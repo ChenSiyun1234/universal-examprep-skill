@@ -1,6 +1,10 @@
 ---
 name: universal-exam-cram-coach
-description: "通用期末考试 1 天极速备考教练（LLM Wiki & Ingest 重构版）。采用惰性加载降低 Token 消耗，使用一键解析脚本零摩擦初始化，通过标准真题库物理防幻觉。"
+description: "帮助学生在临考前进行结构化极速复习：解析课程资料/大纲/重点，按章节生成 wiki 知识库与标准题库，组织针对性刷题与判分，并记录复习进度和错题。当用户即将考试、需要快速复习计划、练习题、错题复盘或考前小抄时使用（关键词：期末/备考/复习/刷题/划重点/错题；exam, cram, study plan, quiz, review）。不适用于长期学习规划、与考试无关的写作或编程任务。"
+license: MIT
+metadata:
+  version: "2.0"
+  author: ZeKaiNie
 ---
 
 # 通用期末考试极速备考教练指令 (Universal Exam Cram Coach - LLM Wiki Edition)
@@ -16,7 +20,7 @@ description: "通用期末考试 1 天极速备考教练（LLM Wiki & Ingest 重
 ### 第一步：一键大纲解析与本地化 (Zero-friction Ingestion)
 1. **智能解析**：快速阅读并解析用户上传的文件，提取所有的知识点、核心公式、高频题型和名词解释。
 2. **后台自动构建 JSON**：Agent 必须在后台自动构建一份符合 `ingest.py` 要求的 `raw_input.json` 格式数据，并将其以 `raw_input.json` 写入到临时目录（例如 scratch/ 目录）中。**绝对禁止要求或提示用户去手动创建、修改此 JSON 文件。**
-3. **执行一键导入**：运行命令 `python .agents/skills/universal-exam-cram-coach/scripts/ingest.py --input <temp_json_path>`。
+3. **执行一键导入**：在技能目录下运行 `python scripts/ingest.py --input <temp_json_path>`（Claude Code 中可用 `python "${CLAUDE_SKILL_DIR}/scripts/ingest.py" --input <temp_json_path>`）。**注意**：本技能在 Claude Code 中应安装到 `~/.claude/skills/universal-exam-cram-coach/` 或项目内 `.claude/skills/universal-exam-cram-coach/`；早先文档中的 `.agents/skills/` 仅是 Codex/Cursor 的约定，Claude Code 不会扫描该路径。
 4. **【核心】无 Python 环境自动降级机制**：
    * 如果运行该 Python 脚本失败（报错如 `python is not recognized` 或环境限制），Agent **必须立即且无感地自动执行降级逻辑**：
    * 直接利用自身的 `write_to_file` / `write_file` 工具，手动在工作区创建 `references/wiki/` 目录，将章节知识切片分别写入 `ch1_xxx.md` 等，写入 `references/quiz_bank.json`，并依据 `templates/` 目录下的模板生成 `study_plan.md` 与 `study_progress.md`。
