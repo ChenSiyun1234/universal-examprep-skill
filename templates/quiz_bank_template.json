@@ -1,0 +1,25 @@
+[
+  {
+    "id": "q1",
+    "chapter": 1,
+    "type": "choice",
+    "question": "这是一道示例选择题。题目描述的是什么？",
+    "options": [
+      "A. 选项A的内容",
+      "B. 选项B的内容",
+      "C. 选项C的内容",
+      "D. 选项D的内容"
+    ],
+    "answer": "A",
+    "explanation": "这是选择题的解析，用于学生做错时 AI 给出纠错解释。"
+  },
+  {
+    "id": "q2",
+    "chapter": 2,
+    "type": "subjective",
+    "question": "这是一道示例主观题/计算题。题目描述是什么？",
+    "answer": "这里是标准计算步骤和最终数值答案。",
+    "keywords": ["关键字1", "关键字2", "公式A"],
+    "explanation": "这是主观题/计算题的详细解题步骤解析。"
+  }
+]
