@@ -7,12 +7,8 @@
 ---
 
 ## 📊 知识点打卡状态
-- [ ] **第一阶段**：基础概念篇 (关联 `references/wiki/ch1_concepts.md`)
-- [ ] **第二阶段**：核心计算与机理篇 (关联 `references/wiki/ch2_formulas.md`)
-- [ ] **第三阶段**：综合应用与设计篇 (关联 `references/wiki/ch3_applications.md`)
-- [ ] **第四阶段**：算法与分析篇 (关联 `references/wiki/ch4_algorithms.md`)
-- [ ] **第五阶段**：综合模拟自测篇 (关联 `references/quiz_bank.json`)
-- [ ] **第六阶段**：易错扫雷与冲刺 (关联 错题自测)
+<!-- 下方 PHASE_CHECKLIST 为 scripts/ingest.py 的插入锚点，请勿删除 -->
+<!-- PHASE_CHECKLIST -->
 
 ---
 
