@@ -45,8 +45,9 @@
 
 1. **新建你的复习文件夹**：在你的电脑上新建一个普通的空文件夹，命名为你的学科名字（比如叫 `计算机组成原理复习`），并用你的 AI 软件（如 Cursor 或终端里的 Claude Code）打开这个文件夹。
 2. **一键全自动安装技能 (Prompt 1)**：在 AI 聊天对话框中，直接复制发送以下指令给 AI：
-   > **“帮我在当前目录下创建 `.agents/skills/` 文件夹，并帮我把 GitHub 仓库 `https://github.com/ZeKaiNie/universal-examprep-skill` 克隆或下载并移动到该目录下，完成技能的本地安装。”**
+   > **“帮我在当前目录下创建 `.claude/skills/` 文件夹，并把 GitHub 仓库 `https://github.com/ZeKaiNie/universal-examprep-skill` 克隆到 `.claude/skills/universal-exam-cram-coach/`，完成技能的本地安装。”**
    * *AI 行为：AI 助手会在后台默默下载并新建隐藏目录，完全不需要你手动拖拽文件。*
+   * *📌 路径说明：Claude Code 读取技能的位置是 `~/.claude/skills/` 或项目内 `.claude/skills/`；而 `.agents/skills/` 是 Codex / Cursor 的约定，Claude Code 不会扫描该路径。请按你实际使用的工具选择对应目录。*
 3. **一键初始化并开始复习 (Prompt 2)**：安装成功后，直接上传你的复习大纲或重点图片，发送：
    > **“这是我的【马原】复习大纲，请遵循刚才安装的 `universal-exam-cram-coach` 技能，在后台解析大纲并自动初始化我的备考 Wiki 空间。”**
    * *AI 行为：AI 将自动大纲解析、完成 Wiki 物理切片和进度计划生成。你只需要跟着 AI 的节奏答题复习即可！*
