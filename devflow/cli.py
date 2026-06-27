@@ -145,12 +145,18 @@ def cmd_resume(args) -> int:
     # Safety: a resume defaults to DRY-RUN even if the original run was --real-github. Live writes
     # must be re-requested explicitly on resume, so they can never silently persist across a pause.
     want_live = bool(getattr(args, "real_github", False))
-    if want_live and (state.get("issue_simulated") or state.get("pr_simulated")):
-        # the checkpoint's issue/PR ids are dry-run fakes (e.g. #2001) — going live could post a
-        # real @codex comment to an unrelated PR with that number. Refuse.
-        print("[devflow] refusing --real-github resume: this thread's issue/PR ids were created in "
-              "dry-run (simulated). Re-run the flow with --real-github from the start to use real ids.")
-        return 1
+    if want_live:
+        # DEFAULT-DENY: only allow a live resume if provenance EXPLICITLY proves each existing
+        # artifact id is real (issue_simulated/pr_simulated == False). A missing flag (e.g. an old
+        # checkpoint from before provenance tracking) is treated as simulated → refuse, so we can
+        # never live-comment on an unrelated real issue/PR that happens to share a fake id.
+        issue_unproven = state.get("issue_number") and state.get("issue_simulated", True)
+        pr_unproven = state.get("pr_number") and state.get("pr_simulated", True)
+        if issue_unproven or pr_unproven:
+            print("[devflow] refusing --real-github resume: this thread's issue/PR ids are not "
+                  "proven real (simulated or unknown provenance). Re-run the flow with --real-github "
+                  "from the start to use real ids.")
+            return 1
     state["real_github"] = want_live
     start = state.get("paused_at_node") or GATE_TO_NODE.get(gate)
     state["status"] = "running"

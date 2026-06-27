@@ -43,6 +43,14 @@ def commit_push_branch(state: DevflowState) -> dict:
 
 
 def create_draft_pr(state: DevflowState) -> dict:
+    # In real mode, refuse to open a PR for a branch we never actually pushed: commit_push_branch is
+    # a no-op in this PR, so branch_pushed is never set. Opening a PR for a deterministically-named
+    # branch that happens to already exist on the remote could submit stale/unrelated contents.
+    if state.get("real_github") and not state.get("branch_pushed"):
+        return {"errors": ["create_draft_pr: branch was never pushed (no branch provenance) — "
+                           "refusing to open a real PR"],
+                "event_log": ["[create_draft_pr] stopped: no branch provenance; not opening a real "
+                              "PR for an unowned branch."]}
     res = _writer(state).create_draft_pr(
         title=f"[devflow] {state['task_type']}",
         body="Automated draft PR from devflow.",
@@ -66,16 +74,23 @@ def request_codex_review(state: DevflowState) -> dict:
                            "refusing to comment on #0"],
                 "event_log": ["[request_codex_review] stopped: no PR number; not commenting on #0."]}
     res = _writer(state).comment_on_pr(pr, "@codex review this PR.")
-    upd = {"codex_review_status": "requested",
-           "event_log": [f"[request_codex_review] {res.get('log', '')}"]}
     if res.get("error"):
-        upd["errors"] = [f"request_codex_review: {res['error']}"]
-    return upd
+        # comment failed → request never sent; terminal safe-stop so the wait node doesn't poll
+        # for (or consume a pre-existing) review that never answered this request.
+        return {"codex_review_status": "timeout",
+                "errors": [f"request_codex_review: {res['error']}"],
+                "event_log": [f"[request_codex_review] FAILED to post '@codex review' "
+                              f"({res['error']}); stopping instead of polling."]}
+    return {"codex_review_status": "requested",
+            "event_log": [f"[request_codex_review] {res.get('log', '')}"]}
 
 
 def wait_for_codex_review(state: DevflowState) -> dict:
     """Real mode: bounded poll of PR comments/reviews for a Codex review. Dry-run: simulate.
     ``state['_simulate']['review']`` in {'blocking','clean','timeout'} drives the dry-run branch."""
+    if state.get("codex_review_status") == "timeout":   # request already failed/safe-stopped
+        return {"event_log": ["[wait_for_codex_review] skipped: review request did not succeed; "
+                              "not polling."]}
     if not state.get("pr_number"):   # nothing to poll — don't hit PR #0
         return {"codex_review_status": "timeout",
                 "errors": ["wait_for_codex_review: no PR number to poll"],

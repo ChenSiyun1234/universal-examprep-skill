@@ -107,6 +107,7 @@ class DevflowState(TypedDict, total=False):
     _sleep_fn: object                   # injectable sleep for bounded polling (tests)
     issue_simulated: bool               # the issue id is a dry-run fake (refuse live resume)
     pr_simulated: bool                  # the PR id is a dry-run fake (refuse live resume)
+    branch_pushed: bool                 # the branch was actually pushed (gate real PR creation)
 
 
 def new_state(task_type: str, thread_id: str, repo: str = "ZeKaiNie/universal-examprep-skill",

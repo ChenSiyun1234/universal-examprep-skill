@@ -17,10 +17,11 @@ def _writer(state: DevflowState) -> GitHubWriter:
 
 
 def create_advisory_issue(state: DevflowState) -> dict:
+    # No labels: `gh issue create --label` fails if the label doesn't already exist on the repo,
+    # which would break live issue creation before the @codex request. Keep it label-free.
     res = _writer(state).create_advisory_issue(
         title=f"[advisory] {state['task_type']}",
         body="Automated advisory request from devflow. Please provide an implementation advisory.",
-        labels=["devflow", "advisory"],
     )
     upd = {"event_log": [f"[create_advisory_issue] {res.get('log', '')}"]}
     if res.get("error"):
@@ -70,6 +71,9 @@ def wait_for_codex_advisory(state: DevflowState) -> dict:
 
     ``state['_simulate']['advisory'] == 'timeout'`` forces the timeout branch in dry-run/tests.
     """
+    if state.get("codex_advisory_status") == "timeout":   # request already failed/safe-stopped
+        return {"event_log": ["[wait_for_codex_advisory] skipped: advisory request did not "
+                              "succeed; not polling."]}
     if not state.get("issue_number"):   # nothing to poll — don't hit issue #0
         return {"codex_advisory_status": "timeout",
                 "errors": ["wait_for_codex_advisory: no issue number to poll"],

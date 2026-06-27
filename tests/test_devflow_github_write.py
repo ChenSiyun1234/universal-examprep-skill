@@ -264,5 +264,56 @@ class TestCodexReviewFixesPR3Round2(unittest.TestCase):
                 pass
 
 
+# ---- round 3 of Codex review on PR #3 ----
+class TestCodexReviewFixesPR3Round3(unittest.TestCase):
+    def test_wait_advisory_skips_when_already_timed_out(self):
+        st = new_state("t", "t")
+        st["codex_advisory_status"] = "timeout"
+        st["issue_number"] = 7
+        with mock.patch.object(G.subprocess, "run", side_effect=AssertionError("no poll!")):
+            out = advisory_nodes.wait_for_codex_advisory(st)
+        self.assertNotIn("codex_advisory_status", out)  # unchanged; did not poll
+        self.assertTrue(any("skipped" in e for e in out["event_log"]))
+
+    def test_review_comment_failure_safe_stops(self):
+        st = new_state("t", "t", real_github=True)
+        st["pr_number"] = 8
+
+        class FakeWriter:
+            def comment_on_pr(self, n, b):
+                return {"error": "boom", "log": "x"}
+
+        with mock.patch.object(pr_nodes, "_writer", return_value=FakeWriter()):
+            out = pr_nodes.request_codex_review(st)
+        self.assertEqual(out["codex_review_status"], "timeout")
+
+    def test_create_draft_pr_refuses_without_branch_provenance(self):
+        st = new_state("t", "t", real_github=True)
+        st["branch_name"] = "devflow/x"
+        with mock.patch.object(G.subprocess, "run", side_effect=AssertionError("no gh!")):
+            out = pr_nodes.create_draft_pr(st)
+        self.assertNotIn("pr_number", out)     # refused: never opened a PR
+        self.assertTrue(out["errors"])
+
+    def test_resume_refuses_live_on_unproven_old_checkpoint(self):
+        from devflow import cli
+        from types import SimpleNamespace
+        import os
+        st = new_state("t", "oldckpt-xyz")  # NO issue_simulated flag (pre-provenance checkpoint)
+        st.update({"issue_number": 1001, "status": "paused",
+                   "paused_at_node": "human_approval", "paused_at_gate": GATE_ADVISORY})
+        st.pop("issue_simulated", None)
+        cli._save_ckpt(st)
+        try:
+            args = SimpleNamespace(thread_id="oldckpt-xyz", gate="advisory",
+                                   decision="approved", real_github=True)
+            self.assertEqual(cli.cmd_resume(args), 1)  # default-deny: unproven id refused
+        finally:
+            try:
+                os.remove(cli._ckpt_path("oldckpt-xyz"))
+            except OSError:
+                pass
+
+
 if __name__ == "__main__":
     unittest.main()
