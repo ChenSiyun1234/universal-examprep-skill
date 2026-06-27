@@ -12,7 +12,7 @@
 <li><b>skill</b>：只把课件建成知识库，模型按需检索（skill 的防幻觉机制）。</li>
 </ul>
 <div class="card">
-<b>一句话结论</b>：在最弱的 Haiku 上，闭卷正确率 18% → 给全材料 2% → skill 惰性检索 93%；越界题上 skill 的弃答率 100%（闭卷只有 60%，即闭卷在不会的题上更爱硬编）。
+<b>一句话结论</b>：在最弱的 Haiku 上，闭卷正确率 18% → skill 惰性检索 93%；越界题上 skill 弃答 100%（闭卷只有 60%，即闭卷在不会的题上更爱硬编）。「给全材料」臂把整门课塞进提示，频繁撞配额/上下文上限——Haiku 上 65 题仅 2 题跑通，跑通的题正确率与 skill 相当，但这种不可行本身正是 skill 定向检索的实际价值。
 </div>
 <h2>📊 正确率：3 模型 × 3 条件</h2>
 <svg viewBox="0 0 680 320" xmlns="http://www.w3.org/2000/svg" role="img">
@@ -28,22 +28,20 @@
 <text x="42" y="34" font-size="11" fill="#888" text-anchor="end">100%</text>
 <rect x="89" y="226" width="41" height="38" fill="#d93025" rx="2"/>
 <text x="110" y="222" font-size="10" fill="#444" text-anchor="middle">16</text>
-<rect x="141" y="98" width="41" height="166" fill="#f9ab00" rx="2"/>
-<text x="161" y="94" font-size="10" fill="#444" text-anchor="middle">71</text>
+<rect x="141" y="58" width="41" height="206" fill="#f9ab00" rx="2"/>
+<text x="161" y="54" font-size="10" fill="#444" text-anchor="middle">88</text>
 <rect x="192" y="51" width="41" height="213" fill="#1a7f64" rx="2"/>
 <text x="213" y="47" font-size="10" fill="#444" text-anchor="middle">91</text>
 <text x="151" y="282" font-size="12" fill="#333" text-anchor="middle">Opus 4.8</text>
 <rect x="295" y="149" width="41" height="115" fill="#d93025" rx="2"/>
 <text x="316" y="145" font-size="10" fill="#444" text-anchor="middle">49</text>
-<rect x="347" y="158" width="41" height="106" fill="#f9ab00" rx="2"/>
-<text x="367" y="154" font-size="10" fill="#444" text-anchor="middle">45</text>
+<rect x="347" y="47" width="41" height="217" fill="#f9ab00" rx="2"/>
+<text x="367" y="43" font-size="10" fill="#444" text-anchor="middle">93</text>
 <rect x="398" y="64" width="41" height="200" fill="#1a7f64" rx="2"/>
 <text x="419" y="60" font-size="10" fill="#444" text-anchor="middle">85</text>
 <text x="357" y="282" font-size="12" fill="#333" text-anchor="middle">Sonnet 4.6</text>
 <rect x="501" y="221" width="41" height="43" fill="#d93025" rx="2"/>
 <text x="522" y="217" font-size="10" fill="#444" text-anchor="middle">18</text>
-<rect x="553" y="260" width="41" height="4" fill="#f9ab00" rx="2"/>
-<text x="573" y="256" font-size="10" fill="#444" text-anchor="middle">2</text>
 <rect x="604" y="47" width="41" height="217" fill="#1a7f64" rx="2"/>
 <text x="625" y="43" font-size="10" fill="#444" text-anchor="middle">93</text>
 <text x="563" y="282" font-size="12" fill="#333" text-anchor="middle">Haiku 4.5</text>
@@ -55,19 +53,20 @@
 <text x="322" y="312" font-size="11" fill="#444">skill（惰性检索）</text>
 </svg>
 <table><tr><th class=l>模型</th><th>闭卷（无材料）</th><th>给全材料（dump）</th><th>skill（惰性检索）</th></tr>
-<tr><td class=l>Opus 4.8</td><td>16%</td><td>71%</td><td>91%</td></tr>
-<tr><td class=l>Sonnet 4.6</td><td>49%</td><td>45%</td><td>85%</td></tr>
-<tr><td class=l>Haiku 4.5</td><td>18%</td><td>2%</td><td>93%</td></tr>
+<tr><td class=l>Opus 4.8</td><td>16%</td><td>88%</td><td>91%</td></tr>
+<tr><td class=l>Sonnet 4.6</td><td>49%</td><td>93%</td><td>85%</td></tr>
+<tr><td class=l>Haiku 4.5</td><td>18%</td><td>—</td><td>93%</td></tr>
 </table>
+<p class="muted">「给全材料」臂仅在真答案上计分（撞限流的报错答案已剔除）：Opus n=50、Sonnet n=27、Haiku n=2（样本太小，未列其正确率）。</p>
 <h2>🧪 幻觉率 & 越界弃答</h2>
 <p class="muted">幻觉率＝答案里出现材料未支持/相矛盾论断的比例（越低越好，按整篇讲义为依据判，会惩罚“正确但材料没写”的展开）；越界弃答率＝材料没覆盖的探针题上老实说“未涵盖”的比例（越高越好）。</p>
 <table><tr><th class=l>模型 / 指标</th><th>闭卷（无材料）</th><th>给全材料（dump）</th><th>skill（惰性检索）</th></tr>
-<tr><td class=l>Opus 4.8 · 幻觉</td><td>2%</td><td>18%</td><td>20%</td></tr>
-<tr><td class=l>Sonnet 4.6 · 幻觉</td><td>18%</td><td>31%</td><td>29%</td></tr>
-<tr><td class=l>Haiku 4.5 · 幻觉</td><td>4%</td><td>62%</td><td>20%</td></tr>
-<tr><td class=l>Opus 4.8 · 越界弃答</td><td>60%</td><td>10%</td><td>100%</td></tr>
-<tr><td class=l>Sonnet 4.6 · 越界弃答</td><td>50%</td><td>0%</td><td>100%</td></tr>
-<tr><td class=l>Haiku 4.5 · 越界弃答</td><td>60%</td><td>0%</td><td>100%</td></tr>
+<tr><td class=l>Opus 4.8 · 幻觉</td><td>2%</td><td>12%</td><td>20%</td></tr>
+<tr><td class=l>Sonnet 4.6 · 幻觉</td><td>18%</td><td>7%</td><td>29%</td></tr>
+<tr><td class=l>Haiku 4.5 · 幻觉</td><td>4%</td><td>—</td><td>20%</td></tr>
+<tr><td class=l>Opus 4.8 · 越界弃答</td><td>60%</td><td>100%</td><td>100%</td></tr>
+<tr><td class=l>Sonnet 4.6 · 越界弃答</td><td>50%</td><td>—</td><td>100%</td></tr>
+<tr><td class=l>Haiku 4.5 · 越界弃答</td><td>60%</td><td>—</td><td>100%</td></tr>
 </table>
 <h2>📈 迭代逼近：知识库越全，越答得对</h2>
 <p class="muted">skill 臂分 3 轮，知识库从 7 章逐步补到 14、20 章（讲义题+探针，Haiku）。</p>
@@ -95,7 +94,8 @@
 </svg>
 <h2>⚠️ 诚实声明 Caveats</h2><ul>
 <li>题量 n=65（每条都跨 3 臂同题对比，最公平）。</li>
-<li>裁判＝sonnet（judge_repeats=1），数值题为确定性判分。裁判与被测同属一个模型家族，仅做了跨模型而非人工 kappa 校准——属已知局限。</li>
+<li>裁判＝sonnet（judge_repeats=1），数值题为确定性判分。裁判与被测同属一个模型家族，尚未做人工 kappa 校准——属已知局限。早期一版裁判曾把与标准答案一字不差的回答误判为幻觉（把 skill 压成假的 38%），已修复并对全部答案重判，上表为重判后数字。</li>
+<li>「给全材料」臂把整门课 dump 进提示，频繁撞订阅配额/上下文上限；其报错答案已从计分中剔除，仅在真答案上计分（样本量见上）。这本身说明 dump 全课在工程上不可行。</li>
 <li>幻觉/忠实度以整篇讲义为依据，会把“正确但讲义没写”的展开也算作不忠实——对 grounding 基准是合理口径，但解读时需知晓。</li>
 <li>本报告只针对该 skill 本身、与任何未来平台无关。数据与脚本可复现。</li>
 </ul>
@@ -121,7 +121,7 @@
 <li><b>Skill</b>：course built into a wiki the model retrieves from on demand (the skill's regime).</li>
 </ul>
 <div class="card">
-<b>Bottom line</b>：On the weakest model (Haiku): closed-book correctness 18% → full-materials 2% → skill retrieval 93%; on out-of-scope probes the skill abstains 100% vs closed-book 60% (closed-book fabricates more when it doesn't know).
+<b>Bottom line</b>：On the weakest model (Haiku): closed-book correctness 18% → skill retrieval 93%; on out-of-scope probes the skill abstains 100% vs closed-book 60% (closed-book fabricates more when it doesn't know). The full-materials arm dumps the entire course and keeps hitting quota/context limits — only 2 of 65 Haiku items completed; on items that did complete it matches the skill, but that infeasibility is exactly the point in favour of the skill's targeted retrieval.
 </div>
 <h2>📊 Correctness: 3 models × 3 conditions</h2>
 <svg viewBox="0 0 680 320" xmlns="http://www.w3.org/2000/svg" role="img">
@@ -137,22 +137,20 @@
 <text x="42" y="34" font-size="11" fill="#888" text-anchor="end">100%</text>
 <rect x="89" y="226" width="41" height="38" fill="#d93025" rx="2"/>
 <text x="110" y="222" font-size="10" fill="#444" text-anchor="middle">16</text>
-<rect x="141" y="98" width="41" height="166" fill="#f9ab00" rx="2"/>
-<text x="161" y="94" font-size="10" fill="#444" text-anchor="middle">71</text>
+<rect x="141" y="58" width="41" height="206" fill="#f9ab00" rx="2"/>
+<text x="161" y="54" font-size="10" fill="#444" text-anchor="middle">88</text>
 <rect x="192" y="51" width="41" height="213" fill="#1a7f64" rx="2"/>
 <text x="213" y="47" font-size="10" fill="#444" text-anchor="middle">91</text>
 <text x="151" y="282" font-size="12" fill="#333" text-anchor="middle">Opus 4.8</text>
 <rect x="295" y="149" width="41" height="115" fill="#d93025" rx="2"/>
 <text x="316" y="145" font-size="10" fill="#444" text-anchor="middle">49</text>
-<rect x="347" y="158" width="41" height="106" fill="#f9ab00" rx="2"/>
-<text x="367" y="154" font-size="10" fill="#444" text-anchor="middle">45</text>
+<rect x="347" y="47" width="41" height="217" fill="#f9ab00" rx="2"/>
+<text x="367" y="43" font-size="10" fill="#444" text-anchor="middle">93</text>
 <rect x="398" y="64" width="41" height="200" fill="#1a7f64" rx="2"/>
 <text x="419" y="60" font-size="10" fill="#444" text-anchor="middle">85</text>
 <text x="357" y="282" font-size="12" fill="#333" text-anchor="middle">Sonnet 4.6</text>
 <rect x="501" y="221" width="41" height="43" fill="#d93025" rx="2"/>
 <text x="522" y="217" font-size="10" fill="#444" text-anchor="middle">18</text>
-<rect x="553" y="260" width="41" height="4" fill="#f9ab00" rx="2"/>
-<text x="573" y="256" font-size="10" fill="#444" text-anchor="middle">2</text>
 <rect x="604" y="47" width="41" height="217" fill="#1a7f64" rx="2"/>
 <text x="625" y="43" font-size="10" fill="#444" text-anchor="middle">93</text>
 <text x="563" y="282" font-size="12" fill="#333" text-anchor="middle">Haiku 4.5</text>
@@ -164,19 +162,20 @@
 <text x="435.8" y="312" font-size="11" fill="#444">Skill (lazy retrieval)</text>
 </svg>
 <table><tr><th class=l>Model</th><th>Closed-book (no materials)</th><th>Full materials dumped</th><th>Skill (lazy retrieval)</th></tr>
-<tr><td class=l>Opus 4.8</td><td>16%</td><td>71%</td><td>91%</td></tr>
-<tr><td class=l>Sonnet 4.6</td><td>49%</td><td>45%</td><td>85%</td></tr>
-<tr><td class=l>Haiku 4.5</td><td>18%</td><td>2%</td><td>93%</td></tr>
+<tr><td class=l>Opus 4.8</td><td>16%</td><td>88%</td><td>91%</td></tr>
+<tr><td class=l>Sonnet 4.6</td><td>49%</td><td>93%</td><td>85%</td></tr>
+<tr><td class=l>Haiku 4.5</td><td>18%</td><td>—</td><td>93%</td></tr>
 </table>
+<p class="muted">Full-materials arm scored on real answers only (rate-limit error replies excluded): Opus n=50, Sonnet n=27, Haiku n=2 (too small to report).</p>
 <h2>🧪 Hallucination & out-of-scope abstention</h2>
 <p class="muted">Hallucination = share of answers with claims not supported by (or contradicting) the source (lower is better; judged against the full lecture, so it penalizes correct-but-unsourced elaboration). OOS abstention = share of not-covered probes where the model honestly says “not covered” (higher is better).</p>
 <table><tr><th class=l>Model / metric</th><th>Closed-book (no materials)</th><th>Full materials dumped</th><th>Skill (lazy retrieval)</th></tr>
-<tr><td class=l>Opus 4.8 · halluc.</td><td>2%</td><td>18%</td><td>20%</td></tr>
-<tr><td class=l>Sonnet 4.6 · halluc.</td><td>18%</td><td>31%</td><td>29%</td></tr>
-<tr><td class=l>Haiku 4.5 · halluc.</td><td>4%</td><td>62%</td><td>20%</td></tr>
-<tr><td class=l>Opus 4.8 · OOS abstain</td><td>60%</td><td>10%</td><td>100%</td></tr>
-<tr><td class=l>Sonnet 4.6 · OOS abstain</td><td>50%</td><td>0%</td><td>100%</td></tr>
-<tr><td class=l>Haiku 4.5 · OOS abstain</td><td>60%</td><td>0%</td><td>100%</td></tr>
+<tr><td class=l>Opus 4.8 · halluc.</td><td>2%</td><td>12%</td><td>20%</td></tr>
+<tr><td class=l>Sonnet 4.6 · halluc.</td><td>18%</td><td>7%</td><td>29%</td></tr>
+<tr><td class=l>Haiku 4.5 · halluc.</td><td>4%</td><td>—</td><td>20%</td></tr>
+<tr><td class=l>Opus 4.8 · OOS abstain</td><td>60%</td><td>100%</td><td>100%</td></tr>
+<tr><td class=l>Sonnet 4.6 · OOS abstain</td><td>50%</td><td>—</td><td>100%</td></tr>
+<tr><td class=l>Haiku 4.5 · OOS abstain</td><td>60%</td><td>—</td><td>100%</td></tr>
 </table>
 <h2>📈 Convergence: more wiki coverage → more correct</h2>
 <p class="muted">Skill arm over 3 rounds as the wiki grows 7 → 14 → 20 chapters (lecture items + probes, Haiku).</p>
@@ -204,7 +203,8 @@
 </svg>
 <h2>⚠️ Caveats</h2><ul>
 <li>n=65 items, each answered under all conditions.</li>
-<li>Judge = sonnet (repeats=1); numeric items scored deterministically. Judge and tested models share one family; only cross-model (not human-kappa) calibration was done — a known limitation.</li>
+<li>Judge = sonnet (repeats=1); numeric items scored deterministically. Judge and tested models share one family; no human-kappa calibration yet — a known limitation. An earlier judge mis-scored exact-match answers as hallucinations (suppressing the skill arm to a fake 38%); it was fixed and ALL answers were re-judged — the tables above are post-fix.</li>
+<li>The full-materials arm dumps the whole course and frequently hits subscription-quota / context limits; its error replies are excluded and it is scored on real answers only (sample sizes above) — which itself shows dumping a whole course is operationally impractical.</li>
 <li>Faithfulness is judged against the full lecture, so correct-but-unsourced elaboration counts as unfaithful — a reasonable grounding criterion, but worth knowing.</li>
 <li>This report concerns the skill itself only, independent of any future platform. Data and code are reproducible.</li>
 </ul>

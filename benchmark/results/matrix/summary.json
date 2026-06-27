@@ -23,18 +23,20 @@
       "hallucination": 0.0182,
       "abstention_oos": 0.6,
       "n_judge_error": 0,
-      "n_lexical": 2
+      "n_lexical": 2,
+      "n_infra_error": 0
     },
     "opus|material": {
       "n": 65,
-      "n_answerable": 55,
-      "n_oos": 10,
-      "correct": 0.7091,
-      "faithfulness": 0.7091,
-      "hallucination": 0.1818,
-      "abstention_oos": 0.1,
+      "n_answerable": 50,
+      "n_oos": 1,
+      "correct": 0.88,
+      "faithfulness": 0.88,
+      "hallucination": 0.12,
+      "abstention_oos": 1.0,
       "n_judge_error": 0,
-      "n_lexical": 11
+      "n_lexical": 12,
+      "n_infra_error": 14
     },
     "sonnet|closedbook": {
       "n": 65,
@@ -45,7 +47,8 @@
       "hallucination": 0.1818,
       "abstention_oos": 0.5,
       "n_judge_error": 0,
-      "n_lexical": 6
+      "n_lexical": 6,
+      "n_infra_error": 0
     },
     "opus|skill": {
       "n": 65,
@@ -56,18 +59,20 @@
       "hallucination": 0.2,
       "abstention_oos": 1.0,
       "n_judge_error": 0,
-      "n_lexical": 13
+      "n_lexical": 13,
+      "n_infra_error": 0
     },
     "sonnet|material": {
       "n": 65,
-      "n_answerable": 55,
-      "n_oos": 10,
-      "correct": 0.4545,
-      "faithfulness": 0.4811,
-      "hallucination": 0.3091,
-      "abstention_oos": 0.0,
-      "n_judge_error": 2,
-      "n_lexical": 5
+      "n_answerable": 27,
+      "n_oos": 0,
+      "correct": 0.9259,
+      "faithfulness": 0.9259,
+      "hallucination": 0.0741,
+      "abstention_oos": null,
+      "n_judge_error": 0,
+      "n_lexical": 5,
+      "n_infra_error": 38
     },
     "sonnet|skill": {
       "n": 65,
@@ -78,7 +83,8 @@
       "hallucination": 0.2909,
       "abstention_oos": 1.0,
       "n_judge_error": 0,
-      "n_lexical": 17
+      "n_lexical": 17,
+      "n_infra_error": 0
     },
     "haiku|closedbook": {
       "n": 65,
@@ -89,18 +95,20 @@
       "hallucination": 0.0364,
       "abstention_oos": 0.6,
       "n_judge_error": 3,
-      "n_lexical": 2
+      "n_lexical": 2,
+      "n_infra_error": 0
     },
     "haiku|material": {
       "n": 65,
-      "n_answerable": 55,
-      "n_oos": 10,
-      "correct": 0.0182,
-      "faithfulness": 0.0294,
-      "hallucination": 0.6182,
-      "abstention_oos": 0.0,
-      "n_judge_error": 4,
-      "n_lexical": 1
+      "n_answerable": 2,
+      "n_oos": 0,
+      "correct": null,
+      "faithfulness": null,
+      "hallucination": null,
+      "abstention_oos": null,
+      "n_judge_error": 0,
+      "n_lexical": 1,
+      "n_infra_error": 63
     },
     "haiku|skill": {
       "n": 65,
@@ -111,7 +119,8 @@
       "hallucination": 0.2,
       "abstention_oos": 1.0,
       "n_judge_error": 0,
-      "n_lexical": 17
+      "n_lexical": 17,
+      "n_infra_error": 0
     }
   },
   "convergence": {
@@ -124,7 +133,8 @@
       "hallucination": 0.0769,
       "abstention_oos": 1.0,
       "n_judge_error": 1,
-      "n_lexical": 4
+      "n_lexical": 4,
+      "n_infra_error": 0
     },
     "conv_r2": {
       "n": 49,
@@ -135,7 +145,8 @@
       "hallucination": 0.1026,
       "abstention_oos": 1.0,
       "n_judge_error": 0,
-      "n_lexical": 7
+      "n_lexical": 7,
+      "n_infra_error": 0
     },
     "conv_r3": {
       "n": 49,
@@ -146,10 +157,16 @@
       "hallucination": 0.2821,
       "abstention_oos": 1.0,
       "n_judge_error": 0,
-      "n_lexical": 9
+      "n_lexical": 9,
+      "n_infra_error": 0
     }
   },
-  "judge_note": "re-scored with hardened judge (lexical fast-path + parse-robust + no-silent-hallucination); original flawed-judge output kept in summary_original_judge.json",
+  "judge_note": "authoritative LLM re-judge (fixed judge); material arm scored on REAL answers only (rate-limit errors excluded); haiku|material n=2 insufficient->null; original flawed-judge output in summary_original_judge.json",
   "rejudged": true,
-  "judge_llm_calls": 245
+  "judge_llm_calls": 245,
+  "material_n": {
+    "opus|material": 50,
+    "sonnet|material": 27,
+    "haiku|material": 2
+  }
 }

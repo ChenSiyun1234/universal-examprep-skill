@@ -77,18 +77,42 @@ def claude_judge(model):
     return ask
 
 
+GEN_ANS = os.path.join(MATRIX, "gen_answers.jsonl")
+_ERR = ("hit your limit", "api error", "rate limited", "temporarily limiting", "usage limit",
+        "你已达到", "prompt is too long")
+
+
+def is_infra_error(a):
+    """An answer that is a rate-limit / API / context error string, NOT a model answer — must be
+    EXCLUDED from correctness (counting it as 'wrong' is what made the dump arm look like 2%)."""
+    a = (a or "").lower()
+    return any(e in a for e in _ERR)
+
+
+def _gen_rows():
+    return load_jsonl(GEN_ANS) if os.path.exists(GEN_ANS) else []
+
+
 def unified_rows(course):
-    """Normalize both runs to {course, tag, model, arm, id, answer}."""
-    rows = []
+    """Normalize runs to {course, tag, model, arm, id, answer}. PSYC now comes from the REAL
+    generated answers (gen_answers.jsonl), NOT the old MOCK results/raw.jsonl; algo `material`
+    items that errored out the first time are PATCHED with their reruns from gen_answers.jsonl."""
+    rows, gen = [], _gen_rows()
     if course in ("algo", "both"):
+        rerun = {(d["model"], d["id"]): d["answer"] for d in gen
+                 if d["course"] == "algo" and d["arm"] == "material"}
         for d in load_jsonl(ALGO_ANS):
+            ans = d.get("answer", "")
+            if d["tag"] == "matrix" and d["arm"] == "material" and is_infra_error(ans) \
+                    and (d["model"], d["id"]) in rerun:
+                ans = rerun[(d["model"], d["id"])]                 # patch error with a clean rerun
             rows.append({"course": "algo", "tag": d["tag"], "model": d["model"],
-                         "arm": d["arm"], "id": d["id"], "answer": d.get("answer", "")})
-    if course in ("psyc", "both") and os.path.exists(PSYC_RAW):
-        for d in load_jsonl(PSYC_RAW):                  # 2-arm single-model: split baseline + skill
-            for arm, akey in (("baseline", "baseline_answer"), ("skill", "skill_answer")):
-                rows.append({"course": "psyc", "tag": "psyc", "model": "psyc", "arm": arm,
-                             "id": d["id"], "answer": d.get(akey, "")})
+                         "arm": d["arm"], "id": d["id"], "answer": ans})
+    if course in ("psyc", "both"):
+        for d in gen:                                              # REAL psyc answers, 3 arms x 3 models
+            if d["course"] == "psyc":
+                rows.append({"course": "psyc", "tag": "psyc", "model": d["model"],
+                             "arm": d["arm"], "id": d["id"], "answer": d.get("answer", "")})
     return rows
 
 
@@ -106,15 +130,17 @@ def load_cache():
 
 def cell_label(row):
     if row["course"] == "psyc":
-        return f"psyc|{row['arm']}"
+        return f"psyc|{row['model']}|{row['arm']}"
     if row["tag"] == "matrix":
         return f"{row['model']}|{row['arm']}"
     return row["tag"]                                   # conv_r1/r2/r3
 
 
 def aggregate(scores):
-    ans = [s for s in scores if s.get("answerable", True)]
-    oos = [s for s in scores if not s.get("answerable", True)]
+    # infra-errors (rate-limit / context) are EXCLUDED — they are not model answers, so counting
+    # them as wrong is exactly what made the dump arm look like a fake 2%.
+    ans = [s for s in scores if s.get("answerable", True) and not s.get("infra_error")]
+    oos = [s for s in scores if not s.get("answerable", True) and not s.get("infra_error")]
     decided = [s for s in ans if not s.get("judge_error") and s.get("faithfulness") is not None]
 
     def rate(xs, key):
@@ -129,6 +155,7 @@ def aggregate(scores):
         "abstention_oos": rate(oos, "abstained"),
         "n_judge_error": sum(1 for s in ans if s.get("judge_error")),
         "n_lexical": sum(1 for s in ans if s.get("scored_by") == "lexical"),
+        "n_infra_error": sum(1 for s in scores if s.get("infra_error")),
     }
 
 
@@ -154,6 +181,12 @@ def main():
         item = gold[row["course"]].get(row["id"])
         if not item:
             missing += 1
+            continue
+        if is_infra_error(row["answer"]):              # rate-limit/context error -> exclude, don't judge
+            cells.setdefault(cell_label(row), []).append(
+                {"id": row["id"], "answerable": bool(item.get("answerable", True)),
+                 "infra_error": True, "correct": False, "abstained": False,
+                 "hallucinated": None, "faithfulness": None, "scored_by": "infra_error"})
             continue
         k = cache_key(row["id"], row["answer"])
         if k in cache:

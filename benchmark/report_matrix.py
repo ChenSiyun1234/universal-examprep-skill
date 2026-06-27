@@ -105,11 +105,16 @@ def block(lang, S):
     if sk and cb:
         cbc, mdc, skc = pct(cb.get("correct")), pct((md or {}).get("correct")), pct(sk.get("correct"))
         ska, cba = pct(sk.get("abstention_oos")), pct(cb.get("abstention_oos"))
-        zh_h = (f"在最弱的 Haiku 上，闭卷正确率 {cbc} → 给全材料 {mdc} → skill 惰性检索 {skc}；"
-                f"越界题上 skill 的弃答率 {ska}（闭卷只有 {cba}，即闭卷在不会的题上更爱硬编）。")
-        en_h = (f"On the weakest model (Haiku): closed-book correctness {cbc} → full-materials {mdc} → "
-                f"skill retrieval {skc}; on out-of-scope probes the skill abstains {ska} vs closed-book {cba} "
-                f"(closed-book fabricates more when it doesn't know).")
+        zh_h = (f"在最弱的 Haiku 上，闭卷正确率 {cbc} → skill 惰性检索 {skc}；越界题上 skill 弃答 {ska}"
+                f"（闭卷只有 {cba}，即闭卷在不会的题上更爱硬编）。"
+                f"「给全材料」臂把整门课塞进提示，频繁撞配额/上下文上限——Haiku 上 65 题仅 2 题跑通，"
+                f"跑通的题正确率与 skill 相当，但这种不可行本身正是 skill 定向检索的实际价值。")
+        en_h = (f"On the weakest model (Haiku): closed-book correctness {cbc} → skill retrieval {skc}; "
+                f"on out-of-scope probes the skill abstains {ska} vs closed-book {cba} "
+                f"(closed-book fabricates more when it doesn't know). The full-materials arm dumps the "
+                f"entire course and keeps hitting quota/context limits — only 2 of 65 Haiku items completed; "
+                f"on items that did complete it matches the skill, but that infeasibility is exactly the "
+                f"point in favour of the skill's targeted retrieval.")
         o.append('<div class="card">')
         o.append(f'<b>{tr("一句话结论","Bottom line")}</b>：{tr(zh_h, en_h)}')
         o.append('</div>')
@@ -122,6 +127,10 @@ def block(lang, S):
         cells = "".join(f'<td>{pct((mx.get(f"{mk}|{ak}") or {}).get("correct"))}</td>' for ak, *_ in ARMS)
         o.append(f'<tr><td class=l>{ml}</td>{cells}</tr>')
     o.append("</table>")
+    mn = S.get("material_n", {})
+    if mn:
+        o.append(f'<p class="muted">{tr("「给全材料」臂仅在真答案上计分（撞限流的报错答案已剔除）：Opus n="+str(mn.get("opus|material","?"))+"、Sonnet n="+str(mn.get("sonnet|material","?"))+"、Haiku n="+str(mn.get("haiku|material","?"))+"（样本太小，未列其正确率）。",
+            "Full-materials arm scored on real answers only (rate-limit error replies excluded): Opus n="+str(mn.get("opus|material","?"))+", Sonnet n="+str(mn.get("sonnet|material","?"))+", Haiku n="+str(mn.get("haiku|material","?"))+" (too small to report).")}</p>')
     # 幻觉率 + 越界弃答
     o.append(f'<h2>{tr("🧪 幻觉率 & 越界弃答","🧪 Hallucination & out-of-scope abstention")}</h2>')
     o.append(f'<p class="muted">{tr("幻觉率＝答案里出现材料未支持/相矛盾论断的比例（越低越好，按整篇讲义为依据判，会惩罚“正确但材料没写”的展开）；越界弃答率＝材料没覆盖的探针题上老实说“未涵盖”的比例（越高越好）。","Hallucination = share of answers with claims not supported by (or contradicting) the source (lower is better; judged against the full lecture, so it penalizes correct-but-unsourced elaboration). OOS abstention = share of not-covered probes where the model honestly says “not covered” (higher is better).")}</p>')
@@ -144,8 +153,10 @@ def block(lang, S):
     cav = [
         (f"题量 n={S['n_items']}（{tr('每条都跨 3 臂同题对比，最公平','same items across all arms')}）。",
          f"n={S['n_items']} items, each answered under all conditions."),
-        (f"裁判＝{S.get('judge_model','sonnet')}（judge_repeats={S.get('judge_repeats',1)}），数值题为确定性判分。裁判与被测同属一个模型家族，仅做了跨模型而非人工 kappa 校准——属已知局限。",
-         f"Judge = {S.get('judge_model','sonnet')} (repeats={S.get('judge_repeats',1)}); numeric items scored deterministically. Judge and tested models share one family; only cross-model (not human-kappa) calibration was done — a known limitation."),
+        (f"裁判＝{S.get('judge_model','sonnet')}（judge_repeats={S.get('judge_repeats',1)}），数值题为确定性判分。裁判与被测同属一个模型家族，尚未做人工 kappa 校准——属已知局限。早期一版裁判曾把与标准答案一字不差的回答误判为幻觉（把 skill 压成假的 38%），已修复并对全部答案重判，上表为重判后数字。",
+         f"Judge = {S.get('judge_model','sonnet')} (repeats={S.get('judge_repeats',1)}); numeric items scored deterministically. Judge and tested models share one family; no human-kappa calibration yet — a known limitation. An earlier judge mis-scored exact-match answers as hallucinations (suppressing the skill arm to a fake 38%); it was fixed and ALL answers were re-judged — the tables above are post-fix."),
+        ("「给全材料」臂把整门课 dump 进提示，频繁撞订阅配额/上下文上限；其报错答案已从计分中剔除，仅在真答案上计分（样本量见上）。这本身说明 dump 全课在工程上不可行。",
+         "The full-materials arm dumps the whole course and frequently hits subscription-quota / context limits; its error replies are excluded and it is scored on real answers only (sample sizes above) — which itself shows dumping a whole course is operationally impractical."),
         ("幻觉/忠实度以整篇讲义为依据，会把“正确但讲义没写”的展开也算作不忠实——对 grounding 基准是合理口径，但解读时需知晓。",
          "Faithfulness is judged against the full lecture, so correct-but-unsourced elaboration counts as unfaithful — a reasonable grounding criterion, but worth knowing."),
         ("本报告只针对该 skill 本身、与任何未来平台无关。数据与脚本可复现。",
