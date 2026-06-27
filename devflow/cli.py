@@ -30,6 +30,7 @@ from devflow.state import (
     new_state, APPROVED, REJECTED, APPROVAL_GATES,
     GATE_ADVISORY, GATE_FIX, GATE_MERGE,
 )
+from devflow.tools.github_cli import ReadOnlyGitHub, check_gh_available, GhError
 
 # Windows GBK consoles otherwise mangle the report box-drawing / CJK text.
 for _s in ("stdout", "stderr"):
@@ -157,6 +158,74 @@ def cmd_resume(args) -> int:
     return 0
 
 
+# ---- read-only GitHub commands (no writes) ----
+def _require_gh() -> int:
+    st = check_gh_available()
+    if not st.get("available"):
+        print(f"[devflow] {st['error']}")
+        return 2
+    if not st.get("authenticated"):
+        print(f"[devflow] {st['error']}\nRun `gh auth login` first.")
+        return 3
+    return 0
+
+
+def cmd_github_check(args) -> int:
+    st = check_gh_available()
+    print(json.dumps(st, ensure_ascii=False, indent=2))
+    return 0 if st.get("authenticated") else 1
+
+
+def cmd_read_issue(args) -> int:
+    rc = _require_gh()
+    if rc:
+        return rc
+    gh = ReadOnlyGitHub(args.repo)
+    try:
+        comments = gh.get_issue_comments(args.issue)
+        advisory = gh.find_latest_codex_advisory(args.issue)
+    except GhError as e:
+        print(f"[devflow] gh error: {e}")
+        return 1
+    print(f"[read-issue] #{args.issue} — {len(comments)} comment(s)")
+    for c in comments:
+        print(f"  - {c['author']} @ {c['created_at']}: {(c['body'] or '')[:100]}")
+    if advisory:
+        print(f"\nLatest Codex advisory: by {advisory['author']} @ {advisory['created_at']}")
+        print(advisory["body"][:800])
+    else:
+        print("\nLatest Codex advisory: (none found)")
+    return 0
+
+
+def cmd_read_pr(args) -> int:
+    rc = _require_gh()
+    if rc:
+        return rc
+    gh = ReadOnlyGitHub(args.repo)
+    try:
+        comments = gh.get_pr_comments(args.pr)
+        reviews = gh.get_pr_reviews(args.pr)
+        review = gh.find_latest_codex_review(args.pr)
+    except GhError as e:
+        print(f"[devflow] gh error: {e}")
+        return 1
+    print(f"[read-pr] #{args.pr} — {len(comments)} comment(s), {len(reviews)} review(s)")
+    for r in reviews:
+        print(f"  review: {r['author']} [{r['state']}] @ {r['created_at']}")
+    if review:
+        print(f"\nLatest Codex review: by {review['author']} ({review['source']}) "
+              f"blocking={review['blocking']} state={review.get('state')}")
+        if review["items"]:
+            print("  items:")
+            for it in review["items"][:20]:
+                print(f"   - {it}")
+        print(review["body"][:800])
+    else:
+        print("\nLatest Codex review: (none found)")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="devflow", description="Dry-run LangGraph devflow orchestrator")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -181,6 +250,20 @@ def build_parser() -> argparse.ArgumentParser:
     rs.add_argument("--gate", required=True, choices=list(_GATE_ALIASES))
     rs.add_argument("--decision", required=True, choices=["approved", "rejected"])
     rs.set_defaults(func=cmd_resume)
+
+    # --- read-only GitHub commands ---
+    gc = sub.add_parser("github-check", help="check gh availability + authentication (read-only)")
+    gc.set_defaults(func=cmd_github_check)
+
+    ri = sub.add_parser("read-issue", help="read an issue's comments + latest Codex advisory")
+    ri.add_argument("--issue", type=int, required=True)
+    ri.add_argument("--repo", default=None, help="owner/name (default: current repo)")
+    ri.set_defaults(func=cmd_read_issue)
+
+    rp = sub.add_parser("read-pr", help="read a PR's comments/reviews + latest Codex review")
+    rp.add_argument("--pr", type=int, required=True)
+    rp.add_argument("--repo", default=None, help="owner/name (default: current repo)")
+    rp.set_defaults(func=cmd_read_pr)
     return p
 
 

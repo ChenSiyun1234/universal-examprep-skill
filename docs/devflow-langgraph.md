@@ -116,6 +116,59 @@ python -m devflow.cli run --task docs-advisory --thread-id demo-5 --simulate-adv
 
 Tests: `python -m unittest tests.test_devflow_graph`
 
+## Read-only GitHub integration
+
+`devflow/tools/github_cli.py` has two clearly separated layers:
+
+* **Write layer** (`DryRunGitHub`) — issue/PR/branch/merge operations are recorded no-ops in this
+  scaffold (`executed: False`).
+* **Read-only layer** (`ReadOnlyGitHub` + `check_gh_available()`) — inspects issues, PRs, comments
+  and reviews via the `gh` CLI. **Strictly read-only.** Every `gh` invocation passes through
+  `_assert_read_only()`, the single safety chokepoint, which:
+  * allow-lists only read shapes (`gh auth status`, `gh repo view`, `gh issue view`, `gh pr view`,
+    `gh pr/issue list`, `gh pr diff`, and `gh api`);
+  * refuses `gh api` with a write method (`-X POST/PUT/PATCH/DELETE`) or write-style field flags
+    (`-f/--field/-F/--raw-field/--input` — which would make `gh api` POST);
+  * runs **before** any subprocess is spawned, so a write-shaped command never executes.
+
+There is no code path in the read-only layer that can create, comment, push, or merge.
+
+### Functions
+
+* `check_gh_available()` → `{available, authenticated, account, error}` (never raises)
+* `ReadOnlyGitHub(repo=None).get_repo_info()`
+* `.get_issue_comments(issue_number)` / `.get_pr_comments(pr_number)` / `.get_pr_reviews(pr_number)`
+* `.find_latest_codex_advisory(issue_number)` — newest comment authored by a Codex account
+* `.find_latest_codex_review(pr_number)` — newest Codex PR comment/review, with a light
+  `blocking` heuristic (CHANGES_REQUESTED or "blocking/must fix" language) and parsed bullet items
+
+Codex authorship is detected by login (`codex` / `chatgpt`, e.g. `chatgpt-codex-connector[bot]`).
+
+### Prerequisite (local)
+
+An **authenticated `gh` CLI** is required for the read commands:
+
+```bash
+gh --version        # GitHub CLI installed
+gh auth login       # one-time authentication
+```
+
+If `gh` is missing or unauthenticated, the read commands print a clear error and exit non-zero
+(they never fall back to anything that mutates state).
+
+### Examples
+
+```bash
+python -m devflow.cli github-check
+python -m devflow.cli read-issue --issue 123 [--repo owner/name]
+python -m devflow.cli read-pr    --pr 456     [--repo owner/name]
+```
+
+`--repo` defaults to the current repository. Tests for this layer mock `gh` entirely
+(`tests/test_devflow_github_readonly.py`): they assert no write command can run, that a Codex
+advisory/review is detected/parsed from sample comments/reviews, and that gh-unavailable errors
+are clear.
+
 ## Dependency note
 
 The repo has no product dependency file and the product is intentionally stdlib-only. To avoid
@@ -125,10 +178,9 @@ installing it only upgrades the orchestrator to the real LangGraph backend.
 
 ## Planned next PRs
 
-1. **Read-only GitHub integration** — real `gh`/API reads (issue/PR status) behind the same
-   `DryRunGitHub` interface, still no mutations.
-2. **GitHub issue/PR write integration** — gated, explicit, non-default mutations (create issue,
-   open draft PR) with confirmation.
-3. **Codex polling** — replace the simulated advisory/review with real `@codex` request + bounded
-   polling for responses.
+1. ~~Read-only GitHub integration~~ — **done** (`ReadOnlyGitHub` + `check_gh_available`, this PR).
+2. **GitHub issue/PR write integration** — gated, explicit, **non-default** mutations behind
+   flags (e.g. `--write`/`--confirm`): create issue, open draft PR. Default stays read-only/dry-run.
+3. **Codex polling** — replace the simulated advisory/review with a real `@codex` request +
+   bounded polling, consuming `find_latest_codex_advisory` / `find_latest_codex_review`.
 4. **Merge approval execution** — wire `claude_execute_merge` to a real, human-approved merge.
