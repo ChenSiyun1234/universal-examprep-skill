@@ -99,11 +99,17 @@ def _assert_read_only(args: list[str]) -> None:
             base = tok.split("=", 1)[0]               # handle both `--field x` and `--field=x`
             if base in _API_WRITE_FLAGS:
                 raise GhError(f"refused: write-style `gh api` flag {tok!r}")
+            # compact short field flags with an attached value: -fbody=hi, -Ffoo=bar
+            if len(tok) > 2 and tok[0] == "-" and tok[1] in ("f", "F") and tok[2] != "-":
+                raise GhError(f"refused: write-style `gh api` field flag {tok!r}")
+            # method via -X/--method (space, `=`, or attached compact form -XPUT)
+            method = None
             if base in ("-X", "--method"):
-                method = (tok.split("=", 1)[1] if "=" in tok
-                          else (args[i + 1] if i + 1 < len(args) else "")).upper()
-                if method in _WRITE_METHODS:
-                    raise GhError(f"refused: `gh api` method {method}")
+                method = tok.split("=", 1)[1] if "=" in tok else (args[i + 1] if i + 1 < len(args) else "")
+            elif tok.startswith("-X") and len(tok) > 2:
+                method = tok[2:]
+            if method and method.upper() in _WRITE_METHODS:
+                raise GhError(f"refused: `gh api` method {method.upper()}")
         return
     if tuple(args[:2]) in _ALLOWED_READ_PREFIXES or (args[0],) in _ALLOWED_READ_PREFIXES:
         return
@@ -156,10 +162,12 @@ def check_gh_available() -> dict:
         return {"available": False, "authenticated": False,
                 "error": "gh CLI not found on PATH. Install GitHub CLI and run `gh auth login`."}
     try:
-        out = _run_gh(["auth", "status"])
+        # scope to github.com: `gh auth status` (no host) exits non-zero if ANY known host (e.g. a
+        # stale Enterprise login) has issues, which would wrongly block valid github.com reads.
+        out = _run_gh(["auth", "status", "--hostname", "github.com"])
     except GhError as e:
         return {"available": True, "authenticated": False,
-                "error": f"gh is installed but not authenticated: {e}"}
+                "error": f"gh is installed but not authenticated for github.com: {e}"}
     account = None
     m = re.search(r"account\s+(\S+)", out) or re.search(r"Logged in to \S+ account (\S+)", out)
     if m:
@@ -189,9 +197,17 @@ def parse_review_packet(body: str, state: Optional[str] = None) -> dict:
     """
     text = body or ""
     low = text.lower()
-    # word-boundary match; the negative lookbehind keeps "non-blocking" from counting as blocking
-    blocking = (state or "").upper() == "CHANGES_REQUESTED" or bool(
+    # A CHANGES_REQUESTED review state is authoritative. Otherwise use the text heuristic, but let
+    # explicit negations ("no blocking issues", "not blocking", "do not request changes") win so a
+    # clean review isn't mis-flagged. (?<!non-) keeps "non-blocking" from matching either.
+    state_blocking = (state or "").upper() == "CHANGES_REQUESTED"
+    negated = bool(re.search(
+        r"\bno\s+(?:\w+\s+){0,2}blocking\b|\bnot\s+blocking\b|\bno\s+required\s+changes?\b"
+        r"|\b(?:do|does|did)\s+not\s+request\s+changes\b|\bdon'?t\s+request\s+changes\b"
+        r"|\bno\s+changes?\s+requested\b", low))
+    text_blocking = bool(
         re.search(r"(?<!non-)\bblocking\b|\bmust fix\b|\brequired change\b|\brequest changes\b", low))
+    blocking = state_blocking or (text_blocking and not negated)
     bullets = [ln.strip(" -*\t") for ln in text.splitlines() if ln.strip().startswith(("-", "*"))]
     return {
         "state": state,
@@ -304,9 +320,13 @@ class ReadOnlyGitHub:
             return None
         latest = max(candidates, key=lambda c: c.get("created_at") or "")
         packet = parse_review_packet(latest["body"], latest.get("state"))
-        # Preserve a CHANGES_REQUESTED verdict even if a later (e.g. COMMENTED) entry is newest.
-        if any((c.get("state") or "").upper() == "CHANGES_REQUESTED" for c in candidates):
-            packet["blocking"] = True
+        # Resolve blocking from the LATEST review that carries a terminal state: a CHANGES_REQUESTED
+        # persists until a *newer* APPROVED review clears it (don't force-block forever via any()).
+        stateful = [c for c in candidates if (c.get("state") or "").upper() in
+                    ("CHANGES_REQUESTED", "APPROVED")]
+        if stateful:
+            newest_state = max(stateful, key=lambda c: c.get("created_at") or "")["state"].upper()
+            packet["blocking"] = (newest_state == "CHANGES_REQUESTED")
         return {
             "source": latest["source"],
             "pr_number": int(pr_number),

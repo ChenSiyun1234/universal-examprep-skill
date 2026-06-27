@@ -61,7 +61,11 @@ class TestReadOnlyGuard(unittest.TestCase):
                     ["api", "x", "--method=POST"],
                     ["api", "x", "--field=body=hi"],        # equals-form write flag
                     ["api", "x", "--raw-field=b=c"],
-                    ["api", "x", "-X=DELETE"]):
+                    ["api", "x", "-X=DELETE"],
+                    ["api", "x", "-XPUT"],                  # compact attached method
+                    ["api", "x", "-XPOST"],
+                    ["api", "x", "-fbody=hi"],              # compact attached field
+                    ["api", "x", "-Ffoo=bar"]):
             with self.assertRaises(GhError):
                 _assert_read_only(bad)
 
@@ -159,6 +163,15 @@ class TestAvailability(unittest.TestCase):
         self.assertTrue(st["authenticated"])
         self.assertEqual(st["account"], "TESTER")
 
+    def test_auth_check_is_scoped_to_github_host(self):
+        calls = []
+        with mock.patch.object(G.shutil, "which", return_value="gh"), \
+             mock.patch.object(G.subprocess, "run", side_effect=fake_run_factory(calls)):
+            check_gh_available()
+        auth_calls = [c for c in calls if c[1:3] == ["auth", "status"]]
+        self.assertTrue(auth_calls)
+        self.assertIn("github.com", auth_calls[0])  # scoped to the github.com host
+
 
 class TestCodexAuthorMatch(unittest.TestCase):
     def test_matches_exact_trusted(self):
@@ -187,6 +200,39 @@ class TestParsingHardening(unittest.TestCase):
     def test_blocking_word_flagged(self):
         self.assertTrue(G.parse_review_packet("This is a blocking issue.")["blocking"])
         self.assertTrue(G.parse_review_packet("you must fix this")["blocking"])
+
+    def test_negated_blocking_phrases_not_flagged(self):
+        for txt in ("No blocking issues found.", "There are not blocking concerns here.",
+                    "I do not request changes.", "No required changes.", "No changes requested."):
+            self.assertFalse(G.parse_review_packet(txt, state="COMMENTED")["blocking"], txt)
+
+    def test_changes_requested_then_approved_clears_blocking(self):
+        gh = ReadOnlyGitHub("o/r")
+        reviews = [
+            {"author": "codex", "body": "fix", "state": "CHANGES_REQUESTED",
+             "created_at": "2026-01-01T00:00:00Z", "url": "r1"},
+            {"author": "codex", "body": "lgtm", "state": "APPROVED",
+             "created_at": "2026-01-05T00:00:00Z", "url": "r2"},  # newer approval
+        ]
+        with mock.patch.object(gh, "get_pr_comments", return_value=[]), \
+             mock.patch.object(gh, "get_pr_review_comments", return_value=[]), \
+             mock.patch.object(gh, "get_pr_reviews", return_value=reviews):
+            rev = gh.find_latest_codex_review(2)
+        self.assertFalse(rev["blocking"])  # newer APPROVED clears the prior CHANGES_REQUESTED
+
+    def test_changes_requested_stays_blocking_if_newest(self):
+        gh = ReadOnlyGitHub("o/r")
+        reviews = [
+            {"author": "codex", "body": "lgtm", "state": "APPROVED",
+             "created_at": "2026-01-01T00:00:00Z", "url": "r1"},
+            {"author": "codex", "body": "fix", "state": "CHANGES_REQUESTED",
+             "created_at": "2026-01-05T00:00:00Z", "url": "r2"},  # newer changes-requested
+        ]
+        with mock.patch.object(gh, "get_pr_comments", return_value=[]), \
+             mock.patch.object(gh, "get_pr_review_comments", return_value=[]), \
+             mock.patch.object(gh, "get_pr_reviews", return_value=reviews):
+            rev = gh.find_latest_codex_review(2)
+        self.assertTrue(rev["blocking"])
 
     def test_changes_requested_preserved_when_newer_comment(self):
         reviews = [
