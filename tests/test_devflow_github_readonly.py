@@ -41,7 +41,8 @@ def fake_run_factory(recorder, *, auth_ok=True):
         if args[:2] == ["repo", "view"]:
             return SimpleNamespace(returncode=0, stdout=json.dumps({"nameWithOwner": "o/r"}), stderr="")
         if args and args[0] == "api":
-            path = args[1] if len(args) > 1 else ""
+            # path is the repos/... token (skip flags like --hostname github.com --paginate --slurp)
+            path = next((a for a in args[1:] if a.startswith("repos/")), "")
             if "/reviews" in path:
                 return SimpleNamespace(returncode=0, stdout=json.dumps(PR_REVIEWS), stderr="")
             if "/comments" in path:
@@ -95,6 +96,14 @@ class TestReadOnlyOps(unittest.TestCase):
         self.p_run.start()
         self.addCleanup(self.p_which.stop)
         self.addCleanup(self.p_run.stop)
+
+    def test_api_reads_pinned_to_github_host(self):
+        ReadOnlyGitHub("o/r").get_pr_comments(2)
+        api_calls = [c for c in self.calls if c[1:2] == ["api"]]
+        self.assertTrue(api_calls)
+        for c in api_calls:
+            self.assertIn("--hostname", c)
+            self.assertIn("github.com", c)
 
     def test_no_write_commands_are_called(self):
         gh = ReadOnlyGitHub("o/r")
@@ -203,8 +212,22 @@ class TestParsingHardening(unittest.TestCase):
 
     def test_negated_blocking_phrases_not_flagged(self):
         for txt in ("No blocking issues found.", "There are not blocking concerns here.",
-                    "I do not request changes.", "No required changes.", "No changes requested."):
+                    "I do not request changes.", "No required changes.", "No changes requested.",
+                    "This is not a blocking issue.", "That is not a required change.",
+                    "No major blocking concerns."):
             self.assertFalse(G.parse_review_packet(txt, state="COMMENTED")["blocking"], txt)
+
+    def test_newer_blocking_comment_survives_older_approval(self):
+        gh = ReadOnlyGitHub("o/r")
+        reviews = [{"author": "codex", "body": "lgtm", "state": "APPROVED",
+                    "created_at": "2026-01-01T00:00:00Z", "url": "r1"}]
+        newer_comment = [{"author": "codex", "body": "Actually blocking: must fix X",
+                          "created_at": "2026-01-09T00:00:00Z", "url": "c9"}]
+        with mock.patch.object(gh, "get_pr_comments", return_value=newer_comment), \
+             mock.patch.object(gh, "get_pr_review_comments", return_value=[]), \
+             mock.patch.object(gh, "get_pr_reviews", return_value=reviews):
+            rev = gh.find_latest_codex_review(2)
+        self.assertTrue(rev["blocking"])  # newer blocking comment not hidden by older approval
 
     def test_changes_requested_then_approved_clears_blocking(self):
         gh = ReadOnlyGitHub("o/r")

@@ -152,8 +152,10 @@ def _flatten_pages(slurped):
 
 
 def _gh_json_paginated(path: str, timeout: int = 60):
-    """Paginated GET that stays valid JSON across pages via ``--slurp`` (then flattened)."""
-    return _flatten_pages(_gh_json(["api", path, "--paginate", "--slurp"], timeout=timeout))
+    """Paginated GET pinned to github.com (so a stray ``GH_HOST`` can't redirect the read to an
+    Enterprise host after a github.com auth check), kept valid JSON across pages via ``--slurp``."""
+    return _flatten_pages(_gh_json(
+        ["api", "--hostname", "github.com", path, "--paginate", "--slurp"], timeout=timeout))
 
 
 def check_gh_available() -> dict:
@@ -201,8 +203,11 @@ def parse_review_packet(body: str, state: Optional[str] = None) -> dict:
     # explicit negations ("no blocking issues", "not blocking", "do not request changes") win so a
     # clean review isn't mis-flagged. (?<!non-) keeps "non-blocking" from matching either.
     state_blocking = (state or "").upper() == "CHANGES_REQUESTED"
+    # allow optional words (e.g. "a", "any", "major") between the negator and the blocking term:
+    # "not a blocking issue", "not a required change", "no major blocking concerns", etc.
     negated = bool(re.search(
-        r"\bno\s+(?:\w+\s+){0,2}blocking\b|\bnot\s+blocking\b|\bno\s+required\s+changes?\b"
+        r"\bno\s+(?:\w+\s+){0,3}blocking\b|\bnot\s+(?:\w+\s+){0,3}blocking\b"
+        r"|\bno\s+(?:\w+\s+){0,3}required\s+changes?\b|\bnot\s+(?:\w+\s+){0,3}required\s+changes?\b"
         r"|\b(?:do|does|did)\s+not\s+request\s+changes\b|\bdon'?t\s+request\s+changes\b"
         r"|\bno\s+changes?\s+requested\b", low))
     text_blocking = bool(
@@ -319,14 +324,21 @@ class ReadOnlyGitHub:
         if not candidates:
             return None
         latest = max(candidates, key=lambda c: c.get("created_at") or "")
-        packet = parse_review_packet(latest["body"], latest.get("state"))
-        # Resolve blocking from the LATEST review that carries a terminal state: a CHANGES_REQUESTED
-        # persists until a *newer* APPROVED review clears it (don't force-block forever via any()).
+        packet = parse_review_packet(latest["body"], latest.get("state"))  # default: latest item's verdict
+        # Reconcile with terminal review states:
+        #  - a CHANGES_REQUESTED review stays in effect until a *newer* APPROVED clears it;
+        #  - an APPROVED clears blocking only if it's the most recent signal — a newer plain comment
+        #    with blocking language still counts (don't let an old approval hide it).
         stateful = [c for c in candidates if (c.get("state") or "").upper() in
                     ("CHANGES_REQUESTED", "APPROVED")]
         if stateful:
-            newest_state = max(stateful, key=lambda c: c.get("created_at") or "")["state"].upper()
-            packet["blocking"] = (newest_state == "CHANGES_REQUESTED")
+            newest_sf = max(stateful, key=lambda c: c.get("created_at") or "")
+            nstate = (newest_sf.get("state") or "").upper()
+            if nstate == "CHANGES_REQUESTED":
+                packet["blocking"] = True
+            elif (newest_sf.get("created_at") or "") >= (latest.get("created_at") or ""):
+                packet["blocking"] = False   # APPROVED is the most recent signal
+            # else: APPROVED predates a newer comment -> keep that comment's parsed verdict
         return {
             "source": latest["source"],
             "pr_number": int(pr_number),
