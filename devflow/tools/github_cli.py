@@ -96,15 +96,14 @@ def _assert_read_only(args: list[str]) -> None:
         raise GhError("empty gh command")
     if args[0] == "api":
         for i, tok in enumerate(args):
-            if tok in _API_WRITE_FLAGS:
+            base = tok.split("=", 1)[0]               # handle both `--field x` and `--field=x`
+            if base in _API_WRITE_FLAGS:
                 raise GhError(f"refused: write-style `gh api` flag {tok!r}")
-            if tok in ("-X", "--method"):
-                method = (args[i + 1] if i + 1 < len(args) else "").upper()
+            if base in ("-X", "--method"):
+                method = (tok.split("=", 1)[1] if "=" in tok
+                          else (args[i + 1] if i + 1 < len(args) else "")).upper()
                 if method in _WRITE_METHODS:
                     raise GhError(f"refused: `gh api` method {method}")
-            if tok.startswith("--method="):
-                if tok.split("=", 1)[1].upper() in _WRITE_METHODS:
-                    raise GhError(f"refused: `gh api` method in {tok!r}")
         return
     if tuple(args[:2]) in _ALLOWED_READ_PREFIXES or (args[0],) in _ALLOWED_READ_PREFIXES:
         return
@@ -136,6 +135,21 @@ def _gh_json(args: list[str], timeout: int = 60):
         raise GhError(f"could not parse gh JSON output: {e}")
 
 
+def _flatten_pages(slurped):
+    """`gh api --paginate --slurp` yields one JSON array whose elements are per-page responses
+    (each itself an array). Flatten one level. Tolerant of an already-flat list."""
+    if isinstance(slurped, list) and slurped and isinstance(slurped[0], list):
+        return [item for page in slurped for item in page]
+    if isinstance(slurped, list):
+        return slurped
+    return [] if slurped is None else [slurped]
+
+
+def _gh_json_paginated(path: str, timeout: int = 60):
+    """Paginated GET that stays valid JSON across pages via ``--slurp`` (then flattened)."""
+    return _flatten_pages(_gh_json(["api", path, "--paginate", "--slurp"], timeout=timeout))
+
+
 def check_gh_available() -> dict:
     """Report gh availability + authentication. Never raises — returns a structured status."""
     if shutil.which("gh") is None:
@@ -154,11 +168,17 @@ def check_gh_available() -> dict:
 
 
 # -- Codex detection / parsing ---------------------------------------------------------
-_CODEX_LOGIN_RE = re.compile(r"(?i)(codex|chatgpt)")
+# Exact, trusted Codex/ChatGPT-connector logins. We match EXACTLY (case-insensitive) rather than
+# "login contains codex/chatgpt", because on a public repo anyone could pick a login like
+# "codex-fan" and spoof the integration.
+_TRUSTED_CODEX_LOGINS = {
+    "chatgpt-codex-connector[bot]", "chatgpt-codex-connector",
+    "codex", "codex[bot]",
+}
 
 
 def is_codex_author(login: Optional[str]) -> bool:
-    return bool(login) and bool(_CODEX_LOGIN_RE.search(login))
+    return bool(login) and login.strip().lower() in _TRUSTED_CODEX_LOGINS
 
 
 def parse_review_packet(body: str, state: Optional[str] = None) -> dict:
@@ -169,8 +189,9 @@ def parse_review_packet(body: str, state: Optional[str] = None) -> dict:
     """
     text = body or ""
     low = text.lower()
+    # word-boundary match; the negative lookbehind keeps "non-blocking" from counting as blocking
     blocking = (state or "").upper() == "CHANGES_REQUESTED" or bool(
-        re.search(r"\b(blocking|must fix|required change|request changes)\b", low))
+        re.search(r"(?<!non-)\bblocking\b|\bmust fix\b|\brequired change\b|\brequest changes\b", low))
     bullets = [ln.strip(" -*\t") for ln in text.splitlines() if ln.strip().startswith(("-", "*"))]
     return {
         "state": state,
@@ -224,18 +245,24 @@ class ReadOnlyGitHub:
 
     def get_issue_comments(self, issue_number: int) -> list:
         repo = self.resolve_repo()
-        raw = _gh_json(["api", f"repos/{repo}/issues/{int(issue_number)}/comments", "--paginate"])
-        return self._norm_comments(raw)
+        return self._norm_comments(
+            _gh_json_paginated(f"repos/{repo}/issues/{int(issue_number)}/comments"))
 
     def get_pr_comments(self, pr_number: int) -> list:
         # PR conversation comments live on the issues endpoint for the same number
         repo = self.resolve_repo()
-        raw = _gh_json(["api", f"repos/{repo}/issues/{int(pr_number)}/comments", "--paginate"])
-        return self._norm_comments(raw)
+        return self._norm_comments(
+            _gh_json_paginated(f"repos/{repo}/issues/{int(pr_number)}/comments"))
+
+    def get_pr_review_comments(self, pr_number: int) -> list:
+        # file-level (inline) review comments — a separate endpoint from conversation comments
+        repo = self.resolve_repo()
+        return self._norm_comments(
+            _gh_json_paginated(f"repos/{repo}/pulls/{int(pr_number)}/comments"))
 
     def get_pr_reviews(self, pr_number: int) -> list:
         repo = self.resolve_repo()
-        raw = _gh_json(["api", f"repos/{repo}/pulls/{int(pr_number)}/reviews", "--paginate"])
+        raw = _gh_json_paginated(f"repos/{repo}/pulls/{int(pr_number)}/reviews")
         out = []
         for r in raw or []:
             out.append({
@@ -267,6 +294,9 @@ class ReadOnlyGitHub:
         for c in self.get_pr_comments(pr_number):
             if is_codex_author(c["author"]):
                 candidates.append({**c, "source": "pr_comment", "state": None})
+        for c in self.get_pr_review_comments(pr_number):       # inline/file-level review comments
+            if is_codex_author(c["author"]):
+                candidates.append({**c, "source": "pr_review_comment", "state": None})
         for r in self.get_pr_reviews(pr_number):
             if is_codex_author(r["author"]):
                 candidates.append({**r, "source": "pr_review"})
@@ -274,6 +304,9 @@ class ReadOnlyGitHub:
             return None
         latest = max(candidates, key=lambda c: c.get("created_at") or "")
         packet = parse_review_packet(latest["body"], latest.get("state"))
+        # Preserve a CHANGES_REQUESTED verdict even if a later (e.g. COMMENTED) entry is newest.
+        if any((c.get("state") or "").upper() == "CHANGES_REQUESTED" for c in candidates):
+            packet["blocking"] = True
         return {
             "source": latest["source"],
             "pr_number": int(pr_number),

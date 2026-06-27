@@ -58,7 +58,10 @@ class TestReadOnlyGuard(unittest.TestCase):
                     ["pr", "comment", "1", "-b", "hi"], ["pr", "create"],
                     ["api", "repos/o/r/issues/1/comments", "-f", "body=hi"],
                     ["api", "repos/o/r/pulls/1/merge", "-X", "PUT"],
-                    ["api", "x", "--method=POST"]):
+                    ["api", "x", "--method=POST"],
+                    ["api", "x", "--field=body=hi"],        # equals-form write flag
+                    ["api", "x", "--raw-field=b=c"],
+                    ["api", "x", "-X=DELETE"]):
             with self.assertRaises(GhError):
                 _assert_read_only(bad)
 
@@ -158,13 +161,49 @@ class TestAvailability(unittest.TestCase):
 
 
 class TestCodexAuthorMatch(unittest.TestCase):
-    def test_matches(self):
-        for login in ("codex", "chatgpt-codex-connector[bot]", "OpenAI-Codex", "ChatGPT"):
+    def test_matches_exact_trusted(self):
+        for login in ("codex", "Codex", "chatgpt-codex-connector[bot]",
+                      "CHATGPT-CODEX-CONNECTOR[bot]", "codex[bot]"):
             self.assertTrue(is_codex_author(login))
 
-    def test_non_matches(self):
-        for login in ("alice", "bob", "ZeKaiNie", None, ""):
+    def test_rejects_spoofy_and_loose(self):
+        # loose "contains codex/chatgpt" logins must NOT match (anti-spoof on public repos)
+        for login in ("alice", "bob", "ZeKaiNie", None, "",
+                      "OpenAI-Codex", "ChatGPT", "codex-fan", "not-codex", "chatgptbot"):
             self.assertFalse(is_codex_author(login))
+
+
+class TestParsingHardening(unittest.TestCase):
+    def test_paginate_flatten_multipage(self):
+        # gh api --paginate --slurp returns [[page1...],[page2...]] -> flatten one level
+        self.assertEqual(G._flatten_pages([[1, 2], [3]]), [1, 2, 3])
+        self.assertEqual(G._flatten_pages([{"a": 1}]), [{"a": 1}])  # already flat
+        self.assertEqual(G._flatten_pages(None), [])
+
+    def test_non_blocking_not_flagged(self):
+        pkt = G.parse_review_packet("These are all non-blocking nits.", state="COMMENTED")
+        self.assertFalse(pkt["blocking"])
+
+    def test_blocking_word_flagged(self):
+        self.assertTrue(G.parse_review_packet("This is a blocking issue.")["blocking"])
+        self.assertTrue(G.parse_review_packet("you must fix this")["blocking"])
+
+    def test_changes_requested_preserved_when_newer_comment(self):
+        reviews = [
+            {"user": {"login": "codex"}, "state": "CHANGES_REQUESTED", "body": "fix",
+             "submitted_at": "2026-01-01T00:00:00Z", "html_url": "r1"},
+        ]
+        later_comment = [{"user": {"login": "codex"}, "body": "thanks, looks better",
+                          "created_at": "2026-01-09T00:00:00Z", "html_url": "c9"}]
+        gh = ReadOnlyGitHub("o/r")
+        with mock.patch.object(gh, "get_pr_comments", return_value=G.ReadOnlyGitHub._norm_comments(later_comment)), \
+             mock.patch.object(gh, "get_pr_review_comments", return_value=[]), \
+             mock.patch.object(gh, "get_pr_reviews",
+                               return_value=[{"author": "codex", "body": "fix",
+                                              "state": "CHANGES_REQUESTED",
+                                              "created_at": "2026-01-01T00:00:00Z", "url": "r1"}]):
+            rev = gh.find_latest_codex_review(2)
+        self.assertTrue(rev["blocking"])  # preserved despite newer non-blocking comment
 
 
 if __name__ == "__main__":

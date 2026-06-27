@@ -142,7 +142,11 @@ There is no code path in the read-only layer that can create, comment, push, or 
 * `.find_latest_codex_review(pr_number)` — newest Codex PR comment/review, with a light
   `blocking` heuristic (CHANGES_REQUESTED or "blocking/must fix" language) and parsed bullet items
 
-Codex authorship is detected by login (`codex` / `chatgpt`, e.g. `chatgpt-codex-connector[bot]`).
+Codex authorship is matched against an **exact trusted-login allowlist** (e.g.
+`chatgpt-codex-connector[bot]`, `codex`) — not a loose "contains codex/chatgpt" check — so a
+look-alike login on a public repo can't spoof the integration. Paginated reads use
+`gh api --paginate --slurp` so multi-page results stay valid JSON, and PR reviews include inline
+(file-level) review comments with the strongest review state preserved.
 
 ### Prerequisite (local)
 
