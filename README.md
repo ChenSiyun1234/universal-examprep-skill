@@ -3,6 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Agent: Antigravity](https://img.shields.io/badge/Agent-Antigravity-orange.svg)](#)
 [![Version: 2.0](https://img.shields.io/badge/Version-2.0--LLM--Wiki-brightgreen.svg)](#)
+[![CI Build](https://github.com/ZeKaiNie/universal-examprep-skill/actions/workflows/ci.yml/badge.svg)](https://github.com/ZeKaiNie/universal-examprep-skill/actions)
 
 这是一个**基于 LLM Wiki 架构重构**、**全科通用**的期末考试极速备考 AI 智能体技能（Agent Skill）V2.0 版本。
 
@@ -17,6 +18,9 @@
 * **🔌 无 Python 环境自动降级**：新版增加了降级执行能力。即使学生电脑里没有安装 Python，Agent 也会无缝切换为“手动写入模式”，利用自身的文件写入功能直接在本地铺设 Wiki 目录，**100% 免配置、零摩擦运行**。
 * **🎯 标准真题库 quiz_bank.json 抽题**：测试题由“AI 即兴编造”升级为“标准真题库抽测”，规避了 AI 出无解错题、弱智题的毛病。
 * **🏃 测试逃生通道 (Hint & Skip)**：针对测试关卡设计了“查看提示”与“2次答错跳过并归档”机制，防止学生因主观题表述差异或卡壳而被死锁在当前阶段。
+* **🧠 概念疑难点自动追踪**：集成 `confusion-tracker` 插件，自动捕获并记录复习过程中的概念疑问（如“为什么/怎么推导”），形成考前盲区扫雷清单。
+* **🛡️ 运行安全与进度保护**：引入文件名安全过滤、路径防穿透防篡改、进度覆盖前自动备份，并强制 UTF-8 打印完美解决 Windows 终端中文乱码。
+* **🔬 12 个单元测试与 CI 集成**：内置覆盖正常导入、防路径遍历、缺漏报错等 12 个单元测试，由 GitHub Actions 在云端多平台（Windows & Linux）自动运行质量检测。
 
 ---
 
@@ -28,10 +32,14 @@
   * 📄 `web_prompt.md`：**【网页端一键平替提示词】** —— 专为不支持本地写盘的网页版 AI（ChatGPT / DeepSeek 网页端 / 豆包）准备，复制直接用。
 * 📂 **`scripts/`**：自动化脚本。
   * 🐍 `ingest.py`：**【一键环境初始化脚本】** —— 由 AI 助手在后台自动调用，负责一键切分 Wiki 章节、题库并部署进度表。
+* 📂 **`confusion-tracker/`**：【概念疑难点追踪技能】。
+  * 📄 `SKILL.md`：自动捕获并记录对话中的概念疑惑，将其整理到进度表中。
 * 📂 **`templates/`**：备考基准模板文件。
   * 📄 `study_plan_template.md`：复习计划表模板。
   * 📄 `study_progress_template.md`：进度追踪与错题打卡表模板。
   * 📄 `quiz_bank_template.json`：真题抽测 JSON 模板。
+* 📂 **`tests/`**：【单元测试包】。
+  * 📄 `test_ingest.py`：包含 12 个自动化测试用例，用于校验核心环境配置与脚本安全防线。
 * 📄 **`SKILL.md`**：**【智能体技能核心】** —— 包含备考教练的系统指令、惰性加载协议和物理防幻觉协议（Cursor / VS Code / Claude Code / Windsurf 等工具在运行后会自动读取此文件）。
 
 ---
