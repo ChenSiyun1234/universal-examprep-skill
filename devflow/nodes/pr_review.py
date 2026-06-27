@@ -54,6 +54,7 @@ def create_draft_pr(state: DevflowState) -> dict:
         return {**upd, "errors": [f"create_draft_pr: {res['error']}"]}
     upd["pr_number"] = res.get("number")
     upd["pr_url"] = res.get("url")
+    upd["pr_simulated"] = bool(res.get("simulated"))   # provenance: refuse live resume on fakes
     return upd
 
 
@@ -95,7 +96,13 @@ def wait_for_codex_review(state: DevflowState) -> dict:
                     "event_log": [f"[wait_for_codex_review] gh error: {e}"]}
         if poll["found"]:
             rev = poll["result"]
-            blocking = [{"note": i} for i in rev.get("items", [])] if rev.get("blocking") else []
+            if rev.get("blocking"):
+                # a blocking review with no parsed bullets still must trip the fix gate, so
+                # synthesize one placeholder entry (the router only checks blocking_comments).
+                blocking = [{"note": i} for i in (rev.get("items") or [])] or \
+                           [{"note": "blocking review (no itemized comments)"}]
+            else:
+                blocking = []
             return {"codex_review_status": "ready", "review_summary": rev,
                     "blocking_comments": blocking,
                     "event_log": [f"[wait_for_codex_review] Codex review found after "

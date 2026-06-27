@@ -220,5 +220,49 @@ class TestCodexReviewFixes(unittest.TestCase):
         self.assertTrue(out["errors"])
 
 
+# ---- round 2 of Codex review on PR #3 ----
+class TestCodexReviewFixesPR3Round2(unittest.TestCase):
+    def test_blocking_review_without_bullets_still_gates(self):
+        st = new_state("t", "t", real_github=True, max_polls=2, poll_seconds=0)
+        st["pr_number"] = 8
+        st["_sleep_fn"] = quiet
+        rev = {"blocking": True, "items": [], "state": "CHANGES_REQUESTED", "body": "please fix"}
+        with mock.patch.object(G.ReadOnlyGitHub, "find_latest_codex_review", return_value=rev):
+            out = pr_nodes.wait_for_codex_review(st)
+        self.assertEqual(out["codex_review_status"], "ready")
+        self.assertEqual(len(out["blocking_comments"]), 1)  # synthesized so the fix gate triggers
+
+    def test_failed_advisory_comment_stops_instead_of_polling(self):
+        st = new_state("t", "t", real_github=True)
+        st["issue_number"] = 7
+
+        class FakeWriter:
+            def comment_on_issue(self, n, b):
+                return {"error": "transient gh failure", "log": "x"}
+
+        with mock.patch.object(advisory_nodes, "_writer", return_value=FakeWriter()):
+            out = advisory_nodes.request_codex_advisory(st)
+        self.assertEqual(out["codex_advisory_status"], "timeout")
+        self.assertTrue(out["errors"])
+
+    def test_resume_refuses_live_on_simulated_artifacts(self):
+        from devflow import cli
+        from types import SimpleNamespace
+        st = new_state("t", "provtest-xyz")
+        st.update({"issue_number": 1001, "issue_simulated": True, "status": "paused",
+                   "paused_at_node": "human_approval", "paused_at_gate": GATE_ADVISORY})
+        cli._save_ckpt(st)
+        try:
+            args = SimpleNamespace(thread_id="provtest-xyz", gate="advisory",
+                                   decision="approved", real_github=True)
+            self.assertEqual(cli.cmd_resume(args), 1)  # refuse live resume on simulated ids
+        finally:
+            import os
+            try:
+                os.remove(cli._ckpt_path("provtest-xyz"))
+            except OSError:
+                pass
+
+
 if __name__ == "__main__":
     unittest.main()

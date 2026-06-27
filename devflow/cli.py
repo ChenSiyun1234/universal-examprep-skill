@@ -144,7 +144,14 @@ def cmd_resume(args) -> int:
     state.setdefault("approvals", {})[gate] = decision
     # Safety: a resume defaults to DRY-RUN even if the original run was --real-github. Live writes
     # must be re-requested explicitly on resume, so they can never silently persist across a pause.
-    state["real_github"] = bool(getattr(args, "real_github", False))
+    want_live = bool(getattr(args, "real_github", False))
+    if want_live and (state.get("issue_simulated") or state.get("pr_simulated")):
+        # the checkpoint's issue/PR ids are dry-run fakes (e.g. #2001) — going live could post a
+        # real @codex comment to an unrelated PR with that number. Refuse.
+        print("[devflow] refusing --real-github resume: this thread's issue/PR ids were created in "
+              "dry-run (simulated). Re-run the flow with --real-github from the start to use real ids.")
+        return 1
+    state["real_github"] = want_live
     start = state.get("paused_at_node") or GATE_TO_NODE.get(gate)
     state["status"] = "running"
     app = build_graph(prefer_fallback=True)  # resume uses the stdlib runner's start_node support
@@ -244,11 +251,11 @@ def cmd_run_docs_advisory(args) -> int:
         approvals={},  # nothing seeded -> the workflow pauses at the advisory-approval gate
         real_github=args.real_github, max_polls=args.max_polls, poll_seconds=args.poll_seconds,
     )
-    app = build_graph(prefer_fallback=args.fallback)
+    app = build_graph(prefer_fallback=not args.langgraph)
     print(f"[devflow] run-docs-advisory backend={getattr(app, 'backend', '?')} "
           f"real_github={args.real_github} max_polls={args.max_polls} "
           f"poll_seconds={args.poll_seconds} thread={args.thread_id}")
-    final = app.invoke(state)
+    final = _invoke(app, state)   # routes the langgraph backend through the per-thread config
     packet = final.get("advisory_packet") or {}
     if packet.get("summary"):
         print(f"\nCodex advisory summary:\n  {packet['summary']}")
@@ -322,7 +329,8 @@ def build_parser() -> argparse.ArgumentParser:
                      help="bounded wait: max poll attempts (0 = do not poll)")
     rda.add_argument("--poll-seconds", type=_nonneg_int, default=30,
                      help="bounded wait: sleep between polls (must be >= 0)")
-    rda.add_argument("--fallback", action="store_true")
+    rda.add_argument("--langgraph", action="store_true",
+                     help="use the EXPERIMENTAL real LangGraph backend (default: stdlib backend)")
     rda.set_defaults(func=cmd_run_docs_advisory)
     return p
 

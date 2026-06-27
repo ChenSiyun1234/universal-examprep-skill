@@ -27,6 +27,7 @@ def create_advisory_issue(state: DevflowState) -> dict:
         return {**upd, "errors": [f"create_advisory_issue: {res['error']}"]}
     upd["issue_number"] = res.get("number")
     upd["issue_url"] = res.get("url")
+    upd["issue_simulated"] = bool(res.get("simulated"))   # provenance: refuse live resume on fakes
     return upd
 
 
@@ -40,11 +41,15 @@ def request_codex_advisory(state: DevflowState) -> dict:
                               "not commenting on #0."]}
     res = _writer(state).comment_on_issue(
         issue, "@codex please provide an implementation advisory for this task.")
-    upd = {"codex_advisory_status": "requested",
-           "event_log": [f"[request_codex_advisory] {res.get('log', '')}"]}
     if res.get("error"):
-        upd["errors"] = [f"request_codex_advisory: {res['error']}"]
-    return upd
+        # the comment failed → the request was never sent, so don't poll for a response. Terminal
+        # safe-stop (timeout) routes to post_merge_report instead of waiting the full budget.
+        return {"codex_advisory_status": "timeout",
+                "errors": [f"request_codex_advisory: {res['error']}"],
+                "event_log": [f"[request_codex_advisory] FAILED to post '@codex' "
+                              f"({res['error']}); stopping instead of polling."]}
+    return {"codex_advisory_status": "requested",
+            "event_log": [f"[request_codex_advisory] {res.get('log', '')}"]}
 
 
 def _simulated_packet(state: DevflowState) -> dict:

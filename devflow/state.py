@@ -104,6 +104,9 @@ class DevflowState(TypedDict, total=False):
     paused_at_gate: Optional[str]
     paused_at_node: Optional[str]
     interrupt_payload: dict
+    _sleep_fn: object                   # injectable sleep for bounded polling (tests)
+    issue_simulated: bool               # the issue id is a dry-run fake (refuse live resume)
+    pr_simulated: bool                  # the PR id is a dry-run fake (refuse live resume)
 
 
 def new_state(task_type: str, thread_id: str, repo: str = "ZeKaiNie/universal-examprep-skill",
