@@ -1,26 +1,32 @@
-"""Implementation + review phase nodes (all dry-run / simulated)."""
+"""Implementation + review phase nodes.
+
+In real mode (``state['real_github']``) the create-PR / comment nodes go through the guarded
+``GitHubWriter``; the review-wait node bounded-polls real PR comments/reviews. Everything else
+(applying edits, running checks, committing/pushing) remains a dry-run no-op in this PR — there is
+NO branch push, NO merge, NO force-push capability here.
+"""
 
 from __future__ import annotations
 
 from devflow.state import DevflowState
-from devflow.tools.github_cli import DryRunGitHub
+from devflow.tools.github_cli import GitHubWriter, ReadOnlyGitHub, bounded_poll, GhError
+
+
+def _writer(state: DevflowState) -> GitHubWriter:
+    return GitHubWriter(state["repo"], live=bool(state.get("real_github")))
 
 
 def apply_approved_changes(state: DevflowState) -> dict:
     """Simulate applying the approved changes. NO files are edited in this scaffold."""
-    planned = ["devflow/<scaffold files>"]  # representative, not an actual edit
     return {
-        "files_changed": planned,
+        "files_changed": ["devflow/<scaffold files>"],
         "event_log": ["[apply_approved_changes] dry-run: would apply approved edits — "
                       "no files actually modified."],
     }
 
 
 def run_checks(state: DevflowState) -> dict:
-    """Dry-run: does NOT execute any checks, so it must not claim any passed.
-
-    Records what *would* run under ``checks_not_run`` with an explicit dry-run note.
-    """
+    """Dry-run: does NOT execute any checks, so it must not claim any passed."""
     return {
         "checks_not_run": [
             "unit tests (dry-run: not executed)",
@@ -31,33 +37,64 @@ def run_checks(state: DevflowState) -> dict:
 
 
 def commit_push_branch(state: DevflowState) -> dict:
-    gh = DryRunGitHub(state["repo"])
-    gh.create_branch(state.get("branch_name") or "devflow/scaffold")
-    gh.push_branch(state.get("branch_name") or "devflow/scaffold")
+    """Pure no-op: this PR has NO branch-push capability (and never force-pushes)."""
     return {"event_log": [f"[commit_push_branch] dry-run: would commit & push "
-                          f"'{state.get('branch_name')}' — not pushed."]}
+                          f"'{state.get('branch_name')}' — NOT performed (no push capability)."]}
 
 
 def create_draft_pr(state: DevflowState) -> dict:
-    gh = DryRunGitHub(state["repo"])
-    res = gh.create_pr(head=state.get("branch_name") or "devflow/scaffold", base="main",
-                       title=f"[devflow] {state['task_type']}", body="dry-run scaffold", draft=True)
-    return {
-        "pr_number": res["number"], "pr_url": res["url"],
-        "event_log": [f"[create_draft_pr] dry-run: would open DRAFT PR -> {res['url']}"],
-    }
+    res = _writer(state).create_draft_pr(
+        title=f"[devflow] {state['task_type']}",
+        body="Automated draft PR from devflow.",
+        base="main",
+        head=state.get("branch_name") or "devflow/scaffold",
+    )
+    upd = {"event_log": [f"[create_draft_pr] {res.get('log', '')}"]}
+    if res.get("error"):
+        return {**upd, "errors": [f"create_draft_pr: {res['error']}"]}
+    upd["pr_number"] = res.get("number")
+    upd["pr_url"] = res.get("url")
+    return upd
 
 
 def request_codex_review(state: DevflowState) -> dict:
-    gh = DryRunGitHub(state["repo"])
-    gh.comment("pr", state.get("pr_number") or 0, "@codex review this PR.")
-    return {"codex_review_status": "requested",
-            "event_log": ["[request_codex_review] dry-run: would post '@codex review' — not posted."]}
+    res = _writer(state).comment_on_pr(state.get("pr_number") or 0, "@codex review this PR.")
+    upd = {"codex_review_status": "requested",
+           "event_log": [f"[request_codex_review] {res.get('log', '')}"]}
+    if res.get("error"):
+        upd["errors"] = [f"request_codex_review: {res['error']}"]
+    return upd
 
 
 def wait_for_codex_review(state: DevflowState) -> dict:
-    """Simulate Codex returning a review. ``state['_simulate']['review']`` can be:
-    'clean' (no blocking), 'blocking' (default), or 'timeout'."""
+    """Real mode: bounded poll of PR comments/reviews for a Codex review. Dry-run: simulate.
+    ``state['_simulate']['review']`` in {'blocking','clean','timeout'} drives the dry-run branch."""
+    if state.get("real_github"):
+        repo = state["repo"]
+        pr = state.get("pr_number") or 0
+        kwargs = {"sleep_fn": state["_sleep_fn"]} if state.get("_sleep_fn") else {}
+        try:
+            poll = bounded_poll(
+                lambda: ReadOnlyGitHub(repo).find_latest_codex_review(pr),
+                max_attempts=int(state.get("max_polls", 6)),
+                sleep_seconds=int(state.get("poll_seconds", 30)),
+                **kwargs,
+            )
+        except GhError as e:
+            return {"codex_review_status": "timeout", "errors": [f"wait_for_codex_review: {e}"],
+                    "event_log": [f"[wait_for_codex_review] gh error: {e}"]}
+        if poll["found"]:
+            rev = poll["result"]
+            blocking = [{"note": i} for i in rev.get("items", [])] if rev.get("blocking") else []
+            return {"codex_review_status": "ready", "review_summary": rev,
+                    "blocking_comments": blocking,
+                    "event_log": [f"[wait_for_codex_review] Codex review found after "
+                                  f"{poll['attempts']} poll(s); blocking={rev.get('blocking')}."]}
+        return {"codex_review_status": "timeout",
+                "errors": [f"no Codex review after {poll['attempts']} poll(s)"],
+                "event_log": [f"[wait_for_codex_review] TIMEOUT after {poll['attempts']} "
+                              f"bounded poll(s)."]}
+
     sim = (state.get("_simulate") or {}).get("review", "blocking")
     if sim == "timeout":
         return {"codex_review_status": "timeout",
@@ -83,13 +120,13 @@ def summarize_review(state: DevflowState) -> dict:
     b = len(state.get("blocking_comments", []))
     summary = {"blocking": b, "non_blocking": nb,
                "deferred": len(state.get("deferred_followups", []))}
-    return {"review_summary": summary,
+    return {"review_summary": {**(state.get("review_summary") or {}), **summary},
             "event_log": [f"[summarize_review] {b} blocking / {nb} non-blocking comments."]}
 
 
 def fix_blocking_comments(state: DevflowState) -> dict:
     """Simulate addressing blocking comments (no real edits)."""
-    fixed = [c.get("path", "?") for c in state.get("blocking_comments", [])]
+    fixed = [c.get("path", c.get("note", "?")) for c in state.get("blocking_comments", [])]
     return {
         "files_changed": [f"fix:{p}" for p in fixed],
         "event_log": [f"[fix_blocking_comments] dry-run: would address {len(fixed)} blocking "
@@ -98,15 +135,23 @@ def fix_blocking_comments(state: DevflowState) -> dict:
 
 
 def request_codex_rereview(state: DevflowState) -> dict:
-    gh = DryRunGitHub(state["repo"])
-    gh.comment("pr", state.get("pr_number") or 0, "@codex re-review after fixes.")
-    # dry-run: simulate the re-review coming back and accepting the fixes (clean). merge_readiness
-    # below requires this completed re-review, so we never reach merge with only 'rereview_requested'.
-    # Mark the earlier findings RESOLVED so the report isn't internally inconsistent (blocking>0 yet
-    # would-merge): record outstanding_blocking=0 in review_summary; blocking_comments stays as history.
-    summary = {**(state.get("review_summary") or {}), "outstanding_blocking": 0,
-               "resolved_by_rereview": True}
-    return {"codex_review_status": "ready", "rereview_done": True, "rereview_blocking": False,
-            "review_summary": summary,
-            "event_log": ["[request_codex_rereview] dry-run: requested re-review; simulated a clean "
-                          "re-review (fixes accepted; earlier findings marked resolved)."]}
+    pr = state.get("pr_number")
+    if not pr:   # PR creation failed/unparsed — stop safely instead of commenting on #0
+        return {"errors": ["request_codex_rereview: no PR number — refusing to comment on #0"],
+                "event_log": ["[request_codex_rereview] stopped: no PR number."]}
+    res = _writer(state).comment_on_pr(pr, "@codex re-review after fixes.")
+    upd = {"event_log": [f"[request_codex_rereview] {res.get('log', '')}"]}
+    if res.get("error"):
+        upd["errors"] = [f"request_codex_rereview: {res['error']}"]
+    if state.get("real_github"):
+        # a real re-review result must be polled (a later PR); leave it 'requested' so
+        # merge_readiness stays safe and never treats this as a completed clean re-review.
+        upd["codex_review_status"] = "rereview_requested"
+    else:
+        # dry-run: simulate a clean re-review (fixes accepted). Mark earlier findings RESOLVED
+        # (outstanding_blocking=0) so the report isn't inconsistent (blocking>0 yet would-merge).
+        summary = {**(state.get("review_summary") or {}), "outstanding_blocking": 0,
+                   "resolved_by_rereview": True}
+        upd.update({"codex_review_status": "ready", "rereview_done": True,
+                    "rereview_blocking": False, "review_summary": summary})
+    return upd

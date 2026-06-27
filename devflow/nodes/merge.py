@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from devflow.state import DevflowState, APPROVED, REJECTED
-from devflow.tools.github_cli import DryRunGitHub
 
 
 def _derive_halt(state: DevflowState):
@@ -42,12 +41,12 @@ def merge_readiness(state: DevflowState) -> dict:
 
 
 def claude_execute_merge(state: DevflowState) -> dict:
-    """Would execute the merge — but in this scaffold it is a recorded no-op."""
-    gh = DryRunGitHub(state["repo"])
-    res = gh.merge_pr(state.get("pr_number") or 0)
+    """No merge capability exists in devflow yet. This is a pure no-op in every mode
+    (including real_github): merge execution is deferred to a later, explicitly-approved PR."""
     return {
         "status": "running",
-        "event_log": [f"[claude_execute_merge] dry-run: merge NOT executed ({res['note']})."],
+        "event_log": ["[claude_execute_merge] merge NOT executed — no merge capability in this "
+                      "PR (deferred to a future human-approved merge PR)."],
     }
 
 

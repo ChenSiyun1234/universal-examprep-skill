@@ -226,6 +226,36 @@ def cmd_read_pr(args) -> int:
     return 0
 
 
+def cmd_run_docs_advisory(args) -> int:
+    """Advisory flow up to the human-approval gate. Real mode does the issue + @codex writes, then
+    bounded-polls for the advisory, summarizes, and PAUSES for approval before any repo edits."""
+    if args.real_github:
+        rc = _require_gh()
+        if rc:
+            return rc
+        print("[devflow] REAL GitHub mode: will create a real advisory issue and post an '@codex' "
+              "comment, then STOP at human approval before any repo edits. No merge, no push.")
+    state = new_state(
+        task_type=args.task, thread_id=args.thread_id, repo=args.repo,
+        approvals={},  # nothing seeded -> the workflow pauses at the advisory-approval gate
+        real_github=args.real_github, max_polls=args.max_polls, poll_seconds=args.poll_seconds,
+    )
+    app = build_graph(prefer_fallback=args.fallback)
+    print(f"[devflow] run-docs-advisory backend={getattr(app, 'backend', '?')} "
+          f"real_github={args.real_github} max_polls={args.max_polls} "
+          f"poll_seconds={args.poll_seconds} thread={args.thread_id}")
+    final = app.invoke(state)
+    packet = final.get("advisory_packet") or {}
+    if packet.get("summary"):
+        print(f"\nCodex advisory summary:\n  {packet['summary']}")
+    if final.get("status") == "paused":
+        _save_ckpt(final)
+    _print_outcome(final)
+    if final.get("codex_advisory_status") == "timeout":
+        print("\n[devflow] Codex advisory TIMED OUT — stopped safely; nothing further was done.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="devflow", description="Dry-run LangGraph devflow orchestrator")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -264,6 +294,19 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("--pr", type=int, required=True)
     rp.add_argument("--repo", default=None, help="owner/name (default: current repo)")
     rp.set_defaults(func=cmd_read_pr)
+
+    # --- advisory flow up to human approval (dry-run by default; --real-github opts in) ---
+    rda = sub.add_parser("run-docs-advisory",
+                         help="advisory issue -> @codex -> bounded wait -> summarize -> human approval")
+    rda.add_argument("--task", default="docs-advisory")
+    rda.add_argument("--thread-id", default="docs-advisory-1")
+    rda.add_argument("--repo", default="ZeKaiNie/universal-examprep-skill")
+    rda.add_argument("--real-github", action="store_true",
+                     help="perform REAL guarded gh writes (issue + @codex comment); default dry-run")
+    rda.add_argument("--max-polls", type=int, default=6, help="bounded wait: max poll attempts")
+    rda.add_argument("--poll-seconds", type=int, default=30, help="bounded wait: sleep between polls")
+    rda.add_argument("--fallback", action="store_true")
+    rda.set_defaults(func=cmd_run_docs_advisory)
     return p
 
 

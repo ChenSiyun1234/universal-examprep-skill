@@ -81,6 +81,9 @@ class DevflowState(TypedDict, total=False):
 
     # --- control / dry-run plumbing (not GitHub data) ---
     dry_run: bool
+    real_github: bool        # False (default) = dry-run writes; True = real gh mutations (opt-in)
+    max_polls: int           # bounded wait: max attempts when polling GitHub for Codex responses
+    poll_seconds: int        # bounded wait: sleep between polls
     # approvals supplied up front (gate -> APPROVED/REJECTED). Used by the fallback runner and
     # as default resume values; with real LangGraph these come from interrupt()/Command(resume=).
     approvals: dict
@@ -105,12 +108,21 @@ class DevflowState(TypedDict, total=False):
 
 def new_state(task_type: str, thread_id: str, repo: str = "ZeKaiNie/universal-examprep-skill",
               approvals: Optional[dict] = None, pause_at: Optional[str] = None,
-              dry_run: bool = True) -> DevflowState:
-    """Build a fresh initial state. ``dry_run`` is True and cannot be disabled in this scaffold."""
+              dry_run: bool = True, real_github: bool = False,
+              max_polls: int = 6, poll_seconds: int = 30) -> DevflowState:
+    """Build a fresh initial state.
+
+    ``real_github=False`` (default) keeps all GitHub writes as logged dry-run no-ops. Setting it True
+    (CLI ``--real-github``) lets the create/comment nodes perform real, guarded gh mutations — but
+    NEVER merge/delete/force-push, and never past the human-approval gate without approval.
+    """
     return DevflowState(
         task_type=task_type,
         thread_id=thread_id,
         repo=repo,
+        real_github=bool(real_github),
+        max_polls=int(max_polls),
+        poll_seconds=int(poll_seconds),
         branch_name=None,
         issue_number=None, issue_url=None, pr_number=None, pr_url=None,
         codex_advisory_status="", codex_review_status="",

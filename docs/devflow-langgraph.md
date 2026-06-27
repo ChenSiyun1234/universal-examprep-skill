@@ -173,6 +173,70 @@ python -m devflow.cli read-pr    --pr 456     [--repo owner/name]
 advisory/review is detected/parsed from sample comments/reviews, and that gh-unavailable errors
 are clear.
 
+## GitHub write mode (guarded, opt-in)
+
+`GitHubWriter` adds the only *write* path devflow has. It is **off by default** and limited to four
+operations — there is no merge, branch-delete, or force-push capability anywhere in the class.
+
+| Capability | `create_advisory_issue` | `comment_on_issue` | `create_draft_pr` | `comment_on_pr` |
+|---|---|---|---|---|
+| present | ✅ | ✅ | ✅ (always `--draft`) | ✅ |
+
+| **NOT present** | merge | branch delete | push / force-push | close/admin |
+
+### Dry-run vs real mode
+
+* **Dry-run (default, `real_github=False`)** — every write logs exactly what it *would* run
+  (`[github-write:DRY-RUN] … :: gh issue create …`) and returns a simulated number/URL. Nothing is
+  sent to GitHub; no `gh` subprocess is spawned.
+* **Real mode (`real_github=True`, CLI `--real-github`)** — the four operations run real, guarded
+  `gh` commands. Every command passes `_assert_write_allowed()` (allow-list of create/comment only;
+  refuses any `merge`/`delete`/`--force`/`push` token) **and** `_assert_no_secrets()` (refuses
+  content that looks like a token/key). Failures are returned as `{executed: False, error: …}` —
+  the workflow fails safely rather than crashing.
+
+### Bounded waiting (no infinite loops)
+
+`wait_for_codex_advisory` / `wait_for_codex_review` poll via the read-only layer using
+`bounded_poll(fetch, max_attempts, sleep_seconds)` — capped attempts, configurable sleep, default
+small (`--max-polls 6 --poll-seconds 30`). On exhaustion they set a `timeout` status and a clear
+error; they never loop forever.
+
+### Codex issue handoff (advisory)
+
+1. `create_advisory_issue` opens an issue (real or simulated).
+2. `request_codex_advisory` posts an `@codex …` comment asking for an advisory.
+3. `wait_for_codex_advisory` bounded-polls the issue's comments for a Codex-authored reply
+   (`find_latest_codex_advisory`).
+4. `summarize_advisory` condenses it; `human_approval` **interrupts for approval before any repo
+   edits**. Approval is never inferred.
+
+### PR review handoff
+
+1. `create_draft_pr` opens a draft PR; `request_codex_review` posts `@codex review …`.
+2. `wait_for_codex_review` bounded-polls PR comments/reviews (`find_latest_codex_review`), with a
+   light blocking/items parse.
+3. Blocking comments route to `human_fix_approval`; clean reviews skip the fix gate.
+
+### CLI
+
+```bash
+# dry-run (safe; no writes): create(sim) -> @codex(sim) -> simulate advisory -> summarize -> pause
+python -m devflow.cli run-docs-advisory --thread-id demo
+
+# REAL mode: real issue + @codex comment, bounded wait, then PAUSE at human approval (no edits)
+python -m devflow.cli run-docs-advisory --real-github --max-polls 6 --poll-seconds 30 \
+    --repo owner/name --thread-id demo
+```
+
+This PR stops at the human-approval summary: it never applies advisory changes, opens nothing past
+the issue/comment, and never merges.
+
+### Exact safety boundaries (this PR)
+
+Never: merge a PR · delete a branch · force-push · push a branch · add GitHub Actions · add
+secrets/API keys · implement product runtime · auto-apply a Codex advisory without human approval.
+
 ## Dependency note
 
 The repo has no product dependency file and the product is intentionally stdlib-only. To avoid
@@ -182,9 +246,10 @@ installing it only upgrades the orchestrator to the real LangGraph backend.
 
 ## Planned next PRs
 
-1. ~~Read-only GitHub integration~~ — **done** (`ReadOnlyGitHub` + `check_gh_available`, this PR).
-2. **GitHub issue/PR write integration** — gated, explicit, **non-default** mutations behind
-   flags (e.g. `--write`/`--confirm`): create issue, open draft PR. Default stays read-only/dry-run.
-3. **Codex polling** — replace the simulated advisory/review with a real `@codex` request +
-   bounded polling, consuming `find_latest_codex_advisory` / `find_latest_codex_review`.
-4. **Merge approval execution** — wire `claude_execute_merge` to a real, human-approved merge.
+1. ~~Read-only GitHub integration~~ — **done** (`ReadOnlyGitHub` + `check_gh_available`).
+2. ~~GitHub issue/PR write integration + Codex polling~~ — **done** (`GitHubWriter`, `--real-github`,
+   `bounded_poll`; create issue / @codex comment / draft PR / bounded wait — no merge).
+3. **Apply approved advisory changes** — real repo edits after the human-approval gate (still no
+   merge), behind explicit confirmation.
+4. **Merge approval execution** — wire `claude_execute_merge` to a real, human-approved merge
+   (the only step that can merge; deliberately absent today).
