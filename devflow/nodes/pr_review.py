@@ -100,5 +100,8 @@ def fix_blocking_comments(state: DevflowState) -> dict:
 def request_codex_rereview(state: DevflowState) -> dict:
     gh = DryRunGitHub(state["repo"])
     gh.comment("pr", state.get("pr_number") or 0, "@codex re-review after fixes.")
-    return {"codex_review_status": "rereview_requested",
-            "event_log": ["[request_codex_rereview] dry-run: would request re-review — not posted."]}
+    # dry-run: simulate the re-review coming back and accepting the fixes (clean). merge_readiness
+    # below requires this completed re-review, so we never reach merge with only 'rereview_requested'.
+    return {"codex_review_status": "ready", "rereview_done": True, "rereview_blocking": False,
+            "event_log": ["[request_codex_rereview] dry-run: requested re-review; simulated a clean "
+                          "re-review (fixes accepted)."]}

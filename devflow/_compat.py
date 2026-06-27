@@ -37,13 +37,18 @@ def request_human_decision(state: dict, gate: str, payload: dict) -> str:
     """Return a human decision for ``gate`` ("approved"/"rejected").
 
     Resolution order (one interrupt per node invocation — never a loop):
+      0. an explicit ``state["pause_at"] == gate`` ALWAYS pauses here (overrides any seeded approval);
       1. a decision pre-seeded in ``state["approvals"][gate]`` (the resume payload / dry-run policy);
       2. otherwise pause: real ``interrupt()`` under LangGraph, or ``DevflowInterrupt`` in fallback.
     """
+    def _pause():
+        if HAS_LANGGRAPH and not state.get("_force_fallback"):
+            return _lg_interrupt(payload)   # resumed via Command(resume="approved"/"rejected")
+        raise DevflowInterrupt(gate, payload)
+
+    if state.get("pause_at") == gate:        # explicit pause beats a seeded approval
+        return _pause()
     approvals = state.get("approvals") or {}
     if gate in approvals:
         return approvals[gate]
-    if HAS_LANGGRAPH and not state.get("_force_fallback"):
-        # Real pause; resumed via Command(resume="approved"/"rejected").
-        return _lg_interrupt(payload)
-    raise DevflowInterrupt(gate, payload)
+    return _pause()

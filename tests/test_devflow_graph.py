@@ -104,5 +104,57 @@ class TestDevflowGraph(unittest.TestCase):
         self.assertTrue(all(c["executed"] is False for c in gh.calls))
 
 
+# ---- fixes from Codex review of PR #1 ----
+class TestCodexReviewFixesPR1(unittest.TestCase):
+    def test_fallback_sets_force_fallback(self):
+        s = run(approvals={})  # pauses at advisory
+        self.assertTrue(s.get("_force_fallback"))
+
+    def test_pause_at_overrides_seeded_approval(self):
+        # all gates seeded approved, but pause_at forces the advisory gate to interrupt
+        st = new_state("docs-advisory", "t", approvals=dict(ALL_APPROVED), pause_at=GATE_ADVISORY)
+        final = build_graph(prefer_fallback=True).invoke(st)
+        self.assertEqual(final["status"], "paused")
+        self.assertEqual(final["paused_at_gate"], GATE_ADVISORY)
+
+    def test_merge_readiness_requires_completed_rereview(self):
+        from devflow.nodes.merge import merge_readiness
+        base = new_state("t", "t")
+        base["blocking_comments"] = [{"note": "x"}]
+        base["codex_review_status"] = "ready"
+        # re-review NOT done -> not merge-ready (was the bug: synthetic fix made it ready)
+        self.assertFalse(merge_readiness({**base})["merge_readiness_ready"])
+        # re-review done & clean -> ready
+        ok = merge_readiness({**base, "rereview_done": True, "rereview_blocking": False})
+        self.assertTrue(ok["merge_readiness_ready"])
+        # re-review done but still blocking -> not ready
+        bad = merge_readiness({**base, "rereview_done": True, "rereview_blocking": True})
+        self.assertFalse(bad["merge_readiness_ready"])
+
+    def test_blocking_path_reaches_merge_via_rereview(self):
+        # full dry-run blocking path now passes through a completed re-review before merge
+        s = run(simulate={"advisory": "ready", "review": "blocking"})
+        self.assertEqual(s["status"], "done")
+        self.assertTrue(any("request_codex_rereview" in e for e in s["event_log"]))
+        self.assertIn("would-merge", s["final_report"])
+
+    def test_checkpoint_path_no_collision(self):
+        from devflow.cli import _ckpt_path
+        self.assertNotEqual(_ckpt_path("demo/a"), _ckpt_path("demo_a"))
+
+    def test_invoke_passes_thread_config_to_langgraph(self):
+        from devflow.cli import _invoke
+        captured = {}
+
+        class FakeLG:
+            backend = "langgraph"
+            def invoke(self, state, config=None):
+                captured["config"] = config
+                return {"status": "done"}
+
+        _invoke(FakeLG(), {"thread_id": "abc"})
+        self.assertEqual(captured["config"], {"configurable": {"thread_id": "abc"}})
+
+
 if __name__ == "__main__":
     unittest.main()

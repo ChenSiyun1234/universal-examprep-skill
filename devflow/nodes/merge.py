@@ -24,15 +24,20 @@ def _derive_halt(state: DevflowState):
 
 
 def merge_readiness(state: DevflowState) -> dict:
-    """Assess readiness: no unresolved blocking comments and review is ready."""
-    blocking = state.get("blocking_comments", [])
-    # In dry-run, fix_blocking_comments doesn't remove items; treat 'fix:' files_changed as resolution.
-    resolved = any(str(f).startswith("fix:") for f in state.get("files_changed", []))
-    ready = (not blocking) or resolved
+    """Assess readiness. A (re-)review must have actually COMPLETED — never merge-ready while the
+    re-review is only 'requested'. If there were blocking comments, require a completed clean
+    re-review (rereview_done and not rereview_blocking); otherwise just require a ready review."""
+    review_ok = state.get("codex_review_status") == "ready"
+    had_blocking = bool(state.get("blocking_comments"))
+    if had_blocking:
+        ready = review_ok and bool(state.get("rereview_done")) and not state.get("rereview_blocking")
+    else:
+        ready = review_ok
     return {
         "merge_readiness_ready": ready,
-        "event_log": [f"[merge_readiness] ready={ready} "
-                      f"(blocking={len(blocking)}, fixes_applied={resolved})."],
+        "event_log": [f"[merge_readiness] ready={ready} (review_ok={review_ok}, "
+                      f"had_blocking={had_blocking}, rereview_done={bool(state.get('rereview_done'))}, "
+                      f"rereview_blocking={bool(state.get('rereview_blocking'))})."],
     }
 
 

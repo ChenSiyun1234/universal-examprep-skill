@@ -19,6 +19,7 @@ Resume a paused thread:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -44,8 +45,11 @@ CKPT_DIR = os.path.join(tempfile.gettempdir(), "devflow_runs")
 
 
 def _ckpt_path(thread_id: str) -> str:
+    # append a hash of the ORIGINAL id so distinct ids that sanitize to the same name
+    # (e.g. "demo/a" vs "demo_a") never collide and overwrite each other's checkpoint.
     safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in thread_id)
-    return os.path.join(CKPT_DIR, f"{safe}.json")
+    digest = hashlib.sha1(thread_id.encode("utf-8")).hexdigest()[:8]
+    return os.path.join(CKPT_DIR, f"{safe}-{digest}.json")
 
 
 def _save_ckpt(state: dict) -> str:
@@ -85,6 +89,14 @@ def _print_outcome(state: dict) -> None:
               f"{state['thread_id']} --gate {alias} --decision approved")
 
 
+def _invoke(app, state, start_node=None):
+    """Invoke either backend. The real LangGraph backend (opt-in) needs a per-thread config with
+    a configurable.thread_id for its MemorySaver checkpointer; the stdlib fallback uses start_node."""
+    if getattr(app, "backend", "") == "langgraph":
+        return app.invoke(state, config={"configurable": {"thread_id": state.get("thread_id", "devflow")}})
+    return app.invoke(state, start_node=start_node) if start_node else app.invoke(state)
+
+
 def cmd_run(args) -> int:
     state = new_state(
         task_type=args.task, thread_id=args.thread_id, repo=args.repo,
@@ -93,10 +105,11 @@ def cmd_run(args) -> int:
     if args.simulate_advisory or args.simulate_review:
         state["_simulate"] = {"advisory": args.simulate_advisory or "ready",
                               "review": args.simulate_review or "blocking"}
-    app = build_graph(prefer_fallback=args.fallback)
+    # Default to the fully-supported stdlib backend; --langgraph opts into the experimental one.
+    app = build_graph(prefer_fallback=not args.langgraph)
     print(f"[devflow] backend={getattr(app, 'backend', '?')}  dry_run=True  "
           f"task={args.task}  thread={args.thread_id}")
-    final = app.invoke(state)
+    final = _invoke(app, state)
     if final.get("status") == "paused":
         _save_ckpt(final)
     _print_outcome(final)
@@ -142,8 +155,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="pause (interrupt) at this gate instead of auto-deciding")
     r.add_argument("--simulate-advisory", choices=["ready", "timeout"])
     r.add_argument("--simulate-review", choices=["blocking", "clean", "timeout"])
-    r.add_argument("--fallback", action="store_true",
-                   help="force the stdlib fallback backend even if langgraph is installed")
+    r.add_argument("--langgraph", action="store_true",
+                   help="use the EXPERIMENTAL real LangGraph backend (requires `pip install "
+                        "langgraph`); default is the fully-supported stdlib backend")
     r.set_defaults(func=cmd_run)
 
     rs = sub.add_parser("resume", help="resume a paused thread with an approval decision")

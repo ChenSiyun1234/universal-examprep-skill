@@ -80,6 +80,18 @@ class DevflowState(TypedDict, total=False):
     halt_reason: Optional[str]
     final_report: Optional[str]
 
+    # --- control channels that nodes/routers read (declared so the real LangGraph StateGraph
+    #     does not drop them; LangGraph filters node updates to known channels) ---
+    fix_approval: Optional[str]         # decision at the blocking-fix gate
+    merge_readiness_ready: bool         # merge_readiness verdict
+    rereview_done: bool                 # a re-review completed after fixes
+    rereview_blocking: bool             # re-review still found blocking issues
+    _simulate: dict                     # dry-run simulation hooks {advisory, review}
+    _force_fallback: bool               # force DevflowInterrupt even if langgraph is installed
+    paused_at_gate: Optional[str]
+    paused_at_node: Optional[str]
+    interrupt_payload: dict
+
 
 def new_state(task_type: str, thread_id: str, repo: str = "ZeKaiNie/universal-examprep-skill",
               approvals: Optional[dict] = None, pause_at: Optional[str] = None,

@@ -138,6 +138,9 @@ class FallbackApp:
     MAX_STEPS = 200  # hard safety bound; this DAG visits far fewer nodes (no infinite loops)
 
     def invoke(self, state: dict, start_node: Optional[str] = None) -> dict:
+        # Force the stdlib interrupt path even if langgraph is installed: this runner only catches
+        # DevflowInterrupt, so approval nodes must NOT call langgraph's native interrupt().
+        state["_force_fallback"] = True
         cur = start_node or ENTRY
         steps = 0
         while cur != END:

@@ -65,6 +65,16 @@ checks_run, checks_not_run, files_changed, errors, event_log`.
 Both expose `.invoke(state)` and the same nodes/routing, so behaviour is identical; only the
 interrupt/checkpoint machinery differs.
 
+The CLI **defaults to the stdlib backend** (fully supported). The real LangGraph backend is
+opt-in and experimental via `--langgraph` (`pip install langgraph`); when selected, the CLI passes
+a `config={"configurable": {"thread_id": …}}` so its `MemorySaver` checkpointer works, and the
+fallback runner sets `_force_fallback` so approval gates always use `DevflowInterrupt` rather than
+LangGraph's native `interrupt()` when running under the stdlib backend. `DevflowState` declares all
+control channels (`fix_approval`, `merge_readiness_ready`, `rereview_done`, `_simulate`, …) so the
+real `StateGraph` does not drop them. An explicit `pause_at` always pauses its gate, even if an
+approval was seeded. `merge_readiness` requires a **completed** (re-)review — never merge-ready while
+a re-review is only "requested".
+
 ## How human approval gates work
 
 There are three gates, each calling `request_human_decision(...)` **exactly once per node
