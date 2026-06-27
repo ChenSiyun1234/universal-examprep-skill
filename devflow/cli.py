@@ -46,8 +46,9 @@ CKPT_DIR = os.path.join(tempfile.gettempdir(), "devflow_runs")
 
 def _ckpt_path(thread_id: str) -> str:
     # append a hash of the ORIGINAL id so distinct ids that sanitize to the same name
-    # (e.g. "demo/a" vs "demo_a") never collide and overwrite each other's checkpoint.
-    safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in thread_id)
+    # (e.g. "demo/a" vs "demo_a") never collide. Bound the slug so a very long thread-id can't
+    # exceed the filesystem's per-component name limit; the hash keeps it unique after truncation.
+    safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in thread_id)[:80]
     digest = hashlib.sha1(thread_id.encode("utf-8")).hexdigest()[:8]
     return os.path.join(CKPT_DIR, f"{safe}-{digest}.json")
 
@@ -98,6 +99,12 @@ def _invoke(app, state, start_node=None):
 
 
 def cmd_run(args) -> int:
+    if args.langgraph and args.pause_at:
+        # LangGraph reports a pause via result['__interrupt__'], not status="paused"; this CLI
+        # doesn't wire LangGraph resume, so a --langgraph pause would exit silently. Refuse it.
+        print("[devflow] --pause-at is not supported with --langgraph (LangGraph resume is not "
+              "wired into this CLI). Use the default stdlib backend for pause/resume.")
+        return 2
     state = new_state(
         task_type=args.task, thread_id=args.thread_id, repo=args.repo,
         approvals=_approvals_from_args(args),
@@ -112,6 +119,12 @@ def cmd_run(args) -> int:
     final = _invoke(app, state)
     if final.get("status") == "paused":
         _save_ckpt(final)
+    else:
+        # completed run: clear any stale checkpoint so a later `resume` can't load obsolete state
+        try:
+            os.remove(_ckpt_path(args.thread_id))
+        except OSError:
+            pass
     _print_outcome(final)
     return 0
 

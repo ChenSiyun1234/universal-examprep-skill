@@ -12,7 +12,17 @@ the graph.
 from __future__ import annotations
 
 import operator
-from typing import Annotated, Any, Optional, TypedDict
+from typing import Any, Optional, TypedDict
+
+# `typing.Annotated` only exists on Python 3.9+. The repo's CI still runs the test matrix on 3.8
+# with no third-party deps, so importing this module must not require Annotated. When it's absent
+# we fall back to a plain ``list`` annotation; the fallback runner uses the explicit append-key set
+# below, and the (optional, 3.9+) LangGraph backend reads the Annotated reducers when available.
+try:
+    from typing import Annotated
+    _LIST_ADD = Annotated[list, operator.add]
+except ImportError:  # Python 3.8
+    _LIST_ADD = list
 
 # ---- approval gate identifiers (one per human-in-the-loop interrupt) ----
 GATE_ADVISORY = "advisory_implementation"   # approve implementing the Codex advisory
@@ -29,7 +39,7 @@ PENDING = "pending"
 class DevflowState(TypedDict, total=False):
     """Everything the workflow needs to carry between nodes.
 
-    Fields with an ``Annotated[list, operator.add]`` reducer accumulate across nodes;
+    Fields with an ``_LIST_ADD`` reducer accumulate across nodes;
     scalar fields are last-write-wins.
     """
 
@@ -52,22 +62,22 @@ class DevflowState(TypedDict, total=False):
     review_summary: Optional[dict]
 
     # --- review findings ---
-    blocking_comments: Annotated[list, operator.add]
-    non_blocking_comments: Annotated[list, operator.add]
-    deferred_followups: Annotated[list, operator.add]
+    blocking_comments: _LIST_ADD
+    non_blocking_comments: _LIST_ADD
+    deferred_followups: _LIST_ADD
 
     # --- human decisions ---
     human_approval: Optional[str]   # APPROVED | REJECTED | PENDING
     merge_approval: Optional[str]
 
     # --- checks / changes ---
-    checks_run: Annotated[list, operator.add]
-    checks_not_run: Annotated[list, operator.add]
-    files_changed: Annotated[list, operator.add]
+    checks_run: _LIST_ADD
+    checks_not_run: _LIST_ADD
+    files_changed: _LIST_ADD
 
     # --- diagnostics ---
-    errors: Annotated[list, operator.add]
-    event_log: Annotated[list, operator.add]
+    errors: _LIST_ADD
+    event_log: _LIST_ADD
 
     # --- control / dry-run plumbing (not GitHub data) ---
     dry_run: bool
@@ -116,16 +126,14 @@ def new_state(task_type: str, thread_id: str, repo: str = "ZeKaiNie/universal-ex
     )
 
 
-# keys whose values accumulate (append) — derived from the Annotated reducers above so the
-# fallback runner stays in sync with the schema automatically.
+# Keys whose values accumulate (append) across node updates. Declared explicitly (rather than
+# derived via get_type_hints, which needs Annotated) so this works on Python 3.8 too. Keep in sync
+# with the _LIST_ADD-annotated fields above.
+_APPEND_KEYS = frozenset({
+    "blocking_comments", "non_blocking_comments", "deferred_followups",
+    "checks_run", "checks_not_run", "files_changed", "errors", "event_log",
+})
+
+
 def append_keys() -> set:
-    import typing
-    keys = set()
-    # get_type_hints(..., include_extras=True) resolves the string annotations produced by
-    # `from __future__ import annotations` back into real Annotated objects with metadata.
-    hints = typing.get_type_hints(DevflowState, include_extras=True)
-    for name, hint in hints.items():
-        meta = getattr(hint, "__metadata__", None)
-        if meta and operator.add in meta:
-            keys.add(name)
-    return keys
+    return set(_APPEND_KEYS)

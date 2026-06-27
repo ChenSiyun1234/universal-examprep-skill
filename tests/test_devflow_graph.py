@@ -176,5 +176,35 @@ class TestCodexReviewFixesPR1Round2(unittest.TestCase):
         self.assertEqual(resumed["status"], "done")
 
 
+# ---- round 3 of Codex review on PR #1 ----
+class TestCodexReviewFixesPR1Round3(unittest.TestCase):
+    def test_append_keys_explicit_and_complete(self):
+        from devflow.state import append_keys
+        self.assertEqual(append_keys(), {
+            "blocking_comments", "non_blocking_comments", "deferred_followups",
+            "checks_run", "checks_not_run", "files_changed", "errors", "event_log"})
+
+    def test_pause_at_with_langgraph_is_refused(self):
+        from devflow.cli import build_parser
+        args = build_parser().parse_args(
+            ["run", "--thread-id", "x", "--langgraph", "--pause-at", "advisory"])
+        self.assertEqual(args.func(args), 2)  # refused, no silent exit
+
+    def test_checkpoint_filename_is_length_bounded(self):
+        from devflow.cli import _ckpt_path
+        import os
+        self.assertLessEqual(len(os.path.basename(_ckpt_path("z" * 500))), 100)
+
+    def test_completed_run_clears_stale_checkpoint(self):
+        from devflow import cli
+        import os
+        tid = "round3-clear-xyz"
+        cli._save_ckpt({"thread_id": tid, "status": "paused"})  # stale paused checkpoint
+        self.assertTrue(os.path.exists(cli._ckpt_path(tid)))
+        args = cli.build_parser().parse_args(["run", "--thread-id", tid])
+        cli.cmd_run(args)  # completes (status done) -> should remove the stale checkpoint
+        self.assertFalse(os.path.exists(cli._ckpt_path(tid)))
+
+
 if __name__ == "__main__":
     unittest.main()
