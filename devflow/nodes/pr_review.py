@@ -102,6 +102,11 @@ def request_codex_rereview(state: DevflowState) -> dict:
     gh.comment("pr", state.get("pr_number") or 0, "@codex re-review after fixes.")
     # dry-run: simulate the re-review coming back and accepting the fixes (clean). merge_readiness
     # below requires this completed re-review, so we never reach merge with only 'rereview_requested'.
+    # Mark the earlier findings RESOLVED so the report isn't internally inconsistent (blocking>0 yet
+    # would-merge): record outstanding_blocking=0 in review_summary; blocking_comments stays as history.
+    summary = {**(state.get("review_summary") or {}), "outstanding_blocking": 0,
+               "resolved_by_rereview": True}
     return {"codex_review_status": "ready", "rereview_done": True, "rereview_blocking": False,
+            "review_summary": summary,
             "event_log": ["[request_codex_rereview] dry-run: requested re-review; simulated a clean "
-                          "re-review (fixes accepted)."]}
+                          "re-review (fixes accepted; earlier findings marked resolved)."]}

@@ -141,6 +141,10 @@ class FallbackApp:
         # Force the stdlib interrupt path even if langgraph is installed: this runner only catches
         # DevflowInterrupt, so approval nodes must NOT call langgraph's native interrupt().
         state["_force_fallback"] = True
+        if start_node:
+            # Resuming: a seeded approval is the resume decision, so clear any forced pause_at —
+            # otherwise the gate would re-pause forever instead of consuming the decision.
+            state["pause_at"] = None
         cur = start_node or ENTRY
         steps = 0
         while cur != END:

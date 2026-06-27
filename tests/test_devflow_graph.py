@@ -156,5 +156,25 @@ class TestCodexReviewFixesPR1(unittest.TestCase):
         self.assertEqual(captured["config"], {"configurable": {"thread_id": "abc"}})
 
 
+# ---- round 2 of Codex review on PR #1 ----
+class TestCodexReviewFixesPR1Round2(unittest.TestCase):
+    def test_clean_rereview_marks_findings_resolved(self):
+        s = run(simulate={"advisory": "ready", "review": "blocking"})
+        self.assertEqual(s["status"], "done")
+        # report must be internally consistent: 0 outstanding blocking AND would-merge
+        self.assertIn("0 outstanding", s["final_report"])
+        self.assertIn("would-merge", s["final_report"])
+        self.assertEqual((s.get("review_summary") or {}).get("outstanding_blocking"), 0)
+
+    def test_pause_at_cleared_on_resume(self):
+        # pause_at forces the gate to pause even though all gates are seeded-approved...
+        st = new_state("docs-advisory", "t", approvals=dict(ALL_APPROVED), pause_at=GATE_ADVISORY)
+        paused = build_graph(prefer_fallback=True).invoke(st)
+        self.assertEqual(paused["status"], "paused")
+        # ...and resuming from the paused node proceeds (pause_at cleared, seeded decision wins)
+        resumed = build_graph(prefer_fallback=True).invoke(paused, start_node=paused["paused_at_node"])
+        self.assertEqual(resumed["status"], "done")
+
+
 if __name__ == "__main__":
     unittest.main()

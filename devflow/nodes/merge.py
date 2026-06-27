@@ -56,6 +56,11 @@ def post_merge_report(state: DevflowState) -> dict:
     (completed, or safely stopped at a rejected gate / timeout)."""
     merged = state.get("merge_approval") == APPROVED and bool(state.get("merge_readiness_ready"))
     halt = state.get("halt_reason") or _derive_halt(state)
+    # outstanding (unresolved) blocking: a clean re-review resolves the earlier findings, so report
+    # 0 outstanding instead of the raw historical count (which would look inconsistent with would-merge)
+    raw_blocking = len(state.get("blocking_comments", []))
+    rs = state.get("review_summary") or {}
+    outstanding = rs["outstanding_blocking"] if "outstanding_blocking" in rs else raw_blocking
     lines = [
         "================ devflow dry-run report ================",
         f"task_type        : {state.get('task_type')}",
@@ -69,7 +74,8 @@ def post_merge_report(state: DevflowState) -> dict:
         f"advisory_approval: {state.get('human_approval')}",
         f"fix_approval     : {state.get('fix_approval')}",
         f"merge_approval   : {state.get('merge_approval')}",
-        f"blocking         : {len(state.get('blocking_comments', []))}",
+        f"blocking         : {outstanding} outstanding ({raw_blocking} found"
+        f"{', resolved by re-review' if state.get('rereview_done') and not outstanding else ''})",
         f"non_blocking     : {len(state.get('non_blocking_comments', []))}",
         f"checks_run       : {state.get('checks_run', [])}",
         f"checks_not_run   : {state.get('checks_not_run', [])}",

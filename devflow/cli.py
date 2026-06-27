@@ -120,7 +120,10 @@ def cmd_resume(args) -> int:
     try:
         state = _load_ckpt(args.thread_id)
     except FileNotFoundError:
-        print(f"[devflow] no checkpoint for thread '{args.thread_id}'. Run it first.")
+        print(f"[devflow] no checkpoint for thread '{args.thread_id}'. Run it first.\n"
+              "Note: `resume` supports the stdlib backend only. A run started with --langgraph "
+              "pauses via LangGraph's native interrupt (no JSON checkpoint is written) and must be "
+              "resumed through LangGraph's own Command(resume=...) — not wired into this CLI yet.")
         return 1
     gate = _GATE_ALIASES[args.gate]
     decision = APPROVED if args.decision == "approved" else REJECTED
