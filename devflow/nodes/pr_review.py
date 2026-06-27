@@ -58,7 +58,13 @@ def create_draft_pr(state: DevflowState) -> dict:
 
 
 def request_codex_review(state: DevflowState) -> dict:
-    res = _writer(state).comment_on_pr(state.get("pr_number") or 0, "@codex review this PR.")
+    pr = state.get("pr_number")
+    if not pr:   # PR creation failed/unparsed — stop safely instead of commenting on #0
+        return {"codex_review_status": "timeout",
+                "errors": ["request_codex_review: no PR number (creation failed) — "
+                           "refusing to comment on #0"],
+                "event_log": ["[request_codex_review] stopped: no PR number; not commenting on #0."]}
+    res = _writer(state).comment_on_pr(pr, "@codex review this PR.")
     upd = {"codex_review_status": "requested",
            "event_log": [f"[request_codex_review] {res.get('log', '')}"]}
     if res.get("error"):
@@ -69,9 +75,13 @@ def request_codex_review(state: DevflowState) -> dict:
 def wait_for_codex_review(state: DevflowState) -> dict:
     """Real mode: bounded poll of PR comments/reviews for a Codex review. Dry-run: simulate.
     ``state['_simulate']['review']`` in {'blocking','clean','timeout'} drives the dry-run branch."""
+    if not state.get("pr_number"):   # nothing to poll — don't hit PR #0
+        return {"codex_review_status": "timeout",
+                "errors": ["wait_for_codex_review: no PR number to poll"],
+                "event_log": ["[wait_for_codex_review] stopped: no PR number."]}
     if state.get("real_github"):
         repo = state["repo"]
-        pr = state.get("pr_number") or 0
+        pr = state.get("pr_number")
         kwargs = {"sleep_fn": state["_sleep_fn"]} if state.get("_sleep_fn") else {}
         try:
             poll = bounded_poll(

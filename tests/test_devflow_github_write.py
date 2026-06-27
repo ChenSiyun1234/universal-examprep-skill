@@ -170,5 +170,55 @@ class TestNoMergeInGraph(unittest.TestCase):
         self.assertTrue(any("merge NOT executed" in e for e in out["event_log"]))
 
 
+# ---- fixes from Codex review of PR #3 ----
+class TestCodexReviewFixes(unittest.TestCase):
+    def test_bounded_poll_zero_does_not_fetch(self):
+        seen = {"n": 0}
+        res = bounded_poll(lambda: seen.__setitem__("n", seen["n"] + 1) or {"x": 1},
+                           max_attempts=0, sleep_seconds=5, sleep_fn=quiet)
+        self.assertFalse(res["found"])
+        self.assertEqual(res["attempts"], 0)
+        self.assertEqual(seen["n"], 0)  # honor 0 = never even fetch
+
+    def test_bounded_poll_negative_sleep_clamped(self):
+        slept = []
+        res = bounded_poll(lambda: None, max_attempts=2, sleep_seconds=-5,
+                           sleep_fn=lambda s: slept.append(s))
+        self.assertFalse(res["found"])
+        self.assertEqual(slept, [0])  # negative interval clamped to 0; never raises
+
+    def test_secret_guard_covers_more_prefixes(self):
+        w = GitHubWriter("o/r", live=False, logger=quiet)
+        for tok in ("ghu_" + "A" * 30, "ghs_" + "B" * 30, "ghr_" + "C" * 30, "AIza" + "D" * 35):
+            res = w.comment_on_issue(5, f"leaked {tok}")
+            self.assertFalse(res["executed"])
+            self.assertIn("secret", res["error"].lower())
+
+    def test_guard_refusal_returns_safe_error_not_raise(self):
+        # a secret in the body must NOT raise out of _exec — it returns a safe error dict
+        w = GitHubWriter("o/r", live=True, logger=quiet)
+        with mock.patch.object(G, "_spawn_gh", side_effect=AssertionError("should not reach gh")):
+            res = w.create_advisory_issue("t", "token ghp_" + "X" * 30)
+        self.assertFalse(res["executed"])
+        self.assertIn("secret", res["error"].lower())
+
+    def test_request_advisory_stops_on_missing_issue(self):
+        st = new_state("docs-advisory", "t", real_github=True)
+        st["issue_number"] = None
+        with mock.patch.object(G.subprocess, "run", side_effect=AssertionError("no gh write!")):
+            out = advisory_nodes.request_codex_advisory(st)
+        self.assertEqual(out["codex_advisory_status"], "timeout")
+        self.assertTrue(out["errors"])
+        self.assertTrue(any("#0" in e for e in out["event_log"]))
+
+    def test_request_review_stops_on_missing_pr(self):
+        st = new_state("docs-advisory", "t", real_github=True)
+        st["pr_number"] = None
+        with mock.patch.object(G.subprocess, "run", side_effect=AssertionError("no gh write!")):
+            out = pr_nodes.request_codex_review(st)
+        self.assertEqual(out["codex_review_status"], "timeout")
+        self.assertTrue(out["errors"])
+
+
 if __name__ == "__main__":
     unittest.main()

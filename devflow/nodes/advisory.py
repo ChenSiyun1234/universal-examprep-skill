@@ -31,10 +31,15 @@ def create_advisory_issue(state: DevflowState) -> dict:
 
 
 def request_codex_advisory(state: DevflowState) -> dict:
+    issue = state.get("issue_number")
+    if not issue:   # issue creation failed/unparsed — stop safely instead of commenting on #0
+        return {"codex_advisory_status": "timeout",
+                "errors": ["request_codex_advisory: no issue number (creation failed) — "
+                           "refusing to comment on #0"],
+                "event_log": ["[request_codex_advisory] stopped: no issue number; "
+                              "not commenting on #0."]}
     res = _writer(state).comment_on_issue(
-        state.get("issue_number") or 0,
-        "@codex please provide an implementation advisory for this task.",
-    )
+        issue, "@codex please provide an implementation advisory for this task.")
     upd = {"codex_advisory_status": "requested",
            "event_log": [f"[request_codex_advisory] {res.get('log', '')}"]}
     if res.get("error"):
@@ -60,9 +65,13 @@ def wait_for_codex_advisory(state: DevflowState) -> dict:
 
     ``state['_simulate']['advisory'] == 'timeout'`` forces the timeout branch in dry-run/tests.
     """
+    if not state.get("issue_number"):   # nothing to poll — don't hit issue #0
+        return {"codex_advisory_status": "timeout",
+                "errors": ["wait_for_codex_advisory: no issue number to poll"],
+                "event_log": ["[wait_for_codex_advisory] stopped: no issue number."]}
     if state.get("real_github"):
         repo = state["repo"]
-        issue = state.get("issue_number") or 0
+        issue = state.get("issue_number")
         sleep_fn = (state.get("_sleep_fn") or None)
         kwargs = {"sleep_fn": sleep_fn} if sleep_fn else {}
         try:

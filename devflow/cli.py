@@ -142,10 +142,14 @@ def cmd_resume(args) -> int:
     gate = _GATE_ALIASES[args.gate]
     decision = APPROVED if args.decision == "approved" else REJECTED
     state.setdefault("approvals", {})[gate] = decision
+    # Safety: a resume defaults to DRY-RUN even if the original run was --real-github. Live writes
+    # must be re-requested explicitly on resume, so they can never silently persist across a pause.
+    state["real_github"] = bool(getattr(args, "real_github", False))
     start = state.get("paused_at_node") or GATE_TO_NODE.get(gate)
     state["status"] = "running"
     app = build_graph(prefer_fallback=True)  # resume uses the stdlib runner's start_node support
-    print(f"[devflow] resume thread={args.thread_id} gate={args.gate} decision={decision}")
+    print(f"[devflow] resume thread={args.thread_id} gate={args.gate} decision={decision} "
+          f"real_github={state['real_github']}")
     final = app.invoke(state, start_node=start)
     if final.get("status") == "paused":
         _save_ckpt(final)
@@ -256,6 +260,14 @@ def cmd_run_docs_advisory(args) -> int:
     return 0
 
 
+def _nonneg_int(v: str) -> int:
+    """argparse type: reject negative integers with a clear message (no silent clamp)."""
+    iv = int(v)
+    if iv < 0:
+        raise argparse.ArgumentTypeError(f"must be >= 0 (got {iv})")
+    return iv
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="devflow", description="Dry-run LangGraph devflow orchestrator")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -279,6 +291,9 @@ def build_parser() -> argparse.ArgumentParser:
     rs.add_argument("--thread-id", required=True)
     rs.add_argument("--gate", required=True, choices=list(_GATE_ALIASES))
     rs.add_argument("--decision", required=True, choices=["approved", "rejected"])
+    rs.add_argument("--real-github", action="store_true",
+                    help="re-enable real gh writes on this resume (default: dry-run, even if the "
+                         "original run used --real-github)")
     rs.set_defaults(func=cmd_resume)
 
     # --- read-only GitHub commands ---
@@ -303,8 +318,10 @@ def build_parser() -> argparse.ArgumentParser:
     rda.add_argument("--repo", default="ZeKaiNie/universal-examprep-skill")
     rda.add_argument("--real-github", action="store_true",
                      help="perform REAL guarded gh writes (issue + @codex comment); default dry-run")
-    rda.add_argument("--max-polls", type=int, default=6, help="bounded wait: max poll attempts")
-    rda.add_argument("--poll-seconds", type=int, default=30, help="bounded wait: sleep between polls")
+    rda.add_argument("--max-polls", type=_nonneg_int, default=6,
+                     help="bounded wait: max poll attempts (0 = do not poll)")
+    rda.add_argument("--poll-seconds", type=_nonneg_int, default=30,
+                     help="bounded wait: sleep between polls (must be >= 0)")
     rda.add_argument("--fallback", action="store_true")
     rda.set_defaults(func=cmd_run_docs_advisory)
     return p

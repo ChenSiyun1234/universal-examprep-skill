@@ -370,10 +370,12 @@ _FORBIDDEN_WRITE_TOKENS = {
     "merge", "delete", "--delete", "-d", "-D", "--force", "-f",
     "--force-with-lease", "push", "close", "--admin",
 }
-# obvious secret/token shapes — refuse to post content that looks like a credential
+# obvious secret/token shapes — refuse to post content that looks like a credential.
+# Covers all GitHub token prefixes (ghp_/gho_/ghu_/ghs_/ghr_ + fine-grained github_pat_),
+# AWS keys, Slack tokens, Google API keys, and PEM private keys.
 _SECRET_RE = re.compile(
-    r"(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|gho_[A-Za-z0-9]{20,}"
-    r"|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}"
+    r"(gh[posur]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
+    r"|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_\-]{30,}"
     r"|-----BEGIN [A-Z ]*PRIVATE KEY-----)")
 
 
@@ -414,13 +416,20 @@ def _parse_url_number(out: str) -> dict:
 
 def bounded_poll(fetch, max_attempts: int, sleep_seconds: float, sleep_fn=time.sleep) -> dict:
     """Call ``fetch()`` up to ``max_attempts`` times, sleeping ``sleep_seconds`` between tries,
-    stopping as soon as it returns a truthy value. Bounded — never an infinite loop."""
+    stopping as soon as it returns a truthy value. Bounded — never an infinite loop.
+
+    ``max_attempts <= 0`` means "do not poll" (0 attempts, immediate not-found). A negative
+    ``sleep_seconds`` is clamped to 0 so ``time.sleep`` can never raise."""
+    target = int(max_attempts)
+    if target <= 0:                       # honor 0 / negative: no poll at all
+        return {"found": False, "result": None, "attempts": 0}
+    sleep_seconds = max(0, sleep_seconds)  # never pass a negative interval to sleep
     attempts = 0
-    for attempts in range(1, max(1, int(max_attempts)) + 1):
+    for attempts in range(1, target + 1):
         result = fetch()
         if result:
             return {"found": True, "result": result, "attempts": attempts}
-        if attempts < max_attempts:
+        if attempts < target:
             sleep_fn(sleep_seconds)
     return {"found": False, "result": None, "attempts": attempts}
 
@@ -445,8 +454,13 @@ class GitHubWriter:
         self._pr_seq = 2000
 
     def _exec(self, args: list[str], op: str, desc: str, sim: dict, parse=None) -> dict:
-        _assert_write_allowed(args)                       # write-shape gate
-        _assert_no_secrets(*[a for a in args if isinstance(a, str)])
+        try:
+            _assert_write_allowed(args)                   # write-shape gate
+            _assert_no_secrets(*[a for a in args if isinstance(a, str)])
+        except GhError as e:                              # user-controlled input must not crash us
+            self.calls.append({"op": op, "args": list(args), "live": self.live, "executed": False})
+            return {"executed": False, "error": str(e),
+                    "log": f"[github-write:REFUSED] {desc} :: {e}"}
         mode = "LIVE" if self.live else "DRY-RUN"
         line = f"[github-write:{mode}] {desc} :: {_shorten(args)}"
         self._log(line)                                  # print/log EXACTLY what we are doing

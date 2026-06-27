@@ -200,7 +200,13 @@ operations — there is no merge, branch-delete, or force-push capability anywhe
 `wait_for_codex_advisory` / `wait_for_codex_review` poll via the read-only layer using
 `bounded_poll(fetch, max_attempts, sleep_seconds)` — capped attempts, configurable sleep, default
 small (`--max-polls 6 --poll-seconds 30`). On exhaustion they set a `timeout` status and a clear
-error; they never loop forever.
+error; they never loop forever. `--max-polls 0` means "do not poll" (immediate timeout), negative
+`--poll-seconds` is rejected at the CLI, and the wait nodes refuse to poll issue/PR `#0` (a failed
+create stops the run safely instead of acting on the wrong number).
+
+**Resume safety:** a paused `--real-github` run resumes in **dry-run by default**; live writes must
+be re-requested with `--real-github` on the `resume` command, so they can never silently persist
+across a human-approval pause.
 
 ### Codex issue handoff (advisory)
 
