@@ -6,6 +6,16 @@ This skill is **bilingual by design**: an English *control plane* for precision 
 
 ---
 
+## 本 PR 的范围 / Scope of this change
+
+This PR establishes the language policy and student-facing Chinese output contract. It does **not** fully rewrite all existing control instructions into English. The follow-up control-plane pass should make the modular `skills/exam-*` files use English for **Activation / Inputs / Workflow / Output Contract / Boundaries**, while keeping Chinese examples and templates for student-facing output.
+
+- 本 PR 建立**双语语言策略** + 统一来源标注，并修好各入口的一致性。
+- 本 PR **不**把现有控制指令整体改写成英文；根目录 `SKILL.md` 维持中文优先以保证兼容。
+- **后续 PR** 再把模块化 `skills/exam-*` 的控制段（Activation / Inputs / Workflow / Output Contract / Boundaries）转为英文，同时保留学生侧的中文示例与模板。
+
+---
+
 ## English control plane（控制层 = 英文优先）
 
 These instructions are read by the agent (Claude / Codex), **not** the student. Prefer English, and keep them **precise, imperative, and testable**:
