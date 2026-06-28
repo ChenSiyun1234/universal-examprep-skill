@@ -18,12 +18,13 @@ license: MIT
 
 ## Persistence
 
-会话状态固化在工作区根目录，**每次会话第一件事就是读取它们**，据此恢复记忆位置：
+会话状态固化在工作区根目录。**恢复时只读 `study_progress.md`（必要时连带 `study_plan.md`）来定位当前阶段**；
+`references/wiki/` 与 `quiz_bank.json` 一律**按需读取、绝不在恢复时预加载**（与下面的惰性加载一致）。
 
-- `study_progress.md` — 当前阶段、知识点打卡、错题档案、💡 概念疑难点记录。**每次学习/检查点事件后必须更新**。
-- `study_plan.md` — 阶段计划与各阶段关联的 wiki 章节文件。
-- `references/wiki/chN_*.md` — 分章节知识库（唯一知识边界，按需 lazy-load）。
-- `references/quiz_bank.json` — 标准题库（判分与抽题的唯一答案来源）。
+- `study_progress.md` — 当前阶段、知识点打卡、错题档案、💡 概念疑难点记录。**每轮先读它恢复；每次学习/检查点事件后必须更新**。
+- `study_plan.md` — 阶段计划与各阶段关联的 wiki 章节文件（恢复时读，用来知道当前阶段对应哪个 wiki）。
+- `references/wiki/chN_*.md` — 分章节知识库（唯一知识边界）。**只在教学到该章时读那一个文件**，不要在恢复时一次性预读。
+- `references/quiz_bank.json` — 标准题库（判分与抽题的唯一答案来源）。**测验时按需取相关题**，不要整库塞进上下文。
 
 纯网页端（不能读写文件）时改用「文本断点」：每轮结束输出可复制的进度 Summary，下轮请用户贴回。
 

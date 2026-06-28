@@ -23,7 +23,7 @@
 ## 文件约定
 - `references/wiki/chN_*.md` 唯一知识源 · `references/quiz_bank.json` 唯一答案源（题带 `source`: teacher / ai_generated）
 - `study_plan.md` 阶段计划 · `study_progress.md` 进度 + 错题 + 疑难点（每轮更新、重启先读）
-- 无本地写盘的纯网页端：可用 `prompts/web_prompt.md` 起步，但**它仍是 V2.0 版**——会让模型自行生成测验题、且缺 🟢/🟡/⚠️ 来源标注；**务必仍遵守上面的核心规则**（测验只从挂载的 `quiz_bank.json` 出题、答案标注来源），别照搬旧提示词绕过防幻觉约束。每轮末尾输出可复制的进度 Summary 作断点。
+- 无本地写盘的纯网页端：用 `prompts/web_prompt.md`（已含 V2.1 来源标注与防编题规则）；测验仍只从用户挂载的题库出题、答案按 🟢/🟡/⚠️ 标注来源。每轮末尾输出可复制的进度 Summary 作断点。
 
 ## 完整协议
 读 `skills/exam-cram/SKILL.md`（主技能）+ `skills/exam-*/SKILL.md`（子技能：ingest / tutor / quiz / review / cheatsheet / audit / help），或根目录 `SKILL.md`。本文件是它们的对齐浓缩版，规则措辞应与之保持一致。
