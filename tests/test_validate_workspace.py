@@ -11,6 +11,7 @@ import json
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 from contextlib import redirect_stdout
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -101,12 +102,37 @@ class TestValidateWorkspace(unittest.TestCase):
         self.assertEqual(V._exit_code(errors), 0)
         self.assertTrue(any("无 answer" in w["msg"] for w in warnings))
 
-    def test_missing_chapter_and_phase_rejected(self):
+    def test_missing_chapter_or_phase_warns_not_error(self):
+        # ingest.py does NOT require chapter/phase, so Tier 1 must warn, not hard-fail (Codex r2)
         d = self.make_ws([{"id": "x", "type": "choice", "question": "q",
                            "options": ["A. a"], "answer": "A", "source": "teacher"}])
+        errors, warnings, _ = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 0)
+        self.assertTrue(any("chapter 或 phase" in w["msg"] for w in warnings))
+
+    def test_traversal_before_wiki_segment_rejected(self):
+        # "../references/wiki/x.md" escapes BEFORE the matched segment — must still be caught (Codex r2)
+        d = self.make_ws([{"id": "x", "chapter": 1, "type": "choice", "question": "q",
+                           "options": ["A. a"], "answer": "A", "source": "teacher"}],
+                         plan="见 `../references/wiki/ch1.md`\n阶段 1\n")
         errors, _, _ = V.validate(d)
         self.assertEqual(V._exit_code(errors), 1)
-        self.assertTrue(any("chapter 或 phase" in e["msg"] for e in errors))
+        self.assertTrue(any("路径穿越" in e["msg"] for e in errors))
+
+    def test_non_string_source_does_not_crash(self):
+        # a list/object source must be a structured error, not a TypeError on the set membership (Codex r2)
+        d = self.make_ws([{"id": "x", "chapter": 1, "type": "choice", "question": "q",
+                           "options": ["A. a"], "answer": "A", "source": ["teacher"]}])
+        errors, _, _ = V.validate(d)   # must not raise
+        self.assertTrue(any("source 必须是字符串" in e["msg"] for e in errors))
+
+    def test_unreadable_wiki_dir_is_fatal(self):
+        # references/wiki/ that exists but can't be listed -> structured fatal (exit 2), not a traceback (Codex r2)
+        d = self.make_ws([{"id": "x", "chapter": 1, "type": "choice", "question": "q",
+                           "options": ["A. a"], "answer": "A", "source": "teacher"}])
+        with mock.patch.object(V.os, "listdir", side_effect=OSError("boom")):
+            errors, _, _ = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 2)
 
     def test_phase_field_satisfies_requirement(self):
         d = self.make_ws([{"id": "x", "phase": 1, "type": "choice", "question": "q",

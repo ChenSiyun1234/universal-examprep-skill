@@ -31,7 +31,7 @@
 | 字段 | 必需 | 说明 |
 | --- | --- | --- |
 | `id` | ✅ | 题目唯一标识（数组内不得重复） |
-| `chapter`（或 `phase`） | ✅ | 所属章节/阶段（整数或字符串） |
+| `chapter`（或 `phase`） | 强烈建议 | 所属章节/阶段（整数或字符串）。章节测验按它过滤抽题，缺了该题会抽不到。因 `ingest.py` 不强制，校验器对缺失只**告警**不报错 |
 | `type` | ✅ | 题型，见下方 6 类之一 |
 | `question` | ✅ | 题干 |
 | `answer` **或** `answer_status` | 见 §3 | 标准答案；无答案时用 `answer_status: "unknown"` |
@@ -66,7 +66,7 @@
 2. **缺答案如实标注（告警）**：一道题缺 `answer` 时报**告警**（建议补 `answer`，或标 `answer_status: "unknown"` / `source: "ai_generated"`）。这与 `ingest.py` 对「无答案题」**告警但不失败**的行为一致——由 `ingest.py` 正常产出的工作区不会被 Tier 1 判为无效。
 3. **缺 `source`**：有答案但未标 `source` → **告警**（建议补全来源）。
 
-> `chapter`（或 `phase`）是**必需**字段（见 §2）：缺二者 → **错误**，因为章节复习按它过滤抽题。
+> `chapter`（或 `phase`）用于章节复习过滤抽题，强烈建议每题都带；但 `ingest.py` 不强制，故缺失只报**告警**（不判工作区无效）。
 
 > 这些字段与 [`templates/quiz_bank_template.json`](../templates/quiz_bank_template.json) 一致；`ingest.py` 的 `VALID_QUIZ_TYPES`
 > 定义了上述 6 类。本规范在其基础上补充了各题型的可选字段与来源校验，供 `validate_workspace.py` 静态检查使用，**不改变既有生成逻辑**。

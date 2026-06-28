@@ -20,7 +20,9 @@ SIX_TYPES = {"choice", "subjective", "diagram", "fill_blank", "true_false", "cod
 MATERIAL_SOURCES = {"teacher", "material"}
 ALL_SOURCES = {"teacher", "material", "ai_generated", "mixed", "unknown"}
 SAFE_WIKI = re.compile(r"^[\w.\-]+\.md$")
-WIKI_REF_RE = re.compile(r"references/wiki/([^\s)`'\"]+)")
+# capture the WHOLE path token around references/wiki/ (incl. any leading prefix), so a reference that
+# escapes BEFORE the matched segment (e.g. "../references/wiki/x.md") is caught, not silently trimmed.
+WIKI_REF_RE = re.compile(r"([^\s)`'\"]*references/wiki/[^\s)`'\"]+)")
 TRUE_FALSE_OK = {"true", "false", "t", "f", "yes", "no", "真", "假", "对", "错", "是", "否"}
 
 
@@ -59,7 +61,12 @@ def validate(ws):
     # ---- wiki filenames must be safe ----
     wiki_files = set()
     if has_wiki:
-        for entry in sorted(os.listdir(wiki_dir)):
+        try:
+            entries = sorted(os.listdir(wiki_dir))
+        except OSError as e:
+            err(f"references/wiki/ 无法读取（权限/瞬时移除）: {e}", level="fatal")
+            entries = []
+        for entry in entries:
             if os.path.isdir(os.path.join(wiki_dir, entry)):
                 err(f"references/wiki/ 下不应有子目录: {entry}")
                 continue
@@ -71,11 +78,14 @@ def validate(ws):
     # ---- path-traversal in wiki references inside the .md files ----
     def scan_refs(text, where):
         for m in WIKI_REF_RE.finditer(text or ""):
-            ref = m.group(1)
-            if ".." in ref or ref.startswith(("/", "\\")) or (len(ref) >= 2 and ref[1] == ":"):
-                err(f"{where} 中存在路径穿越的 wiki 引用: references/wiki/{ref}")
-            elif has_wiki and SAFE_WIKI.match(ref) and ref not in wiki_files:
-                warn(f"{where} 引用的 wiki 文件不存在: references/wiki/{ref}")
+            full = m.group(1)
+            idx = full.find("references/wiki/")
+            prefix, fname = full[:idx], full[idx + len("references/wiki/"):]
+            if (".." in full or full.startswith(("/", "\\")) or (len(full) >= 2 and full[1] == ":")
+                    or (prefix and prefix != "./")):
+                err(f"{where} 中存在路径穿越/逃逸的 wiki 引用: {full}")
+            elif has_wiki and SAFE_WIKI.match(fname) and fname not in wiki_files:
+                warn(f"{where} 引用的 wiki 文件不存在: references/wiki/{fname}")
     for name in ("study_plan.md", "study_progress.md"):
         p = os.path.join(ws, name)
         if os.path.isfile(p):
@@ -105,7 +115,9 @@ def validate(ws):
                 if not q.get(fld):
                     err(f"{tag} 缺少必需字段 {fld}")
             if q.get("chapter") in (None, "") and q.get("phase") in (None, ""):
-                err(f"{tag} 缺少 chapter 或 phase（二者至少其一——章节复习按此过滤抽题）")
+                # ingest.py does NOT require chapter/phase, so a hard error would reject valid ingest
+                # output. Keep it a WARNING (章节测验按它过滤抽题，缺了会抽不到，但不判工作区无效).
+                warn(f"{tag} 缺少 chapter 或 phase（章节测验按它过滤抽题，缺了会抽不到该题）")
             # id/type must be SCALAR before being used as set/dict keys: a malformed list/object id or
             # type would raise TypeError (unhashable) and crash before any structured error is returned.
             qid = q.get("id")
@@ -141,6 +153,9 @@ def validate(ws):
 
             # provenance + answer presence
             src = q.get("source")
+            if src is not None and not isinstance(src, str):
+                err(f"{tag} 的 source 必须是字符串，当前为 {type(src).__name__}")
+                src = None
             if src is not None and src not in ALL_SOURCES:
                 err(f"{tag} 的 source 取值非法: {src!r}（应为 {sorted(ALL_SOURCES)}）")
             if bool(q.get("ai_generated")) and src not in {"ai_generated", "mixed"}:
