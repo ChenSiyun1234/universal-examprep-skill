@@ -80,6 +80,13 @@ metadata:
 
 ---
 
+## 🌏 语言默认与统一来源标注 (Language & Provenance Labels)
+
+* **学生可见输出默认简体中文**（讲解 / 判分 / 复盘 / 小抄 / 进度面板），除非用户另有要求；面向代理的控制指令（流程 / 边界 / schema / 安全）保持英文 / 精确。完整语言策略见 [`docs/language-policy.md`](docs/language-policy.md)。
+* **全技能统一的来源标注用词（canonical）**：🟢 来自资料 / 🟡 AI补充，可能与你老师讲的不完全一致 / ⚠️ AI生成答案，非老师/教材提供。根目录与模块化两套入口都以此为准，**绝不**把 AI 补充 / 生成的内容写得像老师给的标准答案。
+
+---
+
 ## 🌐 网页端聊天机器人运行适配指南 (Web Portability)
 
 若用户在**纯网页端**（无法读写本地文件、无法运行 Python 脚本的环境，如 Claude Project 或 ChatGPT Web）使用此技能，请遵循以下流程运行：

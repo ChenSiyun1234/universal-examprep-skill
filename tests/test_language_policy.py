@@ -67,6 +67,13 @@ class LanguagePolicyTest(unittest.TestCase):
         self.assertIn("知识来源透明化", root, "根 SKILL.md 缺少 V2.1 知识来源透明化协议")
         self.assertIn("AI 生成", root, "根 SKILL.md 缺少 ⚠️ AI 生成答案标注约定")
 
+    def test_root_skill_mirrors_language_default(self):
+        # default/compat entrypoint must also carry the language default + canonical labels (Codex r1 #1/#2)
+        root = read("SKILL.md")
+        self.assertIn("简体中文", root, "根 SKILL.md 未镜像「默认简体中文」")
+        self.assertIn("language-policy", root, "根 SKILL.md 未指向 docs/language-policy.md")
+        self.assertIn("AI生成答案，非老师/教材提供", root, "根 SKILL.md 未对齐 canonical 来源标注")
+
     def test_web_prompt_remains_chinese_first(self):
         web = read("prompts", "web_prompt.md")
         self.assertIn("网页端", web, "web_prompt 不再是中文优先")
