@@ -52,8 +52,11 @@ def validate(ws):
 
     # ---- structure ----
     wiki_dir = os.path.join(ws, "references", "wiki")
-    has_wiki = os.path.isdir(wiki_dir)
-    if not has_wiki:
+    wiki_is_link = os.path.islink(wiki_dir)
+    has_wiki = os.path.isdir(wiki_dir) and not wiki_is_link
+    if wiki_is_link:
+        err("references/wiki/ 不应是符号链接（os.path.isdir 会跟随它，可能指向工作区外）")
+    elif not has_wiki:
         err("缺少 references/wiki/ 目录")
     qb_path = os.path.join(ws, "references", "quiz_bank.json")
     has_qb = os.path.isfile(qb_path)
@@ -125,6 +128,8 @@ def validate(ws):
             for fld in ("id", "type", "question"):
                 if q.get(fld) in (None, ""):           # presence check (not truthiness) so id=0 stays valid
                     err(f"{tag} 缺少必需字段 {fld}")
+            if q.get("question") not in (None, "") and not isinstance(q.get("question"), str):
+                err(f"{tag} 的 question 必须是非空字符串，当前为 {type(q.get('question')).__name__}")
             if q.get("chapter") in (None, "") and q.get("phase") in (None, ""):
                 # ingest.py does NOT require chapter/phase, so a hard error would reject valid ingest
                 # output. Keep it a WARNING (章节测验按它过滤抽题，缺了会抽不到，但不判工作区无效).
@@ -151,6 +156,17 @@ def validate(ws):
             # per-type required/recommended
             if t == "choice" and not (isinstance(q.get("options"), list) and q.get("options")):
                 err(f"{tag} choice 题必须有非空 options")
+            if (t == "choice" and isinstance(q.get("options"), list) and q.get("options")
+                    and q.get("answer") not in (None, "")):
+                # the answer must name one of the options (its label like "A", or the full option text)
+                def _label(o):
+                    m = re.match(r"\s*([A-Za-z0-9]+)\s*[.．)：:、]", str(o))
+                    return (m.group(1) if m else str(o).strip()).upper()
+                labels = {_label(o) for o in q["options"]}
+                am = re.match(r"\s*([A-Za-z0-9]+)", str(q["answer"]))
+                ans_label = (am.group(1) if am else str(q["answer"]).strip()).upper()
+                if q["answer"] not in q["options"] and ans_label not in labels:
+                    err(f"{tag} choice 的 answer {q['answer']!r} 不在 options 中")
             if t == "subjective" and not q.get("keywords"):
                 warn(f"{tag} subjective 题建议提供 keywords（要点检索判分）")
             if t == "diagram" and not q.get("diagram_type"):
@@ -160,7 +176,8 @@ def validate(ws):
             if t == "true_false":
                 a = q.get("answer")
                 if a is not None and not (isinstance(a, bool) or str(a).strip().lower() in TRUE_FALSE_OK):
-                    warn(f"{tag} true_false 的 answer 应为布尔型（true/false/真/假/对/错），当前 {a!r}")
+                    # a present-but-non-boolean answer has no usable gold -> error (missing answer stays a warning)
+                    err(f"{tag} true_false 的 answer 必须是布尔型（true/false/真/假/对/错），当前 {a!r}")
 
             # provenance + answer presence
             src = q.get("source")

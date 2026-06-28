@@ -179,6 +179,33 @@ class TestValidateWorkspace(unittest.TestCase):
         errors, _, _ = V.validate(d)
         self.assertFalse(any("缺少必需字段 id" in e["msg"] for e in errors))
 
+    # ---- Codex round 4 ----
+    def test_choice_answer_not_in_options_rejected(self):
+        d = self.make_ws([self._ok_item(answer="Z")])
+        errors, _, _ = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertTrue(any("不在 options 中" in e["msg"] for e in errors))
+
+    def test_symlinked_wiki_root_rejected(self):
+        d = self.make_ws([self._ok_item()])
+        wdir = os.path.join(d, "references", "wiki")
+        with mock.patch.object(V.os.path, "islink", side_effect=lambda p: p == wdir):
+            errors, _, _ = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertTrue(any("不应是符号链接" in e["msg"] for e in errors))
+
+    def test_invalid_true_false_answer_is_error(self):
+        d = self.make_ws([self._ok_item(type="true_false", answer="maybe")])
+        errors, _, _ = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertTrue(any("true_false 的 answer 必须是布尔型" in e["msg"] for e in errors))
+
+    def test_non_string_question_rejected(self):
+        d = self.make_ws([self._ok_item(question=[])])
+        errors, _, _ = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertTrue(any("question 必须是非空字符串" in e["msg"] for e in errors))
+
     def test_phase_field_satisfies_requirement(self):
         d = self.make_ws([{"id": "x", "phase": 1, "type": "choice", "question": "q",
                            "options": ["A. a"], "answer": "A", "source": "teacher"}])
