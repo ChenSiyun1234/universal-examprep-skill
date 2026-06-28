@@ -279,6 +279,41 @@ class TestValidateWorkspace(unittest.TestCase):
         self.assertEqual(V._exit_code(errors), 0)            # still a warning, not an error (ingest允许无答案)
         self.assertTrue(any("无 answer" in w["msg"] for w in warnings))
 
+    # ---- Codex round 7 ----
+    def test_symlinked_progress_file_rejected(self):
+        d = self.make_ws([self._ok_item()])
+        prog = os.path.join(d, "study_progress.md")
+        with mock.patch.object(V.os.path, "islink", side_effect=lambda p: p == prog):
+            errors, _, _ = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertTrue(any("进度文件 经符号链接" in e["msg"] for e in errors))
+
+    def test_choice_answer_as_option_text_accepted(self):
+        # answer stored as option text only ("先进后出" for "A. 先进后出") is valid (common in exported banks)
+        d = self.make_ws([self._ok_item(options=["A. 先进后出", "B. 先进先出"], answer="先进后出")])
+        errors, _, _ = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 0)
+        self.assertFalse(any("不在 options 中" in e["msg"] for e in errors))
+
+    def test_bogus_choice_answer_still_rejected(self):
+        # regression guard: a truly invalid answer must STILL be rejected after the option-text widening
+        d = self.make_ws([self._ok_item(options=["A. 先进后出", "B. 先进先出"], answer="Z")])
+        errors, _, _ = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertTrue(any("不在 options 中" in e["msg"] for e in errors))
+
+    def test_windows_backslash_traversal_rejected(self):
+        d = self.make_ws([self._ok_item()], plan="见 references\\wiki\\..\\..\\etc\\passwd.md\n")
+        errors, _, _ = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertTrue(any("路径穿越" in e["msg"] for e in errors))
+
+    def test_progress_template_has_confusion_section(self):
+        # fresh ingest output must carry the 疑难点 section so Tier 1 doesn't warn on canonical output (r7)
+        tpl = os.path.join(os.path.dirname(os.path.dirname(__file__)), "templates", "study_progress_template.md")
+        with open(tpl, encoding="utf-8") as f:
+            self.assertIn("疑难点", f.read())
+
     def test_phase_field_satisfies_requirement(self):
         d = self.make_ws([{"id": "x", "phase": 1, "type": "choice", "question": "q",
                            "options": ["A. a"], "answer": "A", "source": "teacher"}])

@@ -74,7 +74,11 @@ def validate(ws):
     elif not has_qb:
         err("缺少 references/quiz_bank.json")
     for name, label in (("study_plan.md", "复习计划"), ("study_progress.md", "进度文件")):
-        if not os.path.isfile(os.path.join(ws, name)):
+        rp = os.path.join(ws, name)
+        if os.path.islink(rp) or (os.path.isfile(rp)
+                                  and not os.path.realpath(rp).startswith(ws_real + os.sep)):
+            err(f"{label} 经符号链接逃出工作区（技能会读/写这个路径）: {name}")
+        elif not os.path.isfile(rp):
             err(f"缺少 {label}: {name}")
 
     # ---- wiki filenames must be safe ----
@@ -100,7 +104,8 @@ def validate(ws):
 
     # ---- path-traversal in wiki references inside the .md files ----
     def scan_refs(text, where):
-        for m in WIKI_REF_RE.finditer(text or ""):
+        norm = (text or "").replace("\\", "/")   # treat Windows separators as path separators so
+        for m in WIKI_REF_RE.finditer(norm):      # references\wiki\..\..\x.md is matched & traversal-checked
             full = m.group(1).rstrip("。．.")   # drop a trailing sentence period (a real name ends in ".md")
             idx = full.find("references/wiki/")
             prefix, fname = full[:idx], full[idx + len("references/wiki/"):]
@@ -180,14 +185,19 @@ def validate(ws):
                 err(f"{tag} choice 题必须有非空 options")
             if (t == "choice" and isinstance(q.get("options"), list) and q.get("options")
                     and q.get("answer") not in (None, "")):
-                # the answer must name one of the options (its label like "A", or the full option text)
+                # the answer may name an option by label ("A"), full option string, or just the option
+                # TEXT after the label ("先进后出" for "A. 先进后出" — common in exported banks)
                 def _label(o):
                     m = re.match(r"\s*([A-Za-z0-9]+)\s*[.．)：:、]", str(o))
                     return (m.group(1) if m else str(o).strip()).upper()
+                def _text(o):
+                    return re.sub(r"^\s*[A-Za-z0-9]+\s*[.．)：:、]\s*", "", str(o)).strip()
                 labels = {_label(o) for o in q["options"]}
+                texts = {_text(o) for o in q["options"]}
                 am = re.match(r"\s*([A-Za-z0-9]+)", str(q["answer"]))
                 ans_label = (am.group(1) if am else str(q["answer"]).strip()).upper()
-                if q["answer"] not in q["options"] and ans_label not in labels:
+                if (q["answer"] not in q["options"] and ans_label not in labels
+                        and str(q["answer"]).strip() not in texts):
                     err(f"{tag} choice 的 answer {q['answer']!r} 不在 options 中")
             if t == "subjective" and not q.get("keywords"):
                 warn(f"{tag} subjective 题建议提供 keywords（要点检索判分）")
