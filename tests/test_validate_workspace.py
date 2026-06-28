@@ -237,6 +237,48 @@ class TestValidateWorkspace(unittest.TestCase):
         self.assertEqual(V._exit_code(errors), 1)
         self.assertTrue(any("缺少必需字段 question" in e["msg"] for e in errors))
 
+    # ---- Codex round 6 ----
+    def test_prose_and_trailing_period_wiki_ref_accepted(self):
+        # CJK-prose-adjacent + trailing sentence period must NOT be misread as path traversal (false positive r6)
+        d = self.make_ws([self._ok_item()], plan="阶段 1：见：references/wiki/ch1.md。\n")
+        errors, _, _ = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 0)
+        self.assertFalse(any("路径穿越" in e["msg"] or "不符合扁平" in e["msg"] for e in errors))
+
+    def test_traversal_still_caught_after_regex_narrowing(self):
+        # regression guard: '../' escape must still be rejected with the narrowed regex
+        d = self.make_ws([self._ok_item()], plan="见 ../references/wiki/ch1.md\n")
+        errors, _, _ = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertTrue(any("路径穿越" in e["msg"] for e in errors))
+
+    def test_symlinked_quiz_bank_rejected(self):
+        d = self.make_ws([self._ok_item()])
+        qb = os.path.join(d, "references", "quiz_bank.json")
+        with mock.patch.object(V.os.path, "islink", side_effect=lambda p: p == qb):
+            errors, _, _ = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertTrue(any("quiz_bank.json 经符号链接" in e["msg"] for e in errors))
+
+    def test_missing_wiki_ref_in_plan_is_error(self):
+        # study_plan referencing a wiki file that doesn't exist -> hard error (r6; ingest never dangles)
+        d = self.make_ws([self._ok_item()], plan="阶段 1 `references/wiki/ghost.md`\n")
+        errors, _, _ = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertTrue(any("wiki 文件不存在" in e["msg"] for e in errors))
+
+    def test_boolean_chapter_rejected(self):
+        d = self.make_ws([self._ok_item(chapter=True)])
+        errors, _, _ = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertTrue(any("chapter 必须是整数或字符串" in e["msg"] for e in errors))
+
+    def test_whitespace_answer_counts_as_missing(self):
+        d = self.make_ws([self._ok_item(type="subjective", answer="   ")])
+        errors, warnings, _ = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 0)            # still a warning, not an error (ingest允许无答案)
+        self.assertTrue(any("无 answer" in w["msg"] for w in warnings))
+
     def test_phase_field_satisfies_requirement(self):
         d = self.make_ws([{"id": "x", "phase": 1, "type": "choice", "question": "q",
                            "options": ["A. a"], "answer": "A", "source": "teacher"}])

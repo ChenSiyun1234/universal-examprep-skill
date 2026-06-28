@@ -20,9 +20,10 @@ SIX_TYPES = {"choice", "subjective", "diagram", "fill_blank", "true_false", "cod
 MATERIAL_SOURCES = {"teacher", "material"}
 ALL_SOURCES = {"teacher", "material", "ai_generated", "mixed", "unknown"}
 SAFE_WIKI = re.compile(r"^[\w.\-]+\.md$")
-# capture the WHOLE path token around references/wiki/ (incl. any leading prefix), so a reference that
-# escapes BEFORE the matched segment (e.g. "../references/wiki/x.md") is caught, not silently trimmed.
-WIKI_REF_RE = re.compile(r"([^\s\[\]()`'\"]*references/wiki/[^\s\[\]()`'\"]+)")
+# capture the path token around references/wiki/. The LEADING class is path-only ([./\\]) so a real escape
+# ("../", "/abs", "C:/…") is still captured and caught, while adjacent prose/CJK/punctuation
+# (e.g. "见：references/wiki/ch1.md") is NOT swallowed into a false "path traversal" error.
+WIKI_REF_RE = re.compile(r"([.\\/]*references/wiki/[\w.\-/\\]+)")
 TRUE_FALSE_OK = {"true", "false", "t", "f", "yes", "no", "真", "假", "对", "错", "是", "否"}
 
 
@@ -65,8 +66,12 @@ def validate(ws):
     elif not has_wiki:
         err("缺少 references/wiki/ 目录")
     qb_path = os.path.join(ws, "references", "quiz_bank.json")
-    has_qb = os.path.isfile(qb_path)
-    if not has_qb:
+    qb_is_link = os.path.islink(qb_path)
+    qb_escapes = os.path.isfile(qb_path) and not os.path.realpath(qb_path).startswith(ws_real + os.sep)
+    has_qb = os.path.isfile(qb_path) and not qb_is_link and not qb_escapes
+    if qb_is_link or qb_escapes:
+        err("references/quiz_bank.json 经符号链接逃出工作区（指向工作区外的答案源）")
+    elif not has_qb:
         err("缺少 references/quiz_bank.json")
     for name, label in (("study_plan.md", "复习计划"), ("study_progress.md", "进度文件")):
         if not os.path.isfile(os.path.join(ws, name)):
@@ -96,7 +101,7 @@ def validate(ws):
     # ---- path-traversal in wiki references inside the .md files ----
     def scan_refs(text, where):
         for m in WIKI_REF_RE.finditer(text or ""):
-            full = m.group(1)
+            full = m.group(1).rstrip("。．.")   # drop a trailing sentence period (a real name ends in ".md")
             idx = full.find("references/wiki/")
             prefix, fname = full[:idx], full[idx + len("references/wiki/"):]
             if (".." in full or full.startswith(("/", "\\")) or (len(full) >= 2 and full[1] == ":")
@@ -105,7 +110,10 @@ def validate(ws):
             elif not SAFE_WIKI.match(fname):
                 err(f"{where} 的 wiki 引用不符合扁平 references/wiki/*.md 规范（不应有子目录）: references/wiki/{fname}")
             elif has_wiki and fname not in wiki_files:
-                warn(f"{where} 引用的 wiki 文件不存在: references/wiki/{fname}")
+                # ingest.py writes each phase's wiki file BEFORE rendering study_plan.md from the same
+                # phase list, so a freshly-ingested workspace never dangles. A missing ref therefore means
+                # a renamed/deleted wiki (the skill must load it before teaching) -> hard error, not warning.
+                err(f"{where} 引用的 wiki 文件不存在: references/wiki/{fname}（阶段加载前必须存在）")
     for name in ("study_plan.md", "study_progress.md"):
         p = os.path.join(ws, name)
         if os.path.isfile(p):
@@ -144,7 +152,9 @@ def validate(ws):
                 warn(f"{tag} 缺少 chapter 或 phase（章节测验按它过滤抽题，缺了会抽不到该题）")
             for f2 in ("chapter", "phase"):
                 cv = q.get(f2)
-                if cv is not None and not isinstance(cv, (str, int)):  # schema限定整数/字符串；数组/对象不可用于过滤
+                # schema限定整数/字符串；数组/对象不可用于过滤。bool 是 int 子类，需显式排除
+                # （chapter:true 会被当成 1，把题分到错误阶段）。
+                if cv is not None and (isinstance(cv, bool) or not isinstance(cv, (str, int))):
                     err(f"{tag} 的 {f2} 必须是整数或字符串，当前为 {type(cv).__name__}")
             # id/type must be SCALAR before being used as set/dict keys: a malformed list/object id or
             # type would raise TypeError (unhashable) and crash before any structured error is returned.
@@ -202,7 +212,8 @@ def validate(ws):
                 err(f"{tag} 为 AI 生成答案，但 source 未标注为 ai_generated/mixed——"
                     "严禁把 AI 生成答案伪装成老师提供或隐藏来源")
             answer_val = q.get("answer")
-            has_answer = answer_val not in (None, "", [], {})
+            has_answer = (answer_val not in (None, "", [], {})
+                          and not (isinstance(answer_val, str) and not answer_val.strip()))
             status = str(q.get("answer_status", "")).strip().lower()
             if not has_answer:
                 if status == "unknown" or src in {"ai_generated", "unknown"}:
