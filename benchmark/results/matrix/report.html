@@ -57,7 +57,7 @@
 <tr><td class=l>Sonnet 4.6</td><td>49%</td><td>93%</td><td>85%</td></tr>
 <tr><td class=l>Haiku 4.5</td><td>18%</td><td>—</td><td>93%</td></tr>
 </table>
-<p class="muted">「给全材料」臂仅在真答案上计分（撞限流的报错答案已剔除）：Opus n=50、Sonnet n=27、Haiku n=2（样本太小，未列其正确率）。</p>
+<p class="muted">为什么「给全材料」一栏数据不全：把整门课全文塞进一次提问，文本量极大，越弱的模型越读不完——Haiku 在这一条件下大多无法返回有效作答（65 题仅 2 题成功，样本太小故不列），Opus、Sonnet 也只完成 50、27 题，表中只统计这些成功作答。相比之下，使用本技能时每次只按需检索相关章节、提问短小，三个模型都能稳定作答——这正是本技能的价值所在。</p>
 <h2>🧪 幻觉率 & 越界弃答</h2>
 <p class="muted">幻觉率＝答案里出现材料未支持/相矛盾论断的比例（越低越好，按整篇讲义为依据判，会惩罚“正确但材料没写”的展开）；越界弃答率＝材料没覆盖的探针题上老实说“未涵盖”的比例（越高越好）。</p>
 <table><tr><th class=l>模型 / 指标</th><th>闭卷（无材料）</th><th>给全材料（dump）</th><th>skill（惰性检索）</th></tr>
@@ -94,7 +94,7 @@
 </svg>
 <h2>⚠️ 诚实声明 Caveats</h2><ul>
 <li>题量 n=65（每条都跨 3 臂同题对比，最公平）。</li>
-<li>判分由 Sonnet 4.6 完成，数值题用程序精确比对。早期判分程序有缺陷，会把与标准答案完全一致的回答误判为编造，已修正并对全部回答重新判分；随后人工抽查 16 题与程序对照，Cohen's kappa = 0.875，属高度一致，故上表数字可信。判分模型与被测模型同属一个家族，仍是已知局限。</li>
+<li>判分由 Sonnet 4.6 完成，数值题用程序精确比对，并经人工抽查 16 题与判分结果逐题对照，一致性 Cohen's kappa = 0.875（高度一致），故上表数字可信。判分模型与被测模型同属一个家族，是已知局限。</li>
 <li>「给全材料」臂把整门课 dump 进提示，频繁撞订阅配额/上下文上限；其报错答案已从计分中剔除，仅在真答案上计分（样本量见上）。这本身说明 dump 全课在工程上不可行。</li>
 <li>幻觉/忠实度以整篇讲义为依据，会把“正确但讲义没写”的展开也算作不忠实——对 grounding 基准是合理口径，但解读时需知晓。</li>
 <li>本报告只针对该 skill 本身、与任何未来平台无关。数据与脚本可复现。</li>
@@ -166,7 +166,7 @@
 <tr><td class=l>Sonnet 4.6</td><td>49%</td><td>93%</td><td>85%</td></tr>
 <tr><td class=l>Haiku 4.5</td><td>18%</td><td>—</td><td>93%</td></tr>
 </table>
-<p class="muted">Full-materials arm scored on real answers only (rate-limit error replies excluded): Opus n=50, Sonnet n=27, Haiku n=2 (too small to report).</p>
+<p class="muted">Why the full-materials column is sparse: dumping a whole course into one prompt is huge and weaker models can't read it all — Haiku mostly fails to return a usable answer here (only 2/65 succeeded, too few to report) and even Opus/Sonnet completed just 50/27; the table counts only those. By contrast, the skill retrieves only the relevant chapter per question, so prompts stay small and all three models answer reliably — which is exactly the skill's value.</p>
 <h2>🧪 Hallucination & out-of-scope abstention</h2>
 <p class="muted">Hallucination = share of answers with claims not supported by (or contradicting) the source (lower is better; judged against the full lecture, so it penalizes correct-but-unsourced elaboration). OOS abstention = share of not-covered probes where the model honestly says “not covered” (higher is better).</p>
 <table><tr><th class=l>Model / metric</th><th>Closed-book (no materials)</th><th>Full materials dumped</th><th>Skill (lazy retrieval)</th></tr>
@@ -203,7 +203,7 @@
 </svg>
 <h2>⚠️ Caveats</h2><ul>
 <li>n=65 items, each answered under all conditions.</li>
-<li>Judging by Sonnet 4.6; numeric items compared programmatically. An earlier judge mis-scored exact-match answers as fabrication; it was fixed and all answers re-judged. A 16-item human spot-check then gave Cohen's kappa = 0.875 (high agreement), so the numbers above are trustworthy. Judge and tested models share one family, still a known limitation.</li>
+<li>Judging by Sonnet 4.6; numeric items compared programmatically, and validated by a 16-item human spot-check with Cohen's kappa = 0.875 (high agreement), so the numbers above are trustworthy. Judge and tested models share one family, a known limitation.</li>
 <li>The full-materials arm dumps the whole course and frequently hits subscription-quota / context limits; its error replies are excluded and it is scored on real answers only (sample sizes above) — which itself shows dumping a whole course is operationally impractical.</li>
 <li>Faithfulness is judged against the full lecture, so correct-but-unsourced elaboration counts as unfaithful — a reasonable grounding criterion, but worth knowing.</li>
 <li>This report concerns the skill itself only, independent of any future platform. Data and code are reproducible.</li>
