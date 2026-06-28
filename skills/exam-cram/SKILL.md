@@ -46,7 +46,7 @@ After restoring state, pick the ONE step that matches the user's intent and curr
 2. **Quiz**: filter `references/quiz_bank.json` for this chapter's items and drill/grade from them; never invent questions when relevant items exist. Delegate to `exam-quiz`. Six quiz types: choice / subjective / diagram / fill_blank / true_false / code. For diagram items (binary-tree rotation, graph traversal, state machines, etc.), run the algorithm to compute the structure first, then render; never hand-draw from memory.
 3. **Concept Q&A**: when the user asks why/what/how-to-derive, answer only from the current wiki chapter. If the point is a confusion, record it via `confusion-tracker` into the progress file.
 4. **Escape hatch**: when the user answers wrong twice in a row, offer three choices (view hint / skip and archive the mistake / continue) and proceed by the user's choice.
-5. **Final review / emergency cheatsheet**: trigger when the workspace reaches the final-review stage (all study phases cleared, per `study_progress.md`/`study_plan.md`), OR when the user is in `panic` mode or explicitly asks for a cheatsheet — but NOT on the `sprint` mode name alone. Load the mistake archive and confusion records first, then run sweep-and-cheatsheet. Delegate to `exam-review` and `exam-cheatsheet`.
+5. **Final review / cheatsheet**: trigger when the workspace reaches the final-review stage (all study phases cleared, per `study_progress.md`/`study_plan.md`), OR when the user explicitly asks for a cheatsheet/review — NOT on the `sprint` or `panic` mode name alone. A fresh `panic`-mode student goes to step 1 teaching first (key-question coaching via `exam-tutor`); the cheatsheet is built from that taught content, not by jumping to an empty review. Load the mistake archive and confusion records first, then run sweep-and-cheatsheet. Delegate to `exam-review` and `exam-cheatsheet`.
 
 After each learning or checkpoint event, update `study_progress.md` (phase, check-ins, mistake archive, confusion records) and refresh the progress panel at the end of the reply. When file I/O is unavailable (pure web client), switch to "text breakpoints": output a copyable progress Summary at the end of each turn and ask the user to paste it back next turn.
 
@@ -56,7 +56,7 @@ Selected by `argument-hint` or the user's tone; modes change emphasis only, not 
 
 - **normal** — concept review plus drilling, balanced (default).
 - **sprint** — attack only high-frequency / high-score chapters and question types; less lecturing, more drilling.
-- **panic** — "exam tomorrow, barely studied": switch to zero-baseline key-question coaching — for each teacher-marked key question give 【考点拆解】+【标准答题模板/步骤】+【易错点】+【3 分钟速记】, aiming for the student to reproduce the answer framework in the exam; produce the cheatsheet first.
+- **panic** — "exam tomorrow, barely studied": switch to zero-baseline key-question coaching FIRST — for each teacher-marked key question give 【考点拆解】+【标准答题模板/步骤】+【易错点】+【3 分钟速记】, aiming for the student to reproduce the answer framework in the exam; then build the cheatsheet from those taught key questions (teaching precedes the cheatsheet, never the other way around).
 - **mock** — test first, teach after: draw a full set of questions to simulate, grade, then coach the missed items.
 
 ## Output Contract
