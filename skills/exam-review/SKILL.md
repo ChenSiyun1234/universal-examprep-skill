@@ -9,32 +9,34 @@ license: MIT
 
 # exam-review — 错题与疑难复盘
 
-把整轮积累的错题与疑难点集中清算。**复盘已有记录，不教新章节。**
+## Purpose
+Clear the backlog of recorded mistakes and confusions before the exam. Replay only previously recorded items; teach no new chapters and add no new questions.
 
 ## Activation
-- 进入最终复习阶段；或用户要求「复盘错题 / 查漏补缺 / 考前过一遍」。
+Run when the student enters the final review stage, or asks to 复盘错题 / 查漏补缺 / 考前过一遍 (replay mistakes / find gaps / final pass).
 
 ## Inputs
-- `study_progress.md` 的 ❌ 错题档案 与 💡 概念疑难点记录。
-- `references/quiz_bank.json`（按错题 ID 调原题）。
+- `study_progress.md`: the ❌ 错题档案 (mistake records) and 💡 概念疑难点记录 (confusion-tracker entries).
+- `references/quiz_bank.json`: source items, keyed by id, re-fetched for each recorded mistake.
 
 ## Workflow
-1. **错题扫雷**：按错题档案的题 ID 从题库重新调原题，让学生再做一遍；仍错则再讲 `explanation` 并保留在档。
-2. **疑难复述**：逐条读「概念疑难点记录」，请学生用自己的话复述/解释。
-3. **状态更新**：能正确解释的疑难点 → 标「已回顾」；仍模糊的 → 保持「待回顾」并再讲一次。
-4. **缺口汇总**：列出仍未过的错题与未回顾的疑难点，作为最后冲刺与小抄（`exam-cheatsheet`）的重点输入。
+1. Reload mistake records from `study_progress.md`. For each recorded mistake, read its item id, fetch that exact item from `references/quiz_bank.json` by id, and have the student redo it. Replay only items already recorded; never invent or add new questions.
+2. If the student answers a replayed item correctly, mark it 已订正 in the record. If still wrong, re-explain using the item's `explanation` field and keep it in the record.
+3. Reload the confusion-tracker entries from `study_progress.md`. Read each entry aloud and have the student restate it in their own words (what it is, why it works that way).
+4. If the student restates an entry correctly, set its status to 已回顾. If still vague, re-explain once and keep its status 待回顾.
+5. Compile the open list: items still marked wrong plus entries still 待回顾. Hand this list to the final sprint and to `exam-cheatsheet` as priority input.
+6. Write results back to the same `study_progress.md` by appending; update each item/entry status in place. Do not overwrite other skills' writes.
 
-## Output format
-- 一份「还没拿下的清单」（错题 + 疑难点）+ 各自当前状态；末尾刷新进度面板。
-- 更新 `study_progress.md` 的错题/疑难点状态，交回 `exam-cram`。
+## Output Contract
+- Produce one "还没拿下的清单" (not-yet-mastered list): recorded mistakes plus confusion entries, each with its current status (已订正 / 已回顾 / 待回顾). End with a refreshed progress panel.
+- Append updated mistake/confusion statuses to `study_progress.md` and return control to `exam-cram`.
+- Student-facing output defaults to Simplified Chinese unless the user asks otherwise. (See [`docs/language-policy.md`](../../docs/language-policy.md).)
 
-## Language & review examples
-Student-facing output defaults to Simplified Chinese unless the user asks otherwise.（详见 [`docs/language-policy.md`](../../docs/language-policy.md)。）
-
+## Student-facing Output
 - **错题重做**：这道你上次错在「……」。同一道题再做一遍——这次盯住 ……。做对了我就把它从错题本划掉（标「已订正」）。
 - **疑难复述**：你之前卡在「……」这个概念。用你自己的话讲一遍：它是什么、为什么这样。讲清楚 → 标「已回顾」；还含糊 → 我再讲一次，保留「待回顾」。
 - **缺口小结**：还没拿下的——错题：……；疑难点：……。这几条留到 `exam-cheatsheet` 重点列。
 
 ## Boundaries
-- 只复盘已记录项，不新增题库里没有的题。
-- 与 `confusion-tracker` 写同一份 `study_progress.md`：**追加**疑难点、就地更新状态，避免覆盖他人写入。
+- Replay only recorded items. Never add a question that is not already in the records or the quiz bank.
+- Share `study_progress.md` with `confusion-tracker`: append confusion entries and update status in place; never overwrite another skill's writes.

@@ -9,31 +9,35 @@ license: MIT
 
 # exam-tutor — 章节授课
 
-讲清当前阶段的一个 wiki 章节。**只教学，不抽题判分（那是 `exam-quiz`）。**
+## Purpose
+Teach exactly one current wiki chapter. Explain concepts with real-life metaphors and dissect formulas. For zero-basic students, switch to key-question explanation mode. For diagram questions, run the standard algorithm first, then render. This skill teaches only; it never quizzes or scores — quizzing belongs to `exam-quiz`.
 
 ## Activation
-- 进入某复习阶段、需要把该阶段的 wiki 章节讲懂。
-- 用户要求「讲一下这章 / 精讲这道重点题 / 这个公式怎么来的」。
+- The student enters a review phase and needs the current phase's wiki chapter taught.
+- The student asks "讲一下这章 / 精讲这道重点题 / 这个公式怎么来的" (teach this chapter / explain this key question / where does this formula come from).
+- Called by `exam-cram` to deliver the teaching step for the current phase.
 
 ## Inputs
-- 当前阶段对应的单个 wiki 章节文件 `references/wiki/chN_*.md`。
-- `study_progress.md`（确认当前阶段与已掌握状态）。
+- `references/wiki/chN_*.md` — the single wiki chapter file for the current phase. Read this and nothing else.
+- `study_progress.md` — read to confirm the current phase and the student's mastery state.
 
 ## Workflow
-1. **惰性读取**：`view_file` **只**读当前章节文件；严禁一次性读全书或塞整库进上下文。
-2. **隐喻讲概念**：每个概念配一个现实生活隐喻；理科**解剖公式**——讲清每个符号的物理意义与单位，给一个极简口算例题。
-3. **零基础「重点题精讲」模式**（学生表示几乎没学过时）：对老师勾的每道重点题依次给——【考点拆解】+【标准答题模板/步骤】+【易错点】+【3 分钟速记口诀】；目标是考场能默写出答题框架。
-4. **画图题协议**（二叉树/AVL/红黑树/B 树/图遍历/状态机等）：禁止凭记忆手绘。先写并真实运行标准算法的 Python（`matplotlib`/`graphviz`）得到结构再渲染成图；提醒「按通用教科书画法，老师有特殊要求以老师为准」；无 Python 则用 ASCII/Mermaid 描述每一步并标「未经程序验证」。
-5. **来源标注**（canonical 见 [`docs/language-policy.md`](../../docs/language-policy.md)）：🟢 来自资料 / 🟡 AI补充，可能与你老师讲的不完全一致 逐段标清；老师没给而 AI 代答的标 ⚠️ AI生成答案，非老师/教材提供。
-6. **疑难追踪**：用户追问概念（为什么/是什么/怎么推）时，按 `confusion-tracker` 把疑难点记入 `study_progress.md`。
+1. **Lazy-load one slice.** Call `view_file` on exactly ONE current chapter file `references/wiki/chN_*.md`. Never read the whole book and never load the entire library into context. If the chapter file is missing, abstain and tell the student which file is absent; do not fabricate content.
+2. **Teach with metaphor and formula dissection.** Give each concept one concrete real-life metaphor. For STEM material, dissect every formula: state each symbol's physical meaning and unit, then give one minimal hand-computable example.
+3. **Zero-basic key-question mode.** When the student says they have barely studied, walk each teacher-flagged key question in order and output these four blocks: 【考点拆解】 (what it tests) + 【标准答题模板/步骤】 (standard answer template/steps) + 【易错点】 (common mistakes) + 【3 分钟速记口诀】 (3-minute memory hook). Aim for an answer framework the student can reproduce from memory in the exam.
+4. **Diagram protocol.** For binary tree / AVL / red-black tree / B-tree / graph traversal / state machine diagrams, do not freehand from memory. First write and actually run the standard algorithm in Python (`matplotlib`/`graphviz`) to obtain the structure, then render it to an image. Tell the student "按通用教科书画法，老师有特殊要求以老师为准" (drawn per standard textbook convention; defer to the teacher for special requirements). If Python is unavailable, describe each step in ASCII/Mermaid and label it "未经程序验证" (not program-verified).
+5. **Provenance labels.** Label every segment using the canonical markers (see [`docs/language-policy.md`](../../docs/language-policy.md)): 🟢 来自资料 for material-sourced content / 🟡 AI补充，可能与你老师讲的不完全一致 for AI additions. When the teacher did not provide the answer and the AI supplies it, label it ⚠️ AI生成答案，非老师/教材提供.
+6. **Confusion tracking.** When the student asks follow-up concept questions (why / what / how derived), invoke `confusion-tracker` to record the confusion point into `study_progress.md`.
+7. **Update progress.** After teaching the chapter, set its checkpoint status in `study_progress.md`, then hand control back to `exam-cram`.
 
-## Output format
-- 简洁讲解 + 必要的隐喻/公式解剖/速记；末尾刷新进度面板。
-- 教完更新 `study_progress.md` 的章节打卡状态，交回 `exam-cram`。
+## Output Contract
+- Output a concise explanation plus the needed metaphor / formula dissection / memory hook, ending with a refreshed progress panel.
+- After each learning or checkpoint event, update the chapter checkpoint status in `study_progress.md`.
+- Do not quiz or score; for practice questions, delegate to `exam-quiz` (which draws only from `references/quiz_bank.json`).
+- Validate every path before reading; never read outside `references/wiki/`.
+- Student-facing output defaults to Simplified Chinese unless the user asks otherwise. Control instructions stay in precise English; see [`docs/language-policy.md`](../../docs/language-policy.md).
 
-## Language & student-facing examples
-Student-facing output defaults to Simplified Chinese unless the user asks otherwise.（控制指令保持英文/精确；详见 [`docs/language-policy.md`](../../docs/language-policy.md)。）
-
+## Student-facing Output
 讲题用这个紧凑、可照写的中文格式（具体、应试，别写翻译腔/长篇大论）：
 
 ```text
@@ -60,5 +64,7 @@ Student-facing output defaults to Simplified Chinese unless the user asks otherw
 零基础重点题精讲沿用同样的小标题（这题考什么 / 标准答题步骤 / 易错点 / 3分钟速记 / 现在轮到你）。
 
 ## Boundaries
-- 不发散到非当前章节的知识；越界内容标「🟡 AI补充，可能与你老师讲的不完全一致」或如实弃答。
-- 不把 AI 补充内容说成老师讲的；画图题不跳过「先跑算法」直接想象。
+- Do not stray beyond the current chapter. Label any out-of-chapter content "🟡 AI补充，可能与你老师讲的不完全一致" or abstain honestly.
+- Do not present AI additions as the teacher's words.
+- Do not skip "先跑算法" (run the algorithm first) and freehand a diagram from imagination.
+- Do not quiz or score; that is `exam-quiz`'s job.

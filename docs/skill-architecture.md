@@ -34,6 +34,8 @@ confusion-tracker/  # 既有子技能（概念疑难点追踪，写 study_progre
 | 工作区体检 | `exam-audit` |
 | 速查 | `exam-help` |
 
+> **双语分层**：模块化 `skills/exam-*` 用**英文控制段**（Purpose / Activation / Inputs / Workflow / Output Contract / Boundaries）+ `Student-facing Output` 下的**简体中文学生示例**；根 `SKILL.md` 维持中文优先作兼容入口。详见 [`language-policy.md`](language-policy.md)。
+
 ## 4. V2.1 协议落点
 - **知识来源透明化（provenance）**：贯穿全部子技能——🟢 来自资料 / 🟡 AI补充，可能与你老师讲的不完全一致 / ⚠️ AI生成答案，非老师/教材提供（canonical 见 `docs/language-policy.md`）；契约写在 `exam-cram` 的 *Knowledge provenance* 与 `AGENTS.md` 规则 4–5、8。
 - **零基础「重点题精讲」模式**：`exam-cram` 的 `panic` 模式 + `exam-tutor` 的对应工作流。

@@ -9,37 +9,40 @@ license: MIT
 
 # exam-quiz — 抽题判分
 
-只从题库出题、按标准答案判分。**绝不现场编造题目或答案。**
+Quiz the student from the question bank and grade against stored answers. Never invent questions or answers on the fly.
+
+## Purpose
+Pull chapter/phase-scoped items from `references/quiz_bank.json`, present one item at a time across the six quiz types, grade each answer, run the escape hatch on repeated failures, and archive skipped/wrong items to `study_progress.md`. Hand control back to `exam-cram` after the checkpoint.
 
 ## Activation
-- 某阶段学完，需要刷题检验；或用户要求「测一下 / 来几道题 / 模考」。
+- Trigger after a phase is studied and needs a checkpoint quiz, or when the user asks 「测一下 / 来几道题 / 模考」.
 
 ## Inputs
-- `references/quiz_bank.json`（题库；每题**必须带 `chapter`（或 `phase`）**——抽题按它过滤，缺了该题在章节测验里就抽不到；并带 `type`、`answer`、`explanation`、`source`，主观题带 `keywords`）。
-- 当前章节号（只抽本章 `chapter` 的题）。
+- `references/quiz_bank.json` — the question bank. Each item carries `type`, `answer`, `explanation`, `source`, and a `chapter` OR `phase` tag; subjective items carry `keywords`. Filter selection by `chapter` or `phase`. An item with neither tag cannot be selected for a chapter quiz.
+- Current chapter number — select only items whose `chapter` (or matching `phase`) equals it.
 
-> 若由 `exam-ingest` 生成题库，须保证每道题都带 `chapter`/`phase`，否则即便题库里有题，章节测验也会「找不到题」。
+> If `exam-ingest` produced the bank, require every item to carry `chapter`/`phase`. Without it, the chapter quiz reports "no items found" even when the bank holds matching items.
 
 ## Workflow
-1. **标准抽题**：按当前阶段**匹配题目的 `chapter` 或 `phase`** 过滤出题（题库里两种字段都可能用，只看 `chapter` 会漏掉只标了 `phase` 的题）；题库里有相关题就**绝不**自己编题。
-2. **按 6 大题型判分**：
-   - `choice` 选择 — 比对 `answer` 选项。
-   - `subjective` 主观/计算 — 「要点检索制」：作答是否覆盖该题 `keywords` 与关键步骤，意思对即通过，给相似度反馈。
-   - `fill_blank` 填空 — 比对标准填项（容忍同义表述）。
-   - `true_false` 判断 — 比对真假并要求简述理由。
-   - `code` 代码/改错 — 看关键修改点/输出是否符合 `answer`。
-   - `diagram` 画图 — 不靠想象判图：按 `render_hint` **先跑标准算法**得到结构再与学生作答比对；提醒老师画法优先。
-3. **逃生通道**：答错先给逻辑漏洞 + 原题 `explanation` + 提示；**连续答错 2 次**主动给「查看提示 / 跳过并归档错题 / 继续」三选一，按选择放行。
-4. **归档**：跳过或答错的题写入 `study_progress.md` 错题档案。
-5. **来源诚实**：题/答 `source` 为 `ai_generated` 的，判分时提示「⚠️ AI生成答案，非老师/教材提供」（仅供参考，请核对）。
+1. **Select items**: filter by matching `chapter` OR `phase` (the bank uses both fields; filtering on `chapter` alone drops items tagged only with `phase`). If the bank contains relevant items, never write new questions.
+2. **Grade by the six quiz types**:
+   - `choice` — compare against the `answer` option.
+   - `subjective` — keyword-coverage grading: pass if the answer covers the item's `keywords` and key steps; accept equivalent wording; report coverage feedback.
+   - `fill_blank` — compare against the standard fill (accept synonyms).
+   - `true_false` — compare the verdict and require a one-line reason.
+   - `code` — check the key edits/output against `answer`.
+   - `diagram` — do not judge the figure from memory: follow `render_hint` to run the standard algorithm first, derive the structure, then compare against the student's drawing; state that the instructor's drawing method takes precedence.
+3. **Escape hatch**: on a wrong answer, give the logic gap + the item's `explanation` + a hint. On the 2nd consecutive wrong answer, offer three choices — view hint / skip and archive the wrong item / continue — and proceed per the choice.
+4. **Archive**: write skipped or wrong items into the `study_progress.md` wrong-item archive.
+5. **Source honesty**: when an item's or answer's `source` is `ai_generated`, flag it at grading time with 「⚠️ AI生成答案，非老师/教材提供」 (reference only, verify against the instructor/textbook).
 
-## Output format
-- 一次一题，判分给「过/未过 + 要点反馈」；末尾刷新进度面板。
-- 更新 `study_progress.md` 打卡与错题档案，交回 `exam-cram`。
+## Output Contract
+- Present one item at a time; grade as pass/not-pass plus key-point feedback; refresh the progress panel at the end.
+- Update the `study_progress.md` check-in log and wrong-item archive, then hand control back to `exam-cram`.
+- Student-facing output defaults to Simplified Chinese unless the user asks otherwise. (See [`docs/language-policy.md`](../../docs/language-policy.md).)
+- Provenance labels in feedback are verbatim student-facing markers: 🟢 来自资料 / 🟡 AI补充，可能与你老师讲的不完全一致 / ⚠️ AI生成答案，非老师/教材提供.
 
-## Language & feedback examples
-Student-facing output defaults to Simplified Chinese unless the user asks otherwise.（详见 [`docs/language-policy.md`](../../docs/language-policy.md)。）
-
+## Student-facing Output
 判分反馈用简短、具体的中文，先点考点再给改进：
 
 - **答对**：✅ 对了。这题考什么：……（一句点考点）。顺手记个易错点：……。
@@ -49,5 +52,5 @@ Student-facing output defaults to Simplified Chinese unless the user asks otherw
 - **题/答为 AI 生成**：⚠️ AI生成答案，非老师/教材提供，仅供参考，请和老师/教材核对。
 
 ## Boundaries
-- 题库有相关题时不自编题；无答案不硬判，标 ⚠️ 或如实说明。
-- 画图题不凭记忆判定对错——以程序跑出的标准结构为准。
+- When the bank holds relevant items, do not write your own. With no stored answer, do not force a verdict — mark ⚠️ or state the limitation plainly.
+- Do not judge diagram items from memory — the algorithm-derived standard structure is the reference.

@@ -6,13 +6,16 @@ This skill is **bilingual by design**: an English *control plane* for precision 
 
 ---
 
-## 本 PR 的范围 / Scope of this change
+## 双语落地范围 / Scope & rollout
 
-This PR establishes the language policy and student-facing Chinese output contract. It does **not** fully rewrite all existing control instructions into English. The follow-up control-plane pass should make the modular `skills/exam-*` files use English for **Activation / Inputs / Workflow / Output Contract / Boundaries**, while keeping Chinese examples and templates for student-facing output.
+The bilingual split lands in two steps and is now realized:
+1. **Policy + provenance** — establish the language policy and mirror the canonical provenance labels into every entrypoint.
+2. **Control-plane conversion** — the modular `skills/exam-*` files use **English control sections** (Purpose / Activation / Inputs / Workflow / Output Contract / Boundaries) while keeping **Simplified-Chinese student-facing examples** under `Student-facing Output`.
 
-- 本 PR 建立**双语语言策略** + 统一来源标注，并修好各入口的一致性。
-- 本 PR **不**把现有控制指令整体改写成英文；根目录 `SKILL.md` 维持中文优先以保证兼容。
-- **后续 PR** 再把模块化 `skills/exam-*` 的控制段（Activation / Inputs / Workflow / Output Contract / Boundaries）转为英文，同时保留学生侧的中文示例与模板。
+Root `SKILL.md` stays **Chinese-first** as the compatibility entrypoint, and `prompts/web_prompt.md` stays Chinese-first — neither is rewritten wholesale.
+
+- 模块化 `skills/exam-*`：英文控制段 + `Student-facing Output` 下的中文学生示例（已落地）。
+- 根目录 `SKILL.md` / `prompts/web_prompt.md`：维持**中文优先**，不整体改写。
 
 ---
 
@@ -31,7 +34,7 @@ Write concrete, checkable behavior. **Avoid vague words** like "properly", "comp
 
 > 例：不要写「妥善处理越界提问」，要写「越界提问 → 标 🟡 AI 补充，或如实弃答」。
 
-> 注：已存在的中文控制指令**无需为本 PR 逐句改写成英文**（本次不做整体翻译）；但**新增**的控制指令应遵循上面的英文 / 精确 / 可测原则。
+> 注：模块化 `skills/exam-*` 的控制段**已转为英文**；根 `SKILL.md` 维持**中文优先**（兼容入口），不强制逐句改写。新增控制指令一律遵循上面的英文 / 精确 / 可测原则。
 
 ---
 

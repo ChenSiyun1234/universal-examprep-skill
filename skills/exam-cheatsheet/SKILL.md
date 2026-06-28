@@ -9,28 +9,33 @@ license: MIT
 
 # exam-cheatsheet — 考前小抄
 
-把整轮学到的东西压成考场能用的速记。**只汇总已掌握内容，不教新东西、不编新题。**
+## Purpose
+Compress everything already mastered into a one-to-two-page, printable, copy-by-hand cram sheet, written to `walkthrough.md` in the workspace. Summarize only mastered content. Do not teach new material and do not invent new questions.
 
 ## Activation
-- 各阶段基本通关、进入收尾；或用户要求「给我一份考前小抄 / 速记 / 总复习」。
+Trigger when all study phases are basically cleared and review is wrapping up, OR when the user asks for 「给我一份考前小抄 / 速记 / 总复习」 (a pre-exam cheat sheet, quick-recall sheet, or final review).
 
 ## Inputs
-- `references/wiki/`（各章核心结论/公式）、`references/quiz_bank.json`（重点题答题框架）。
-- `study_progress.md`（错题、疑难点、各章掌握度）。
+- `references/wiki/` — core conclusions/formulas per chapter. Lazy-load only the current chapter slice; never load the full wiki at once.
+- `references/quiz_bank.json` — teacher-flagged key items and their answer frameworks.
+- `study_progress.md` — mistakes, confusion entries, and per-chapter mastery. Read mistakes and confusion entries FIRST.
 
 ## Workflow
-1. **抓骨架**：每章只留最高频/最高分的公式、结论、名词解释一句话版。
-2. **答题模板**：老师勾的重点题给「考场照写就能拿分」的答题框架/解题步骤；配 3 分钟速记口诀。
-3. **盯薄弱**：错题与「待回顾」疑难点单列一栏，提示考前最后再看。
-4. **来源标注**（canonical 见 [`docs/language-policy.md`](../../docs/language-policy.md)）：🟢 来自资料 / 🟡 AI补充，可能与你老师讲的不完全一致 / ⚠️ AI生成答案，非老师/教材提供，一并标清，避免把 AI 补的当老师重点。
-5. **产出**：写 `walkthrough.md` 到工作区（极简、可打印的一两页）。
+1. **Load weak spots first.** Read mistakes and confusion entries from `study_progress.md` before anything else, so the cram sheet prioritizes what the user still loses points on.
+2. **Extract the skeleton.** For each chapter keep only the highest-frequency / highest-scoring formulas, conclusions, and one-sentence term definitions. Drop everything else.
+3. **Answer templates.** For teacher-flagged key items in `references/quiz_bank.json`, give a copy-it-in-the-exam answer framework / solution-step list; attach a 3-minute mnemonic.
+4. **Weak-spot column.** List mistakes and still-open confusion entries in their own column as the last thing to review before the exam.
+5. **Mark provenance** (canonical labels in [`docs/language-policy.md`](../../docs/language-policy.md)): tag each line with 🟢 来自资料 / 🟡 AI补充，可能与你老师讲的不完全一致 / ⚠️ AI生成答案，非老师/教材提供, so AI-added lines are never mistaken for teacher emphasis.
+6. **Write output.** Write `walkthrough.md` to the workspace: per-chapter quick-recall + key-item templates + weak-spot list; refresh the progress panel at the end.
+7. Never invent teacher emphasis that is not in the materials. If the materials do not flag a point, do not present it as a teacher-flagged item.
 
-## Output format
-- `walkthrough.md`：分章速记 + 重点题模板 + 薄弱清单；末尾刷新进度面板。
+## Output Contract
+- Write `walkthrough.md`: per-chapter quick recall + key-item answer templates + weak-spot list, with a refreshed progress panel at the end.
+- Every line carries one provenance label: 🟢 来自资料 / 🟡 AI补充，可能与你老师讲的不完全一致 / ⚠️ AI生成答案，非老师/教材提供.
+- Keep it to one or two printable, hand-copyable pages.
+- Student-facing output defaults to Simplified Chinese unless the user asks otherwise. (See [`docs/language-policy.md`](../../docs/language-policy.md).)
 
-## Language & cheat-sheet format
-Student-facing output defaults to Simplified Chinese unless the user asks otherwise.（详见 [`docs/language-policy.md`](../../docs/language-policy.md)。）
-
+## Student-facing Output
 考前最后一小时速记小抄，按这几栏压缩（每条一行、能照写，标清来源）：
 
 ```text
@@ -52,5 +57,5 @@ Student-facing output defaults to Simplified Chinese unless the user asks otherw
 ```
 
 ## Boundaries
-- 不在小抄里塞资料没覆盖、又没标 🟡/⚠️ 的内容。
-- 不替代系统复习——小抄是浓缩，不是省略防幻觉协议。
+- Do not put content into the cram sheet that the materials do not cover unless it is tagged 🟡 or ⚠️.
+- The cram sheet is a compression, not a replacement for systematic review, and not a shortcut around the anti-hallucination protocol.
