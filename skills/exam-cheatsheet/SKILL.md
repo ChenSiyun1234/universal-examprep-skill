@@ -22,11 +22,34 @@ license: MIT
 1. **抓骨架**：每章只留最高频/最高分的公式、结论、名词解释一句话版。
 2. **答题模板**：老师勾的重点题给「考场照写就能拿分」的答题框架/解题步骤；配 3 分钟速记口诀。
 3. **盯薄弱**：错题与「待回顾」疑难点单列一栏，提示考前最后再看。
-4. **来源标注**：🟢来自资料 / 🟡AI 补充 / ⚠️ AI 生成答案 一并标清，避免把 AI 补的当老师重点。
+4. **来源标注**（canonical 见 [`docs/language-policy.md`](../../docs/language-policy.md)）：🟢 来自资料 / 🟡 AI补充，可能与你老师讲的不完全一致 / ⚠️ AI生成答案，非老师/教材提供，一并标清，避免把 AI 补的当老师重点。
 5. **产出**：写 `walkthrough.md` 到工作区（极简、可打印的一两页）。
 
 ## Output format
 - `walkthrough.md`：分章速记 + 重点题模板 + 薄弱清单；末尾刷新进度面板。
+
+## Language & cheat-sheet format
+Student-facing output defaults to Simplified Chinese unless the user asks otherwise.（详见 [`docs/language-policy.md`](../../docs/language-policy.md)。）
+
+考前最后一小时速记小抄，按这几栏压缩（每条一行、能照写，标清来源）：
+
+```text
+【必背结论/公式】
+- ……（🟢 来自资料）
+- ……（🟡 AI补充，可能与你老师讲的不完全一致）
+
+【老师强调】
+- ……（老师勾的重点题答题框架，考场照写拿分）
+
+【常见易错点/坑】
+- ……（最容易丢分或答偏的地方）
+
+【3分钟速记口诀】
+- ……
+
+【还没拿下（考前再看一眼）】
+- 错题：……　疑难点：……
+```
 
 ## Boundaries
 - 不在小抄里塞资料没覆盖、又没标 🟡/⚠️ 的内容。

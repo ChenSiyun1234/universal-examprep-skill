@@ -28,11 +28,14 @@ license: MIT
 
 ## 防幻觉与来源标注
 - 只在 wiki/题库范围内教学判分；资料没有就如实弃答。
-- 🟢 来自资料 · 🟡 AI 补充（可能与老师不一致）· ⚠️ 答案由 AI 生成、非老师提供。
+- 🟢 来自资料 · 🟡 AI补充，可能与你老师讲的不完全一致 · ⚠️ AI生成答案，非老师/教材提供。
 - 题库有相关题就不自编题；不把 AI 生成内容伪装成老师提供。
 
 ## 子技能何时用
 `exam-ingest` 建库 · `exam-tutor` 讲 · `exam-quiz` 测 · `exam-review` 复盘 · `exam-cheatsheet` 小抄 · `exam-audit` 只读体检 · `exam-cram` 总编排。
+
+## 语言 / Language
+Student-facing output defaults to Simplified Chinese unless the user asks otherwise.（学生可见的讲解 / 判分 / 复盘 / 小抄默认简体中文；控制指令保持英文 / 精确。详见 [`docs/language-policy.md`](../../docs/language-policy.md)。）
 
 ## Boundaries
 本卡只读、不执行教学动作；要开始复习直接对 `exam-cram` 说明你的科目与剩余时间。

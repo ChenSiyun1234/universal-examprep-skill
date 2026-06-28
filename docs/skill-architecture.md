@@ -35,7 +35,7 @@ confusion-tracker/  # 既有子技能（概念疑难点追踪，写 study_progre
 | 速查 | `exam-help` |
 
 ## 4. V2.1 协议落点
-- **知识来源透明化（provenance）**：贯穿全部子技能——🟢来自资料 / 🟡AI 补充 / ⚠️AI 生成答案；契约写在 `exam-cram` 的 *Knowledge provenance* 与 `AGENTS.md` 规则 4–5、8。
+- **知识来源透明化（provenance）**：贯穿全部子技能——🟢 来自资料 / 🟡 AI补充，可能与你老师讲的不完全一致 / ⚠️ AI生成答案，非老师/教材提供（canonical 见 `docs/language-policy.md`）；契约写在 `exam-cram` 的 *Knowledge provenance* 与 `AGENTS.md` 规则 4–5、8。
 - **零基础「重点题精讲」模式**：`exam-cram` 的 `panic` 模式 + `exam-tutor` 的对应工作流。
 - **画图题确定性处理（`type: "diagram"`）**：`exam-tutor`（讲）与 `exam-quiz`（判）的「先跑算法再画图」流程。
 - **6 大题型**（`choice / subjective / diagram / fill_blank / true_false / code`）：`exam-quiz`，与 `scripts/ingest.py` 的 `VALID_QUIZ_TYPES` 一致。

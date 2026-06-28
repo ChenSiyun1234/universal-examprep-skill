@@ -26,11 +26,16 @@ license: MIT
    - 题型用 6 类之一：`choice / subjective / diagram / fill_blank / true_false / code`。
 3. **执行导入**：运行**技能包根目录**的 `scripts/ingest.py`：`python <技能包根>/scripts/ingest.py --input <临时json>`（整包安装到 Claude Code 时 `${CLAUDE_SKILL_DIR}` 指向包根，用 `python "${CLAUDE_SKILL_DIR}/scripts/ingest.py" --input <…>`）。
 4. **无 Python 降级**：脚本失败（如 `python is not recognized`）时立即无感切换——用写盘工具按 `templates/` 手动建 `references/wiki/chN_*.md`、`references/quiz_bank.json`、`study_plan.md`、`study_progress.md`。
-5. **来源标注**：wiki 段落区分 🟢来自资料 / 🟡AI 补充；老师没给答案而 AI 代答的题，答案标 ⚠️ AI 生成。
+5. **来源标注**（canonical 见 [`docs/language-policy.md`](../../docs/language-policy.md)）：wiki 段落区分 🟢 来自资料 / 🟡 AI补充，可能与你老师讲的不完全一致；老师没给答案而 AI 代答的题，答案标 ⚠️ AI生成答案，非老师/教材提供。
+
+## Language & output
+Student-facing output defaults to Simplified Chinese unless the user asks otherwise.（冷启动回执也按此默认；详见 [`docs/language-policy.md`](../../docs/language-policy.md)。）
 
 ## Output format
 - 标准工作区：`references/wiki/`、`references/quiz_bank.json`、`study_plan.md`、`study_progress.md`。
-- 一句话回执：建了几章、几道题、各题型/来源占比；然后交回 `exam-cram` 进入第二步授课。
+- 一句话回执（默认简体中文），例：
+  `已初始化备考空间：3 章 wiki + 18 道题（含 2 道 ⚠️ AI生成答案，非老师/教材提供），进度已建。下一步开讲第 1 章。`
+  然后交回 `exam-cram` 进入第二步授课。
 
 ## Boundaries
 - `scripts/ingest.py` 与 `templates/` 在**技能包根目录**、不在 `skills/exam-ingest/` 内。若把本子技能**单独**安装（`CLAUDE_SKILL_DIR` 仅指向 `skills/exam-ingest/`），脚本/模板将不可用——请安装**整个技能包**（含根 `scripts/`、`templates/`），或直接走第 4 步无 Python 降级手动建库。
