@@ -37,6 +37,13 @@ def _reject_const(c):
     raise ValueError(f"非标准 JSON 常量 {c}（NaN/Infinity 不允许）")
 
 
+def _is_symlink(p):
+    # dedicated seam for our own symlink checks. Tests mock THIS, not os.path.islink — because on
+    # CPython <3.10 posixpath.realpath() itself calls os.path.islink, so mocking os.path.islink would
+    # make realpath() try os.readlink() on a non-link and raise OSError (EINVAL) on Linux/py3.8.
+    return os.path.islink(p)
+
+
 def validate(ws):
     """Return (errors, warnings, stats). errors may carry level 'error' or 'fatal'."""
     errors, warnings, stats = [], [], {}
@@ -53,7 +60,7 @@ def validate(ws):
 
     # ---- structure ----
     wiki_dir = os.path.join(ws, "references", "wiki")
-    wiki_is_link = os.path.islink(wiki_dir)
+    wiki_is_link = _is_symlink(wiki_dir)
     # realpath containment also catches a symlinked PARENT (e.g. references/ itself is a symlink),
     # which islink(wiki_dir) alone misses.
     ws_real = os.path.realpath(ws)
@@ -66,7 +73,7 @@ def validate(ws):
     elif not has_wiki:
         err("缺少 references/wiki/ 目录")
     qb_path = os.path.join(ws, "references", "quiz_bank.json")
-    qb_is_link = os.path.islink(qb_path)
+    qb_is_link = _is_symlink(qb_path)
     qb_escapes = os.path.isfile(qb_path) and not os.path.realpath(qb_path).startswith(ws_real + os.sep)
     has_qb = os.path.isfile(qb_path) and not qb_is_link and not qb_escapes
     if qb_is_link or qb_escapes:
@@ -75,7 +82,7 @@ def validate(ws):
         err("缺少 references/quiz_bank.json")
     for name, label in (("study_plan.md", "复习计划"), ("study_progress.md", "进度文件")):
         rp = os.path.join(ws, name)
-        if os.path.islink(rp) or (os.path.isfile(rp)
+        if _is_symlink(rp) or (os.path.isfile(rp)
                                   and not os.path.realpath(rp).startswith(ws_real + os.sep)):
             err(f"{label} 经符号链接逃出工作区（技能会读/写这个路径）: {name}")
         elif not os.path.isfile(rp):
@@ -91,7 +98,7 @@ def validate(ws):
             entries = []
         for entry in entries:
             full_e = os.path.join(wiki_dir, entry)
-            if os.path.islink(full_e):
+            if _is_symlink(full_e):
                 err(f"references/wiki/ 下不应有符号链接（可能指向工作区外）: {entry}")
                 continue
             if os.path.isdir(full_e):
