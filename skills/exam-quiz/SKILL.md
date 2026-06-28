@@ -15,8 +15,10 @@ license: MIT
 - 某阶段学完，需要刷题检验；或用户要求「测一下 / 来几道题 / 模考」。
 
 ## Inputs
-- `references/quiz_bank.json`（题库，每题带 `type`、`answer`、`explanation`、`source`，主观题带 `keywords`）。
+- `references/quiz_bank.json`（题库；每题**必须带 `chapter`（或 `phase`）**——抽题按它过滤，缺了该题在章节测验里就抽不到；并带 `type`、`answer`、`explanation`、`source`，主观题带 `keywords`）。
 - 当前章节号（只抽本章 `chapter` 的题）。
+
+> 若由 `exam-ingest` 生成题库，须保证每道题都带 `chapter`/`phase`，否则即便题库里有题，章节测验也会「找不到题」。
 
 ## Workflow
 1. **标准抽题**：按 `chapter` 过滤题库出题；题库里有相关题就**绝不**自己编题。

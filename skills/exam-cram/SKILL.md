@@ -96,5 +96,7 @@ license: MIT
 | [`exam-audit`](../exam-audit/SKILL.md) | 只读检查已建好的工作区有无问题（默认不改） |
 | [`exam-help`](../exam-help/SKILL.md) | 速查卡：命令、模式、文件约定 |
 
+> 注：`confusion-tracker`（被 `exam-review` / `exam-tutor` 用来记录概念疑难点）位于**技能包根目录** `confusion-tracker/`，**不在 `skills/` 树内**。模块化安装这些子技能时务必一并包含它（或安装整个技能包），否则「💡 概念疑难点记录」能力会缺失。
+>
 > 兼容性：根目录 `SKILL.md` 仍是默认/兼容入口，承载完整 V2.1 协议；本文件是同一行为的模块化主入口。
 > 通用代理的一屏速记见根目录 `AGENTS.md`。
