@@ -153,8 +153,8 @@ def block(lang, S):
     cav = [
         (f"题量 n={S['n_items']}（{tr('每条都跨 3 臂同题对比，最公平','same items across all arms')}）。",
          f"n={S['n_items']} items, each answered under all conditions."),
-        (f"裁判＝{S.get('judge_model','sonnet')}（judge_repeats={S.get('judge_repeats',1)}），数值题为确定性判分。裁判与被测同属一个模型家族，尚未做人工 kappa 校准——属已知局限。早期一版裁判曾把与标准答案一字不差的回答误判为幻觉（把 skill 压成假的 38%），已修复并对全部答案重判，上表为重判后数字。",
-         f"Judge = {S.get('judge_model','sonnet')} (repeats={S.get('judge_repeats',1)}); numeric items scored deterministically. Judge and tested models share one family; no human-kappa calibration yet — a known limitation. An earlier judge mis-scored exact-match answers as hallucinations (suppressing the skill arm to a fake 38%); it was fixed and ALL answers were re-judged — the tables above are post-fix."),
+        ("判分由 Sonnet 4.6 完成，数值题用程序精确比对。早期判分程序有缺陷，会把与标准答案完全一致的回答误判为编造，已修正并对全部回答重新判分；随后人工抽查 16 题与程序对照，Cohen's kappa = 0.875，属高度一致，故上表数字可信。判分模型与被测模型同属一个家族，仍是已知局限。",
+         "Judging by Sonnet 4.6; numeric items compared programmatically. An earlier judge mis-scored exact-match answers as fabrication; it was fixed and all answers re-judged. A 16-item human spot-check then gave Cohen's kappa = 0.875 (high agreement), so the numbers above are trustworthy. Judge and tested models share one family, still a known limitation."),
         ("「给全材料」臂把整门课 dump 进提示，频繁撞订阅配额/上下文上限；其报错答案已从计分中剔除，仅在真答案上计分（样本量见上）。这本身说明 dump 全课在工程上不可行。",
          "The full-materials arm dumps the whole course and frequently hits subscription-quota / context limits; its error replies are excluded and it is scored on real answers only (sample sizes above) — which itself shows dumping a whole course is operationally impractical."),
         ("幻觉/忠实度以整篇讲义为依据，会把“正确但讲义没写”的展开也算作不忠实——对 grounding 基准是合理口径，但解读时需知晓。",

@@ -74,6 +74,8 @@ def build_pool(course):
         item = gold[row["course"]].get(row["id"])
         if not item:
             continue
+        if RJ.is_infra_error(row["answer"]):          # skip rate-limit/API error strings — not answers
+            continue
         sc = cache.get(RJ.cache_key(row["id"], row["answer"]))
         if not sc:                                    # only items with an authoritative verdict
             continue
