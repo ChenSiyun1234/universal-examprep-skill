@@ -134,6 +134,51 @@ class TestValidateWorkspace(unittest.TestCase):
             errors, _, _ = V.validate(d)
         self.assertEqual(V._exit_code(errors), 2)
 
+    # ---- Codex round 3 ----
+    def _ok_item(self, **over):
+        item = {"id": "x", "chapter": 1, "type": "choice", "question": "q",
+                "options": ["A. a"], "answer": "A", "source": "teacher"}
+        item.update(over)
+        return item
+
+    def test_symlinked_wiki_file_rejected(self):
+        d = self.make_ws([self._ok_item()])
+        link = os.path.join(d, "references", "wiki", "ch1.md")
+        with mock.patch.object(V.os.path, "islink", side_effect=lambda p: p == link):
+            errors, _, _ = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertTrue(any("符号链接" in e["msg"] for e in errors))
+
+    def test_subdir_wiki_reference_rejected(self):
+        d = self.make_ws([self._ok_item()], plan="见 `references/wiki/subdir/ch1.md`\n阶段 1\n")
+        errors, _, _ = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertTrue(any("扁平" in e["msg"] for e in errors))
+
+    def test_nan_in_quiz_bank_is_fatal(self):
+        d = self.make_ws([self._ok_item()])
+        open(os.path.join(d, "references", "quiz_bank.json"), "w", encoding="utf-8").write(
+            '[{"id":"x","chapter":1,"type":"choice","question":"q","options":["A"],"answer":NaN}]')
+        errors, _, _ = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 2)
+
+    def test_unreadable_plan_is_fatal(self):
+        d = self.make_ws([self._ok_item()])
+        real = V._read
+
+        def boom(p):
+            if p.endswith("study_plan.md"):
+                raise OSError("boom")
+            return real(p)
+        with mock.patch.object(V, "_read", side_effect=boom):
+            errors, _, _ = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 2)
+
+    def test_zero_numeric_id_is_valid(self):
+        d = self.make_ws([self._ok_item(id=0)])
+        errors, _, _ = V.validate(d)
+        self.assertFalse(any("缺少必需字段 id" in e["msg"] for e in errors))
+
     def test_phase_field_satisfies_requirement(self):
         d = self.make_ws([{"id": "x", "phase": 1, "type": "choice", "question": "q",
                            "options": ["A. a"], "answer": "A", "source": "teacher"}])

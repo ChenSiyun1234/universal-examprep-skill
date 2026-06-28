@@ -31,6 +31,11 @@ def _read(path):
         return f.read()
 
 
+def _reject_const(c):
+    # json.loads accepts NaN/Infinity/-Infinity by default; reject them so quiz_bank.json is strict JSON.
+    raise ValueError(f"非标准 JSON 常量 {c}（NaN/Infinity 不允许）")
+
+
 def validate(ws):
     """Return (errors, warnings, stats). errors may carry level 'error' or 'fatal'."""
     errors, warnings, stats = [], [], {}
@@ -67,7 +72,11 @@ def validate(ws):
             err(f"references/wiki/ 无法读取（权限/瞬时移除）: {e}", level="fatal")
             entries = []
         for entry in entries:
-            if os.path.isdir(os.path.join(wiki_dir, entry)):
+            full_e = os.path.join(wiki_dir, entry)
+            if os.path.islink(full_e):
+                err(f"references/wiki/ 下不应有符号链接（可能指向工作区外）: {entry}")
+                continue
+            if os.path.isdir(full_e):
                 err(f"references/wiki/ 下不应有子目录: {entry}")
                 continue
             if not SAFE_WIKI.match(entry):
@@ -84,20 +93,22 @@ def validate(ws):
             if (".." in full or full.startswith(("/", "\\")) or (len(full) >= 2 and full[1] == ":")
                     or (prefix and prefix != "./")):
                 err(f"{where} 中存在路径穿越/逃逸的 wiki 引用: {full}")
-            elif has_wiki and SAFE_WIKI.match(fname) and fname not in wiki_files:
+            elif not SAFE_WIKI.match(fname):
+                err(f"{where} 的 wiki 引用不符合扁平 references/wiki/*.md 规范（不应有子目录）: references/wiki/{fname}")
+            elif has_wiki and fname not in wiki_files:
                 warn(f"{where} 引用的 wiki 文件不存在: references/wiki/{fname}")
     for name in ("study_plan.md", "study_progress.md"):
         p = os.path.join(ws, name)
         if os.path.isfile(p):
             try:
                 scan_refs(_read(p), name)
-            except OSError:
-                warn(f"{name} 读取失败，跳过引用检查")
+            except OSError as e:
+                err(f"{name}（必需文件）无法读取: {e}", level="fatal")
 
     # ---- quiz_bank.json schema ----
     if has_qb:
         try:
-            data = json.loads(_read(qb_path))
+            data = json.loads(_read(qb_path), parse_constant=_reject_const)
         except (ValueError, OSError) as e:
             err(f"quiz_bank.json 不是合法 JSON: {e}", level="fatal")
             return errors, warnings, stats
@@ -112,7 +123,7 @@ def validate(ws):
                 continue
             tag = f"题[{q.get('id', i)}]"
             for fld in ("id", "type", "question"):
-                if not q.get(fld):
+                if q.get(fld) in (None, ""):           # presence check (not truthiness) so id=0 stays valid
                     err(f"{tag} 缺少必需字段 {fld}")
             if q.get("chapter") in (None, "") and q.get("phase") in (None, ""):
                 # ingest.py does NOT require chapter/phase, so a hard error would reject valid ingest
