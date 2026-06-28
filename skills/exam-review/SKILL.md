@@ -29,7 +29,7 @@ Run when the student enters the final review stage, or asks to 复盘错题 / �
 
 ## Output Contract
 - Produce one "还没拿下的清单" (not-yet-mastered list): recorded mistakes plus confusion entries, each with its current status (已订正 / 已回顾 / 待回顾). End with a refreshed progress panel.
-- Append updated mistake/confusion statuses to `study_progress.md` and return control to `exam-cram`.
+- Update each mistake/confusion status **in place** in its existing `study_progress.md` row (已订正 / 已回顾 / 待回顾); append only genuinely new records. Never leave a mastered item still marked wrong/待回顾. Then return control to `exam-cram`.
 - Student-facing output defaults to Simplified Chinese unless the user asks otherwise. (See [`docs/language-policy.md`](../../docs/language-policy.md).)
 
 ## Student-facing Output

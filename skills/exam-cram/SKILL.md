@@ -46,7 +46,7 @@ After restoring state, pick the ONE step that matches the user's intent and curr
 2. **Quiz**: filter `references/quiz_bank.json` for this chapter's items and drill/grade from them; never invent questions when relevant items exist. Delegate to `exam-quiz`. Six quiz types: choice / subjective / diagram / fill_blank / true_false / code. For diagram items (binary-tree rotation, graph traversal, state machines, etc.), run the algorithm to compute the structure first, then render; never hand-draw from memory.
 3. **Concept Q&A**: when the user asks why/what/how-to-derive, answer only from the current wiki chapter. If the point is a confusion, record it via `confusion-tracker` into the progress file.
 4. **Escape hatch**: when the user answers wrong twice in a row, offer three choices (view hint / skip and archive the mistake / continue) and proceed by the user's choice.
-5. **Final review**: on entering the sprint phase, load the mistake archive and confusion records first, then run sweep-and-cheatsheet. Delegate to `exam-review` and `exam-cheatsheet`.
+5. **Final review**: when the workspace reaches the final-review stage (all study phases cleared, per `study_progress.md`/`study_plan.md` — NOT the `sprint` mode name), load the mistake archive and confusion records first, then run sweep-and-cheatsheet. Delegate to `exam-review` and `exam-cheatsheet`.
 
 After each learning or checkpoint event, update `study_progress.md` (phase, check-ins, mistake archive, confusion records) and refresh the progress panel at the end of the reply. When file I/O is unavailable (pure web client), switch to "text breakpoints": output a copyable progress Summary at the end of each turn and ask the user to paste it back next turn.
 

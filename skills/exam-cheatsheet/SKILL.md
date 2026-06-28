@@ -16,7 +16,7 @@ Compress everything already mastered into a one-to-two-page, printable, copy-by-
 Trigger when all study phases are basically cleared and review is wrapping up, OR when the user asks for 「给我一份考前小抄 / 速记 / 总复习」 (a pre-exam cheat sheet, quick-recall sheet, or final review).
 
 ## Inputs
-- `references/wiki/` — core conclusions/formulas per chapter. Lazy-load only the current chapter slice; never load the full wiki at once.
+- `references/wiki/` — core conclusions/formulas per chapter. Iterate through **all mastered chapters** from `study_plan.md`/`study_progress.md`, reading each chapter slice one at a time (never dump the whole wiki into context at once) so the sheet covers every mastered chapter.
 - `references/quiz_bank.json` — teacher-flagged key items and their answer frameworks.
 - `study_progress.md` — mistakes, confusion entries, and per-chapter mastery. Read mistakes and confusion entries FIRST.
 
