@@ -144,7 +144,7 @@ class TestValidateWorkspace(unittest.TestCase):
     def test_symlinked_wiki_file_rejected(self):
         d = self.make_ws([self._ok_item()])
         link = os.path.join(d, "references", "wiki", "ch1.md")
-        with mock.patch.object(V.os.path, "islink", side_effect=lambda p: p == link):
+        with mock.patch.object(V, "_is_symlink", side_effect=lambda p: p == link):
             errors, _, _ = V.validate(d)
         self.assertEqual(V._exit_code(errors), 1)
         self.assertTrue(any("符号链接" in e["msg"] for e in errors))
@@ -189,7 +189,7 @@ class TestValidateWorkspace(unittest.TestCase):
     def test_symlinked_wiki_root_rejected(self):
         d = self.make_ws([self._ok_item()])
         wdir = os.path.join(d, "references", "wiki")
-        with mock.patch.object(V.os.path, "islink", side_effect=lambda p: p == wdir):
+        with mock.patch.object(V, "_is_symlink", side_effect=lambda p: p == wdir):
             errors, _, _ = V.validate(d)
         self.assertEqual(V._exit_code(errors), 1)
         self.assertTrue(any("符号链接" in e["msg"] for e in errors))
@@ -255,7 +255,7 @@ class TestValidateWorkspace(unittest.TestCase):
     def test_symlinked_quiz_bank_rejected(self):
         d = self.make_ws([self._ok_item()])
         qb = os.path.join(d, "references", "quiz_bank.json")
-        with mock.patch.object(V.os.path, "islink", side_effect=lambda p: p == qb):
+        with mock.patch.object(V, "_is_symlink", side_effect=lambda p: p == qb):
             errors, _, _ = V.validate(d)
         self.assertEqual(V._exit_code(errors), 1)
         self.assertTrue(any("quiz_bank.json 经符号链接" in e["msg"] for e in errors))
@@ -283,7 +283,7 @@ class TestValidateWorkspace(unittest.TestCase):
     def test_symlinked_progress_file_rejected(self):
         d = self.make_ws([self._ok_item()])
         prog = os.path.join(d, "study_progress.md")
-        with mock.patch.object(V.os.path, "islink", side_effect=lambda p: p == prog):
+        with mock.patch.object(V, "_is_symlink", side_effect=lambda p: p == prog):
             errors, _, _ = V.validate(d)
         self.assertEqual(V._exit_code(errors), 1)
         self.assertTrue(any("进度文件 经符号链接" in e["msg"] for e in errors))
