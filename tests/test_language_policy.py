@@ -71,12 +71,12 @@ class LanguagePolicyTest(unittest.TestCase):
         self.assertIn("control plane", p.lower(), "未定义英文控制层")
         self.assertIn("Simplified Chinese", p, "未定义简体中文学生层")
 
-    def test_policy_scoped_as_bridge_not_full_rewrite(self):
-        # this PR establishes the policy; it does NOT fully convert control instructions to English
+    def test_policy_documents_bilingual_split(self):
+        # the policy documents the English-control / Chinese-student split + root stays Chinese-first
         p = read("docs", "language-policy.md").lower()
-        self.assertIn("scope of this change", p, "缺少范围说明小节")
-        self.assertIn("follow-up", p, "缺少「后续 PR 再做英文控制层」的范围说明")
-        self.assertIn("control-plane", p, "缺少后续英文控制层的说明")
+        self.assertIn("control-plane", p, "缺少控制层转换说明")
+        self.assertIn("student-facing", p, "缺少学生侧说明")
+        self.assertIn("chinese-first", p, "缺少根 SKILL.md 中文优先说明")
 
     # ---- canonical provenance wording everywhere ----
     def test_canonical_labels_present_in_all_target_files(self):

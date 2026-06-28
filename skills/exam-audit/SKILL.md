@@ -9,25 +9,36 @@ license: MIT
 
 # exam-audit — 工作区体检（只读）
 
-检查 `exam-ingest` 建出来的工作区有没有坑。**默认只报告，不改文件**（要改须用户明确许可）。
+## Purpose
+Inspect a prep workspace built by `exam-ingest` and report health issues. This is a read-only inspector. Do NOT fix anything by default; only fix after the user explicitly grants permission. Emit a concrete issue report; never silently modify or delete files.
 
 ## Activation
-- 用户怀疑工作区不对（章节缺、题判不了、进度乱）；或想在正式复习前先体检。
+Activate when the user suspects the workspace is broken (missing chapters, ungradable quiz items, inconsistent progress), or when the user wants a pre-review health check before studying. Do not activate to build, teach, or grade.
 
 ## Inputs
-- 工作区：`references/wiki/`、`references/quiz_bank.json`、`study_plan.md`、`study_progress.md`。
+- `references/wiki/` — chapter knowledge files (`chN_*.md`).
+- `references/quiz_bank.json` — quiz items.
+- `study_plan.md` — phase plan with chapter anchors.
+- `study_progress.md` — rendered phase checkpoints and recorded wrong-question IDs.
 
-## Workflow（逐项核对，只读）
-1. **结构**：`study_plan.md` 列的每个阶段都有对应 `references/wiki/chN_*.md` 文件？有没有孤儿章节或断链？
-2. **题库**：每题 `type` 属 6 类之一？`choice` 有 `options`？`subjective` 有 `keywords`？缺 `answer` 的题有没有 ⚠️/`source: ai_generated` 标注？
-3. **来源诚实**：有没有 AI 生成的答案被当成老师标准答案（缺 ⚠️ 标注）？wiki 有没有该标 🟡 却没标的 AI 补充段落？
-4. **进度一致**：`study_progress.md` 里**已渲染出来的**阶段打卡行与 `study_plan.md` 的阶段对得上吗？错题 ID 在题库里都找得到吗？（注意：模板锚点 `<!-- PHASE_CHECKLIST -->` 在 `ingest.py` 生成时已被替换、正常成品里**本就不该再出现**——不要把它的缺失当成问题。）
-5. **安全**：有没有 `references/wiki/` 之外的可疑写入、`../`/绝对路径残留。
+## Workflow
+Inspect read-only. Open and parse files; never write, rename, or delete. Check each item below and record every failure as a concrete issue (file path + what is wrong).
 
-## Output format
-- 一份「问题清单」：每条含【级别(阻断/警告/提示)】+【位置文件】+【现象】+【建议修法】；末尾给总体结论（可用 / 需修）。
-- **不自动修复**；如用户许可再逐项改，或交回 `exam-ingest` 重建。
+1. **Structure.** For each phase listed in `study_plan.md`, confirm a matching `references/wiki/chN_*.md` file exists. Flag orphan chapters (wiki files no phase references) and broken links (phases pointing to absent chapters).
+2. **Quiz bank.** For each item in `references/quiz_bank.json`: confirm `type` is one of the six allowed types (choice / subjective / diagram / fill_blank / true_false / code); confirm `choice` items carry `options`; confirm `subjective` items carry `keywords`; confirm any item missing `answer` carries the ⚠️ marker or `source: ai_generated`.
+3. **Provenance honesty.** Flag any AI-generated answer presented as the teacher's standard answer (missing the ⚠️ marker). Flag any AI-supplement wiki passage that should carry 🟡 but does not.
+4. **Plan/progress consistency.** Confirm each rendered phase-checkpoint line in `study_progress.md` maps to a phase in `study_plan.md`. Confirm every wrong-question ID in `study_progress.md` exists in `references/quiz_bank.json`. Note: the template anchor `<!-- PHASE_CHECKLIST -->` is replaced by `scripts/ingest.py` at generation time and is absent from a correct finished workspace — do NOT report its absence as a problem.
+5. **Path safety.** Flag suspicious writes outside `references/wiki/` and any residual `../` or absolute paths.
+
+## Output Contract
+Emit a single issue list. Each entry contains: 【级别(阻断/警告/提示)】 (severity: blocker / warning / notice) + 【位置文件】 (file path) + 【现象】 (concrete symptom) + 【建议修法】 (suggested fix). End with an overall verdict: 可用 (usable) or 需修 (needs repair).
+
+Do NOT auto-fix. After reporting, fix item-by-item only if the user grants permission, or hand the workspace back to `exam-ingest` for rebuild.
+
+Preserve these provenance labels VERBATIM when quoting them in findings: 🟢 来自资料 / 🟡 AI补充，可能与你老师讲的不完全一致 / ⚠️ AI生成答案，非老师/教材提供.
+
+Student-facing output defaults to Simplified Chinese unless the user asks otherwise.
 
 ## Boundaries
-- 默认零改动、零删除——这是体检不是施工。
-- 不臆断老师意图；只报客观不一致，把判断权交给学生。
+- Zero modifications and zero deletions by default — this is an inspection, not construction.
+- Do not infer the teacher's intent; report only objective inconsistencies and leave the judgment to the student.

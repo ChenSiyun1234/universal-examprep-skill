@@ -9,37 +9,38 @@ license: MIT
 
 # exam-ingest — 工作区初始化
 
-把零散的备考材料转成 `exam-cram` 依赖的固定工作区结构。**只负责建库，不负责教学/判分。**
+## Purpose
+Convert scattered prep materials into the fixed workspace structure that `exam-cram` depends on. Build the knowledge base only; do not teach or grade. Produce `references/wiki/`, `references/quiz_bank.json`, `study_plan.md`, and `study_progress.md`, then hand control back to `exam-cram`.
 
 ## Activation
-- 工作区缺失（无 `references/wiki/`、`references/quiz_bank.json` 或 `study_progress.md`）。
-- 用户刚上传课件/大纲/重点/真题，或明确要求「初始化 / 建库 / 开始备考」。
+Activate when the workspace is missing — that is, any of `references/wiki/`, `references/quiz_bank.json`, or `study_progress.md` is absent. Also activate when the user has just uploaded courseware/syllabus/highlights/past exams, or explicitly requests 「初始化 / 建库 / 开始备考」(initialize / build the bank / start prepping).
 
 ## Inputs
-- 学生上传的资料：文本、教材页图片、老师勾画重点、历年真题、课堂录音转写等。
-- 目标工作区目录（默认当前工作区根）。
+- Student-uploaded materials: text, textbook page images, teacher-marked highlights, past exam papers, lecture audio transcripts.
+- Target workspace directory (default: current workspace root).
 
 ## Workflow
-1. **解析**：读取资料，抽取知识点、核心公式、高频题型、名词解释；按章节/阶段分组。
-2. **后台拼 JSON**：自动构建符合 `scripts/ingest.py` 的 `raw_input.json`（含 `course_name`、`phases[]`、`quiz_bank[]`），写入临时目录。**绝不要求用户手写或修改该 JSON。**
-   - 每道题**必须带 `chapter`（或 `phase`）**，否则章节复习会抽不到它；并带 `source`：`teacher`（来自老师/真题）或 `ai_generated`（AI 补的）。
-   - 题型用 6 类之一：`choice / subjective / diagram / fill_blank / true_false / code`。
-3. **执行导入**：运行**技能包根目录**的 `scripts/ingest.py`：`python <技能包根>/scripts/ingest.py --input <临时json>`（整包安装到 Claude Code 时 `${CLAUDE_SKILL_DIR}` 指向包根，用 `python "${CLAUDE_SKILL_DIR}/scripts/ingest.py" --input <…>`）。
-4. **无 Python 降级**：脚本失败（如 `python is not recognized`）时立即无感切换——用写盘工具按 `templates/` 手动建 `references/wiki/chN_*.md`、`references/quiz_bank.json`、`study_plan.md`、`study_progress.md`。
-5. **来源标注**（canonical 见 [`docs/language-policy.md`](../../docs/language-policy.md)）：wiki 段落区分 🟢 来自资料 / 🟡 AI补充，可能与你老师讲的不完全一致；老师没给答案而 AI 代答的题，答案标 ⚠️ AI生成答案，非老师/教材提供。
+1. Parse the materials. Extract knowledge points, core formulas, high-frequency question types, and term definitions. Group them by chapter or phase.
+2. Build `raw_input.json` in the background so it matches `scripts/ingest.py`. Auto-construct an object with `course_name`, `phases[]`, and `quiz_bank[]`, and write it to a temp directory. Never ask the user to write or edit this JSON.
+   - Every quiz item MUST carry `chapter` (or `phase`); without it, chapter review cannot retrieve the item. Every item MUST carry `source`: `teacher` (from the teacher/past exams) or `ai_generated` (added by AI).
+   - Set each item's type to one of six: `choice / subjective / diagram / fill_blank / true_false / code`.
+3. Run the package-root `scripts/ingest.py`: `python <package-root>/scripts/ingest.py --input <temp-json>`. When the full package is installed in Claude Code, `${CLAUDE_SKILL_DIR}` points at the package root — use `python "${CLAUDE_SKILL_DIR}/scripts/ingest.py" --input <…>`.
+4. No-Python fallback. If the script fails (e.g. `python is not recognized`), switch immediately and silently: use file-write tools to build, from `templates/`, the files `references/wiki/chN_*.md`, `references/quiz_bank.json`, `study_plan.md`, and `study_progress.md`.
+5. Label provenance (canonical labels in [`docs/language-policy.md`](../../docs/language-policy.md)). In wiki paragraphs, distinguish 🟢 来自资料 from 🟡 AI补充，可能与你老师讲的不完全一致. For a question the teacher gave no answer to and AI answers instead, mark the answer ⚠️ AI生成答案，非老师/教材提供.
 
-## Language & output
-Student-facing output defaults to Simplified Chinese unless the user asks otherwise.（冷启动回执也按此默认；详见 [`docs/language-policy.md`](../../docs/language-policy.md)。）
+## Output Contract
+- Produce the standard workspace: `references/wiki/`, `references/quiz_bank.json`, `study_plan.md`, `study_progress.md`.
+- Emit one setup-receipt line, then hand control back to `exam-cram` for step two (teaching).
+- Student-facing output defaults to Simplified Chinese unless the user asks otherwise. The cold-start receipt follows this default; see [`docs/language-policy.md`](../../docs/language-policy.md).
 
-## Output format
-- 标准工作区：`references/wiki/`、`references/quiz_bank.json`、`study_plan.md`、`study_progress.md`。
-- 一句话回执（默认简体中文），例：
+## Student-facing Output
+一句话回执（默认简体中文），例：
   `已初始化备考空间：3 章 wiki + 18 道题（含 2 道 ⚠️ AI生成答案，非老师/教材提供），进度已建。下一步开讲第 1 章。`
   然后交回 `exam-cram` 进入第二步授课。
 
 ## Boundaries
-- `scripts/ingest.py` 与 `templates/` 在**技能包根目录**、不在 `skills/exam-ingest/` 内。若把本子技能**单独**安装（`CLAUDE_SKILL_DIR` 仅指向 `skills/exam-ingest/`），脚本/模板将不可用——请安装**整个技能包**（含根 `scripts/`、`templates/`），或直接走第 4 步无 Python 降级手动建库。
-- 不修改 `scripts/ingest.py` 的逻辑，只调用它。
-- 文件名仅 `references/wiki/` 下安全名（脚本会拒绝 `../`/绝对路径/重复名）。
-- 不臆造老师没提供的「标准答案」而不加 ⚠️ 标注；资料不足就如实说明缺口。
-- 不覆盖已有 `study_progress.md`（脚本默认不清；`--force` 会先备份）。
+- `scripts/ingest.py` and `templates/` live at the package root, not inside `skills/exam-ingest/`. If this subskill is installed alone (`CLAUDE_SKILL_DIR` points only at `skills/exam-ingest/`), the script and templates are unavailable — install the whole package (including root `scripts/` and `templates/`), or use the step-4 no-Python fallback to build the workspace by hand.
+- Do not modify the logic of `scripts/ingest.py`; only call it.
+- Use only safe filenames under `references/wiki/`. The script rejects `../`, absolute paths, and duplicate names.
+- Do not fabricate a "standard answer" the teacher did not provide without the ⚠️ label. When materials are insufficient, state the gap honestly.
+- Do not overwrite an existing `study_progress.md`. The script does not clear it by default; `--force` backs it up first.
