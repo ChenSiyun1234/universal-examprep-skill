@@ -28,6 +28,29 @@ license: MIT
 ## Output format
 - `walkthrough.md`：分章速记 + 重点题模板 + 薄弱清单；末尾刷新进度面板。
 
+## Language & cheat-sheet format
+Student-facing output defaults to Simplified Chinese unless the user asks otherwise.（详见 [`docs/language-policy.md`](../../docs/language-policy.md)。）
+
+考前最后一小时速记小抄，按这几栏压缩（每条一行、能照写，标清来源）：
+
+```text
+【必背结论/公式】
+- ……（🟢 来自资料）
+- ……（🟡 AI补充，可能与你老师讲的不完全一致）
+
+【老师强调】
+- ……（老师勾的重点题答题框架，考场照写拿分）
+
+【常见易错点/坑】
+- ……（最容易丢分或答偏的地方）
+
+【3分钟速记口诀】
+- ……
+
+【还没拿下（考前再看一眼）】
+- 错题：……　疑难点：……
+```
+
 ## Boundaries
 - 不在小抄里塞资料没覆盖、又没标 🟡/⚠️ 的内容。
 - 不替代系统复习——小抄是浓缩，不是省略防幻觉协议。

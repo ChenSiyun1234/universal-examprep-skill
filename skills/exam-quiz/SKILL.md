@@ -37,6 +37,17 @@ license: MIT
 - 一次一题，判分给「过/未过 + 要点反馈」；末尾刷新进度面板。
 - 更新 `study_progress.md` 打卡与错题档案，交回 `exam-cram`。
 
+## Language & feedback examples
+Student-facing output defaults to Simplified Chinese unless the user asks otherwise.（详见 [`docs/language-policy.md`](../../docs/language-policy.md)。）
+
+判分反馈用简短、具体的中文，先点考点再给改进：
+
+- **答对**：✅ 对了。这题考什么：……（一句点考点）。顺手记个易错点：……。
+- **部分对**：🟡 思路对了一半——你答到了「……」，但漏了「……」这一步，补上就满分。
+- **答错**：❌ 这里错了：……（指出逻辑漏洞）。标准答题步骤：1.… 2.…。再看一眼原题解析。
+- **连错两次**：要不要 ① 查看提示　② 跳过并归档错题　③ 再想想？选 ② 我就「已记录到错题本」，考前再扫雷。
+- **题/答为 AI 生成**：⚠️ AI生成答案，非老师/教材提供，仅供参考，请和老师/教材核对。
+
 ## Boundaries
 - 题库有相关题时不自编题；无答案不硬判，标 ⚠️ 或如实说明。
 - 画图题不凭记忆判定对错——以程序跑出的标准结构为准。

@@ -28,6 +28,13 @@ license: MIT
 - 一份「还没拿下的清单」（错题 + 疑难点）+ 各自当前状态；末尾刷新进度面板。
 - 更新 `study_progress.md` 的错题/疑难点状态，交回 `exam-cram`。
 
+## Language & review examples
+Student-facing output defaults to Simplified Chinese unless the user asks otherwise.（详见 [`docs/language-policy.md`](../../docs/language-policy.md)。）
+
+- **错题重做**：这道你上次错在「……」。同一道题再做一遍——这次盯住 ……。做对了我就把它从错题本划掉（标「已订正」）。
+- **疑难复述**：你之前卡在「……」这个概念。用你自己的话讲一遍：它是什么、为什么这样。讲清楚 → 标「已回顾」；还含糊 → 我再讲一次，保留「待回顾」。
+- **缺口小结**：还没拿下的——错题：……；疑难点：……。这几条留到 `exam-cheatsheet` 重点列。
+
 ## Boundaries
 - 只复盘已记录项，不新增题库里没有的题。
 - 与 `confusion-tracker` 写同一份 `study_progress.md`：**追加**疑难点、就地更新状态，避免覆盖他人写入。

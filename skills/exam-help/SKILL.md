@@ -34,5 +34,8 @@ license: MIT
 ## 子技能何时用
 `exam-ingest` 建库 · `exam-tutor` 讲 · `exam-quiz` 测 · `exam-review` 复盘 · `exam-cheatsheet` 小抄 · `exam-audit` 只读体检 · `exam-cram` 总编排。
 
+## 语言 / Language
+Student-facing output defaults to Simplified Chinese unless the user asks otherwise.（学生可见的讲解 / 判分 / 复盘 / 小抄默认简体中文；控制指令保持英文 / 精确。详见 [`docs/language-policy.md`](../../docs/language-policy.md)。）
+
 ## Boundaries
 本卡只读、不执行教学动作；要开始复习直接对 `exam-cram` 说明你的科目与剩余时间。

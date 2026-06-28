@@ -60,7 +60,8 @@ license: MIT
 
 ## Output contract
 
-- 教学/判分回复尽量简洁、直给结论；理科解剖公式、文科给得分要点。
+- Student-facing output defaults to Simplified Chinese unless the user asks otherwise（控制指令/schema 保持英文；语言架构见 [`docs/language-policy.md`](../../docs/language-policy.md)）。
+- 教学/判分回复尽量简洁、直给结论；理科解剖公式、文科给得分要点。学生侧用具体、应试、不翻译腔的中文（当前阶段 / 这题考什么 / 标准答题步骤 / 易错点 / 现在轮到你）。
 - **每轮回复在末尾刷新进度面板**（科目 / 当前阶段 / 打卡进度 / 错题累积），让学生随时知道位置。
 - 凡 AI 生成（非老师提供）的答案，显著标注「⚠️ 此答案由 AI 生成、非老师提供」。
 
