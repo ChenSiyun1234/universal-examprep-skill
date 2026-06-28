@@ -104,15 +104,26 @@ def validate(ws):
             for fld in ("id", "type", "question"):
                 if not q.get(fld):
                     err(f"{tag} 缺少必需字段 {fld}")
+            if q.get("chapter") in (None, "") and q.get("phase") in (None, ""):
+                err(f"{tag} 缺少 chapter 或 phase（二者至少其一——章节复习按此过滤抽题）")
+            # id/type must be SCALAR before being used as set/dict keys: a malformed list/object id or
+            # type would raise TypeError (unhashable) and crash before any structured error is returned.
             qid = q.get("id")
+            if qid is not None and not isinstance(qid, (str, int, float, bool)):
+                err(f"{tag} 的 id 必须是标量（字符串/数字），当前为 {type(qid).__name__}")
+                qid = None
             if qid is not None:
                 if qid in seen:
                     err(f"重复的题目 id: {qid}")
                 seen.add(qid)
             t = q.get("type")
-            type_counts[t] = type_counts.get(t, 0) + 1
-            if t is not None and t not in SIX_TYPES:
-                err(f"{tag} 的 type 非法: {t!r}（应为 {sorted(SIX_TYPES)} 之一）")
+            if t is not None and not isinstance(t, str):
+                err(f"{tag} 的 type 必须是字符串，当前为 {type(t).__name__}")
+                t = None
+            if t is not None:
+                type_counts[t] = type_counts.get(t, 0) + 1
+                if t not in SIX_TYPES:
+                    err(f"{tag} 的 type 非法: {t!r}（应为 {sorted(SIX_TYPES)} 之一）")
 
             # per-type required/recommended
             if t == "choice" and not (isinstance(q.get("options"), list) and q.get("options")):
@@ -142,7 +153,10 @@ def validate(ws):
                 if status == "unknown" or src in {"ai_generated", "unknown"}:
                     warn(f"{tag} 无 answer，已按 unknown/ai_generated 标注（考前需补全/核对）")
                 else:
-                    err(f"{tag} 无 answer 也无 answer_status，且 source 非 ai_generated/unknown——缺答案必须如实标注")
+                    # ingest.py ACCEPTS answer-less questions (it warns, doesn't fail) and writes neither
+                    # answer_status nor source — so a valid ingest output must NOT fail Tier 1. Keep this a
+                    # WARNING (the "AI answer hidden as teacher" case above stays a hard error).
+                    warn(f"{tag} 无 answer（建议补 answer，或标 answer_status=unknown / source=ai_generated）")
             elif src is None:
                 warn(f"{tag} 有答案但未标 source（建议标 teacher/material/ai_generated）")
         stats["quiz_types"] = type_counts
@@ -154,6 +168,15 @@ def validate(ws):
             prog = _read(prog_path)
             if "疑难点" not in prog and "confusion" not in prog.lower():
                 warn("study_progress.md 未见「概念疑难点记录」区（confusion-tracker 应维护此区）")
+            # current checkpoint phase should correspond to a phase listed in study_plan.md, else the
+            # agent can't resume correctly. Best-effort + lenient (skip silently if unparseable).
+            plan_path = os.path.join(ws, "study_plan.md")
+            m_cur = re.search(r"当前[^#]*?阶段\s*(\d+)", prog, re.S)
+            if m_cur and os.path.isfile(plan_path):
+                plan_phases = set(re.findall(r"阶段\s*(\d+)", _read(plan_path)))
+                if plan_phases and m_cur.group(1) not in plan_phases:
+                    warn(f"study_progress.md 当前阶段 {m_cur.group(1)} 不在 study_plan.md 的阶段列表 "
+                         f"{sorted(int(x) for x in plan_phases)} 中（断点可能无法正确恢复）")
         except OSError:
             pass
 

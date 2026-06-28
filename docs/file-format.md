@@ -63,8 +63,10 @@
 **强制规则（校验器据此报错/告警）：**
 
 1. **不得把 AI 生成的答案伪装成老师提供**：若一道题带 AI 生成标志（`source: ai_generated` 或布尔字段 `ai_generated: true`），其 `source` **必须**是 `ai_generated` 或 `mixed`，**不得**标成 `teacher`/`material`。违反 → **错误**。
-2. **缺答案需如实标注**：一道题既无 `answer` 也无 `answer_status` 时，只有当 `source ∈ {ai_generated, unknown}` 或 `answer_status: "unknown"` 才允许（报为告警/提示）；若是 `teacher`/`material` 或无 `source` 的题缺答案 → **错误**。
+2. **缺答案如实标注（告警）**：一道题缺 `answer` 时报**告警**（建议补 `answer`，或标 `answer_status: "unknown"` / `source: "ai_generated"`）。这与 `ingest.py` 对「无答案题」**告警但不失败**的行为一致——由 `ingest.py` 正常产出的工作区不会被 Tier 1 判为无效。
 3. **缺 `source`**：有答案但未标 `source` → **告警**（建议补全来源）。
+
+> `chapter`（或 `phase`）是**必需**字段（见 §2）：缺二者 → **错误**，因为章节复习按它过滤抽题。
 
 > 这些字段与 [`templates/quiz_bank_template.json`](../templates/quiz_bank_template.json) 一致；`ingest.py` 的 `VALID_QUIZ_TYPES`
 > 定义了上述 6 类。本规范在其基础上补充了各题型的可选字段与来源校验，供 `validate_workspace.py` 静态检查使用，**不改变既有生成逻辑**。

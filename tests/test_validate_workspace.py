@@ -8,6 +8,8 @@ import io
 import os
 import sys
 import json
+import shutil
+import tempfile
 import unittest
 from contextlib import redirect_stdout
 
@@ -72,10 +74,61 @@ class TestValidateWorkspace(unittest.TestCase):
         _, warnings, _, _ = run("warnings_workspace")
         self.assertIn("diagram_type", warn_text(warnings))
 
-    def test_missing_answer_without_provenance_is_error(self):
-        errors, _, _, code = run("invalid_workspace_provenance")
-        self.assertEqual(code, 1)
-        self.assertIn("缺答案必须如实标注", err_text(errors))
+    def make_ws(self, quiz, prog=None, plan=None):
+        """Build a minimal workspace in a tmpdir with a custom quiz_bank (for the regression cases)."""
+        d = tempfile.mkdtemp(prefix="vws-")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        os.makedirs(os.path.join(d, "references", "wiki"))
+        open(os.path.join(d, "references", "wiki", "ch1.md"), "w", encoding="utf-8").write("# ch1\n")
+        open(os.path.join(d, "references", "quiz_bank.json"), "w", encoding="utf-8").write(
+            json.dumps(quiz, ensure_ascii=False))
+        open(os.path.join(d, "study_plan.md"), "w", encoding="utf-8").write(
+            plan or "阶段 1 `references/wiki/ch1.md`\n阶段 2\n")
+        open(os.path.join(d, "study_progress.md"), "w", encoding="utf-8").write(
+            prog or "## 当前复习断点\n阶段 1\n\n## 💡 概念疑难点记录\n")
+        return d
+
+    def test_missing_answer_is_warning_not_error(self):
+        # ingest.py accepts answer-less questions (warn-not-fail); Tier 1 must stay compatible (Codex r1)
+        errors, warnings, _, _ = run("invalid_workspace_provenance")
+        self.assertTrue(any("无 answer" in w["msg"] for w in warnings))
+        self.assertFalse(any("缺答案必须如实标注" in e["msg"] for e in errors))
+
+    def test_missing_answer_alone_is_exit_0_warning(self):
+        d = self.make_ws([{"id": "x", "chapter": 1, "type": "subjective",
+                           "question": "q", "keywords": ["a"], "source": "teacher"}])
+        errors, warnings, _ = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 0)
+        self.assertTrue(any("无 answer" in w["msg"] for w in warnings))
+
+    def test_missing_chapter_and_phase_rejected(self):
+        d = self.make_ws([{"id": "x", "type": "choice", "question": "q",
+                           "options": ["A. a"], "answer": "A", "source": "teacher"}])
+        errors, _, _ = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertTrue(any("chapter 或 phase" in e["msg"] for e in errors))
+
+    def test_phase_field_satisfies_requirement(self):
+        d = self.make_ws([{"id": "x", "phase": 1, "type": "choice", "question": "q",
+                           "options": ["A. a"], "answer": "A", "source": "teacher"}])
+        errors, _, _ = V.validate(d)
+        self.assertFalse(any("chapter 或 phase" in e["msg"] for e in errors))
+
+    def test_non_scalar_id_or_type_does_not_crash(self):
+        # malformed list/object id or type must be a structured error, NOT a TypeError crash (Codex r1)
+        d = self.make_ws([{"id": ["bad"], "chapter": 1, "type": ["choice"],
+                           "question": "q", "answer": "a", "source": "teacher"}])
+        errors, _, _ = V.validate(d)   # must not raise
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertTrue(any("id 必须是标量" in e["msg"] for e in errors))
+        self.assertTrue(any("type 必须是字符串" in e["msg"] for e in errors))
+
+    def test_current_phase_not_in_plan_warns(self):
+        d = self.make_ws([{"id": "x", "chapter": 1, "type": "choice", "question": "q",
+                           "options": ["A. a"], "answer": "A", "source": "teacher"}],
+                         prog="## 当前复习断点\n阶段 99\n\n## 💡 概念疑难点记录\n", plan="阶段 1\n")
+        _, warnings, _ = V.validate(d)
+        self.assertTrue(any("当前阶段 99" in w["msg"] for w in warnings))
 
     def test_ai_generated_answer_without_marker_rejected(self):
         errors, *_ = run("invalid_workspace_provenance")
