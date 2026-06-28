@@ -192,7 +192,7 @@ class TestValidateWorkspace(unittest.TestCase):
         with mock.patch.object(V.os.path, "islink", side_effect=lambda p: p == wdir):
             errors, _, _ = V.validate(d)
         self.assertEqual(V._exit_code(errors), 1)
-        self.assertTrue(any("不应是符号链接" in e["msg"] for e in errors))
+        self.assertTrue(any("符号链接" in e["msg"] for e in errors))
 
     def test_invalid_true_false_answer_is_error(self):
         d = self.make_ws([self._ok_item(type="true_false", answer="maybe")])
@@ -205,6 +205,37 @@ class TestValidateWorkspace(unittest.TestCase):
         errors, _, _ = V.validate(d)
         self.assertEqual(V._exit_code(errors), 1)
         self.assertTrue(any("question 必须是非空字符串" in e["msg"] for e in errors))
+
+    # ---- Codex round 5 ----
+    def test_symlinked_reference_parent_rejected(self):
+        d = self.make_ws([self._ok_item()])
+        wdir = os.path.join(d, "references", "wiki")
+        real_rp = os.path.realpath
+        def rp(p):
+            return "/outside/wiki" if os.path.normcase(p) == os.path.normcase(wdir) else real_rp(p)
+        with mock.patch.object(V.os.path, "realpath", side_effect=rp):
+            errors, _, _ = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertTrue(any("符号链接" in e["msg"] for e in errors))
+
+    def test_non_scalar_chapter_rejected(self):
+        d = self.make_ws([self._ok_item(chapter=[1, 2])])
+        errors, _, _ = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertTrue(any("chapter 必须是整数或字符串" in e["msg"] for e in errors))
+
+    def test_markdown_link_wiki_ref_accepted(self):
+        # [ch1](references/wiki/ch1.md) must NOT be flagged as path traversal (false positive r5)
+        d = self.make_ws([self._ok_item()], plan="阶段 1：见 [ch1](references/wiki/ch1.md)\n")
+        errors, _, _ = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 0)
+        self.assertFalse(any("路径穿越" in e["msg"] for e in errors))
+
+    def test_whitespace_only_required_field_rejected(self):
+        d = self.make_ws([self._ok_item(question="   ")])
+        errors, _, _ = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertTrue(any("缺少必需字段 question" in e["msg"] for e in errors))
 
     def test_phase_field_satisfies_requirement(self):
         d = self.make_ws([{"id": "x", "phase": 1, "type": "choice", "question": "q",

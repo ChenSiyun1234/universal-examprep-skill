@@ -22,7 +22,7 @@ ALL_SOURCES = {"teacher", "material", "ai_generated", "mixed", "unknown"}
 SAFE_WIKI = re.compile(r"^[\w.\-]+\.md$")
 # capture the WHOLE path token around references/wiki/ (incl. any leading prefix), so a reference that
 # escapes BEFORE the matched segment (e.g. "../references/wiki/x.md") is caught, not silently trimmed.
-WIKI_REF_RE = re.compile(r"([^\s)`'\"]*references/wiki/[^\s)`'\"]+)")
+WIKI_REF_RE = re.compile(r"([^\s\[\]()`'\"]*references/wiki/[^\s\[\]()`'\"]+)")
 TRUE_FALSE_OK = {"true", "false", "t", "f", "yes", "no", "真", "假", "对", "错", "是", "否"}
 
 
@@ -53,9 +53,15 @@ def validate(ws):
     # ---- structure ----
     wiki_dir = os.path.join(ws, "references", "wiki")
     wiki_is_link = os.path.islink(wiki_dir)
-    has_wiki = os.path.isdir(wiki_dir) and not wiki_is_link
-    if wiki_is_link:
-        err("references/wiki/ 不应是符号链接（os.path.isdir 会跟随它，可能指向工作区外）")
+    # realpath containment also catches a symlinked PARENT (e.g. references/ itself is a symlink),
+    # which islink(wiki_dir) alone misses.
+    ws_real = os.path.realpath(ws)
+    wiki_real = os.path.realpath(wiki_dir)
+    wiki_escapes = (os.path.isdir(wiki_dir) and wiki_real != ws_real
+                    and not wiki_real.startswith(ws_real + os.sep))
+    has_wiki = os.path.isdir(wiki_dir) and not wiki_is_link and not wiki_escapes
+    if wiki_is_link or wiki_escapes:
+        err("references/wiki/ 经符号链接逃出工作区（本身或其父目录是指向工作区外的软链）")
     elif not has_wiki:
         err("缺少 references/wiki/ 目录")
     qb_path = os.path.join(ws, "references", "quiz_bank.json")
@@ -126,7 +132,9 @@ def validate(ws):
                 continue
             tag = f"题[{q.get('id', i)}]"
             for fld in ("id", "type", "question"):
-                if q.get(fld) in (None, ""):           # presence check (not truthiness) so id=0 stays valid
+                v = q.get(fld)
+                # presence check (not truthiness) so id=0 stays valid; whitespace-only strings count as blank
+                if v in (None, "") or (isinstance(v, str) and not v.strip()):
                     err(f"{tag} 缺少必需字段 {fld}")
             if q.get("question") not in (None, "") and not isinstance(q.get("question"), str):
                 err(f"{tag} 的 question 必须是非空字符串，当前为 {type(q.get('question')).__name__}")
@@ -134,6 +142,10 @@ def validate(ws):
                 # ingest.py does NOT require chapter/phase, so a hard error would reject valid ingest
                 # output. Keep it a WARNING (章节测验按它过滤抽题，缺了会抽不到，但不判工作区无效).
                 warn(f"{tag} 缺少 chapter 或 phase（章节测验按它过滤抽题，缺了会抽不到该题）")
+            for f2 in ("chapter", "phase"):
+                cv = q.get(f2)
+                if cv is not None and not isinstance(cv, (str, int)):  # schema限定整数/字符串；数组/对象不可用于过滤
+                    err(f"{tag} 的 {f2} 必须是整数或字符串，当前为 {type(cv).__name__}")
             # id/type must be SCALAR before being used as set/dict keys: a malformed list/object id or
             # type would raise TypeError (unhashable) and crash before any structured error is returned.
             qid = q.get("id")
