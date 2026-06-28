@@ -25,7 +25,7 @@ Run when the student enters the final review stage, or asks to 复盘错题 / �
 3. Reload the confusion-tracker entries from `study_progress.md`. Read each entry aloud and have the student restate it in their own words (what it is, why it works that way).
 4. If the student restates an entry correctly, set its status to 已回顾. If still vague, re-explain once and keep its status 待回顾.
 5. Compile the open list: items still marked wrong plus entries still 待回顾. Hand this list to the final sprint and to `exam-cheatsheet` as priority input.
-6. Write results back to the same `study_progress.md` by appending; update each item/entry status in place. Do not overwrite other skills' writes.
+6. Write results back to `study_progress.md`: update each existing item/entry status **in place** (已订正 / 已回顾 / 待回顾); append only genuinely new records. Never leave a mastered item as a stale wrong/待回顾 row. Do not overwrite other skills' writes.
 
 ## Output Contract
 - Produce one "还没拿下的清单" (not-yet-mastered list): recorded mistakes plus confusion entries, each with its current status (已订正 / 已回顾 / 待回顾). End with a refreshed progress panel.

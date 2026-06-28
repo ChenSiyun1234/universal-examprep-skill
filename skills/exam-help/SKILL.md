@@ -18,7 +18,7 @@ Activate when the user asks how this skill works, what modes exist, what each wo
 None. Take no files, no arguments, no workspace state. Emit the static card below.
 
 ## Workflow
-1. Print the Chinese reference card under Student-facing Output verbatim.
+1. Print the reference card under Student-facing Output: the Chinese card verbatim by default; if the user explicitly asks for another language, render the same content in that language.
 2. Do not read, scan, or load any workspace files (`references/wiki/`, `references/quiz_bank.json`, `study_progress.md`, `study_plan.md`).
 3. Do not run `scripts/ingest.py` or any subskill.
 4. End. Do not start tutoring, quizzing, ingesting, or grading.

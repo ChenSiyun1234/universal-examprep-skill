@@ -34,7 +34,7 @@ Teach exactly one current wiki chapter. Explain concepts with real-life metaphor
 - Output a concise explanation plus the needed metaphor / formula dissection / memory hook, ending with a refreshed progress panel.
 - After each learning or checkpoint event, update the chapter checkpoint status in `study_progress.md`.
 - Do not quiz or score; for practice questions, delegate to `exam-quiz` (which draws only from `references/quiz_bank.json`).
-- Validate every path before reading; never read outside `references/wiki/`.
+- Limit wiki reads to the single current `references/wiki/chN_*.md` chapter (not other chapters, not the whole book); validate that path. Reading and updating `study_progress.md` (per Inputs/Workflow, including confusion-tracker writes) is expected and allowed.
 - Student-facing output defaults to Simplified Chinese unless the user asks otherwise. Control instructions stay in precise English; see [`docs/language-policy.md`](../../docs/language-policy.md).
 
 ## Student-facing Output
