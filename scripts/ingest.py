@@ -25,7 +25,7 @@ SUBJECT_TOKEN = "《科目名称》"               # 模板中待替换的科目
 PHASE_TABLE_MARKER = "<!-- PHASE_TABLE -->"        # study_plan 模板里表格插入点
 PHASE_CHECKLIST_MARKER = "<!-- PHASE_CHECKLIST -->"  # study_progress 模板里打卡列表插入点
 SAFE_FILENAME = re.compile(r"^[\w.\-]+\.md$")      # 仅允许不含路径的 *.md 文件名
-VALID_QUIZ_TYPES = {"choice", "subjective"}
+VALID_QUIZ_TYPES = {"choice", "subjective", "diagram", "fill_blank", "true_false", "code"}
 
 
 def get_template_path(template_name):
@@ -201,6 +201,8 @@ def main():
         print("\n[!] 注意：以下题目缺少标准答案（answer 为空）：")
         print("    " + ", ".join(missing_answer_ids))
         print("    这些题在测验时没有可对照的标准答案；请先补全，或在对话中让 AI 为它们生成答案后再录入。")
+        print("    ⚠️ 若由 AI 代为生成答案，必须向学生明确标注「此答案由 AI 生成、非老师提供」，")
+        print("       严禁把 AI 生成的答案伪装成老师的标准答案（详见 SKILL.md 知识来源透明化协议）。")
 
     output_dir = os.path.abspath(args.output_dir)
     wiki_dir = os.path.join(output_dir, "references", "wiki")

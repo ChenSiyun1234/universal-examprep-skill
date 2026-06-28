@@ -126,6 +126,25 @@ class IngestEndToEndTest(unittest.TestCase):
                            capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(r.returncode, 1)
 
+    # ---------- 扩展题型：diagram / fill_blank 等被接受 ----------
+    def test_extended_quiz_types_accepted(self):
+        data = {"course_name": "数据结构",
+                "phases": [{"phase_num": 1, "phase_name": "树", "wiki_filename": "ch1.md", "wiki_content": "x"}],
+                "quiz_bank": [
+                    {"id": "d1", "type": "diagram", "question": "画出 AVL 插入 [3,2,1]", "answer": "右旋", "diagram_type": "avl_tree"},
+                    {"id": "f1", "type": "fill_blank", "question": "栈是____", "answer": "LIFO"},
+                ]}
+        r = run_ingest(data, self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        bank = json.loads(read(self.tmp, "references", "quiz_bank.json"))
+        self.assertEqual({q["type"] for q in bank}, {"diagram", "fill_blank"})
+
+    def test_unknown_quiz_type_fails(self):
+        bad = {"course_name": "X",
+               "phases": [{"phase_num": 1, "phase_name": "P", "wiki_filename": "a.md", "wiki_content": "x"}],
+               "quiz_bank": [{"id": "q1", "type": "essay", "question": "?", "answer": "a"}]}
+        self.assertEqual(run_ingest(bad, self.tmp).returncode, 1)
+
     # ---------- 缺标准答案：警告但不中止 ----------
     def test_missing_answer_warns_but_succeeds(self):
         data = {"course_name": "X",
