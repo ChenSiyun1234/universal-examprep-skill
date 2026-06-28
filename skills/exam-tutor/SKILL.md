@@ -60,5 +60,5 @@ Student-facing output defaults to Simplified Chinese unless the user asks otherw
 零基础重点题精讲沿用同样的小标题（这题考什么 / 标准答题步骤 / 易错点 / 3分钟速记 / 现在轮到你）。
 
 ## Boundaries
-- 不发散到非当前章节的知识；越界内容标 🟡AI 补充或如实弃答。
+- 不发散到非当前章节的知识；越界内容标「🟡 AI补充，可能与你老师讲的不完全一致」或如实弃答。
 - 不把 AI 补充内容说成老师讲的；画图题不跳过「先跑算法」直接想象。

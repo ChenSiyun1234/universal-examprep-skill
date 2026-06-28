@@ -68,7 +68,7 @@ Everything the student actually reads **defaults to Simplified Chinese unless th
 | `现在轮到你` | 把球抛回给学生练 |
 | `已记录到错题本` | 归档错题后的回执 |
 | `资料里没有明确答案` | 诚实弃答 |
-| `这部分是 AI 补充，请以老师/教材为准` | AI 补充内容的提醒 |
+| `🟡 AI补充，可能与你老师讲的不完全一致` | AI 补充内容的提醒（与下方 canonical 🟡 一致） |
 
 ### 来源标注用词（防幻觉，全技能统一）
 

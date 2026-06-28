@@ -28,15 +28,25 @@ CANONICAL_FILES = [
     ("skills", "exam-ingest", "SKILL.md"),
 ]
 
-# direct student-facing entrypoints must NOT contain any old competing label
+# direct student-facing / runtime surfaces must NOT contain any old competing label.
+# NB: prose legitimately writes "AI 补充" (space around the Latin token), so we forbid only the
+# unambiguous OLD LABEL strings (distinct suffix / wording), not the bare "AI 补充" prose form.
 NO_OLD_ENTRYPOINTS = [
     ("SKILL.md",),
     ("AGENTS.md",),
     ("prompts", "web_prompt.md"),
+    ("README.md",),
+    ("scripts", "ingest.py"),
+    ("docs", "skill-architecture.md"),
     ("skills", "exam-help", "SKILL.md"),
+    ("skills", "exam-tutor", "SKILL.md"),
+    ("skills", "exam-cram", "SKILL.md"),
+    ("skills", "exam-quiz", "SKILL.md"),
+    ("skills", "exam-review", "SKILL.md"),
+    ("skills", "exam-cheatsheet", "SKILL.md"),
+    ("skills", "exam-ingest", "SKILL.md"),
 ]
 OLD_LABELS = [
-    "🟡 AI 补充",
     "此答案由 AI 生成",
     "答案由 AI 生成",
     "来自学生上传的资料",
