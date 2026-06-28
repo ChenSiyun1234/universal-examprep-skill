@@ -129,6 +129,23 @@
 
 ---
 
+## 🧪 工程化校验 (Engineering Validation)
+
+除了上面那套**昂贵**的真实 benchmark，本仓库还有一组**零成本、可频繁跑**的结构化校验，用来在不烧额度的前提下守住质量：
+
+```bash
+# Tier 0：单元测试（ingest + 工作区校验器 + 技能结构，纯 stdlib，无网络/无 API key）
+python -m unittest discover -s tests -v
+
+# Tier 1：校验一个建好的备考工作区是否符合规范（结构 / 题库 schema / 来源标注 / 路径安全）
+python scripts/validate_workspace.py path/to/workspace
+```
+
+- 工作区文件格式规范见 [`docs/file-format.md`](docs/file-format.md)；校验器为 [`scripts/validate_workspace.py`](scripts/validate_workspace.py)。
+- **完整 benchmark 很贵**（一次单轮矩阵几十美元/几小时，长程漂移测试以天计额度），**不应为每个小改动跑全量**——分层策略见 [`benchmark/docs/test_tiers.md`](benchmark/docs/test_tiers.md)。日常开发与 CI 只跑 Tier 0–1。
+
+---
+
 ## 📂 技能包目录结构与简明功能说明
 
 这是一个结构完备的备考智能体技能包，包含以下核心文件：
