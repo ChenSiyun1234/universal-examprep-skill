@@ -1,6 +1,7 @@
 ---
 name: confusion-tracker
 description: 教学过程中自动捕获和记录学习者的概念疑难点（"为什么/是什么/怎么推/什么意思"类型的问题），保存到进度文件的"概念疑难点记录"区，形成考前回顾清单。
+license: MIT
 version: 1.0.0
 tags: [teaching, tracking, review]
 status: stable

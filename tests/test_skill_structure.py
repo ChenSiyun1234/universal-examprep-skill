@@ -16,6 +16,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SKILL_DIRS = [
     "exam-cram", "exam-ingest", "exam-tutor", "exam-quiz",
     "exam-review", "exam-cheatsheet", "exam-audit", "exam-help",
+    "confusion-tracker",
 ]
 
 # core anti-hallucination rules the compact fallback must carry (invariants, see docs/skill-architecture.md)

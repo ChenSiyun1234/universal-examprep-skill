@@ -36,9 +36,8 @@ class ConfusionTrackerMoveTest(unittest.TestCase):
         fm = frontmatter(read("skills", "confusion-tracker", "SKILL.md"))
         self.assertIn("name:", fm, "缺少 name")
         self.assertIn("description:", fm, "缺少 description")
-        # license OR the skill's existing equivalent fields (version/status)
-        self.assertTrue(any(k in fm for k in ("license:", "version:", "status:")),
-                        "缺少 license 或等价字段（version/status）")
+        # as a skills/ collection member it must carry license, like the other sub-skills
+        self.assertIn("license:", fm, "缺少 license（应与技能集合其他子技能一致）")
         self.assertIn("confusion-tracker", fm, "skill name 未保留为 confusion-tracker")
 
     def test_portability_doc_references_skills_path_only(self):
