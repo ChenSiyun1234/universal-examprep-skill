@@ -6,8 +6,10 @@ CHANGELOG.md. A skill should execute the current behavior directly (knowledge pr
 diagram protocol, six quiz types, LLM Wiki lazy loading, …) instead of reasoning about which
 version introduced what.
 
-Allowlist: CHANGELOG.md (the history file), benchmark/ (historical reports — not scanned),
-and the root SKILL.md frontmatter `metadata.version` line (machine-readable, stripped before scan).
+Allowlist (the ONLY exemptions): CHANGELOG.md (the history file), benchmark/ (historical reports
+— not scanned), and a machine-readable `version:` metadata line (e.g. root SKILL.md frontmatter).
+Everything else — including frontmatter `name:`/`description:` — is scanned, so a skill entrypoint
+that smuggles "V2.1" into its description is caught.
 """
 import glob
 import os
@@ -31,24 +33,21 @@ def read(rel):
         return f.read()
 
 
-def body_without_frontmatter(text):
-    # strip a leading YAML frontmatter block (metadata such as version: lives there and is allowed)
-    if text.startswith("---"):
-        end = text.find("\n---", 3)
-        if end != -1:
-            nl = text.find("\n", end + 1)
-            return text[nl + 1:] if nl != -1 else ""
-    return text
+def _is_exempt_version_line(line):
+    # the only allowlisted exemption: a machine-readable `version:` metadata line
+    return line.strip().startswith("version:")
 
 
 class NoVersionEraRuntimeTextTest(unittest.TestCase):
     def test_runtime_files_have_no_version_era_wording(self):
         offenders = []
         for rel in runtime_files():
-            body = body_without_frontmatter(read(rel))
-            for tok in FORBIDDEN:
-                if tok in body:
-                    offenders.append(f"{rel} -> {tok!r}")
+            for i, line in enumerate(read(rel).splitlines(), 1):
+                if _is_exempt_version_line(line):
+                    continue
+                for tok in FORBIDDEN:
+                    if tok in line:
+                        offenders.append(f"{rel}:{i} -> {tok!r}")
         self.assertEqual(offenders, [], "运行时文本仍含版本号措辞: " + "; ".join(offenders))
 
     def test_readme_uses_capability_not_version_sections(self):
@@ -64,12 +63,16 @@ class NoVersionEraRuntimeTextTest(unittest.TestCase):
         self.assertIn("V2.1", c, "CHANGELOG 未保留 V2.1 历史")
         self.assertIn("V2.0", c, "CHANGELOG 未保留 V2.0 历史")
 
-    def test_skill_frontmatter_version_allowed_body_clean(self):
+    def test_skill_frontmatter_version_is_the_only_exemption(self):
         text = read("SKILL.md")
         self.assertTrue(text.startswith("---"), "SKILL.md 应有 frontmatter")
-        body = body_without_frontmatter(text)
-        self.assertNotIn("V2.1", body, "SKILL.md 正文仍含 V2.1")
-        self.assertNotIn("V2.0", body, "SKILL.md 正文仍含 V2.0")
+        self.assertTrue(any(_is_exempt_version_line(ln) for ln in text.splitlines()),
+                        "SKILL.md 应保留机读 version 元数据")
+        for i, ln in enumerate(text.splitlines(), 1):
+            if _is_exempt_version_line(ln):
+                continue
+            for tok in ("V2.0", "V2.1"):
+                self.assertNotIn(tok, ln, f"SKILL.md:{i} 含 {tok}（version 行外不得出现）")
 
 
 if __name__ == "__main__":
