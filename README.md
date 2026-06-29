@@ -26,7 +26,7 @@
 
 在 V2.1 功能特性的基础上，项目完成了一次大规模的工程化重构（[PR #11](https://github.com/ZeKaiNie/universal-examprep-skill/pull/11)），不改变任何既有行为，专注于可移植性、可维护性和测试基础设施：
 
-* **🧩 模块化技能集合**：将单体 `SKILL.md` 拆分为 `skills/` 下的 8 个单一职责子技能（`exam-cram` 主协调器 + `exam-ingest` / `exam-tutor` / `exam-quiz` / `exam-review` / `exam-cheatsheet` / `exam-audit` / `exam-help`），便于不同 agent 按需加载。根目录 `SKILL.md` 仍为默认兼容入口，不影响已安装用户。
+* **🧩 模块化技能集合**：将单体 `SKILL.md` 拆分为 `skills/` 下的 9 个单一职责子技能（`exam-cram` 主协调器 + `exam-ingest` / `exam-tutor` / `exam-quiz` / `exam-review` / `exam-cheatsheet` / `exam-audit` / `exam-help` + `confusion-tracker` 疑难追踪），便于不同 agent 按需加载。根目录 `SKILL.md` 仍为默认兼容入口，不影响已安装用户。
 * **📄 AGENTS.md 通用代理兜底**：新增一屏浓缩的防幻觉核心契约，供 Codex、Cursor 规则、Antigravity 等不读完整 SKILL.md 的通用代理使用。
 * **🌐 双语控制层**：英文控制指令（精确、可测）+ 简体中文学生可见输出，统一来源标注 canonical 用词（🟢/🟡/⚠️），避免多入口措辞不一致。语言策略详见 [`docs/language-policy.md`](docs/language-policy.md)。
 * **🔍 工作区校验器**：新增 [`scripts/validate_workspace.py`](scripts/validate_workspace.py)（纯标准库），可零成本校验已建工作区的结构、题库 schema、来源标注和路径安全。
