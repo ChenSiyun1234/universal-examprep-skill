@@ -7,42 +7,34 @@ tags: [teaching, tracking, review]
 status: stable
 ---
 
-# Purpose
+# confusion-tracker — 概念疑难点追踪
 
-在教学或备考辅导过程中，当学习者追问概念性问题（非测验题）时，自动捕获这些"疑难点"并写入进度文件。这些问题往往揭示深层理解缺口，是考前回顾的宝贵材料。
+## Purpose
+Capture the learner's concept-level confusions (why / what / how-derived questions — not quiz answers) during tutoring and record them into the 「概念疑难点记录」 section of `study_progress.md`, building a pre-exam review list. Used by `exam-tutor` (while teaching) and `exam-review` (during the final sweep).
 
-# Activation
+## Activation
+- During tutoring, when the learner asks a concept question matching: 「为什么…？」/「…是什么、什么意思？」/「这个公式怎么推、怎么来的？」/「…的重点是什么？」/「讲一下…」, or any clarification follow-up that is not a quiz answer.
+- Skip for: pure quiz answering (right or wrong), and chit-chat that needs no concept explanation.
 
-- **触发条件**：辅导过程中，学习者提问包含以下模式：
-  - "为什么...？"
-  - "...是什么/是什么意思？"
-  - "这个公式怎么推的/怎么来的？"
-  - "...的重点是什么？"
-  - "讲一下..."
-  - 以及任何不是答题、而是要求澄清/深入解释的追问
-- **Skip if**：纯题库答题（正确或错误），无需解释概念的闲聊。
+## Inputs
+- The progress-file path (e.g. `study_progress.md`), read at session start.
+- The current chapter/phase name being taught.
 
-# Inputs
+## Workflow
+1. **Detect** — decide whether the follow-up is a concept question (not a quiz item or its answer).
+2. **Answer** — give a concise, clear explanation grounded in the current wiki chapter. Label the source: 🟢 来自资料 for material-sourced content, 🟡 AI补充，可能与你老师讲的不完全一致 for AI-supplied background. Never present AI-added content as the teacher's.
+3. **Record** — append the confusion to the 「## 💡 概念疑难点记录」 table in `study_progress.md`: 关联章节 / 疑难点 (one line) / 解答要点 (≤2 sentences) / 状态 (default 待回顾). Auto-increment 序号 from the existing rows.
+4. **Confirm** — tell the learner it was logged (e.g. 「已记录到疑难点」) in one short line, without breaking the teaching flow.
 
-- 进度文件路径（如 `study_progress.md`），需在会话开始时由 AI 读取并记录。
-- 当前正在讲解的章节/阶段名称。
+## Output Contract
+- Append one row to the 「## 💡 概念疑难点记录」 table in `study_progress.md` (序号 / 关联章节 / 疑难点 / 解答要点 / 状态).
+- During the final sweep, read the confusion records and have the learner restate each: update 状态 **in place** — 待回顾 → 已回顾 when explained correctly; keep 待回顾 and re-explain otherwise. Never overwrite other skills' writes.
+- Student-facing output defaults to Simplified Chinese unless the user asks otherwise.
 
-# Workflow
+## Student-facing Output
+进度文件里的表格格式（学生侧中文，序号按已有记录递增）：
 
-1. **Detect** — 识别学习者的追问是否属于概念性问题（非测验题/纯答案）。
-2. **Answer** — 给出简洁清晰的解答。
-3. **Record** — 解答完成后，将疑难点追加到进度文件的"## 概念疑难点记录"表格中，包含：
-   - 关联章节
-   - 疑难点（一句话概括问题）
-   - 解答要点（核心答案，不超过两句话）
-   - 状态：默认为"待回顾"
-4. **Confirm** — 记录完成后简要告知学习者（如"已记录到疑难点"），不打断教学节奏。
-
-# Table Format
-
-进度文件中的表格格式：
-
-```
+```text
 ## 💡 概念疑难点记录
 
 | 序号 | 关联章节 | 疑难点 | 解答要点 | 状态 |
@@ -50,15 +42,9 @@ status: stable
 | 1 | 晶体结构 | 为什么FCC是ABC堆垛？ | 第三层落C凹坑→FCC，落A→HCP | 待回顾 |
 ```
 
-序号自增，根据已有记录递增。
+记录完后给一句简短回执（如「已记录到疑难点」），不打断教学节奏。
 
-# Review
-
-- 在"易错扫雷"阶段或考前，AI 应主动读取疑难点记录，逐条请学习者复述/解释，检查状态是否可标记为"已回顾"。
-- 学习者能正确解释的 → 状态更新为"已回顾"；仍模糊的 → 保持"待回顾"并再次讲解。
-
-# Integration
-
-- 与 `universal-examprep-skill` 协同：自动向 `study_progress.md` 写入疑难点。
-- 与 `revision-mode` 协同：回顾阶段可加载疑难点表作为复习重点。
-- 与 `spaced-repetition` 协同：疑难点可作为间隔重复的卡片素材。
+## Boundaries
+- Only record concept questions; never quiz or grade (that is `exam-quiz`).
+- Concept answers carry the canonical provenance labels (🟢 来自资料 / 🟡 AI补充，可能与你老师讲的不完全一致 / ⚠️ AI生成答案，非老师/教材提供); never disguise AI-added content as teacher-provided.
+- Share `study_progress.md` with `exam-review`: append new entries and update status in place; do not overwrite other skills' writes.
