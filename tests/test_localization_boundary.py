@@ -13,7 +13,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REQUIRED_LABELS = [
     "当前阶段", "这题考什么", "标准答题步骤", "易错点", "3分钟速记",
     "现在轮到你", "已记录到错题本", "资料里没有明确答案",
-    "这部分是 AI 补充，请以老师/教材为准",
+    # AI-supplement reminder uses the canonical marker (single source: docs/language-policy.md)
+    "AI补充，可能与你老师讲的不完全一致",
 ]
 
 

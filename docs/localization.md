@@ -6,14 +6,14 @@
 
 ## 1. 当前模型 / Current model
 
-- **控制层（control plane）** 位于 `skills/exam-*/SKILL.md`，控制段用**英文**，包含固定六段：
+- **控制层（control plane）** 位于 `skills/*/SKILL.md`（`exam-*` 与 `confusion-tracker` 都算），控制段用**英文**，包含固定六段：
   - `Purpose`
   - `Activation`
   - `Inputs`
   - `Workflow`
   - `Output Contract`
   - `Boundaries`
-- **学生侧示例 / 模板** 目前放在每个技能的 `## Student-facing Output` 段（与控制逻辑同文件）。
+- **学生侧示例 / 模板** 目前放在**产出学生侧输出的技能**（`exam-tutor` / `exam-quiz` / `exam-review` / `exam-cheatsheet` / `exam-cram` / `exam-ingest` / `exam-help` / `confusion-tracker`）的 `## Student-facing Output` 段（与控制逻辑同文件）。`exam-audit` 是只读体检、**没有**学生侧模板，将来拆 locale 时也无需为它建 locale 文件。
 - **学生侧默认语言 = 简体中文（Simplified Chinese）**，除非用户另有要求。
 - **根目录 `SKILL.md` 与 `prompts/web_prompt.md`** 维持**中文优先（Chinese-first）的兼容入口**，本 PR 不改写它们。
 
@@ -69,7 +69,7 @@ locales/
 
 ## 5. 当前必须保留的中文标签 / Current required Chinese labels
 
-下列中文标签必须保留在打包的 `zh-CN` 学生示例中（将来拆 locale 时也要原样带到 `zh-CN` 文件）：
+下列是当前学生侧的 **canonical 中文词汇**——部分嵌在 `## Student-facing Output` 模板里（如 `当前阶段`），部分是判分反馈 / 诚实弃答 / 来源标注时的固定说法（如 `资料里没有明确答案`、来源标注）。它们必须保留在打包的 `zh-CN` 学生侧；将来拆 locale 时原样带到 `zh-CN` 文件。来源标注用词以 [`language-policy.md`](language-policy.md) 为准（canonical 单一来源）。
 
 - `当前阶段`
 - `这题考什么`
@@ -78,5 +78,5 @@ locales/
 - `3分钟速记`
 - `现在轮到你`
 - `已记录到错题本`
-- `资料里没有明确答案`
-- `这部分是 AI 补充，请以老师/教材为准`
+- `资料里没有明确答案`（诚实弃答）
+- `🟡 AI补充，可能与你老师讲的不完全一致`（AI 补充提醒，canonical 见 `language-policy.md`）
