@@ -24,7 +24,11 @@ Pull chapter/phase-scoped items from `references/quiz_bank.json`, present one it
 > If `exam-ingest` produced the bank, require every item to carry `chapter`/`phase`. Without it, the chapter quiz reports "no items found" even when the bank holds matching items.
 
 ## Workflow
-1. **Select items**: filter by matching `chapter` OR `phase` (the bank uses both fields; filtering on `chapter` alone drops items tagged only with `phase`). If the bank contains relevant items, never write new questions.
+1. **Select & gate items**: filter by matching `chapter` OR `phase` (the bank uses both fields; filtering on `chapter` alone drops items tagged only with `phase`). If the bank contains relevant items, never write new questions.
+   - **Asset gate (fail-closed)** — before asking an item, inspect its `requires_assets` / `assets` / `question_text_status`:
+     - If `requires_assets=true`: first **display or reference all `question_context` / `figure` / `diagram` / `table` assets**. **Do not ask the item if any required asset file is missing or unreadable** — instead say the item is blocked because required context assets are missing, and pick another safe item if one is available. (Concrete case: Lecture Quiz 1.1 asks to shade a Venn diagram shown on the slide — without that diagram attached, the item must not be asked.)
+     - If `question_text_status` is `stub` or `page_reference`: **do not treat the text as a complete standalone question** — include the source page / asset context before asking.
+     - **Web-only / no-image environment**: if assets cannot be displayed, **do not ask asset-required items** — ask a full-text item instead.
 2. **Grade by the six quiz types**:
    - `choice` — compare against the `answer` option.
    - `subjective` — keyword-coverage grading: pass if the answer covers the item's `keywords` and key steps; accept equivalent wording; report coverage feedback.
@@ -54,3 +58,4 @@ Pull chapter/phase-scoped items from `references/quiz_bank.json`, present one it
 ## Boundaries
 - When the bank holds relevant items, do not write your own. With no stored answer, do not force a verdict — mark ⚠️ or state the limitation plainly.
 - Do not judge diagram items from memory — the algorithm-derived standard structure is the reference.
+- **Fail-closed on assets**: never ask an item whose `requires_assets=true` when a required asset is missing, unreadable, or cannot be displayed (e.g. web-only). A blocked item is skipped, not improvised — choose a full-text item instead. The validator (`scripts/validate_workspace.py`) rejects a workspace whose `requires_assets` item lacks valid asset files, so a clean workspace won't reach you in that state.

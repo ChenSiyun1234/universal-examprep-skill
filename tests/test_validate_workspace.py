@@ -361,6 +361,144 @@ class TestValidateWorkspace(unittest.TestCase):
         errors, _, _, code = run("does_not_exist_dir")
         self.assertEqual(code, 2)
 
+    # ---- P0A: asset-aware quiz schema + fail-closed ----
+    def _asset_item(self, **over):
+        item = {"id": "aq", "chapter": 1, "type": "diagram", "diagram_type": "venn",
+                "question": "Shade the requested Venn regions.", "answer": "...", "source": "material",
+                "source_file": "ch01.pdf", "source_pages": [12],
+                "answer_source_file": "ch01.pdf", "answer_source_pages": [13],
+                "assets": [{"path": "references/assets/a.png", "role": "question_context",
+                            "type": "page_image", "caption": "v"}],
+                "requires_assets": True, "question_text_status": "page_reference"}
+        item.update(over)
+        return item
+
+    def _ws_asset(self, item, create=True):
+        d = self.make_ws([item])
+        if create:
+            ap = os.path.join(d, "references", "assets", "a.png")
+            os.makedirs(os.path.dirname(ap), exist_ok=True)
+            open(ap, "wb").write(b"\x89PNG\r\n")   # validator checks existence, not image validity
+        return d
+
+    def test_p0a_old_quizbank_without_asset_fields_still_valid(self):
+        d = self.make_ws([self._ok_item(answer="A")])           # none of the new fields
+        self.assertEqual(V._exit_code(V.validate(d)[0]), 0)
+
+    def test_p0a_valid_assets_pass(self):
+        errors, _, _ = V.validate(self._ws_asset(self._asset_item()))
+        self.assertEqual(V._exit_code(errors), 0, err_text(errors))
+
+    def test_p0a_requires_assets_but_none_fails(self):
+        errors, _, _ = V.validate(self._ws_asset(self._asset_item(assets=[]), create=False))
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertIn("fail-closed", err_text(errors))
+
+    def test_p0a_missing_asset_file_fails_when_required(self):
+        errors, _, _ = V.validate(self._ws_asset(self._asset_item(), create=False))
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertIn("不存在", err_text(errors))
+
+    def test_p0a_asset_path_traversal_fails(self):
+        item = self._asset_item(assets=[{"path": "../outside.png", "role": "figure", "type": "page_image"}])
+        errors, _, _ = V.validate(self._ws_asset(item, create=False))
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertIn("穿越", err_text(errors))
+
+    def test_p0a_asset_absolute_path_fails(self):
+        item = self._asset_item(assets=[{"path": "/etc/x.png", "role": "figure", "type": "page_image"}])
+        errors, _, _ = V.validate(self._ws_asset(item, create=False))
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertIn("绝对路径", err_text(errors))
+
+    def test_p0a_asset_url_fetch_fails(self):
+        item = self._asset_item(assets=[{"path": "https://x/y.png", "role": "figure", "type": "page_image"}])
+        errors, _, _ = V.validate(self._ws_asset(item, create=False))
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertIn("URL", err_text(errors))
+
+    def test_p0a_asset_symlink_escape_fails(self):
+        d = self._ws_asset(self._asset_item())
+        link = os.path.join(d, "references", "assets", "a.png")
+        with mock.patch.object(V, "_is_symlink", side_effect=lambda p: p == link):
+            errors, _, _ = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertTrue(any("符号链接" in e["msg"] for e in errors))
+
+    def test_p0a_invalid_asset_role_fails(self):
+        item = self._asset_item(assets=[{"path": "references/assets/a.png", "role": "bogus",
+                                         "type": "page_image"}])
+        errors, _, _ = V.validate(self._ws_asset(item))
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertIn("role 非法", err_text(errors))
+
+    def test_p0a_invalid_asset_type_fails(self):
+        item = self._asset_item(assets=[{"path": "references/assets/a.png", "role": "figure",
+                                         "type": "bogus"}])
+        errors, _, _ = V.validate(self._ws_asset(item))
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertIn("type 非法", err_text(errors))
+
+    def test_p0a_source_pages_must_be_positive_ints(self):
+        for bad in ([0], [-1], ["12"], [1.5], [True], []):
+            errors, _, _ = V.validate(self._ws_asset(self._asset_item(source_pages=bad)))
+            self.assertEqual(V._exit_code(errors), 1, f"source_pages={bad!r} should fail")
+            self.assertIn("正整数", err_text(errors))
+
+    def test_p0a_stub_without_context_fails(self):
+        item = self._ok_item(answer="A", question_text_status="stub")   # no source_pages / assets
+        errors, _, _ = V.validate(self._ws_asset(item, create=False))
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertIn("stub", err_text(errors))
+
+    def test_p0a_page_reference_without_source_fails(self):
+        item = self._ok_item(answer="A", question_text_status="page_reference")  # no source_file/pages
+        errors, _, _ = V.validate(self._ws_asset(item, create=False))
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertIn("page_reference", err_text(errors))
+
+    def test_p0a_valid_page_reference_with_assets_passes(self):
+        # a page_reference item WITH source_file+source_pages+valid assets must not trip either
+        # the page_reference-missing-source error or the requires_assets fail-closed error
+        item = self._asset_item(question_text_status="page_reference")
+        errors, _, _ = V.validate(self._ws_asset(item))
+        self.assertEqual(V._exit_code(errors), 0, err_text(errors))
+        self.assertNotIn("page_reference", err_text(errors))
+        self.assertNotIn("fail-closed", err_text(errors))
+
+    def test_p0a_requires_false_with_assets_is_valid(self):
+        item = self._asset_item(requires_assets=False, question_text_status="full")
+        errors, _, _ = V.validate(self._ws_asset(item))
+        self.assertEqual(V._exit_code(errors), 0, err_text(errors))
+
+    def test_p0a_requires_true_on_non_diagram_type_is_valid(self):
+        item = self._asset_item(type="subjective", keywords=["x"])   # not a diagram, but figure-dependent
+        errors, _, _ = V.validate(self._ws_asset(item))
+        self.assertEqual(V._exit_code(errors), 0, err_text(errors))
+
+    def test_p0a_fixture_venn_item_validates(self):
+        errors, warnings, stats, code = run("valid_workspace_assets")
+        self.assertEqual(code, 0, err_text(errors))
+        self.assertEqual(stats.get("quiz_types", {}).get("diagram"), 1)
+
+    def test_p0a_examquiz_skill_has_failclosed_rule(self):
+        with open(os.path.join(ROOT, "skills", "exam-quiz", "SKILL.md"), encoding="utf-8") as f:
+            txt = f.read()
+        self.assertIn("requires_assets", txt)
+        self.assertIn("fail-closed", txt)
+
+    def test_p0a_fileformat_documents_asset_fields(self):
+        with open(os.path.join(ROOT, "docs", "file-format.md"), encoding="utf-8") as f:
+            txt = f.read()
+        for field in ("requires_assets", "question_text_status", "source_pages", "assets"):
+            self.assertIn(field, txt)
+
+    def test_p0a_no_new_dependencies(self):
+        with open(os.path.join(ROOT, "scripts", "validate_workspace.py"), encoding="utf-8") as f:
+            src = f.read()
+        for dep in ("pypdf", "pdfplumber", "pypdfium", "import requests", "import numpy", "import PIL"):
+            self.assertNotIn(dep, src)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

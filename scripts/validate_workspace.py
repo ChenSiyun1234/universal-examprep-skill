@@ -26,6 +26,13 @@ SAFE_WIKI = re.compile(r"^[\w.\-]+\.md$")
 WIKI_REF_RE = re.compile(r"([.\\/]*references/wiki/[\w.\-/\\]+)")
 TRUE_FALSE_OK = {"true", "false", "t", "f", "yes", "no", "真", "假", "对", "错", "是", "否"}
 
+# P0A: asset-aware quiz fields. A real EEC-160 test hit lecture Quiz/Example items that depend on a
+# slide figure (e.g. a Venn diagram). The bank must be able to attach the source page/image, and the
+# validator + quiz must fail-closed: never ask a diagram/figure-dependent item without its context.
+ASSET_ROLES = {"question_context", "answer_context", "figure", "table", "diagram", "worked_solution"}
+ASSET_TYPES = {"page_image", "crop_image", "diagram", "table_image", "other_image"}
+QUESTION_TEXT_STATUS = {"full", "stub", "page_reference"}
+
 
 def _read(path):
     with open(path, "r", encoding="utf-8") as f:
@@ -42,6 +49,31 @@ def _is_symlink(p):
     # CPython <3.10 posixpath.realpath() itself calls os.path.islink, so mocking os.path.islink would
     # make realpath() try os.readlink() on a non-link and raise OSError (EINVAL) on Linux/py3.8.
     return os.path.islink(p)
+
+
+def _asset_safety(ws, p):
+    """Path-safety for a quiz asset. Return (full_path_or_None, reason_or_None).
+    full=None means the path string itself is malformed (non-string / abs / .. / URL).
+    Paths are built from the raw `ws` (like the wiki checks); containment is realpath-based."""
+    if not isinstance(p, str) or not p.strip():
+        return None, "path 须为非空字符串"
+    norm = p.replace("\\", "/")
+    if "://" in norm:
+        return None, "不得用 URL / 网络抓取（assets 必须是工作区内的本地文件）"
+    if norm.startswith("/") or (len(norm) >= 2 and norm[1] == ":"):
+        return None, "不得用绝对路径"
+    segs = [s for s in norm.split("/") if s not in ("", ".")]
+    if ".." in segs:
+        return None, "不得含 .. 路径穿越"
+    full = os.path.join(ws, *segs)
+    if _is_symlink(full):
+        return full, "asset 不得为符号链接（可能指向工作区外）"
+    # normcase both sides so a Windows casing difference doesn't falsely reject a contained asset
+    ws_real = os.path.normcase(os.path.realpath(ws))
+    real = os.path.normcase(os.path.realpath(full))
+    if real != ws_real and not real.startswith(ws_real + os.sep):
+        return full, "asset 经符号链接 / 父目录逃出工作区"
+    return full, None
 
 
 def validate(ws):
@@ -217,6 +249,50 @@ def validate(ws):
                 if a is not None and not (isinstance(a, bool) or str(a).strip().lower() in TRUE_FALSE_OK):
                     # a present-but-non-boolean answer has no usable gold -> error (missing answer stays a warning)
                     err(f"{tag} true_false 的 answer 必须是布尔型（true/false/真/假/对/错），当前 {a!r}")
+
+            # ---- asset-aware fields (P0A): fail-closed on diagram/figure/table-dependent items ----
+            requires = bool(q.get("requires_assets"))
+            for pf in ("source_pages", "answer_source_pages"):
+                pv = q.get(pf)
+                if pv is not None and not (isinstance(pv, list) and pv and all(
+                        isinstance(x, int) and not isinstance(x, bool) and x > 0 for x in pv)):
+                    err(f"{tag} {pf} 必须是非空的正整数列表（页码，从 1 起），当前 {pv!r}")
+            assets = q.get("assets")
+            asset_ok = 0
+            if assets is not None and not isinstance(assets, list):
+                err(f"{tag} assets 必须是数组")
+                assets = []
+            for ai, a in enumerate(assets or []):
+                if not isinstance(a, dict):
+                    err(f"{tag} assets[{ai}] 必须是对象（含 path/role/type/caption）")
+                    continue
+                role, atype, apath = a.get("role"), a.get("type"), a.get("path")
+                if role is not None and role not in ASSET_ROLES:
+                    err(f"{tag} assets[{ai}] role 非法: {role!r}（应为 {sorted(ASSET_ROLES)}）")
+                if atype is not None and atype not in ASSET_TYPES:
+                    err(f"{tag} assets[{ai}] type 非法: {atype!r}（应为 {sorted(ASSET_TYPES)}）")
+                full, unsafe = _asset_safety(ws, apath)
+                if unsafe:
+                    err(f"{tag} assets[{ai}] 不安全的 path: {unsafe}（{apath!r}）")
+                elif not os.path.isfile(full):
+                    if requires:
+                        err(f"{tag} assets[{ai}] 必需资源文件不存在: {apath}（requires_assets=true 必须存在）")
+                    else:
+                        warn(f"{tag} assets[{ai}] 资源文件不存在: {apath}（建议补齐 references/assets/ 下的文件）")
+                else:
+                    asset_ok += 1
+            if requires and not (isinstance(assets, list) and assets):
+                err(f"{tag} requires_assets=true 但缺 assets——依赖图/表/Venn 的题没有上下文，"
+                    "测验须 fail-closed（不可在不显示该图的情况下出此题）")
+            elif requires and asset_ok == 0:
+                err(f"{tag} requires_assets=true 但没有任何有效（安全且存在）的 asset，须 fail-closed")
+            qts = q.get("question_text_status")
+            if qts is not None and qts not in QUESTION_TEXT_STATUS:
+                err(f"{tag} question_text_status 非法: {qts!r}（应为 {sorted(QUESTION_TEXT_STATUS)}）")
+            if qts == "stub" and not (q.get("source_pages") or assets):
+                err(f"{tag} question_text_status=stub 必须至少有 source_pages 或 assets 之一（否则题面不完整、无法独立成题）")
+            if qts == "page_reference" and not (q.get("source_file") and q.get("source_pages")):
+                err(f"{tag} question_text_status=page_reference 必须有 source_file + source_pages（指向原始页）")
 
             # provenance + answer presence
             src = q.get("source")

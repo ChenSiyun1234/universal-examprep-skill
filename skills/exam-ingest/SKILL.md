@@ -30,6 +30,7 @@ Activate when the workspace is missing — that is, any of `references/wiki/`, `
 
 ## Output Contract
 - Produce the standard workspace: `references/wiki/`, `references/quiz_bank.json`, `study_plan.md`, `study_progress.md`.
+- The quiz_bank schema supports **asset-aware fields** for **image-dependent lecture questions** (e.g. a Venn diagram shown on a slide, a page figure/table): `source_file`/`source_pages`, `assets` (under `references/assets/`), `requires_assets`, `question_text_status`. When a question depends on a figure that isn't transcribed into text, attach a source-page reference and/or an asset and set `requires_assets=true` so the tutor never asks it without the figure. These fields are **optional and backward-compatible** (old banks stay valid); the PDF scanner emits them (a later capability). See [`docs/file-format.md`](../../docs/file-format.md) §4.
 - Emit one setup-receipt line, then hand control back to `exam-cram` for step two (teaching).
 - Student-facing output defaults to Simplified Chinese unless the user asks otherwise. The cold-start receipt follows this default; see [`docs/language-policy.md`](../../docs/language-policy.md).
 

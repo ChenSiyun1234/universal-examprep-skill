@@ -70,3 +70,51 @@
 
 > 这些字段与 [`templates/quiz_bank_template.json`](../templates/quiz_bank_template.json) 一致；`ingest.py` 的 `VALID_QUIZ_TYPES`
 > 定义了上述 6 类。本规范在其基础上补充了各题型的可选字段与来源校验，供 `validate_workspace.py` 静态检查使用，**不改变既有生成逻辑**。
+
+## 4. 资源依赖与原页引用 (asset-aware fields)
+
+讲义里很多 **Quiz / Example** 题依赖一张图：文氏图（Venn）、页内插图、表格等。题面文字本身不足以独立成题——**不显示那张图，学生根本无法作答**。为此题库项新增一组**可选、向后兼容**字段（老题库不带这些字段仍然有效）。配套的 **PDF 扫描器在下一个 PR（P0B）产出这些字段**；本规范只定义数据模型与安全规则，并让校验器 / 出题**fail-closed**。
+
+### 题项新增可选字段
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `source_file` | string | 题面所在原始文件（如 `ch01.pdf`） |
+| `source_pages` | list[int] | 题面所在页码（**正整数，从 1 起**） |
+| `answer_source_file` | string | 答案所在原始文件 |
+| `answer_source_pages` | list[int] | 答案所在页码（正整数） |
+| `assets` | list[asset] | 题目/答案依赖的图片等资源，见下 |
+| `requires_assets` | bool | 为 `true` 时：**没有有效 asset 就不能出这道题**（校验器报错、出题跳过） |
+| `question_text_status` | `"full"` \| `"stub"` \| `"page_reference"` | 题面完整度：`full` 可独立成题；`stub` 题面残缺、须配 `source_pages` 或 `assets`；`page_reference` 题面是“见某页”、须有 `source_file`+`source_pages`（依赖图时还须有效 assets） |
+
+### asset 对象
+
+```json
+{
+  "path": "references/assets/ch01_p012_quiz_1_1.png",
+  "role": "question_context",
+  "type": "page_image",
+  "caption": "Venn diagram for Quiz 1.1"
+}
+```
+
+- **role** ∈ `question_context` / `answer_context` / `figure` / `table` / `diagram` / `worked_solution`
+- **type** ∈ `page_image` / `crop_image` / `diagram` / `table_image` / `other_image`
+
+### 路径安全规则（校验器强制）
+
+- 必须是**相对路径**，且停留在工作区内；**推荐放 `references/assets/`** 下。
+- **禁止**：绝对路径、`..` 穿越、URL/网络抓取、符号链接逃出工作区。
+- `requires_assets=true` 时：`assets` 非空，且每个 asset 路径安全、**文件必须真实存在**（缺失是**错误**不是告警）。
+- `requires_assets=false` 但带了 assets：合法；asset 文件缺失只**告警**。
+- `requires_assets=true` 而题型不是 `diagram` 也合法——很多文字题同样依赖一张表/图/Venn。
+
+### 校验逻辑小结
+
+| 情形 | 结果 |
+| --- | --- |
+| 老题库（不带这些字段） | ✅ 有效（向后兼容） |
+| `requires_assets=true` 但无 assets / asset 缺失 / 路径不安全 | ❌ 错误（fail-closed） |
+| `question_text_status=stub` 但无 `source_pages` 且无 `assets` | ❌ 错误 |
+| `question_text_status=page_reference` 但缺 `source_file`/`source_pages` | ❌ 错误 |
+| asset `role`/`type` 取值非法、`source_pages` 非正整数 | ❌ 错误 |
