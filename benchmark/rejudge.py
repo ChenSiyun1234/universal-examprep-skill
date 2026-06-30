@@ -107,16 +107,16 @@ def unified_rows(course):
                     and (d["model"], d["id"]) in rerun:
                 ans = rerun[(d["model"], d["id"])]                 # patch error with a clean rerun
             rows.append({"course": "algo", "tag": d["tag"], "model": d["model"],
-                         "arm": d["arm"], "id": d["id"], "answer": ans})
+                         "arm": d["arm"], "id": d["id"], "answer": ans, "cost": d.get("cost")})
         for d in gen:                                              # NEW: fair no-skill agentic arm
             if d["course"] == "algo" and d["arm"] == "rawfiles":
-                rows.append({"course": "algo", "tag": "matrix", "model": d["model"],
-                             "arm": "rawfiles", "id": d["id"], "answer": d.get("answer", "")})
+                rows.append({"course": "algo", "tag": "matrix", "model": d["model"], "arm": "rawfiles",
+                             "id": d["id"], "answer": d.get("answer", ""), "cost": d.get("cost")})
     if course in ("psyc", "both"):
         for d in gen:                                              # REAL psyc answers, 3 arms x 3 models
             if d["course"] == "psyc":
-                rows.append({"course": "psyc", "tag": "psyc", "model": d["model"],
-                             "arm": d["arm"], "id": d["id"], "answer": d.get("answer", "")})
+                rows.append({"course": "psyc", "tag": "psyc", "model": d["model"], "arm": d["arm"],
+                             "id": d["id"], "answer": d.get("answer", ""), "cost": d.get("cost")})
     return rows
 
 
@@ -170,12 +170,17 @@ def export_rows(row, item, sc, infra=False):
     `answerable`); `sc` is the per-item judge verdict (or the infra placeholder). This is the
     committed bridge between rejudge/judge and aggregate_matrix.py: the score row carries exactly
     the fields aggregate_matrix consumes, and the answer row is keyed identically so the join is
-    1:1 (no orphans / missing rows). `scored_by` preserves the judge's own label
+    1:1 (no orphans / missing rows). The answer row also carries `status` ("infra_error"/"ok") and,
+    when the source row has one, the per-answer `cost_usd` — so the aggregator can exclude infra
+    failures and report real costs (not a fake $0). `scored_by` preserves the judge's own label
     (lexical/llm/judge_error/infra_error) and falls back to "deterministic" for the unlabeled
     deterministic paths (numeric / unanswerable-abstention)."""
     answerable = bool(item.get("answerable", True))
     base = {"course": row["course"], "model": row["model"], "arm": row["arm"], "item_id": row["id"]}
     answer_row = dict(base, answerable=answerable, status=("infra_error" if infra else "ok"))
+    cost = row.get("cost")                              # carry the per-answer generation cost through
+    if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+        answer_row["cost_usd"] = cost                  # so the bridge's cost_per_q/totals aren't a fake $0
     score_row = dict(
         base,
         answerable=answerable,
@@ -203,11 +208,19 @@ def main():
                     help="把每题判分导出为 aggregate_matrix.py 可读的 score 行 JSONL（显式路径；零成本，"
                          "deterministic 模式不调用 LLM；只导出 matrix/psyc 单元格，不含 conv_* 收敛轮）")
     ap.add_argument("--answers-out", default=None,
-                    help="可选：同时导出与 score 行严格按 (course,model,arm,item_id) 对齐的 answer 行 "
-                         "JSONL（喂给 aggregate_matrix.py --answers，避免原生 answer 行 schema 不匹配）")
+                    help="与 score 行严格按 (course,model,arm,item_id) 对齐的 answer 行 JSONL（带 "
+                         "status/cost_usd）；用 --scores-out 时【必填】，aggregate_matrix.py 靠它排除 "
+                         "infra 失败并统计成本")
     args = ap.parse_args()
     if args.deterministic and args.llm:
         sys.stderr.write("rejudge: --deterministic 与 --llm 互斥（确定性是默认；要 LLM 复判就只给 --llm）\n")
+        raise SystemExit(2)
+    if args.scores_out and not args.answers_out:
+        # the bridge must emit BOTH halves: the answer row carries status (infra_error) + cost_usd that
+        # aggregate_matrix.py needs. Pairing --scores-out with native answer rows (no status) would make
+        # the aggregator miss infra exclusions and costs — so require the aligned answer export too.
+        sys.stderr.write("rejudge: --scores-out 需同时给 --answers-out——导出的 answer 行带 status/cost，"
+                         "aggregate_matrix.py 要靠它排除 infra 失败并统计成本；缺了会把失败误计为可答题\n")
         raise SystemExit(2)
 
     gold = {"algo": load_gold(ALGO_GOLD), "psyc": load_gold(PSYC_GOLD)}
@@ -231,8 +244,13 @@ def main():
             return                         # collide on (course,model,arm,item_id), so exclude them
         a_row, s_row = export_rows(row, item, sc, infra)
         ek = (a_row["course"], a_row["model"], a_row["arm"], a_row["item_id"])
-        if ek in exported:                 # defensive: aggregate_matrix.py rejects duplicate keys
-            return
+        if ek in exported:
+            # FAIL LOUD, never silently drop: rejudge.aggregate() counts the duplicate while a silent
+            # skip would omit it from the export, so the export→aggregate path would disagree with
+            # summary_corrected.json. (aggregate_matrix.py also rejects duplicate keys.)
+            sys.stderr.write("rejudge: 导出时遇到重复 (course,model,arm,item_id)=%s——"
+                             "输入里有重复行，请先去重再导出\n" % (ek,))
+            raise SystemExit(2)
         exported.add(ek)
         n_exported[0] += 1
         if answers_out:

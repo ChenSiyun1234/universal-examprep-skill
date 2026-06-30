@@ -9,7 +9,7 @@
 | 阶段 | 脚本 | 说明 |
 | --- | --- | --- |
 | 生成 | `benchmark/gen.py` | **增量/补洞**助手：依赖既有 `answers.jsonl` 填补缺失格，**不是**一键全矩阵生成器。 |
-| 判分 | `benchmark/judge.py` / `benchmark/rejudge.py` | 数值精确比对 + lexical exact-match + 弃答；可选 LLM 复判（缓存）。`rejudge.py` 内含 `aggregate()` 单元格逻辑，但与判分/读 `results/` 耦合。**T3.1 起** `rejudge.py` 支持 `--scores-out`（可选 `--answers-out`）零成本导出 `aggregate_matrix.py` 可读的 score/answer 行——判分与聚合之间的桥。 |
+| 判分 | `benchmark/judge.py` / `benchmark/rejudge.py` | 数值精确比对 + lexical exact-match + 弃答；可选 LLM 复判（缓存）。`rejudge.py` 内含 `aggregate()` 单元格逻辑，但与判分/读 `results/` 耦合。**T3.1 起** `rejudge.py` 支持 `--scores-out`（**须同时给 `--answers-out`**）零成本导出 `aggregate_matrix.py` 可读的 score/answer 行（answer 行带 `status`/`cost_usd`）——判分与聚合之间的桥。 |
 | **聚合** | **`benchmark/aggregate_matrix.py`（T3 新增）** | **显式**读 answer/score 行 → `summary.json` 兼容的矩阵 summary。纯标准库、确定性、无网络/LLM。 |
 | 渲染 | `benchmark/report_matrix.py` | summary → 中英双语 `report.html` + 图表 SVG。T3 起支持 `--summary` / `--out-dir`。 |
 
@@ -86,7 +86,7 @@ python benchmark/report_matrix.py \
 
 几点必须讲清：
 
-- **score-row 导出是桥**：`rejudge.py --scores-out`（可选 `--answers-out`）把每题判分规整成 `aggregate_matrix.py` 所需字段（`answerable` 从金标带出，`scored_by` 保留判分自己的标签 lexical/llm/judge_error/infra_error），**只导出 matrix/psyc 单元格**（不含 `conv_*` 收敛轮，避免 `(course,model,arm,item_id)` 键冲突）；默认不开启、零成本、不调 LLM、不写 `results/**`。
+- **score-row 导出是桥**：`rejudge.py --scores-out`（**必须同时给 `--answers-out`**）把每题判分规整成 `aggregate_matrix.py` 所需字段（`answerable` 从金标带出，`scored_by` 保留判分自己的标签 lexical/llm/judge_error/infra_error），并把 **answer 行的 `status`（infra_error）与 `cost_usd`** 一并带出——否则聚合器会把 infra 失败误计为可答题、把成本算成 `$0`。**只导出 matrix/psyc 单元格**（不含 `conv_*` 收敛轮，避免 `(course,model,arm,item_id)` 键冲突；遇到重复键**大声报错**，不静默丢弃）；默认不开启、零成本、不调 LLM、export 只写显式路径。
 - **`summary_corrected.json` 不能直接渲染**：`rejudge.py` 默认仍写它原本的 `summary_corrected.json`（嵌套 `algo`/`psyc` 结构），那份形状与 `report_matrix.py` 读的顶层 `matrix`/`n_items` **不同**，**不能**直接 `--summary summary_corrected.json` 喂给渲染器；要走 `--scores-out → aggregate_matrix.py` 才能得到渲染器可读的 summary。
 - **自定义 summary 必须用 `--out-dir`**：渲染**自定义** `--summary` 时不带 `--out-dir`（即落到默认 `results/matrix/`）会被**拒绝**（退出码 2），以免覆盖已发布的 `results/matrix/report.html`；请始终指到别处。
 

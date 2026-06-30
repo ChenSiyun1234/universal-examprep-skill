@@ -23,6 +23,11 @@ def _run_agg(args):
                           capture_output=True, text=True, encoding="utf-8")
 
 
+def _run(argv):
+    # run any benchmark script (argv[0] is the script path) under the same interpreter
+    return subprocess.run([sys.executable] + argv, capture_output=True, text=True, encoding="utf-8")
+
+
 class AggregateMatrix(unittest.TestCase):
     def _aggregate(self):
         out = os.path.join(tempfile.mkdtemp(), "s.json")
@@ -344,6 +349,62 @@ class AggregateMatrix(unittest.TestCase):
         self.assertEqual(sr2["scored_by"], "infra_error")
         _, sr3 = RJ.export_rows(row, {"id": "x", "answerable": True}, {"correct": True}, False)
         self.assertEqual(sr3["scored_by"], "deterministic")       # unlabeled deterministic path
+
+    def test_rejudge_export_rows_carry_cost(self):
+        # the per-answer generation cost must survive the bridge → real cost_per_q / totals, not a fake $0
+        try:
+            import rejudge as RJ
+        except Exception as e:   # pragma: no cover
+            self.skipTest("rejudge import unavailable: %s" % e)
+        row = {"course": "algo", "model": "haiku", "arm": "skill", "id": "i1", "cost": 0.07}
+        ar, sr = RJ.export_rows(row, {"id": "i1", "answerable": True}, {"correct": True}, False)
+        self.assertAlmostEqual(ar["cost_usd"], 0.07, places=4)    # cost carried onto the answer row
+        d = tempfile.mkdtemp()
+        a, sc = os.path.join(d, "a.jsonl"), os.path.join(d, "s.jsonl")
+        with open(a, "w", encoding="utf-8") as af, open(sc, "w", encoding="utf-8") as sf:
+            af.write(json.dumps(ar, ensure_ascii=False) + "\n")
+            sf.write(json.dumps(sr, ensure_ascii=False) + "\n")
+        out = os.path.join(d, "s.json")
+        A.main(["--answers", a, "--scores", sc, "--out", out])
+        with open(out, encoding="utf-8") as f:
+            summ = json.load(f)
+        self.assertAlmostEqual(summ["total_cost_usd"], 0.07, places=4)        # flows into totals
+        self.assertAlmostEqual(summ["cost_per_q"]["algo"]["skill"], 0.07, places=4)
+        # a row with NO cost omits cost_usd (aggregator defaults 0) — honest, no crash
+        ar2, _ = RJ.export_rows({"course": "algo", "model": "m", "arm": "skill", "id": "x"},
+                                {"id": "x", "answerable": True}, {"correct": True}, False)
+        self.assertNotIn("cost_usd", ar2)
+
+    def test_rejudge_scores_out_requires_answers_out(self):
+        # the bridge must emit BOTH halves; --scores-out alone is refused (the answer row carries the
+        # status/cost the aggregator needs). Fires on arg validation BEFORE any private file is read.
+        r = _run([os.path.join(BENCH, "rejudge.py"), "--scores-out",
+                  os.path.join(tempfile.mkdtemp(), "s.jsonl")])
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("--answers-out", r.stderr)
+
+    def test_rejudge_export_fails_loud_on_duplicate_rows(self):
+        # a duplicate (course,model,arm,item_id) in the source rows must FAIL LOUD on export — never a
+        # silent drop that would diverge from rejudge.aggregate()'s own (duplicate-counting) output.
+        try:
+            import rejudge as RJ
+        except Exception as e:   # pragma: no cover
+            self.skipTest("rejudge import unavailable: %s" % e)
+        from unittest import mock
+        dup = [{"course": "algo", "tag": "matrix", "model": "m", "arm": "skill", "id": "d1", "answer": "x"},
+               {"course": "algo", "tag": "matrix", "model": "m", "arm": "skill", "id": "d1", "answer": "y"}]
+        gold_item = {"id": "d1", "answerable": True, "answer_type": "factual",
+                     "question": "q?", "gold_answer": "zzz", "supporting_span": "s"}
+        d = tempfile.mkdtemp()
+        argv = ["rejudge.py", "--scores-out", os.path.join(d, "s.jsonl"),
+                "--answers-out", os.path.join(d, "a.jsonl")]
+        with mock.patch.object(RJ, "unified_rows", return_value=dup), \
+                mock.patch.object(RJ, "load_gold",
+                                  side_effect=lambda p: {"d1": gold_item} if "algo" in p else {}), \
+                mock.patch.object(sys, "argv", argv):
+            with self.assertRaises(SystemExit) as cm:
+                RJ.main()
+        self.assertEqual(cm.exception.code, 2)
 
     def test_accepts_gen_row_aliases(self):
         # gen.py answer rows use `id`/`cost`; judge score dicts use `id` — aliased to item_id/cost_usd
