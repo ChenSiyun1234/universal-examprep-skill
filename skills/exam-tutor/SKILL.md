@@ -68,4 +68,4 @@ Teach exactly one current wiki chapter. Explain concepts with real-life metaphor
 - Do not present AI additions as the teacher's words.
 - Do not skip "先跑算法" (run the algorithm first) and freehand a diagram from imagination.
 - Do not quiz or score; that is `exam-quiz`'s job.
-- For a key question (重点题) that depends on a figure/diagram (`requires_assets=true`), show the attached asset first; do not present such an item without its context (fail-closed). See [`exam-quiz`](../exam-quiz/SKILL.md) and [`docs/file-format.md`](../../docs/file-format.md) §4.
+- For a key question (重点题) that depends on a figure/diagram, **render/show the figure inline first** (don't just print its path): this covers `requires_assets=true` items AND `question_text_status` `stub`/`page_reference` items (whose text isn't standalone). If the figure can't be shown — no asset, the original file isn't in the workspace, or a web/no-image environment — **do not teach that item as if its prompt were complete**; say its context is missing and move on (fail-closed). See [`exam-quiz`](../exam-quiz/SKILL.md) and [`docs/file-format.md`](../../docs/file-format.md) §4.
