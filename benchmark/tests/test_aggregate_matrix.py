@@ -166,6 +166,55 @@ class AggregateMatrix(unittest.TestCase):
         self.assertEqual(cell["correct"], 0.5)        # 1 of 2 correct — 0/1 handled like booleans
         self.assertEqual(cell["hallucination"], 0.5)
 
+    def test_answerable_resolved_from_score_when_absent_on_answer(self):
+        # the documented gen.py→judge path: answer rows carry NO `answerable`; it arrives on the score.
+        # The aggregator must read it off the score and still apply the answerable/OOS bookkeeping.
+        d = tempfile.mkdtemp()
+        a, sc = os.path.join(d, "a.jsonl"), os.path.join(d, "s.jsonl")
+        with open(a, "w", encoding="utf-8") as f:   # NO answerable on either answer row
+            f.write(json.dumps({"course": "c", "model": "m", "arm": "skill", "id": "q1"}) + "\n")
+            f.write(json.dumps({"course": "c", "model": "m", "arm": "skill", "id": "o1"}) + "\n")
+        with open(sc, "w", encoding="utf-8") as f:   # answerable lives here
+            f.write(json.dumps({"course": "c", "model": "m", "arm": "skill", "id": "q1",
+                                "answerable": True, "correct": True}) + "\n")
+            f.write(json.dumps({"course": "c", "model": "m", "arm": "skill", "id": "o1",
+                                "answerable": False, "abstained": True}) + "\n")
+        out = os.path.join(d, "s.json")
+        A.main(["--answers", a, "--scores", sc, "--out", out])
+        with open(out, encoding="utf-8") as f:
+            cell = json.load(f)["matrix"]["m|skill"]
+        self.assertEqual(cell["n_answerable"], 1)        # q1 answerable read off its score
+        self.assertEqual(cell["n_oos"], 1)               # o1 OOS read off its score
+        self.assertEqual(cell["correct"], 1.0)
+        self.assertEqual(cell["abstention_oos"], 1.0)
+
+    def test_answerable_missing_everywhere_fails_loud(self):
+        # if NEITHER the answer nor the score carries `answerable`, the item's universe is undefined —
+        # must fail loudly rather than silently guess answerable/OOS.
+        d = tempfile.mkdtemp()
+        a, sc = os.path.join(d, "a.jsonl"), os.path.join(d, "s.jsonl")
+        with open(a, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"course": "c", "model": "m", "arm": "skill", "id": "q1"}) + "\n")
+        with open(sc, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"course": "c", "model": "m", "arm": "skill", "id": "q1", "correct": True}) + "\n")
+        r = _run_agg(["--answers", a, "--scores", sc, "--out", os.path.join(d, "o.json")])
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("answerable", r.stderr)
+
+    def test_faithfulness_out_of_range_fails(self):
+        # faithfulness is a rate in [0,1]; a malformed/custom scorer writing 1.5 must FAIL, not be
+        # averaged into a >100% faithfulness rate.
+        d = tempfile.mkdtemp()
+        a, sc = os.path.join(d, "a.jsonl"), os.path.join(d, "s.jsonl")
+        with open(a, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"course": "c", "model": "m", "arm": "skill", "item_id": "q", "answerable": True}) + "\n")
+        with open(sc, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"course": "c", "model": "m", "arm": "skill", "item_id": "q",
+                                "correct": True, "faithfulness": 1.5}) + "\n")
+        r = _run_agg(["--answers", a, "--scores", sc, "--out", os.path.join(d, "o.json")])
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("faithfulness", r.stderr)
+
     def test_accepts_gen_row_aliases(self):
         # gen.py answer rows use `id`/`cost`; judge score dicts use `id` — aliased to item_id/cost_usd
         d = tempfile.mkdtemp()
@@ -271,6 +320,18 @@ class ReportMatrixExplicitSummary(unittest.TestCase):
         self.assertIn("material", html)            # the summary's OWN material arm rendered
         self.assertNotIn("98%", html)              # no hard-coded published PSYC conclusion
         self.assertNotIn("kappa", html.lower())    # no published narrative leaks into a custom render
+
+    def test_custom_summary_to_default_outdir_refuses(self):
+        # rendering a CUSTOM --summary with no --out-dir would overwrite the committed published
+        # results/matrix/report.html — must refuse (exit 2) and leave the published report untouched.
+        committed = os.path.join(BENCH, "results", "matrix", "report.html")
+        before = os.path.getmtime(committed) if os.path.isfile(committed) else None
+        r = subprocess.run([sys.executable, os.path.join(BENCH, "report_matrix.py"), "--summary", EXP],
+                           capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("覆盖已发布报告", r.stderr)
+        after = os.path.getmtime(committed) if os.path.isfile(committed) else None
+        self.assertEqual(before, after)            # published report not clobbered
 
 
 if __name__ == "__main__":

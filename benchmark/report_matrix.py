@@ -305,12 +305,15 @@ def main(argv=None):
     ap.add_argument("--out-dir", default=OUT, help="输出目录（默认 results/matrix/）")
     args = ap.parse_args(argv)
     out_dir = args.out_dir
+    explicit = os.path.abspath(args.summary) != os.path.abspath(os.path.join(OUT, "summary.json"))
+    # rendering a CUSTOM --summary into the default results/matrix/ would overwrite the committed
+    # published report — refuse and require --out-dir for any explicit summary.
+    if explicit and os.path.abspath(out_dir) == os.path.abspath(OUT):
+        sys.stderr.write("report_matrix: 用自定义 --summary 渲染到默认 results/matrix/ 会覆盖已发布报告；"
+                         "请用 --out-dir 指定其他目录。\n")
+        return 2
     os.makedirs(out_dir, exist_ok=True)
     S = json.load(open(args.summary, encoding="utf-8"))
-    # the HTML prose is the PUBLISHED MIT 6.006 / PSYC story; an explicit non-default --summary (fixture
-    # / custom aggregate) reuses that template with DIFFERENT numbers → banner it so it's never mistaken
-    # for the published benchmark.
-    explicit = os.path.abspath(args.summary) != os.path.abspath(os.path.join(OUT, "summary.json"))
     if not explicit:
         _write_standalone_svgs(S, out_dir)   # the README's published comparison charts — default render only
     css = ("body{max-width:860px;margin:0 auto;padding:24px 18px;color:#202124;"
@@ -348,6 +351,7 @@ def main(argv=None):
     path = os.path.join(out_dir, "report.html")
     open(path, "w", encoding="utf-8").write("\n".join(page))
     print("[+] 写出", path)
+    return 0
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

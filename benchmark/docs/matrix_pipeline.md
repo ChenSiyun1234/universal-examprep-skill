@@ -27,8 +27,8 @@
 
 ### 输入/输出 schema
 
-- **answers.jsonl**（题目全集 + 每次作答）：必需 `course, model, arm, item_id, answerable(bool)`；可选 `status`（`"ok"`/`"infra_error"`，默认 `ok`）、`cost_usd`。
-- **scores.jsonl**（判分）：必需 `course, model, arm, item_id`；可选 `correct(bool)`、`faithfulness(0..1)`、`hallucinated(bool)`、`abstained(bool)`、`judge_error(bool)`、`scored_by`。
+- **answers.jsonl**（题目全集 + 每次作答）：必需 `course, model, arm, item_id`；可选 `answerable`（`bool`/`0`/`1`——也可改放在对应的 score 行上，即本仓库 `gen.py→judge` 路径；但**至少**答案或判分其一必须给出，否则大声报错）、`status`（`"ok"`/`"infra_error"`，默认 `ok`）、`cost_usd`。`id`→`item_id`、`cost`→`cost_usd` 这两个本仓库行内别名也被接受。
+- **scores.jsonl**（判分）：必需 `course, model, arm, item_id`；可选 `correct`、`hallucinated`、`abstained`、`judge_error`（`bool` 或 `0`/`1`——`judge.py` 实际写整数）、`faithfulness`（数值，须在 `[0,1]` 内）、`answerable`、`scored_by`。
 - **summary（输出）**：`matrix`（主课程的 `model|arm` 单元格，渲染器读这块）、`course_matrix`（**通用**：每门课的单元格）、`cost_per_q`（课→臂的每题成本）、`psyc`（给 `--secondary-course` 的 renderer 兼容块）、`models/arms/courses/n_items/total_cost_usd/judge_model`。
 
 ### 诚实计数规则（与 `rejudge.aggregate()` 对齐）

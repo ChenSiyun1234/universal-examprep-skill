@@ -10,12 +10,13 @@ file inputs (never silently reads results/matrix/summary.json) and emits a fresh
     summary.json-compatible matrix summary
             ↓  report_matrix.py --summary <summary.json> --out-dir <dir>
 
-Inputs (JSONL, one JSON object per line):
-  --answers : the ITEM UNIVERSE + each answer attempt. Required: course, model, arm, item_id, answerable(bool).
-              Optional: status ("ok" | "infra_error", default "ok"), cost_usd (number, default 0).
-  --scores  : the JUDGMENTS. Required: course, model, arm, item_id. Optional judgment fields:
-              correct(bool), faithfulness(number 0..1), hallucinated(bool), abstained(bool),
-              judge_error(bool), scored_by(str, e.g. "lexical"/"llm").
+Inputs (JSONL, one JSON object per line). `id`→item_id and `cost`→cost_usd are accepted (this repo's
+gen.py / judge.py row shapes), and boolean flags accept JSON booleans OR 0/1 (judge.py emits integers):
+  --answers : the ITEM UNIVERSE + each answer attempt. Required: course, model, arm, item_id.
+              Optional: answerable (bool/0/1 — may instead live on the score row, the gen.py→judge path),
+              status ("ok" | "infra_error", default "ok"), cost_usd (number, default 0).
+  --scores  : the JUDGMENTS. Required: course, model, arm, item_id. Optional: correct, hallucinated,
+              abstained, judge_error (bool/0/1), faithfulness (number in [0,1]), answerable, scored_by.
 
 Honesty rules (mirrors benchmark/rejudge.aggregate() so fixture and real runs agree):
   - infra_error answers are EXCLUDED from correctness denominators (they are not model answers) but
@@ -35,7 +36,7 @@ import json
 import os
 import sys
 
-REQ_ANSWER = ("course", "model", "arm", "item_id", "answerable")
+REQ_ANSWER = ("course", "model", "arm", "item_id")   # `answerable` may instead live on the score row
 REQ_SCORE = ("course", "model", "arm", "item_id")
 
 
@@ -80,8 +81,20 @@ def _validate_score(s):
         if v is not None and not (isinstance(v, bool) or (isinstance(v, int) and v in (0, 1))):
             _die("scores %s 的 %s 必须是布尔值或 0/1（或省略/null），不能是 %r" % (_key(s), b, v))
     f = s.get("faithfulness")
-    if f is not None and (isinstance(f, bool) or not isinstance(f, (int, float))):
-        _die("scores %s 的 faithfulness 必须是数值（或省略/null），不能是 %r" % (_key(s), f))
+    if f is not None:
+        if isinstance(f, bool) or not isinstance(f, (int, float)):
+            _die("scores %s 的 faithfulness 必须是数值（或省略/null），不能是 %r" % (_key(s), f))
+        if not (0 <= f <= 1):
+            _die("scores %s 的 faithfulness 必须在 [0,1] 内，当前 %r" % (_key(s), f))
+
+
+def _as_bool(v):
+    """Coerce a flag to bool — accepts JSON booleans and 0/1 (judge.py emits integers); None passes through."""
+    if v is None or isinstance(v, bool):
+        return v
+    if isinstance(v, int) and v in (0, 1):
+        return bool(v)
+    return None  # caller treats this as 'unusable'
 
 
 def _alias_answer(d):
@@ -139,8 +152,6 @@ def merge_rows(answers, scores):
         if k in seen:
             _die("answers 中出现重复 (course,model,arm,item_id): %s" % (k,))
         seen.add(k)
-        if not isinstance(a["answerable"], bool):
-            _die("answers %s 的 answerable 必须是布尔值" % (k,))
         cost = a.get("cost_usd", 0) or 0
         if isinstance(cost, bool) or not isinstance(cost, (int, float)):
             _die("answers %s 的 cost_usd 必须是数值，当前 %r" % (k, cost))
@@ -149,26 +160,33 @@ def merge_rows(answers, scores):
             _die("answers %s 的 status 必须是 'ok' 或 'infra_error'，当前 %r" % (k, status))
         infra = status == "infra_error"
         s = score_by.get(k)
+        # `answerable` may live on the answer row OR (the documented gen.py→judge path) on the score row.
+        raw_ans = a["answerable"] if "answerable" in a else ((s or {}).get("answerable"))
+        if raw_ans is None:
+            _die("answers/scores %s 都没有 answerable（无法区分可答题/越界探针题）" % (k,))
+        answerable = _as_bool(raw_ans)
+        if answerable is None:
+            _die("answerable 必须是布尔或 0/1，%s 当前 %r" % (k, raw_ans))
         if s is not None:
             judge_error = bool(s.get("judge_error"))
             correct = s.get("correct")
         else:
-            judge_error = a["answerable"] and not infra
+            judge_error = answerable and not infra
             correct = None
         # a completed ANSWERABLE item with no usable verdict — whether the score row is MISSING or
         # PRESENT-but-undecided (judge_error, or no `correct` at all) — is counted NOT-correct: a
         # trustworthy lower bound. Neither a missing nor an undecided judgment may inflate correctness.
-        if a["answerable"] and not infra and (judge_error or correct is None):
+        if answerable and not infra and (judge_error or correct is None):
             judge_error, correct = True, False
         # symmetric lower bound for OOS: a completed out-of-scope item with no abstention verdict
         # (missing score, or a score without `abstained`) counts NOT-abstained — it never inflates
         # abstention_oos (i.e. we don't credit an unverified abstention).
         abstained = (s or {}).get("abstained")
-        if (not a["answerable"]) and not infra and abstained is None:
+        if (not answerable) and not infra and abstained is None:
             abstained = False
         merged.append({
             "course": a["course"], "model": a["model"], "arm": a["arm"], "item_id": str(a["item_id"]),
-            "answerable": a["answerable"], "infra_error": infra, "judge_error": judge_error,
+            "answerable": answerable, "infra_error": infra, "judge_error": judge_error,
             "correct": correct,
             "faithfulness": (s or {}).get("faithfulness"),
             "hallucinated": (s or {}).get("hallucinated"),
