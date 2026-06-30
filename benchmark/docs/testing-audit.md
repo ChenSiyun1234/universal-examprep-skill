@@ -15,7 +15,7 @@
 | **Tier 3** | 完整 benchmark（`gen.py` → 判分 → 矩阵报告） | ❌ | **昂贵**：单轮矩阵约几十美元 / 数小时 | 手动、临时触发 |
 | **Tier 4** | 长程漂移（long-horizon drift） | ❌ | 以天计额度 | **未来工作（future work）**，目前无 harness |
 
-**CI 现状**：`.github/workflows/ci.yml` 只有一步 `python -m unittest discover -s tests -v`，即只跑 Tier 0；全部零成本。README 的「日常开发与 CI 只跑 Tier 0–1」属轻微措辞超前——CI 实际只跑 Tier 0，Tier 1 的校验器逻辑由 Tier 0 单测覆盖，但 CLI 本身不是独立 CI 步骤。
+**CI 现状**：`.github/workflows/ci.yml` 只有一步 `python -m unittest discover -s tests -v`，即只跑 Tier 0；全部零成本。README 也已据此澄清为「CI 实际只跑 Tier 0」——Tier 1 校验器的逻辑由 Tier 0 单测在 `tests/fixtures/` 上覆盖，但该 CLI 本身不是独立 CI 步骤，也没有 `ingest → validate` 的集成步骤。
 
 ---
 
