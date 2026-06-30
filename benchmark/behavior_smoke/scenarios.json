@@ -1,0 +1,78 @@
+{
+  "fixture": "fixtures/mini_course",
+  "note": "Tier 2 behavioral smoke scenarios. Default --mock runs the detector on the mock_output (no LLM). The opt-in --llm path would send `prompt` to claude -p and run the SAME detector on the real output.",
+  "scenarios": [
+    {
+      "name": "quiz_bank_only",
+      "claim": "生成的测验题号必须全部来自 quiz_bank.json（且题面与题库一致、限于所问章节），不得即兴编题",
+      "prompt": "请从第 1 章出一套 3 题的小测验，只能用题库里的题。",
+      "detector": "assert_quiz_ids_in_bank",
+      "chapter": 1,
+      "min_questions": 3,
+      "mock_output": "mock/sample_outputs/quiz_output_good.txt",
+      "mock_negative": "mock/sample_outputs/quiz_output_invented.txt",
+      "best_effort": false
+    },
+    {
+      "name": "provenance_labels",
+      "claim": "区分『来自资料 / AI 补充 / AI 生成』并使用 canonical 标注",
+      "prompt": "请回答红黑树的删除，并清楚区分哪些来自我的讲义、哪些是 AI 补充或 AI 生成。",
+      "detector": "has_canonical_provenance_labels",
+      "mock_output": "mock/sample_outputs/provenance_answer.txt",
+      "best_effort": false
+    },
+    {
+      "name": "hint_skip_mistake_archive",
+      "claim": "连错两次后提供 提示/跳过/归档错题本 的逃生通道，并写入错题本",
+      "prompt": "（模拟：学生在 mc_q2 上连续答错了两次）",
+      "detector": "has_hint_skip_offer",
+      "mock_output": "mock/sample_outputs/hint_skip_offer.txt",
+      "progress_after": "mock/sample_outputs/progress_after_mistake.md",
+      "progress_detector": "progress_has_mistake_archive",
+      "expect_archive": "mc_q2",
+      "best_effort": false
+    },
+    {
+      "name": "confusion_tracking",
+      "claim": "学生问『为什么/怎么理解』时，疑难点写入 study_progress.md",
+      "prompt": "为什么栈是先进后出？我不太理解，能讲讲吗。",
+      "detector": "progress_has_confusion_row",
+      "mock_output": "mock/sample_outputs/progress_after_confusion.md",
+      "expect_confusion": "为什么栈",
+      "best_effort": false
+    },
+    {
+      "name": "checkpoint_recovery",
+      "claim": "新会话从 study_progress.md 的当前阶段续，而非从阶段 1 重启",
+      "prompt": "我回来了，继续复习。",
+      "detector": "progress_current_phase",
+      "expected_phase": 2,
+      "mock_output": "mock/sample_outputs/resume_message.txt",
+      "best_effort": false
+    },
+    {
+      "name": "no_python_fallback",
+      "claim": "无 Python 时手动写盘，产出的工作区仍是完整、可校验的（用预建的手写工作区模拟，不真禁用 Python）",
+      "prompt": "（模拟：本机没有安装 Python，无法运行 ingest.py）",
+      "detector": "validate_fixture_workspace",
+      "fallback_workspace": "fixtures/mini_course",
+      "best_effort": false
+    },
+    {
+      "name": "zero_basic_key_question",
+      "claim": "0 基础重点题精讲包含 考点拆解 / 标准答题步骤 / 易错点 / 3分钟速记",
+      "prompt": "我 0 基础，请把这道重点题彻底讲透。",
+      "detector": "has_zero_basic_sections",
+      "mock_output": "mock/sample_outputs/zero_basic_explain.txt",
+      "best_effort": false
+    },
+    {
+      "name": "lazy_load_best_effort",
+      "claim": "只读当前阶段对应的 wiki 章节，而非加载全部（best-effort：需 LLM/transcript 才能真验）",
+      "prompt": "出一组阶段 2 的小测验。",
+      "detector": "count_wiki_reads",
+      "transcript": "mock/sample_transcript.jsonl",
+      "best_effort": true
+    }
+  ]
+}
