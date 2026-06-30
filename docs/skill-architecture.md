@@ -34,7 +34,7 @@ skills/
 | 工作区体检 | `exam-audit` |
 | 速查 | `exam-help` |
 
-> **双语分层**：模块化 `skills/exam-*` 用**英文控制段**（Purpose / Activation / Inputs / Workflow / Output Contract / Boundaries）+ `Student-facing Output` 下的**简体中文学生示例**；根 `SKILL.md` 维持中文优先作兼容入口。详见 [`language-policy.md`](language-policy.md)。
+> **双语分层**：模块化 `skills/exam-*` 用**英文控制段**（Purpose / Activation / Inputs / Workflow / Output Contract / Boundaries）+ `Student-facing Output` 下的**简体中文学生示例**；根 `SKILL.md` 维持中文优先作兼容入口。详见 [`language-policy.md`](language-policy.md)。学生侧模板目前**有意与控制逻辑同文件、暂不拆 `locales/`**（边界与将来怎么拆见 [`localization.md`](localization.md)）。
 
 ## 4. 防幻觉协议落点
 - **知识来源透明化（provenance）**：贯穿全部子技能——🟢 来自资料 / 🟡 AI补充，可能与你老师讲的不完全一致 / ⚠️ AI生成答案，非老师/教材提供（canonical 见 `docs/language-policy.md`）；契约写在 `exam-cram` 的 *Knowledge provenance* 与 `AGENTS.md` 规则 4–5、8。
