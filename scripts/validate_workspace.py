@@ -279,13 +279,15 @@ def validate(ws):
                 if atype is not None and (not isinstance(atype, str) or atype not in ASSET_TYPES):
                     err(f"{tag} assets[{ai}] type 非法: {atype!r}（应为 {sorted(ASSET_TYPES)} 中的字符串）")
                 full, unsafe = _asset_safety(ws, apath)
+                readable = full and os.path.isfile(full) and os.access(full, os.R_OK)
                 if unsafe:
                     err(f"{tag} assets[{ai}] 不安全的 path: {unsafe}（{apath!r}）")
-                elif not os.path.isfile(full):
+                elif not readable:
                     if requires:
-                        err(f"{tag} assets[{ai}] 必需资源文件不存在: {apath}（requires_assets=true 必须存在）")
+                        err(f"{tag} assets[{ai}] 必需资源文件不存在或不可读: {apath}"
+                            "（requires_assets=true 须存在且可读）")
                     else:
-                        warn(f"{tag} assets[{ai}] 资源文件不存在: {apath}（建议补齐 references/assets/ 下的文件）")
+                        warn(f"{tag} assets[{ai}] 资源文件不存在或不可读: {apath}（建议补齐 references/assets/ 下的文件）")
                 else:
                     asset_ok += 1
                     if isinstance(role, str) and role in QUESTION_SIDE_ROLES:
@@ -299,14 +301,20 @@ def validate(ws):
                 err(f"{tag} requires_assets=true 但没有『题面侧』有效 asset（role 须含 "
                     f"{sorted(QUESTION_SIDE_ROLES)} 之一）——只有答案侧 asset（answer_context/worked_solution）"
                     "无法在出题前展示题面，测验须 fail-closed")
+            # source_file / answer_source_file, when present, must be a non-empty string (not obj/list/blank)
+            for sf in ("source_file", "answer_source_file"):
+                sv = q.get(sf)
+                if sv is not None and not (isinstance(sv, str) and sv.strip()):
+                    err(f"{tag} {sf} 必须是非空字符串（原始文件名），当前 {sv!r}")
             qts = q.get("question_text_status")
             if qts is not None and (not isinstance(qts, str) or qts not in QUESTION_TEXT_STATUS):
                 err(f"{tag} question_text_status 非法: {qts!r}（应为 {sorted(QUESTION_TEXT_STATUS)} 中的字符串）")
-            if qts == "stub" and not (q.get("source_pages") or asset_ok):
-                err(f"{tag} question_text_status=stub 必须至少有 source_pages 或一个『有效』asset"
-                    "（仅声明但缺失/不安全的 asset 不算；否则题面不完整、无法独立成题）")
-            if qts == "page_reference" and not (q.get("source_file") and q.get("source_pages")):
-                err(f"{tag} question_text_status=page_reference 必须有 source_file + source_pages（指向原始页）")
+            if qts == "stub" and not (q.get("source_pages") or q_side_ok):
+                err(f"{tag} question_text_status=stub 必须至少有 source_pages 或一个『题面侧』有效 asset"
+                    "（答案侧 asset 不能在出题前展示；仅声明但缺失/不安全的 asset 也不算；否则题面无法独立成题）")
+            sfile = q.get("source_file")
+            if qts == "page_reference" and not (isinstance(sfile, str) and sfile.strip() and q.get("source_pages")):
+                err(f"{tag} question_text_status=page_reference 必须有非空字符串 source_file + source_pages（指向原始页）")
 
             # provenance + answer presence
             src = q.get("source")
