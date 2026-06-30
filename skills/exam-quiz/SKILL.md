@@ -24,7 +24,11 @@ Pull chapter/phase-scoped items from `references/quiz_bank.json`, present one it
 > If `exam-ingest` produced the bank, require every item to carry `chapter`/`phase`. Without it, the chapter quiz reports "no items found" even when the bank holds matching items.
 
 ## Workflow
-1. **Select items**: filter by matching `chapter` OR `phase` (the bank uses both fields; filtering on `chapter` alone drops items tagged only with `phase`). If the bank contains relevant items, never write new questions.
+1. **Select & gate items**: filter by matching `chapter` OR `phase` (the bank uses both fields; filtering on `chapter` alone drops items tagged only with `phase`). If the bank contains relevant items, never write new questions.
+   - **Asset gate (fail-closed)** — before asking an item, inspect its `requires_assets` / `assets` / `question_text_status`:
+     - If `requires_assets=true`: first **actually render/show the image inline** for all `question_context` / `figure` / `diagram` / `table` assets — **merely printing the file path is not enough**; the student must see the figure. **Do not ask the item if any required asset file is missing, unreadable, or you can only reference (not display) it** — instead say the item is blocked because required context assets can't be shown, and pick another safe item if one is available. (Concrete case: Lecture Quiz 1.1 asks to shade a Venn diagram shown on the slide — without that diagram actually displayed, the item must not be asked.)
+     - If `question_text_status` is `stub` or `page_reference`: **do not treat the text as a complete standalone question** — surface the context first. The context is the attached `assets` if present, else the original `source_file` page. **A standard workspace keeps only `references/wiki/` + `references/assets/`, not the original PDFs** — so a `page_reference`/`stub` item with **no displayable asset** can only be asked if the student still has that source file open. If you cannot show the page (no asset, original not in the workspace, or a web/no-image environment), **skip it like an asset-required item** and pick a `full` item instead.
+     - **Web-only / no-image environment**: if assets cannot be displayed, **do not ask asset-required, `stub`, or `page_reference` items** — ask a `full`-text item instead.
 2. **Grade by the six quiz types**:
    - `choice` — compare against the `answer` option.
    - `subjective` — keyword-coverage grading: pass if the answer covers the item's `keywords` and key steps; accept equivalent wording; report coverage feedback.
@@ -54,3 +58,4 @@ Pull chapter/phase-scoped items from `references/quiz_bank.json`, present one it
 ## Boundaries
 - When the bank holds relevant items, do not write your own. With no stored answer, do not force a verdict — mark ⚠️ or state the limitation plainly.
 - Do not judge diagram items from memory — the algorithm-derived standard structure is the reference.
+- **Fail-closed on assets**: never ask an item whose `requires_assets=true` when a required asset is missing, unreadable, or cannot be displayed (e.g. web-only). A blocked item is skipped, not improvised — choose a full-text item instead. The validator (`scripts/validate_workspace.py`) rejects a workspace whose `requires_assets` item lacks valid asset files, so a clean workspace won't reach you in that state.
