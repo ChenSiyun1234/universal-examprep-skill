@@ -99,7 +99,9 @@
 ```
 
 - **role** ∈ `question_context` / `answer_context` / `figure` / `table` / `diagram` / `worked_solution`
+  - **题面侧 role**（出题前会展示给学生）= `question_context` / `figure` / `diagram` / `table`。`requires_assets=true` 的题**至少要有一个题面侧的有效 asset**；只有答案侧 asset（`answer_context` / `worked_solution`）无法在出题前展示题目，会被判 fail-closed。
 - **type** ∈ `page_image` / `crop_image` / `diagram` / `table_image` / `other_image`
+- `role` / `type` / `question_text_status` 若写成非字符串（数组/对象等）→ **报错**（校验器不崩溃）；`requires_assets` 必须是真正的布尔 `true`/`false`，字符串 `"false"` 之类 → **报错**。
 
 ### 路径安全规则（校验器强制）
 
@@ -115,6 +117,8 @@
 | --- | --- |
 | 老题库（不带这些字段） | ✅ 有效（向后兼容） |
 | `requires_assets=true` 但无 assets / asset 缺失 / 路径不安全 | ❌ 错误（fail-closed） |
-| `question_text_status=stub` 但无 `source_pages` 且无 `assets` | ❌ 错误 |
+| `requires_assets=true` 但只有答案侧 asset（无题面侧有效 asset） | ❌ 错误（出题前无可展示的题面） |
+| `question_text_status=stub` 但无 `source_pages` 且无**有效** asset | ❌ 错误 |
 | `question_text_status=page_reference` 但缺 `source_file`/`source_pages` | ❌ 错误 |
 | asset `role`/`type` 取值非法、`source_pages` 非正整数 | ❌ 错误 |
+| `requires_assets` 非布尔，或 `role`/`type`/`question_text_status` 为非字符串 | ❌ 错误（结构化报错，不崩溃） |

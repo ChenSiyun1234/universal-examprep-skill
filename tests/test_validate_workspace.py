@@ -499,6 +499,53 @@ class TestValidateWorkspace(unittest.TestCase):
         for dep in ("pypdf", "pdfplumber", "pypdfium", "import requests", "import numpy", "import PIL"):
             self.assertNotIn(dep, src)
 
+    # ---- Codex round-2 hardening (5 × P2) ----
+    def test_p0a_requires_assets_string_false_is_rejected(self):
+        # "false" must NOT be coerced truthy, and a non-boolean requires_assets is a schema error
+        item = self._asset_item(requires_assets="false")
+        errors, _, _ = V.validate(self._ws_asset(item))
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertIn("requires_assets 必须是布尔型", err_text(errors))
+
+    def test_p0a_answer_side_only_asset_fails_question_gate(self):
+        # a required item whose ONLY asset is answer-side can't be shown before asking -> fail-closed
+        item = self._asset_item(assets=[{"path": "references/assets/a.png", "role": "answer_context",
+                                         "type": "page_image", "caption": "sol"}])
+        errors, _, _ = V.validate(self._ws_asset(item))   # file exists, but role is answer-side
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertIn("题面侧", err_text(errors))
+
+    def test_p0a_malformed_role_does_not_crash(self):
+        item = self._asset_item(assets=[{"path": "references/assets/a.png", "role": ["x"],
+                                         "type": "page_image"}])
+        errors, _, _ = V.validate(self._ws_asset(item))   # must report, not raise TypeError
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertIn("role 非法", err_text(errors))
+
+    def test_p0a_malformed_type_does_not_crash(self):
+        item = self._asset_item(assets=[{"path": "references/assets/a.png", "role": "figure",
+                                         "type": {"k": 1}}])
+        errors, _, _ = V.validate(self._ws_asset(item))
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertIn("type 非法", err_text(errors))
+
+    def test_p0a_malformed_question_text_status_does_not_crash(self):
+        item = self._asset_item(question_text_status=["page_reference"])
+        errors, _, _ = V.validate(self._ws_asset(item))
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertIn("question_text_status 非法", err_text(errors))
+
+    def test_p0a_stub_with_only_missing_asset_fails(self):
+        # stub + an asset that is declared but missing on disk + no source_pages -> not standalone
+        item = self._asset_item(question_text_status="stub", requires_assets=False,
+                                source_pages=None,
+                                assets=[{"path": "references/assets/a.png", "role": "figure",
+                                         "type": "page_image"}])
+        item.pop("source_pages", None)
+        errors, _, _ = V.validate(self._ws_asset(item, create=False))  # asset file NOT created
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertIn("stub", err_text(errors))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
