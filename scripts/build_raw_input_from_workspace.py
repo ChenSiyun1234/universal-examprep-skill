@@ -419,10 +419,24 @@ def _under(root, child):
     return child_r == root_r or child_r.startswith(root_r + os.sep)
 
 
+# Directories a course folder may contain that are NOT source material and must not be re-ingested:
+# a PRIOR skill workspace (`references/` wiki+assets, `scratch/` extraction), plus vcs/venv/IDE junk.
+# (Real case: D:\EEC 160 held a previous ad-hoc workspace → without pruning, every lecture marker was
+#  triplicated across the pdf + extracted .txt + wiki .md, blowing up the bank with broken items.)
+PRUNE_DIRS = {"references", "scratch", ".git", ".hg", ".svn", "node_modules", "__pycache__",
+              ".venv", "venv", "env", ".idea", ".vscode", ".pytest_cache", ".ipynb_checkpoints"}
+
+
 def _scan_materials(materials_dir):
-    """Return sorted lists of (pdf_paths, text_paths)."""
-    pdfs, texts = [], []
-    for dirpath, _dirs, files in os.walk(materials_dir):
+    """Return sorted (pdf_paths, text_paths, pruned_dirs). Prunes leftover workspace/tooling dirs
+    (see PRUNE_DIRS) so a prior `references/`+`scratch/` workspace sitting inside the course folder
+    isn't scanned as source material."""
+    pdfs, texts, pruned = [], [], []
+    for dirpath, dirs, files in os.walk(materials_dir):
+        for d in dirs:
+            if d.lower() in PRUNE_DIRS:
+                pruned.append(os.path.relpath(os.path.join(dirpath, d), materials_dir).replace(os.sep, "/"))
+        dirs[:] = [d for d in dirs if d.lower() not in PRUNE_DIRS]   # os.walk: prune in place
         for fn in sorted(files):
             low = fn.lower()
             full = os.path.join(dirpath, fn)
@@ -430,7 +444,7 @@ def _scan_materials(materials_dir):
                 pdfs.append(full)
             elif low.endswith((".txt", ".md")):
                 texts.append(full)
-    return sorted(pdfs), sorted(texts)
+    return sorted(pdfs), sorted(texts), sorted(pruned)
 
 
 def _rel(path, base):
@@ -481,8 +495,11 @@ def run(args, backend=None):
     if not os.path.isdir(materials):
         return 2, {"error": "materials 目录不存在: %s" % materials}, None
 
-    pdfs, texts = _scan_materials(materials)
+    pdfs, texts, pruned = _scan_materials(materials)
     report["files_scanned"] = [os.path.relpath(p, materials) for p in (texts + pdfs)]
+    report["pruned_dirs"] = pruned
+    if pruned:   # fail-loud: a prior workspace/tooling dir was skipped, so the user knows why it's ignored
+        report["warnings"].append("pruned_non_material_dirs: %s（不当作课程材料扫描）" % "、".join(pruned[:8]))
 
     # Honest dependency failure: PDFs present but no text backend → stop with a clear, actionable error.
     if pdfs and not backend.can_text():

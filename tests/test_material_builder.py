@@ -270,6 +270,39 @@ class CoreExtraction(unittest.TestCase):
         self.assertTrue(B.requires_assets_heuristic("Draw the circuit."))
         self.assertFalse(B.requires_assets_heuristic("Compute 2 + 2."))  # still no false positive
 
+    # ---- P0D: prune leftover workspace dirs from the materials scan ----
+    def test_scan_prunes_leftover_workspace_dirs(self):
+        d = tempfile.mkdtemp(prefix="mat-")
+        os.makedirs(os.path.join(d, "references", "wiki"))
+        os.makedirs(os.path.join(d, "scratch", "extracted"))
+        with open(os.path.join(d, "references", "wiki", "ch01.md"), "w", encoding="utf-8") as f:
+            f.write("## Quiz 1.1 Problem leftover\n## Quiz 1.1 Solution x")
+        with open(os.path.join(d, "scratch", "extracted", "ch01.txt"), "w", encoding="utf-8") as f:
+            f.write("Quiz 9.9 leftover scratch")
+        with open(os.path.join(d, "ch01.pdf"), "wb") as f:
+            f.write(b"%PDF fake")
+        pdfs, texts, pruned = B._scan_materials(d)
+        self.assertEqual([os.path.basename(p) for p in pdfs], ["ch01.pdf"])  # only the real PDF
+        self.assertEqual(texts, [])                                          # leftover .md/.txt skipped
+        self.assertIn("references", pruned)
+        self.assertIn("scratch", pruned)
+
+    def test_leftover_workspace_not_ingested(self):
+        # P0D end-to-end: a prior workspace's markers must not enter the bank; the real PDF's do
+        d = tempfile.mkdtemp(prefix="mat-")
+        os.makedirs(os.path.join(d, "references", "wiki"))
+        with open(os.path.join(d, "references", "wiki", "ch01.md"), "w", encoding="utf-8") as f:
+            f.write("## Quiz 9.9 Problem leftover\n## Quiz 9.9 Solution x")
+        with open(os.path.join(d, "ch01.pdf"), "wb") as f:
+            f.write(b"%PDF fake")
+        be = FakeBackend({"ch01.pdf": ["Quiz 1.1  Real question.", "Quiz 1.1 Solution  real."]})
+        code, ri, report = B.run(_args(d), backend=be)
+        self.assertEqual(code, 0)
+        ids = [q["id"] for q in ri["quiz_bank"]]
+        self.assertIn("lecture_quiz_1_1", ids)        # from the real PDF
+        self.assertNotIn("lecture_quiz_9_9", ids)     # leftover .md item NOT ingested
+        self.assertTrue(any("pruned_non_material" in w for w in report["warnings"]))
+
     def test_section_grouping_from_headings(self):
         pages = (_pages("a.pdf", "Quiz 1.1  x") + _pages("b.pdf", "Example 2.1 Problem  y"))
         secs = B.group_sections(pages)
