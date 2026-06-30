@@ -72,6 +72,13 @@ class BehaviorSmokeTest(unittest.TestCase):
             H.assert_quiz_ids_in_bank(_read("mock/sample_outputs/quiz_output_invented.txt"), bank_ids),
             "探测器未能识别题库中不存在的 AI 即兴题号",
         )
+        # an UNTAGGED invented question among tagged bank items must ALSO fail (no false confidence)
+        self.assertFalse(
+            H.assert_quiz_ids_in_bank("1. [#mc_q1] 合法题\n2. 这是没标号的 AI 编造题", bank_ids),
+            "未标号的编造题应被判不合格（不能只看已标号的题）",
+        )
+        # a good output where EVERY numbered item is bank-tagged still passes
+        self.assertTrue(H.assert_quiz_ids_in_bank("1. [#mc_q1] a\n2. [#mc_q2] b", bank_ids))
 
     # 6
     def test_provenance_detector_recognizes_all_canonical_labels(self):
@@ -111,8 +118,11 @@ class BehaviorSmokeTest(unittest.TestCase):
     # 11b — resume must point at the current phase, not restart at phase 1 (direct +/- coverage)
     def test_checkpoint_resume_refers_to_current_phase(self):
         self.assertTrue(H.resume_refers_to_phase(_read("mock/sample_outputs/resume_message.txt"), 2))
-        self.assertFalse(H.resume_refers_to_phase("从阶段 1 重新开始，欢迎新同学", 2),
-                         "从阶段 1 重启的续跑文案不应被判为『指向当前阶段 2』")
+        # mentions 阶段 2 but STILL restarts at 阶段 1 → must be rejected (the exact gap Codex flagged)
+        self.assertFalse(H.resume_refers_to_phase("当前在阶段 2，但先从阶段 1 重新开始", 2),
+                         "虽提到阶段 2 但仍从阶段 1 重启，应判不合格")
+        self.assertFalse(H.resume_refers_to_phase("从头开始复习，先看阶段 2 的目录", 2),
+                         "『从头开始』的续跑文案应判不合格")
 
     # 12
     def test_no_python_fallback_workspace_is_complete(self):

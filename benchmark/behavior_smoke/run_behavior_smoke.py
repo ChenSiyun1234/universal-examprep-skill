@@ -52,8 +52,16 @@ def extract_question_ids(text):
 
 
 def assert_quiz_ids_in_bank(text, bank_ids):
-    ids = extract_question_ids(text)
-    return bool(ids) and all(i in bank_ids for i in ids)
+    # every NUMBERED quiz item must carry exactly one [#<id>] tag whose id is in the bank.
+    # (checking only the extracted tags would let an UNTAGGED invented question slip through.)
+    item_lines = [ln for ln in (text or "").splitlines() if re.match(r"\s*\d+\s*[.、)）]", ln)]
+    if not item_lines:
+        return False
+    for ln in item_lines:
+        ids = extract_question_ids(ln)
+        if len(ids) != 1 or ids[0] not in bank_ids:
+            return False
+    return True
 
 
 def has_canonical_provenance_labels(text):
@@ -121,9 +129,14 @@ def progress_current_phase(progress_text):
     return int(m.group(1)) if m else None
 
 
+# restart-at-1 / from-scratch language a resume message must NOT contain
+_RESTART_RE = re.compile(r"从\s*头\s*开始|从\s*阶段\s*1\b|重新\s*开始|重头\s*开始|从头(重新)?来")
+
+
 def resume_refers_to_phase(resume_text, phase):
-    """A resume message should point at the CURRENT phase (not silently restart at phase 1)."""
-    return f"阶段 {phase}" in (resume_text or "")
+    """Resume must point at the CURRENT phase AND not restart at phase 1 / from scratch."""
+    t = resume_text or ""
+    return (f"阶段 {phase}" in t) and not _RESTART_RE.search(t)
 
 
 def count_wiki_reads(transcript_text):
@@ -195,18 +208,24 @@ def check_scenario_mock(name, sc, bank_ids):
 def run_mock(verbose=True):
     spec = load_scenarios()
     bank_ids = load_quiz_bank_ids(FIXTURE)
-    results = []
+    results = []   # (name, detail, status) where status ∈ {PASS, FAIL, SKIP}
     for sc in spec["scenarios"]:
         name = sc["name"]
         if sc.get("best_effort"):
-            results.append((name, "best-effort (needs LLM/transcript; skipped in --mock)", True))
+            # best-effort scenarios are NOT asserted in deterministic mode — report as SKIP,
+            # never as PASS, so the conclusion doesn't overstate what was verified.
+            results.append((name, "best-effort（需 LLM/transcript，--mock 不断言）", "SKIP"))
             continue
         ok, detail = check_scenario_mock(name, sc, bank_ids)
-        results.append((name, detail, ok))
+        results.append((name, detail, "PASS" if ok else "FAIL"))
+    n_pass = sum(1 for _, _, s in results if s == "PASS")
+    n_skip = sum(1 for _, _, s in results if s == "SKIP")
+    n_fail = sum(1 for _, _, s in results if s == "FAIL")
     if verbose:
-        for name, detail, ok in results:
-            print(f"  [{'PASS' if ok else 'FAIL'}] {name}: {detail}")
-    return all(ok for _, _, ok in results), results
+        for name, detail, status in results:
+            print(f"  [{status}] {name}: {detail}")
+        print(f"  ({n_pass} passed, {n_skip} skipped[best-effort, 未断言], {n_fail} failed)")
+    return n_fail == 0, results
 
 
 def check_fixture(verbose=True):
@@ -255,7 +274,7 @@ def main(argv=None):
         return 0 if check_fixture() else 1
     if args.mock:
         ok, _ = run_mock()
-        print("结论:", "✓ 全部行为冒烟通过" if ok else "✗ 有失败")
+        print("结论:", "✓ 确定性行为冒烟全部通过（best-effort 项已跳过、未断言）" if ok else "✗ 有失败")
         return 0 if ok else 1
     ap.print_help()
     return 0

@@ -23,7 +23,7 @@
 ## CI 策略（诚实标注）
 - **CI（`.github/workflows/ci.yml`）当前只跑 Tier 0**（`python -m unittest discover -s tests -v`）——零成本、跨平台、无密钥。
 - **Tier 1 校验器的逻辑已由 Tier 0 测试 + `tests/fixtures/` 覆盖**；但**目前还没有**一个单独的 CI 步骤在「真实 ingest 出来的工作区」上跑 `validate_workspace.py`（本 PR 不新增 CI 步骤）。
-- **Tier 2–4 不进自动 CI**，避免给每个 PR 付费。
+- **Tier 2 的确定性 mock 层已进 CI**（包含在 `tests/test_behavior_smoke.py`，纯 stdlib、零成本）；但 **Tier 2 的真 LLM 行为冒烟（opt-in）与 Tier 3–4 不进自动 CI**，避免给每个 PR 付费。
 
 ## Tier 2 与 Tier 4 的区别
 两者都测「行为」，但**粒度与成本不同**：Tier 2 是**单场景、确定性、近零成本**的行为冒烟（一次脚本化交互 + 对产物断言）；
