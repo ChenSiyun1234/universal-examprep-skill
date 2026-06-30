@@ -73,7 +73,9 @@
 
 ## 4. 资源依赖与原页引用 (asset-aware fields)
 
-讲义里很多 **Quiz / Example** 题依赖一张图：文氏图（Venn）、页内插图、表格等。题面文字本身不足以独立成题——**不显示那张图，学生根本无法作答**。为此题库项新增一组**可选、向后兼容**字段（老题库不带这些字段仍然有效）。配套的 **PDF 扫描器在下一个 PR（P0B）产出这些字段**；本规范只定义数据模型与安全规则，并让校验器 / 出题**fail-closed**。
+讲义里很多 **Quiz / Example** 题依赖一张图：文氏图（Venn）、页内插图、表格等。题面文字本身不足以独立成题——**不显示那张图，学生根本无法作答**。为此题库项新增一组**可选、向后兼容**字段（老题库不带这些字段仍然有效）。配套的官方入口 **[`scripts/build_raw_input_from_workspace.py`](../scripts/build_raw_input_from_workspace.py) 从 PDF 材料产出这些字段**（整页渲染成 asset、保留原页出处、抽取 Example/Quiz 题—解对）；校验器与出题在缺图时**fail-closed**。
+
+> 官方流程：`build_raw_input_from_workspace.py --materials <dir> --out raw_input.json --asset-root <ws>/references/assets` → `ingest.py -i raw_input.json -o <ws>` → `validate_workspace.py <ws>`。PDF 文本/渲染为**可选依赖**（`pip install pypdf pypdfium2`），缺失会清晰报错；纯 `.txt/.md` 无需依赖。
 
 ### 题项新增可选字段
 
