@@ -155,6 +155,11 @@ class BehaviorSmokeTest(unittest.TestCase):
                     "⚠️ AI生成答案，非老师/教材提供：\n答案：栈是 LIFO。")
         self.assertFalse(H.has_canonical_provenance_labels(ml_colon),
                          "标签后只有冒号、内容却在下一行（图例式）也不应判通过")
+        # consecutive PARENTHESIZED labels (a legend), answer below unlabelled, must also fail
+        paren = ("标签说明（🟢 来自资料）（🟡 AI补充，可能与你老师讲的不完全一致）"
+                 "（⚠️ AI生成答案，非老师/教材提供）\n答案：栈是 LIFO。")
+        self.assertFalse(H.has_canonical_provenance_labels(paren),
+                         "连续括注标签图例（答案不带标注）也不应判通过")
 
     # 7
     def test_zero_basic_detector_recognizes_sections(self):
@@ -169,6 +174,9 @@ class BehaviorSmokeTest(unittest.TestCase):
         # the skill's documented bracket block format 【考点拆解】 must be accepted as headings
         bracket = "【考点拆解】讲解\n【标准答题步骤】步骤\n【易错点】注意\n【3分钟速记】口诀"
         self.assertTrue(H.has_zero_basic_sections(bracket), "【…】文档块格式的小节标题也应判通过")
+        # but 【…】 names crammed inline into one checklist line (not line-start headings) must NOT pass
+        self.assertFalse(H.has_zero_basic_sections("请包含：【考点拆解】【标准答题步骤】【易错点】【3分钟速记】"),
+                         "把【…】块名塞进一句话清单（非行首标题）不应判通过")
 
     # 8
     def test_hint_skip_detector_recognizes_recovery_offer(self):
@@ -186,6 +194,8 @@ class BehaviorSmokeTest(unittest.TestCase):
                          "夹词较长的归档否定（…记录进错题档案）也应判不合格")
         self.assertFalse(H.has_hint_skip_offer("可以给提示，也可以跳过；错题本暂不记录此题。"),
                          "名词后否定（错题本暂不记录）也应判不合格")
+        self.assertFalse(H.has_hint_skip_offer("可以提示、可以跳过，但不归档到错题本"),
+                         "裸『不归档』否定也应判不合格")
 
     # 9
     def test_mistake_archive_detector(self):
@@ -244,6 +254,8 @@ class BehaviorSmokeTest(unittest.TestCase):
                          "否定当前阶段（『不是阶段2』）应判不合格")
         self.assertFalse(H.resume_refers_to_phase("你现在不是第2阶段，而是第1阶段。", 2),
                          "否定『第2阶段』形式也应判不合格")
+        self.assertFalse(H.resume_refers_to_phase("当前在阶段2，但先从第1阶段开始", 2),
+                         "『从第1阶段开始』重启也应判不合格")
 
     # 12
     def test_no_python_fallback_workspace_is_complete(self):

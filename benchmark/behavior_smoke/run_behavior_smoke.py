@@ -118,7 +118,9 @@ def has_canonical_provenance_labels(text):
             # content must be on the SAME line as the label ([ \t] only — no newline crossing), so a
             # multi-line legend "🟢 …：\n🟡 …：\n答案：…" with an unlabelled answer does NOT count.
             prefix_use = re.match(r"[ \t]*[:：][ \t]*\S", t[m.end():m.end() + 24])       # label：内容
-            suffix_use = re.search(r"\S[ \t]*[（(][ \t]*$", t[max(0, m.start() - 16):m.start()])  # 内容（label
+            # 内容（label — the char before （ must be real content, NOT another label's closing ）
+            # (so a paren-legend "标签说明（🟢…）（🟡…）（⚠️…）" doesn't read as labelled content)
+            suffix_use = re.search(r"[^）)\s][ \t]*[（(][ \t]*$", t[max(0, m.start() - 16):m.start()])
             if prefix_use or suffix_use:
                 used = True
                 break
@@ -133,7 +135,9 @@ def _heading_present(text, name):
     n = re.escape(name)
     md = (rf"(?m)^\s{{0,3}}"
           rf"(?:#{{1,4}}\s*|\*\*\s*|[0-9一二三四五六七八九十]+\s*[、.．)）]\s*){{1,3}}{n}")
-    return bool(re.search(md, text or "")) or bool(re.search(rf"[【〖]\s*{n}\s*[】〗]", text or ""))
+    # the bracket block must START a line (a heading), not be inline in a checklist like "请包含：【…】【…】"
+    bracket = rf"(?m)^\s{{0,3}}[【〖]\s*{n}\s*[】〗]"
+    return bool(re.search(md, text or "")) or bool(re.search(bracket, text or ""))
 
 
 def has_zero_basic_sections(text):
@@ -154,7 +158,9 @@ def has_hint_skip_offer(text):
     # ("不会…记录进错题档案") OR AFTER the noun ("错题本暂不记录此题").
     negated = (bool(re.search(
                    r"(没有|不能|不会|无法|不给|不予|拒绝)[^。\n]{0,10}?(提示|跳过|归档|错题本|错题档案)", t))
-               or bool(re.search(r"(错题本|错题档案)[^。\n]{0,6}?(暂不|不记|不写|不归|未记|不予记|不会记|不加入)", t)))
+               or bool(re.search(r"(错题本|错题档案)[^。\n]{0,6}?(暂不|不记|不写|不归|未记|不予记|不会记|不加入)", t))
+               # bare 不 + verb ("不归档到错题本" / "不写入" / "不让跳过")
+               or bool(re.search(r"不\s*(归档|写入|记入|记录|存入|加入|放入)|不\s*(给|让|许|准)\s*(提示|跳过)", t)))
     return has_hint and has_skip and has_archive and not negated
 
 
@@ -228,7 +234,8 @@ def progress_current_phase(progress_text):
 # restart-at-1 / from-scratch language a resume message must NOT contain.
 # NB: no \b after the digit — between a digit and a CJK char there is no word boundary, so
 # "从阶段1开始" (no space) would otherwise slip; (?!\d) guards against matching 阶段 10/11.
-_RESTART_RE = re.compile(r"从\s*头\s*开始|从\s*阶段\s*1(?!\d)|重新\s*开始|重头\s*开始|从头(重新)?来")
+_RESTART_RE = re.compile(
+    r"从\s*头\s*开始|从\s*阶段\s*1(?!\d)|从\s*第\s*1\s*阶段|重新\s*开始|重头\s*开始|从头(重新)?来")
 
 
 def resume_refers_to_phase(resume_text, phase):
