@@ -95,35 +95,37 @@ def assert_quiz_ids_in_bank(text, bank):
     ids = extract_question_ids(t)
     if not ids or any(i not in allowed for i in ids):
         return False
-    # (b) EVERY question-item line must carry exactly one bank tag whose CONTENT matches the bank.
+    # (b) ANY tag-bearing line must carry exactly one in-bank tag whose CONTENT matches the bank
+    #     (covers bullet/inline tagged items too); an UNTAGGED question-item line is invention.
     for ln in t.splitlines():
-        if _is_question_item(ln):
-            lids = extract_question_ids(ln)
+        lids = extract_question_ids(ln)
+        if lids:
             if len(lids) != 1 or lids[0] not in allowed:
                 return False
             if qmap is not None and not _content_matches(ln, qmap.get(lids[0], "")):
                 return False
-    return True
-
-
-def has_canonical_provenance_labels(text):
-    # each canonical label must PREFIX actual content (label：内容), not merely appear in a legend list
-    t = text or ""
-    for lbl in CANON_LABELS:
-        labelled = False
-        for m in re.finditer(re.escape(lbl), t):
-            am = re.match(r"\s*[:：]\s*(\S.{2,})", t[m.end():m.end() + 40])
-            if am and not any(o in am.group(1)[:8] for o in CANON_LABELS):
-                labelled = True
-                break
-        if not labelled:
+        elif _is_question_item(ln):
             return False
     return True
 
 
+def has_canonical_provenance_labels(text):
+    # all three canonical labels must be present and used as REAL labels (prefix `label：内容` or
+    # suffix `内容（label）`), not merely listed together in a legend like `🟢… / 🟡… / ⚠️…`.
+    t = text or ""
+    if not all(lbl in t for lbl in CANON_LABELS):
+        return False
+    alt = "|".join(re.escape(l) for l in CANON_LABELS)
+    chained_legend = re.search(rf"(?:{alt})\s*[/、,，|]\s*(?:{alt})\s*[/、,，|]\s*(?:{alt})", t)
+    return not chained_legend
+
+
 def _heading_present(text, name):
-    """True if `name` is a section HEADING (## / ### / **bold** / numbered), not an inline mention."""
-    pat = rf"(?m)^\s{{0,3}}(?:#{{1,4}}\s*|\*\*\s*)(?:[0-9一二三四五六七八九十]+\s*[、.．)）]\s*)?{re.escape(name)}"
+    """True if `name` is a section HEADING — markdown (## / **bold**) OR an ordered-list heading
+    (`1. 考点拆解`) — not just an inline keyword mention."""
+    pat = (rf"(?m)^\s{{0,3}}"
+           rf"(?:#{{1,4}}\s*|\*\*\s*|[0-9一二三四五六七八九十]+\s*[、.．)）]\s*){{1,3}}"
+           rf"{re.escape(name)}")
     return bool(re.search(pat, text or ""))
 
 
@@ -142,8 +144,9 @@ def has_hint_skip_offer(text):
     has_skip = ("跳过" in t) or ("skip" in tl)
     has_archive = ("错题本" in t) or ("错题档案" in t) or ("归档" in t)
     # reject explicit DENIAL of any escape-hatch option, allowing a few intervening words
-    # ("不会把它归档…", "不能现在跳过…")
-    negated = bool(re.search(r"(没有|不能|不会|无法|不给|不予|拒绝)[^。\n]{0,6}?(提示|跳过|归档)", t))
+    # ("不会把它归档…", "不会写入错题本…", "不能现在跳过…")
+    negated = bool(re.search(
+        r"(没有|不能|不会|无法|不给|不予|拒绝)[^。\n]{0,8}?(提示|跳过|归档|写入|记入|存入|加入)", t))
     return has_hint and has_skip and has_archive and not negated
 
 
@@ -185,20 +188,26 @@ def _table_data_rows(section_text):
     return rows
 
 
+def _row_matches(rows, expect):
+    # token-boundary match (join cells with a separator) so `mc_q2` doesn't match `mc_q20`
+    pat = re.compile(rf"(?<![0-9A-Za-z_]){re.escape(expect)}(?![0-9A-Za-z_])")
+    return any(pat.search(" | ".join(r)) for r in rows)
+
+
 def progress_has_mistake_archive(progress_text, expect=None):
     # standard template section is "## ❌ 错题档案记录"; mini/legacy wording uses "错题本" — accept both.
     # if `expect` is given, a row must actually mention it (so archiving the WRONG item doesn't pass).
     rows = _table_data_rows(_section(progress_text, ["错题档案", "错题本"]))
     if not rows:
         return False
-    return any(expect in "".join(r) for r in rows) if expect else True
+    return _row_matches(rows, expect) if expect else True
 
 
 def progress_has_confusion_row(progress_text, expect=None):
     rows = _table_data_rows(_section(progress_text, ["疑难", "confusion"]))
     if not rows:
         return False
-    return any(expect in "".join(r) for r in rows) if expect else True
+    return _row_matches(rows, expect) if expect else True
 
 
 def progress_current_phase(progress_text):
@@ -221,7 +230,9 @@ def resume_refers_to_phase(resume_text, phase):
     """
     t = resume_text or ""
     mentions = bool(re.search(rf"阶段\s*{phase}(?!\d)|第\s*{phase}\s*阶段", t))
-    return mentions and not _RESTART_RE.search(t)
+    # reject negation of the current phase ("你现在不是阶段2，而是阶段1")
+    negated = bool(re.search(rf"不是\s*第?\s*阶段\s*{phase}|不在\s*第?\s*阶段\s*{phase}", t))
+    return mentions and not negated and not _RESTART_RE.search(t)
 
 
 def count_wiki_reads(transcript_text):

@@ -102,6 +102,9 @@ class BehaviorSmokeTest(unittest.TestCase):
                          "第1章测验里抽到第2章题号应被章节范围抓住")
         # the matching bank content within scope passes
         self.assertTrue(H.assert_quiz_ids_in_bank("1. [#mc_q1] " + qmap["mc_q1"]["question"], ch1))
+        # a TAGGED BULLET with invented content must be content-checked too (not skipped)
+        self.assertFalse(H.assert_quiz_ids_in_bank("- [#mc_q1] 请证明红黑树删除算法", ch1),
+                         "项目符号格式的『合法题号 + 编造题面』也应被内容校验抓住")
 
     # 6
     def test_provenance_detector_recognizes_all_canonical_labels(self):
@@ -115,6 +118,10 @@ class BehaviorSmokeTest(unittest.TestCase):
         legend = "可用标签：🟢 来自资料 / 🟡 AI补充，可能与你老师讲的不完全一致 / ⚠️ AI生成答案，非老师/教材提供\n答案是栈。"
         self.assertFalse(H.has_canonical_provenance_labels(legend),
                          "只罗列标签图例、答案却不带标注，不应判通过")
+        # labels used AFTER content (skill style: 结论……（🟢 来自资料）) must pass
+        suffix = ("栈是 LIFO（🟢 来自资料）。红黑树较复杂（🟡 AI补充，可能与你老师讲的不完全一致）。"
+                  "以下为伪代码（⚠️ AI生成答案，非老师/教材提供）。")
+        self.assertTrue(H.has_canonical_provenance_labels(suffix), "标签放在内容之后（括注）也应判通过")
 
     # 7
     def test_zero_basic_detector_recognizes_sections(self):
@@ -123,6 +130,9 @@ class BehaviorSmokeTest(unittest.TestCase):
         # a one-line checklist that merely NAMES the sections (no real headings) must not pass
         self.assertFalse(H.has_zero_basic_sections("请包含：考点拆解、标准答题步骤、易错点、3分钟速记"),
                          "仅罗列小节名（无实际小节标题）不应判通过")
+        # ordered-list headings (1. 考点拆解 / 2. 标准答题步骤 …) are valid section headings
+        ordered = "1. 考点拆解\n讲解\n2. 标准答题步骤\n步骤\n3. 易错点\n注意\n4. 3分钟速记\n口诀"
+        self.assertTrue(H.has_zero_basic_sections(ordered), "有序列表小节标题(1. 考点拆解)也应判通过")
 
     # 8
     def test_hint_skip_detector_recognizes_recovery_offer(self):
@@ -134,6 +144,8 @@ class BehaviorSmokeTest(unittest.TestCase):
         # negation with intervening words must also be caught
         self.assertFalse(H.has_hint_skip_offer("可以提示、可以跳过，但不会把它归档到错题本"),
                          "中间夹词的否定（『不会把它归档』）也应判不合格")
+        self.assertFalse(H.has_hint_skip_offer("可以给提示，也可以跳过，但不会写入错题本"),
+                         "『不会写入错题本』的归档否定也应判不合格")
 
     # 9
     def test_mistake_archive_detector(self):
@@ -153,6 +165,10 @@ class BehaviorSmokeTest(unittest.TestCase):
         self.assertTrue(H.progress_has_mistake_archive(m, expect="mc_q2"))
         self.assertFalse(H.progress_has_mistake_archive(m, expect="mc_q1"),
                          "归档了错误的题（非本场景模拟的 mc_q2）不应判通过")
+        # exact ID match: a row about mc_q20 must NOT satisfy expect=mc_q2 (prefix collision)
+        m20 = "## ❌ 错题档案记录\n| 错题ID | 章节 | 状态 |\n| --- | --- | --- |\n| mc_q20 | 2 | 已归档 |"
+        self.assertFalse(H.progress_has_mistake_archive(m20, expect="mc_q2"),
+                         "mc_q20 的行不应满足 expect=mc_q2（前缀相同不算命中）")
 
     # 10
     def test_confusion_tracker_detector(self):
@@ -183,6 +199,9 @@ class BehaviorSmokeTest(unittest.TestCase):
                         "紧凑『阶段2』（无空格）应判为指向当前阶段")
         self.assertTrue(H.resume_refers_to_phase("从第2阶段接着复习", 2),
                         "『第2阶段』写法应判为指向当前阶段")
+        # negating the current phase must be rejected even though 阶段2 is mentioned
+        self.assertFalse(H.resume_refers_to_phase("你现在不是阶段2，而是阶段1。", 2),
+                         "否定当前阶段（『不是阶段2』）应判不合格")
 
     # 12
     def test_no_python_fallback_workspace_is_complete(self):
