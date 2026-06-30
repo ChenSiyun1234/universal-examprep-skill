@@ -12,8 +12,9 @@ This is NOT an OCR project. It is a deterministic, honest, first official entryp
 
 stdlib-only core + tests. PDF *text extraction* and *page rendering* are OPTIONAL backends:
   - text:   pypdf
-  - render: pypdfium2  (or PyMuPDF / `fitz`)
-Install only if you need them, e.g.:  pip install pypdf pypdfium2
+  - render: PyMuPDF (`fitz`, native PNG, no extra deps) OR pypdfium2 + Pillow (its to_pil adapter)
+Install only if you need them, e.g.:  pip install pypdf pymupdf   (or: pip install pypdf pypdfium2 Pillow)
+Rendering also needs --asset-root <workspace>/references/assets (where the page PNGs are written).
 
 Usage:
   python scripts/build_raw_input_from_workspace.py \\
@@ -105,6 +106,21 @@ def _key(mk):
     return (mk["kind"], mk["chapter"], mk["num"])
 
 
+def _problem_statement(page_text, kind, chapter, num):
+    """Extract the actual problem text that follows the `<kind> X.Y` marker on its page, cut at the
+    next Example/Quiz marker. Used as the real `question` for text-complete items (so they aren't a
+    bare 'see the page' pointer to a page the workspace never copies)."""
+    text = page_text or ""
+    rx = _EXAMPLE_RE if kind == "example" else _QUIZ_RE
+    starts = [m.start() for m in rx.finditer(text) if int(m.group(1)) == chapter and int(m.group(2)) == num]
+    if not starts:
+        return ""
+    s = starts[0]
+    after = [m.start() for m in list(_EXAMPLE_RE.finditer(text)) + list(_QUIZ_RE.finditer(text)) if m.start() > s]
+    e = min(after) if after else len(text)
+    return " ".join(text[s:e].split()).strip()
+
+
 def extract_lecture_items(pages):
     """Pair each `<kind> X.Y` problem with ALL its `<kind> X.Y Solution` pages (including
     `Solution (Continued ...)`), assign stable IDs, and flag asset dependence. De-dups problems by
@@ -140,28 +156,37 @@ def extract_lecture_items(pages):
         needs = requires_assets_heuristic(prob_text)
         kind = mk["kind"]
         label = "Example" if kind == "example" else "Quiz"
+        if needs:
+            # figure-dependent: text alone isn't the question; point at the page + require the asset
+            question = ("（%s %d.%d）本题依赖原始讲义 %s 第 %d 页的图/表，须配合所附 asset 作答。"
+                        % (label, key[1], key[2], prob_page["file"], prob_page["page"]))
+        else:
+            # text-complete: use the ACTUAL problem text so the student sees a real, answerable question
+            stmt = _problem_statement(prob_text, kind, key[1], key[2])
+            question = stmt or ("（%s %d.%d）见原始讲义 %s 第 %d 页。"
+                                % (label, key[1], key[2], prob_page["file"], prob_page["page"]))
         item = {
             "id": "lecture_%s_%d_%d" % (kind, key[1], key[2]),
             "chapter": key[1],
             "type": "diagram" if needs else "subjective",
-            "question": "（%s %d.%d）%s 见原始讲义 %s 第 %d 页的题目。"
-                        % (label, key[1], key[2],
-                           "本题依赖该页的图/表，须配合所附 asset 作答；" if needs else "",
-                           prob_page["file"], prob_page["page"]),
+            "question": question,
             "source": "material",
             "source_file": prob_page["file"],
             "source_pages": [prob_page["page"]],
+            # per-(file,page) detail for the renderer (stripped from the emitted bank by build_raw_input)
+            "_question_pages": [(prob_page["file"], prob_page["page"])],
             "requires_assets": bool(needs),
             "question_text_status": "page_reference" if needs else "full",
         }
         if not needs:
             item["keywords"] = []  # subjective recommended field; left for the tutor/teacher to fill
         if ans_idx:
-            ans_pages = sorted({pages[j]["page"] for j in ans_idx})
-            item["answer_source_file"] = pages[ans_idx[0]]["file"]
-            item["answer_source_pages"] = ans_pages
+            ans = sorted({(pages[j]["file"], pages[j]["page"]) for j in ans_idx}, key=lambda fp: (fp[1], fp[0]))
+            item["answer_source_file"] = ans[0][0]
+            item["answer_source_pages"] = [p for (_f, p) in ans]
+            item["_answer_pages"] = ans              # internal: each answer page keeps its OWN source file
             item["answer"] = "见原始讲义 %s 第 %s 页的解答。" % (
-                pages[ans_idx[0]]["file"], "、".join(str(p) for p in ans_pages))
+                ans[0][0], "、".join(str(p) for (_f, p) in ans))
         else:
             item["answer_status"] = "unknown"   # honest: no solution page detected
         items.append(item)
@@ -219,7 +244,10 @@ def build_raw_input(course_name, sections, lecture_items, homework_items=None):
     if not phases:
         phases = [{"phase_num": 1, "phase_name": "第 1 章", "wiki_filename": "ch01.md",
                    "wiki_content": "# 第 1 章\n\n（未提取到内容）"}]
-    bank = list(lecture_items) + list(homework_items or [])
+    # strip internal render-only keys (e.g. _answer_pages) so they don't leak into the bank
+    def _clean(it):
+        return {k: v for (k, v) in it.items() if not k.startswith("_")}
+    bank = [_clean(it) for it in (list(lecture_items) + list(homework_items or []))]
     return {"course_name": course_name, "phases": phases, "quiz_bank": bank,
             "quiz_items": bank}   # optional mirror field (documented); ingest ignores unknown keys
 
@@ -266,17 +294,17 @@ class RealBackend(object):
 
     def render_page_png(self, pdf_path, page_index):
         if self.render_lib == "pypdfium2":
+            import io
             import pypdfium2 as pdfium
             doc = pdfium.PdfDocument(pdf_path)
             bitmap = doc[page_index].render(scale=1.5)
-            import io
             buf = io.BytesIO()
-            bitmap.to_pil().save(buf, format="PNG")
+            bitmap.to_pil().save(buf, format="PNG")   # PIL adapter — Pillow verified at detect time
             return buf.getvalue()
         if self.render_lib == "pymupdf":
             import fitz
             doc = fitz.open(pdf_path)
-            return doc[page_index].get_pixmap().tobytes("png")
+            return doc[page_index].get_pixmap().tobytes("png")   # native PNG, no Pillow needed
         return None
 
 
@@ -287,13 +315,16 @@ def detect_backend():
         text_lib = "pypdf"
     except Exception:
         pass
+    # PyMuPDF renders to PNG natively; pypdfium2 needs Pillow for its .to_pil() adapter, so only
+    # claim pypdfium2 as a render backend when Pillow is ALSO importable (else can_render() lies).
     try:
-        import pypdfium2  # noqa: F401
-        render_lib = "pypdfium2"
+        import fitz  # noqa: F401  (PyMuPDF) — preferred: no extra deps
+        render_lib = "pymupdf"
     except Exception:
         try:
-            import fitz  # noqa: F401  (PyMuPDF)
-            render_lib = "pymupdf"
+            import pypdfium2  # noqa: F401
+            import PIL  # noqa: F401  (Pillow — required by pypdfium2's to_pil adapter)
+            render_lib = "pypdfium2"
         except Exception:
             pass
     return RealBackend(text_lib, render_lib) if (text_lib or render_lib) else NoBackend()
@@ -323,11 +354,17 @@ def _scan_materials(materials_dir):
     return sorted(pdfs), sorted(texts)
 
 
-def _read_text_file_pages(path):
+def _rel(path, base):
+    """Workspace-relative POSIX identifier for a material file (keeps subdir uniqueness, e.g.
+    lecture/ch01.pdf vs homework/ch01.pdf, so same-named files in different folders don't collide)."""
+    return os.path.relpath(path, base).replace(os.sep, "/")
+
+
+def _read_text_file_pages(path, rel):
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         raw = f.read()
     parts = raw.split("\f") if "\f" in raw else [raw]
-    return [{"file": os.path.basename(path), "page": i + 1, "text": p} for i, p in enumerate(parts)]
+    return [{"file": rel, "page": i + 1, "text": p} for i, p in enumerate(parts)]
 
 
 # ---------------------------------------------------------------------------
@@ -337,14 +374,16 @@ def _read_text_file_pages(path):
 def build_arg_parser():
     p = argparse.ArgumentParser(
         description="官方课程材料 → raw_input.json（+ 可选页面图 assets + 解析报告），供 ingest.py 使用。",
-        epilog="PDF 文本/渲染为可选依赖：pip install pypdf pypdfium2（.txt/.md 材料无需任何依赖）。")
+        epilog="可选依赖：文本 pip install pypdf；渲染 pip install pymupdf（自带 PNG）或 pypdfium2 Pillow。"
+               "（.txt/.md 材料无需任何依赖。）")
     p.add_argument("--materials", required=True, help="课程材料文件夹（含 PDF / txt / md）")
     p.add_argument("--out", default="raw_input.json", help="输出 raw_input.json 路径")
     p.add_argument("--report", default="parse_report.json", help="解析报告 JSON 路径")
-    p.add_argument("--asset-root", default="references/assets",
-                   help="渲染页图写入目录（建议指向 <workspace>/references/assets）")
+    p.add_argument("--asset-root", default=None,
+                   help="渲染页图写入目录，应指向 <workspace>/references/assets。"
+                        "渲染开启而未指定时：auto 跳过渲染并告警，required 报错")
     p.add_argument("--render-pages", choices=["never", "auto", "required"], default="auto",
-                   help="渲染依赖图的页面：never/auto/required（required 时无渲染后端则报错）")
+                   help="渲染依赖图的页面：never/auto/required（required 时无渲染后端/无 --asset-root 则报错）")
     p.add_argument("--extract-lecture-questions", choices=["never", "auto"], default="auto",
                    help="是否抽取讲义 Example/Quiz 题：never/auto")
     p.add_argument("--course-name", default=None, help="科目名称（默认取材料目录名）")
@@ -376,15 +415,20 @@ def run(args, backend=None):
 
     pages = []
     for tp in texts:
-        pages.extend(_read_text_file_pages(tp))
+        pages.extend(_read_text_file_pages(tp, _rel(tp, materials)))
     for pdf in pdfs:
+        rel = _rel(pdf, materials)   # subdir-qualified identifier, not bare basename (avoids collisions)
         try:
             for i, txt in enumerate(backend.page_texts(pdf)):
-                pages.append({"file": os.path.basename(pdf), "page": i + 1, "text": txt, "_pdf": pdf})
+                pages.append({"file": rel, "page": i + 1, "text": txt, "_pdf": pdf})
         except Exception as e:  # backend present but failed on this one file → skip it, keep going
-            report["skipped"].append({"file": os.path.relpath(pdf, materials), "why": "PDF 文本提取失败: %s" % e})
+            report["skipped"].append({"file": rel, "why": "PDF 文本提取失败: %s" % e})
 
     report["pages_extracted"] = len(pages)
+    if not pages:
+        report["warnings"].append("no_pages_extracted")
+        return 4, {"error": "未从 --materials 提取到任何页面内容。请确认目录下有可解析的 PDF/.txt/.md "
+                            "（PDF 文本需 pypdf；若全是图片/扫描件，本工具不做 OCR，无法提取）。"}, report
 
     lecture_items = []
     if args.extract_lecture_questions != "never":
@@ -398,41 +442,46 @@ def run(args, backend=None):
 
     # ---- render assets for figure-dependent items ----
     asset_root = args.asset_root
-    page_pdf = {}  # (file, page) -> source pdf path
-    for pg in pages:
-        if pg.get("_pdf"):
-            page_pdf[(pg["file"], pg["page"])] = pg["_pdf"]
+    page_pdf = {(pg["file"], pg["page"]): pg["_pdf"] for pg in pages if pg.get("_pdf")}
 
     want_render = args.render_pages in ("auto", "required")
     if want_render and not backend.can_render():
         if args.render_pages == "required":
-            return 3, {"error": "render-pages=required 但没有渲染后端。请安装 pypdfium2 或 PyMuPDF "
-                                 "（pip install pypdfium2）。"}, report
+            return 3, {"error": "render-pages=required 但没有渲染后端。请安装 PyMuPDF（pip install pymupdf）"
+                                "或 pypdfium2+Pillow（pip install pypdfium2 Pillow）。"}, report
         report["warnings"].append("render_unavailable")
-
-    # asset paths in raw_input are recorded relative to the workspace as references/assets/<name>;
-    # warn (don't silently diverge) if --asset-root isn't the conventional <workspace>/references/assets.
-    if not os.path.normpath(asset_root).replace("\\", "/").lower().endswith("references/assets"):
+    if want_render and not asset_root:
+        if args.render_pages == "required":
+            return 2, {"error": "--render-pages required 但未指定 --asset-root（应指向 "
+                                "<workspace>/references/assets）。"}, report
+        report["warnings"].append("asset_root_not_set: 未指定 --asset-root，跳过页图渲染——依赖图的题将因"
+                                  "缺图被校验器 fail-closed；请用 --asset-root <workspace>/references/assets 渲染")
+    # asset paths in raw_input are recorded as references/assets/<name>; warn if --asset-root, when given,
+    # isn't the conventional <workspace>/references/assets (else on-disk files and JSON paths diverge).
+    if asset_root and not os.path.normpath(asset_root).replace("\\", "/").lower().endswith("references/assets"):
         report["warnings"].append("asset_root_not_standard: JSON 里 asset 路径按 references/assets/ 记，"
                                   "请把 --asset-root 指向 <workspace>/references/assets，否则文件与路径会对不上")
 
+    can_write = bool(asset_root) and want_render and backend.can_render()
     rendered = 0
     for it in lecture_items:
+        ans_files = {f for (f, _p) in it.get("_answer_pages", [])}
+        if len(ans_files) > 1:   # answer pages span >1 source file → page numbers are ambiguous
+            report["warnings"].append("answer_spans_multiple_files: %s (%s)"
+                                      % (it["id"], "、".join(sorted(ans_files))))
         if not it.get("requires_assets"):
             continue
         assets = []
-        plan = [("question_context", it["source_file"], it["source_pages"], "")]
-        if it.get("answer_source_pages"):
-            plan.append(("answer_context", it["answer_source_file"], it["answer_source_pages"], "_sol"))
-        for role, file, page_list, suffix in plan:
-            if not page_list:
-                continue
-            page = page_list[0]
+        # one asset PER (file, page) — render every question page AND every (continued) answer page,
+        # each from its OWN source file.
+        plan = ([("question_context", f, p, "") for (f, p) in it.get("_question_pages", [])]
+                + [("answer_context", f, p, "_sol") for (f, p) in it.get("_answer_pages", [])])
+        for role, file, page, suffix in plan:
             name = _safe_asset_name(file, page, it["id"], suffix)
             rel_path = "references/assets/" + name
             wrote = False
             pdf = page_pdf.get((file, page))
-            if want_render and backend.can_render() and pdf is not None:
+            if can_write and pdf is not None:
                 png = backend.render_page_png(pdf, page - 1)
                 if png:
                     full = os.path.join(asset_root, name)
@@ -448,6 +497,7 @@ def run(args, backend=None):
                            "caption": "%s p.%d (%s)" % (file, page, role)})
             if not wrote:
                 why = ("无渲染后端" if not (want_render and backend.can_render())
+                       else "未指定 --asset-root" if not asset_root
                        else "该页非 PDF 来源（无法渲染）" if pdf is None
                        else "渲染返回空")
                 report["warnings"].append(

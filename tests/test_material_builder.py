@@ -62,7 +62,9 @@ def _args(materials, **over):
     out = over.pop("out", os.path.join(materials, "raw_input.json"))
     rep = over.pop("report", os.path.join(materials, "parse_report.json"))
     aroot = over.pop("asset_root", os.path.join(materials, "ws", "references", "assets"))
-    argv = ["--materials", materials, "--out", out, "--report", rep, "--asset-root", aroot]
+    argv = ["--materials", materials, "--out", out, "--report", rep]
+    if aroot is not None:                       # pass asset_root=None to OMIT --asset-root
+        argv += ["--asset-root", aroot]
     for k, v in over.items():
         argv += ["--" + k.replace("_", "-"), v]
     return B.build_arg_parser().parse_args(argv)
@@ -185,6 +187,37 @@ class CoreExtraction(unittest.TestCase):
         self.assertIn("hw_1", ids)
         self.assertIn("lecture_quiz_1_1", ids)
 
+    # ---- Codex round-1 hardening (P1 + P2) ----
+    def test_full_item_carries_real_problem_text(self):
+        # P1: a text-complete item's question is the ACTUAL problem text, not a "see the page" pointer
+        pages = _pages("ch01.pdf", "Example 2.3 Problem  Compute the sum 1+2+...+n.",
+                       "Example 2.3 Solution  n(n+1)/2.")
+        it = B.extract_lecture_items(pages)[0]
+        self.assertEqual(it["question_text_status"], "full")
+        self.assertIn("Compute the sum", it["question"])
+        self.assertNotIn("见原始讲义", it["question"])
+
+    def test_rel_keeps_subdir_same_named_files_distinct(self):
+        # P2: same-named PDFs in different subdirs get distinct file ids (no page_pdf collision)
+        base = os.path.join("x", "mats")
+        a = B._rel(os.path.join(base, "lecture", "ch01.pdf"), base)
+        b = B._rel(os.path.join(base, "homework", "ch01.pdf"), base)
+        self.assertEqual(a, "lecture/ch01.pdf")
+        self.assertNotEqual(a, b)
+
+    def test_internal_render_keys_stripped_from_bank(self):
+        ri = B.build_raw_input("C", [{"chapter": 1, "files": ["a"], "pages": [1], "text_blocks": ["t"]}],
+                               [{"id": "lecture_quiz_1_1", "type": "diagram", "question": "q",
+                                 "_question_pages": [("a", 1)], "_answer_pages": [("a", 2)]}])
+        item = ri["quiz_bank"][0]
+        self.assertNotIn("_question_pages", item)
+        self.assertNotIn("_answer_pages", item)
+
+    def test_pypdfium2_render_requires_pillow(self):
+        with open(os.path.join(SCRIPTS, "build_raw_input_from_workspace.py"), encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn("import PIL", src)   # detect_backend must verify Pillow before claiming pypdfium2
+
 
 # --------------------------------------------------------------------------- CLI / run() tests
 
@@ -243,6 +276,50 @@ class CliAndRun(unittest.TestCase):
         code, ri, report = B.run(_args(d, render_pages="auto"), backend=be)
         self.assertEqual(code, 0)
         self.assertTrue(any("likely_asset_required_but_no_image" in w for w in report["warnings"]))
+
+    def test_empty_materials_fails(self):
+        d = tempfile.mkdtemp(prefix="mat-")                  # no parseable files at all
+        code, payload, report = B.run(_args(d), backend=B.NoBackend())
+        self.assertEqual(code, 4)
+        self.assertIn("no_pages_extracted", report["warnings"])
+
+    def test_render_required_without_asset_root_errors(self):
+        d = _materials_with_pdf()
+        be = FakeBackend({"ch01.pdf": ["Quiz 1.1  Venn diagram at right.", "Quiz 1.1 Solution  s."]})
+        code, payload, _ = B.run(_args(d, render_pages="required", asset_root=None), backend=be)
+        self.assertEqual(code, 2)
+        self.assertIn("asset-root", payload["error"])
+
+    def test_render_auto_without_asset_root_warns_and_skips(self):
+        d = _materials_with_pdf()
+        be = FakeBackend({"ch01.pdf": ["Quiz 1.1  Venn diagram at right.", "Quiz 1.1 Solution  s."]})
+        code, ri, report = B.run(_args(d, asset_root=None), backend=be)   # render auto, no --asset-root
+        self.assertEqual(code, 0)
+        self.assertTrue(any("asset_root_not_set" in w for w in report["warnings"]))
+        self.assertEqual(report["pages_rendered"], 0)                     # nothing written to a wrong place
+
+    def test_renders_all_continued_answer_pages(self):
+        d = _materials_with_pdf()
+        be = FakeBackend({"ch01.pdf": ["Quiz 1.4  Shade the Venn diagram at right.",
+                                       "Quiz 1.4 Solution  part1.",
+                                       "Quiz 1.4 Solution (Continued)  part2."]})
+        args = _args(d)
+        code, ri, report = B.run(args, backend=be)
+        item = next(q for q in ri["quiz_bank"] if q["id"] == "lecture_quiz_1_4")
+        sol = [a for a in item["assets"] if a["role"] == "answer_context"]
+        self.assertEqual(len(sol), 2)                        # BOTH solution pages get an asset...
+        for a in sol:                                        # ...and both are rendered to disk
+            self.assertTrue(os.path.isfile(os.path.join(args.asset_root, os.path.basename(a["path"]))))
+
+    def test_answer_spanning_multiple_files_warns(self):
+        d = tempfile.mkdtemp(prefix="mat-")
+        for fn in ("a.pdf", "b.pdf"):
+            with open(os.path.join(d, fn), "wb") as f:
+                f.write(b"%PDF fake")
+        be = FakeBackend({"a.pdf": ["Quiz 1.1  q.", "Quiz 1.1 Solution  part1."],
+                          "b.pdf": ["Quiz 1.1 Solution (Continued)  part2."]})
+        code, ri, report = B.run(_args(d), backend=be)
+        self.assertTrue(any("answer_spans_multiple_files" in w for w in report["warnings"]))
 
 
 # --------------------------------------------------------------------------- ingest integration
