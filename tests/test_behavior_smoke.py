@@ -92,6 +92,9 @@ class BehaviorSmokeTest(unittest.TestCase):
                         "非问题的指令项目符号不应被误判为未标号问题")
         self.assertTrue(H.assert_quiz_ids_in_bank("1. [#mc_q1] 栈的顺序？\n- A. LIFO\n- B. FIFO", bank_ids),
                         "选项行(A./B.)不应被误判为未标号问题")
+        # a "Q." prefixed untagged question must be caught (not mis-classified as an option by A–Z)
+        self.assertFalse(H.assert_quiz_ids_in_bank("1. [#mc_q1] 栈的顺序？\nQ. 红黑树怎么删除？", bank_ids),
+                         "『Q.』开头的未标号问题不应被当成选项而漏检")
 
     def test_quiz_detector_content_and_chapter_scope(self):
         qmap = H.load_quiz_bank_map(H.FIXTURE)
@@ -110,6 +113,11 @@ class BehaviorSmokeTest(unittest.TestCase):
         # tag on its OWN line + invented content on the next line must fail (no vacuous empty-text match)
         self.assertFalse(H.assert_quiz_ids_in_bank("[#mc_q1]\n请证明红黑树删除算法的复杂度。", ch1),
                          "题号单独一行、下一行是编造题面，也应被内容校验抓住")
+        # SWAPPING tag↔content across items must fail (mc_q1's tag on mc_q2's text and vice versa)
+        swapped = ("1. [#mc_q1] " + qmap["mc_q2"]["question"] + "\n"
+                   "2. [#mc_q2] " + qmap["mc_q1"]["question"])
+        self.assertFalse(H.assert_quiz_ids_in_bank(swapped, ch1),
+                         "题号与题面错配（每题题面对应别的题号）应被分段内容校验抓住")
 
     # 6
     def test_provenance_detector_recognizes_all_canonical_labels(self):
@@ -132,6 +140,11 @@ class BehaviorSmokeTest(unittest.TestCase):
                      "⚠️ AI生成答案，非老师/教材提供\n答案：栈是 LIFO。")
         self.assertFalse(H.has_canonical_provenance_labels(ml_legend),
                          "多行图例（标签各自成行、答案不带标注）也不应判通过")
+        # a multi-line legend where each label ends with a colon but content is on the NEXT line must fail
+        ml_colon = ("🟢 来自资料：\n🟡 AI补充，可能与你老师讲的不完全一致：\n"
+                    "⚠️ AI生成答案，非老师/教材提供：\n答案：栈是 LIFO。")
+        self.assertFalse(H.has_canonical_provenance_labels(ml_colon),
+                         "标签后只有冒号、内容却在下一行（图例式）也不应判通过")
 
     # 7
     def test_zero_basic_detector_recognizes_sections(self):
@@ -158,6 +171,8 @@ class BehaviorSmokeTest(unittest.TestCase):
                          "『不会写入错题本』的归档否定也应判不合格")
         self.assertFalse(H.has_hint_skip_offer("可以提示、跳过，但不会把这道题自动记录进错题档案"),
                          "夹词较长的归档否定（…记录进错题档案）也应判不合格")
+        self.assertFalse(H.has_hint_skip_offer("可以给提示，也可以跳过；错题本暂不记录此题。"),
+                         "名词后否定（错题本暂不记录）也应判不合格")
 
     # 9
     def test_mistake_archive_detector(self):

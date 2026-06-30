@@ -58,10 +58,10 @@ def extract_question_ids(text):
     return re.findall(r"\[#([^\]\s]+)\]", text or "")
 
 
-# numbered / Qn: / 第n题 — always a question item
-_NUM_ITEM_RE = re.compile(r"^\s*(?:\d+\s*[.、)）]|[Qq]\d+\s*[:：]|第\s*[一二三四五六七八九十百零\d]+\s*题\s*[:：]?)")
-# an OPTION line (A. / B) / 甲、 / ① …), possibly bulleted — NOT itself a question
-_OPTION_RE = re.compile(r"^\s*[-*•]?\s*(?:[A-Za-d]|[一二三四甲乙丙丁]|[①②③④⑤⑥])\s*[.、)）.]")
+# numbered / Q. / Qn: / 第n题 — always a question item
+_NUM_ITEM_RE = re.compile(r"^\s*(?:\d+\s*[.、)）]|[Qq]\d*\s*[.、:：)）]|第\s*[一二三四五六七八九十百零\d]+\s*题\s*[:：]?)")
+# an OPTION line — labels are A–D (NOT all of A–Z, so "Q." is a question, not an option)
+_OPTION_RE = re.compile(r"^\s*[-*•]?\s*(?:[A-Da-d]|[一二三四甲乙丙丁]|[①②③④⑤⑥])\s*[.、)）.]")
 
 
 def _is_question_item(ln):
@@ -84,20 +84,25 @@ def assert_quiz_ids_in_bank(text, bank):
     ids = extract_question_ids(t)
     if not ids or any(i not in allowed for i in ids):
         return False
-    # (b) no malformed multi-tag lines, and no UNTAGGED question-item line (untagged question = invention).
-    for ln in t.splitlines():
+    # (b) no malformed multi-tag lines, no UNTAGGED question-item line, and (c) each tag's bank question
+    #     must appear in ITS OWN segment (this line + following lines up to the next tag) — so swapping
+    #     tag↔content across items (mc_q1's tag on mc_q2's text) is caught, and an invented body fails.
+    lines = t.splitlines()
+    for idx, ln in enumerate(lines):
         lids = extract_question_ids(ln)
         if len(lids) > 1:
             return False
         if not lids and _is_question_item(ln):
             return False
-    # (c) CONTENT: each tagged id's bank question must actually APPEAR somewhere in the output
-    #     (same-line OR multi-line), so a valid tag slapped on invented content is caught.
-    if qmap is not None:
-        norm = re.sub(r"\s+|\[#[^\]]+\]", "", t)
-        for i in set(ids):
-            b = re.sub(r"\s+", "", qmap.get(i, ""))
-            if b and (b[:8] if len(b) >= 8 else b) not in norm:
+        if lids and qmap is not None:
+            seg = re.sub(r"\[#[^\]]+\]", "", ln)
+            for nxt in lines[idx + 1:]:
+                if extract_question_ids(nxt):
+                    break
+                seg += nxt
+            seg = re.sub(r"\s+", "", seg)
+            b = re.sub(r"\s+", "", qmap.get(lids[0], ""))
+            if b and (b[:8] if len(b) >= 8 else b) not in seg:
                 return False
     return True
 
@@ -109,8 +114,10 @@ def has_canonical_provenance_labels(text):
     for lbl in CANON_LABELS:
         used = False
         for m in re.finditer(re.escape(lbl), t):
-            prefix_use = re.match(r"\s*[:：]\s*\S", t[m.end():m.end() + 24])          # label：内容
-            suffix_use = re.search(r"\S\s*[（(]\s*$", t[max(0, m.start() - 16):m.start()])  # 内容（label
+            # content must be on the SAME line as the label ([ \t] only — no newline crossing), so a
+            # multi-line legend "🟢 …：\n🟡 …：\n答案：…" with an unlabelled answer does NOT count.
+            prefix_use = re.match(r"[ \t]*[:：][ \t]*\S", t[m.end():m.end() + 24])       # label：内容
+            suffix_use = re.search(r"\S[ \t]*[（(][ \t]*$", t[max(0, m.start() - 16):m.start()])  # 内容（label
             if prefix_use or suffix_use:
                 used = True
                 break
@@ -142,10 +149,11 @@ def has_hint_skip_offer(text):
     has_hint = ("提示" in t) or ("hint" in tl)
     has_skip = ("跳过" in t) or ("skip" in tl)
     has_archive = ("错题本" in t) or ("错题档案" in t) or ("归档" in t)
-    # reject explicit DENIAL of any escape-hatch option. Anchor archiving denial on 错题本/错题档案/归档
-    # (with a wider window) so "不会把这道题自动记录进错题档案" is caught regardless of the verb.
-    negated = bool(re.search(
-        r"(没有|不能|不会|无法|不给|不予|拒绝)[^。\n]{0,10}?(提示|跳过|归档|错题本|错题档案)", t))
+    # reject explicit DENIAL of any escape-hatch option — negation BEFORE the verb/noun
+    # ("不会…记录进错题档案") OR AFTER the noun ("错题本暂不记录此题").
+    negated = (bool(re.search(
+                   r"(没有|不能|不会|无法|不给|不予|拒绝)[^。\n]{0,10}?(提示|跳过|归档|错题本|错题档案)", t))
+               or bool(re.search(r"(错题本|错题档案)[^。\n]{0,6}?(暂不|不记|不写|不归|未记|不予记|不会记|不加入)", t)))
     return has_hint and has_skip and has_archive and not negated
 
 
