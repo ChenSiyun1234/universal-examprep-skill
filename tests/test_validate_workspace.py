@@ -546,6 +546,35 @@ class TestValidateWorkspace(unittest.TestCase):
         self.assertEqual(V._exit_code(errors), 1)
         self.assertIn("stub", err_text(errors))
 
+    # ---- Codex round-3 hardening (3 × P2) ----
+    def test_p0a_stub_with_only_answer_side_asset_fails(self):
+        # stub with no source_pages and ONLY an answer-side asset (exists) is not standalone
+        item = self._asset_item(question_text_status="stub", requires_assets=False, source_pages=None,
+                                assets=[{"path": "references/assets/a.png", "role": "answer_context",
+                                         "type": "page_image"}])
+        item.pop("source_pages", None)
+        errors, _, _ = V.validate(self._ws_asset(item))   # file exists, but answer-side only
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertIn("stub", err_text(errors))
+
+    def test_p0a_page_reference_nonstring_source_file_fails(self):
+        for bad in ({"f": "ch01.pdf"}, ["ch01.pdf"], "   "):
+            item = self._asset_item(question_text_status="page_reference", source_file=bad)
+            errors, _, _ = V.validate(self._ws_asset(item))
+            self.assertEqual(V._exit_code(errors), 1, "source_file=%r should fail" % (bad,))
+
+    def test_p0a_unreadable_required_asset_fails(self):
+        item = self._asset_item()                          # requires_assets=true, question_context
+        d = self._ws_asset(item)                           # asset file exists on disk
+        ap = os.path.join(d, "references", "assets", "a.png")
+        real_access = os.access
+        with mock.patch.object(V.os, "access",
+                               side_effect=lambda p, m: False if os.path.abspath(p) == os.path.abspath(ap)
+                               else real_access(p, m)):
+            errors, _, _ = V.validate(d)                   # exists but mocked unreadable -> fail-closed
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertIn("不可读", err_text(errors))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
