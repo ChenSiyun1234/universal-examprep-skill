@@ -43,26 +43,38 @@ _HEAD = r"^[ \t>*•·\-\d.)）、#]*"
 _EXAMPLE_RE = re.compile(_HEAD + r"Example\s+" + _NUM, re.I | re.M)
 _QUIZ_RE = re.compile(_HEAD + r"Quiz\s+" + _NUM, re.I | re.M)
 
-# Phrases/cues implying the page text alone is not a standalone question — it depends on a slide
-# figure/table/diagram. Word-boundary regex for English nouns (so "tablet"/"figure it out" don't trip),
-# plain substrings for multiword cues + zh terms. ASSET_EXCLUDE masks known false-positive phrases first.
+# Two classes of asset cue. ASSET_EXCLUDE masks known false-positive phrases first.
 ASSET_EXCLUDE = ("table of contents", "figure it out", "figure out", "graph theory", "figure caption")
-ASSET_PATTERNS = [re.compile(p, re.I) for p in (
-    r"venn", r"\bdiagram\b", r"\bfigure\b", r"\btable\b", r"\bgraph\b", r"\bplot\b",
-    r"\btree\b", r"\bcircuit\b",
-    r"at right", r"shown on the right", r"shown below", r"drawn below", r"as shown",
-    r"\bshaded?\b", r"\bdraw\b", r"\baxes\b", r"\brectangle\b", r"\btriangle\b",
+# STRONG: the question explicitly references a figure SHOWN to the student ("at right", "Venn", "shade
+# the region", "image below"). Asset-dependent on ANY source — a .txt that says "shade the Venn at right"
+# is fail-closed because the figure is genuinely missing from the text.
+STRONG_CUES = [re.compile(p, re.I) for p in (
+    r"venn", r"at right", r"to the right", r"shown (on the right|below|above)", r"as shown",
+    r"\bshaded?\b",
+    r"(figure|diagram|table|image|picture|chart|graph|tree|plot)s?\s+(below|above|at right|to the right)",
     "文氏图", "图示", "如图", "阴影", "区域", "示意图",
+)]
+# WEAK: a figure NOUN that might instead be a "produce" prompt ("draw the graph of y=x^2", "sketch the
+# tree"). Asset-dependent only for a renderable PDF source (where over-flagging just renders an extra
+# page, harmless); on .txt/.md the text is already complete, so don't fail-close a drawing prompt.
+WEAK_CUES = [re.compile(p, re.I) for p in (
+    r"\bdiagram\b", r"\bfigure\b", r"\btable\b", r"\bgraph\b", r"\bplot\b", r"\btree\b", r"\bcircuit\b",
+    r"\bdraw\b", r"\bdrawn\b", r"\baxes\b", r"\brectangle\b", r"\btriangle\b",
 )]
 
 
-def requires_assets_heuristic(text):
-    """True if the page text references a diagram/table/figure the question depends on.
-    Fail-closed by design: when unsure we prefer attaching a page image over dropping context."""
+def _cue_in(text, patterns):
     masked = (text or "").lower()
     for ex in ASSET_EXCLUDE:
-        masked = masked.replace(ex, " ")   # drop known false-positive phrases before noun matching
-    return any(p.search(masked) for p in ASSET_PATTERNS)
+        masked = masked.replace(ex, " ")   # drop known false-positive phrases before matching
+    return any(p.search(masked) for p in patterns)
+
+
+def requires_assets_heuristic(text, renderable=True):
+    """True if the question depends on a figure that isn't in the text. STRONG figure-SHOWN cues fire on
+    any source; WEAK figure-noun cues (possibly a 'draw the X' produce-prompt) fire only for a renderable
+    PDF source. Fail-closed by design: when unsure on a PDF we prefer attaching a page image."""
+    return _cue_in(text, STRONG_CUES) or (renderable and _cue_in(text, WEAK_CUES))
 
 
 # role is decided by the word IMMEDIATELY after the marker number (anchored), NOT a loose tail scan —
@@ -233,19 +245,19 @@ def extract_lecture_items(pages):
         # scope the asset heuristic to THIS problem's slice on the anchor page; continued pages (which
         # wholly belong to this problem) are scanned whole.
         stmt = _problem_statement(prob_text, kind, key[1], key[2])
-        # requires_assets only makes sense for a renderable PDF source — a .txt/.md source has no hidden
-        # image (its text is already complete), so a textual "Draw the graph of y=x^2" must NOT become
-        # an asset-required item the validator can never satisfy (no page to render).
+        # STRONG figure-shown cues fire on any source (a .txt "shade the Venn at right" is fail-closed);
+        # WEAK figure-noun cues fire only for a renderable PDF (a .txt "draw the graph" stays text-complete).
         renderable = pf.lower().endswith(".pdf")
-        needs = renderable and (requires_assets_heuristic(stmt or prob_text) or any(
-            requires_assets_heuristic(pages[k].get("text", "")) for k in prob_idxs if k != i))
+        needs = (requires_assets_heuristic(stmt or prob_text, renderable) or any(
+            requires_assets_heuristic(pages[k].get("text", ""), renderable) for k in prob_idxs if k != i))
         # marker-only: extraction yielded just the heading on a single page (real prompt likely in an
         # image) → NOT a standalone question. Detect by ABSENCE of any word/CJK content after the
         # heading (not a char-length cutoff — a terse CJK prompt like "求导"/"证明" is a real question).
-        # real prompt content = a LETTER or CJK char. A digits-only body is a slide/page footer
-        # ("Quiz 1.1\n12"), not a question → marker_only (point at the page, don't ask a bare title).
+        # real prompt content = a LETTER, CJK char, or math operator/relation. A bare page-number body
+        # ("Quiz 1.1\n12") is a slide footer → marker_only; a symbolic prompt ("2+2=?", "√4=?") is real.
         marker_only = ((not needs) and len(prob_idxs) == 1
-                       and not re.search(r"[A-Za-z一-鿿]", _body_after_marker(stmt, kind, key[1], key[2])))
+                       and not re.search(r"[A-Za-z一-鿿=+√∫∑^?×÷<>≤≥]",
+                                         _body_after_marker(stmt, kind, key[1], key[2])))
         if needs:
             qts = "page_reference"
             question = ("（%s %d.%d）本题依赖原始讲义 %s 第 %d 页的图/表，须配合所附 asset 作答。"
@@ -287,12 +299,14 @@ def extract_lecture_items(pages):
             item["_answer_pages"] = ans
             ref = "见原始讲义 %s 第 %s 页的解答。" % (
                 first_file, "、".join(str(p) for (f, p) in ans if f == first_file))
-            if needs or marker_only:
-                item["answer"] = ref + ("（依赖图，须看原页/asset）" if needs else "")
+            # keep the EXTRACTED solution text whenever there is one (grading needs it) — even for a
+            # figure-dependent item; only fall back to the page-reference when no text was extracted.
+            sol = " ".join(t for t in (_solution_statement(pages[j].get("text", ""), kind, key[1], key[2])
+                                       for j in ans_idx) if t).strip()
+            if sol:
+                item["answer"] = sol + ("（解答可能依赖图，须看原页/asset）" if needs else "")
             else:
-                sol = " ".join(t for t in (_solution_statement(pages[j].get("text", ""), kind, key[1], key[2])
-                                           for j in ans_idx) if t).strip()
-                item["answer"] = sol or ref
+                item["answer"] = ref + ("（依赖图，须看原页/asset）" if needs else "")
         else:
             item["answer_status"] = "unknown"   # honest: no solution page detected
         items.append(item)
@@ -678,7 +692,10 @@ def run(args, backend=None):
                        else "渲染返回空")
                 report["warnings"].append(
                     "likely_asset_required_but_no_image: %s (%s, %s)" % (it["id"], role, why))
-                if it.get("requires_assets"):   # only a HARD-required figure fails `--render-pages required`
+                # render=required fails when a needed QUESTION figure can't be produced — for a
+                # requires_assets figure OR a marker-only image-prompt (both have _render; role here is
+                # always question_context, since answer-side misses were already `continue`d above).
+                if it.get("_render"):
                     missing_required.append("%s (%s, %s)" % (it["id"], role, why))
         it["assets"] = assets
     report["pages_rendered"] = rendered

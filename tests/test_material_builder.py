@@ -475,6 +475,32 @@ class CoreExtraction(unittest.TestCase):
                                              "Quiz 1.1 Solution  ans"))[0]
         self.assertEqual(it2["question_text_status"], "full")
 
+    # ---- round-11 (P0B r11) hardening: figure-shown vs figure-noun cue split ----
+    def test_txt_figure_shown_cue_is_asset_required(self):
+        # a .txt 'Shade the Venn at right' references a SHOWN figure → fail-closed (STRONG cue, any source)
+        it = B.extract_lecture_items(_pages("notes.txt", "Quiz 1.1  Shade the Venn diagram at right.",
+                                            "Quiz 1.1 Solution  region A."))[0]
+        self.assertTrue(it["requires_assets"])
+        # ...but a .txt 'Draw the graph' (WEAK figure-noun, possibly produce-prompt) stays text-complete
+        it2 = B.extract_lecture_items(_pages("notes.txt", "Quiz 1.2  Draw the graph of y=x^2.",
+                                             "Quiz 1.2 Solution  parabola."))[0]
+        self.assertFalse(it2["requires_assets"])
+
+    def test_image_chart_below_cues(self):
+        for t in ("Use the image below.", "Read the chart below.", "See the picture below."):
+            self.assertTrue(B.requires_assets_heuristic(t), t)
+
+    def test_symbolic_prompt_not_marker_only(self):
+        it = B.extract_lecture_items(_pages("ch01.pdf", "Quiz 1.1  2+2=?", "Quiz 1.1 Solution  4"))[0]
+        self.assertEqual(it["question_text_status"], "full")     # operators = a real prompt
+
+    def test_figure_item_keeps_extracted_answer(self):
+        # a figure-dependent item with an extracted text solution keeps the TEXT answer (for grading)
+        it = B.extract_lecture_items(_pages("ch01.pdf", "Quiz 1.1  Shade the Venn at right.",
+                                            "Quiz 1.1 Solution  the shaded region is A and B."))[0]
+        self.assertTrue(it["requires_assets"])
+        self.assertIn("shaded region", it["answer"])             # not just a page-reference string
+
     def test_section_grouping_from_headings(self):
         pages = (_pages("a.pdf", "Quiz 1.1  x") + _pages("b.pdf", "Example 2.1 Problem  y"))
         secs = B.group_sections(pages)
@@ -632,6 +658,19 @@ class CliAndRun(unittest.TestCase):
         self.assertEqual(code, 4)
         self.assertIn("no_text_extracted", report["warnings"])
         self.assertTrue(any("pdf_no_text" in w for w in report["warnings"]))
+
+    def test_render_required_fails_for_marker_only_image_prompt(self):
+        # round-11: a marker-only image prompt (heading + no text) whose page can't render also fails
+        # `--render-pages required` (its prompt is in an image we can't produce)
+        d = _materials_with_pdf()
+
+        class NullRender(FakeBackend):
+            def render_page_png(self, pdf_path, page_index):
+                return None
+
+        be = NullRender({"ch01.pdf": ["Quiz 1.1", "Quiz 1.1 Solution  ans"]})   # heading only → marker_only
+        code, payload, report = B.run(_args(d, render_pages="required"), backend=be)
+        self.assertEqual(code, 3)
 
     def test_render_required_without_asset_root_errors(self):
         d = _materials_with_pdf()
