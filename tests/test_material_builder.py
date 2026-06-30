@@ -170,11 +170,12 @@ class CoreExtraction(unittest.TestCase):
             self.assertFalse(B.requires_assets_heuristic(t), "false positive: %r" % t)
 
     def test_heuristic_scoped_to_problem_slice(self):
-        # round-3 P2: a Venn mention in a LATER problem on the same page must not flag THIS plain problem
+        # round-3 P2: a Venn mention in a LATER problem on the same page must not flag THIS plain problem.
+        # (markers are line-anchored, so each Quiz heading starts its own line — as in real slide text)
         pages = [{"file": "ch01.pdf", "page": 1,
-                  "text": "Quiz 1.1  Compute 2+2.  Quiz 1.2  Shade the Venn diagram at right."},
+                  "text": "Quiz 1.1  Compute 2+2.\nQuiz 1.2  Shade the Venn diagram at right."},
                  {"file": "ch01.pdf", "page": 2,
-                  "text": "Quiz 1.1 Solution  4.  Quiz 1.2 Solution  the region."}]
+                  "text": "Quiz 1.1 Solution  4.\nQuiz 1.2 Solution  the region."}]
         items = {it["id"]: it for it in B.extract_lecture_items(pages)}
         self.assertFalse(items["lecture_quiz_1_1"]["requires_assets"])  # plain → not asset-required
         self.assertTrue(items["lecture_quiz_1_2"]["requires_assets"])   # Venn slice → asset-required
@@ -186,6 +187,40 @@ class CoreExtraction(unittest.TestCase):
         self.assertNotEqual(a, b)
         self.assertIn("lecture", a)
         self.assertIn("solutions", b)
+
+    # ---- round-4 hardening ----
+    def test_inline_mention_is_not_a_marker(self):
+        # round-4 P2: prose "See Example 1.1" / a TOC entry must not be mistaken for a lecture heading
+        pages = _pages("ch01.pdf", "Please review the proof. See Example 1.1 in the textbook for details.")
+        self.assertEqual(B.extract_lecture_items(pages), [])
+
+    def test_problem_statement_picks_problem_not_solution(self):
+        # round-4 P2: solution-before-problem on one page → slice the PROBLEM, not the earlier solution
+        text = "Example 1.1 Solution  the answer is 42.\nExample 1.1 Problem  what is the answer?"
+        stmt = B._problem_statement(text, "example", 1, 1)
+        self.assertIn("what is the answer", stmt)
+        self.assertNotIn("answer is 42", stmt)
+
+    def test_same_marker_in_two_files_namespaced(self):
+        # round-4 P2: Quiz 1.1 in two files → two distinct items, each paired with its OWN solution
+        pages = [{"file": "lecture/ch01.pdf", "page": 1, "text": "Quiz 1.1  Compute A."},
+                 {"file": "lecture/ch01.pdf", "page": 2, "text": "Quiz 1.1 Solution  A is 1."},
+                 {"file": "homework/ch01.pdf", "page": 1, "text": "Quiz 1.1  Compute B."},
+                 {"file": "homework/ch01.pdf", "page": 2, "text": "Quiz 1.1 Solution  B is 2."}]
+        items = B.extract_lecture_items(pages)
+        self.assertEqual(len(items), 2)                      # both kept (not deduped away)
+        self.assertEqual(len({it["id"] for it in items}), 2)  # distinct namespaced ids
+        by_file = {it["source_file"]: it for it in items}
+        self.assertIn("A is 1", by_file["lecture/ch01.pdf"]["answer"])   # paired with own file's solution
+        self.assertIn("B is 2", by_file["homework/ch01.pdf"]["answer"])
+
+    def test_marker_only_question_is_page_reference(self):
+        # round-4 P2: only a heading extracted (prompt is in an image) → page_reference, not an
+        # unanswerable "full" title
+        pages = _pages("ch01.pdf", "Quiz 1.1", "Quiz 1.1 Solution  see the figure.")
+        it = B.extract_lecture_items(pages)[0]
+        self.assertEqual(it["question_text_status"], "page_reference")
+        self.assertFalse(it.get("requires_assets"))
 
     def test_section_grouping_from_headings(self):
         pages = (_pages("a.pdf", "Quiz 1.1  x") + _pages("b.pdf", "Example 2.1 Problem  y"))

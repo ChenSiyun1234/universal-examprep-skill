@@ -36,8 +36,11 @@ import sys
 # ---------------------------------------------------------------------------
 
 _NUM = r"(\d+)\s*\.\s*(\d+)"
-_EXAMPLE_RE = re.compile(r"Example\s+" + _NUM, re.I)
-_QUIZ_RE = re.compile(r"Quiz\s+" + _NUM, re.I)
+# anchor markers to a line START (after optional bullet/number prefix) so inline prose like
+# "see Example 1.1" or a table-of-contents entry doesn't get mistaken for a lecture heading.
+_HEAD = r"^[ \t>*•·\-\d.)）、]*"
+_EXAMPLE_RE = re.compile(_HEAD + r"Example\s+" + _NUM, re.I | re.M)
+_QUIZ_RE = re.compile(_HEAD + r"Quiz\s+" + _NUM, re.I | re.M)
 
 # Phrases/cues implying the page text alone is not a standalone question — it depends on a slide
 # figure/table/diagram. Word-boundary regex for English nouns (so "tablet"/"figure it out" don't trip),
@@ -107,18 +110,34 @@ def _key(mk):
 
 
 def _problem_statement(page_text, kind, chapter, num):
-    """Extract the actual problem text that follows the `<kind> X.Y` marker on its page, cut at the
-    next Example/Quiz marker. Used as the real `question` for text-complete items (so they aren't a
-    bare 'see the page' pointer to a page the workspace never copies)."""
+    """Extract the actual problem text that follows the `<kind> X.Y` PROBLEM marker on its page, cut
+    at the next Example/Quiz marker. Picks the problem-role marker (not a `Solution` of the same
+    number that may sit earlier on the page in a solution-before-problem layout)."""
     text = page_text or ""
     rx = _EXAMPLE_RE if kind == "example" else _QUIZ_RE
-    starts = [m.start() for m in rx.finditer(text) if int(m.group(1)) == chapter and int(m.group(2)) == num]
-    if not starts:
+    s = None
+    for m in rx.finditer(text):
+        if int(m.group(1)) == chapter and int(m.group(2)) == num \
+                and not _ROLE_SOLUTION_RE.match(text[m.end():m.end() + 48]):
+            s = m.start()
+            break
+    if s is None:
         return ""
-    s = starts[0]
     after = [m.start() for m in list(_EXAMPLE_RE.finditer(text)) + list(_QUIZ_RE.finditer(text)) if m.start() > s]
     e = min(after) if after else len(text)
     return " ".join(text[s:e].split()).strip()
+
+
+def _body_after_marker(stmt, kind, chapter, num):
+    """The text of `stmt` after stripping the leading `<kind> X.Y [Problem]` heading — used to tell a
+    real prompt from a marker-only title (a slide whose prompt is in an image pypdf couldn't read)."""
+    rx = _EXAMPLE_RE if kind == "example" else _QUIZ_RE
+    m = rx.search(stmt or "")
+    if not m:
+        return (stmt or "").strip()
+    rest = stmt[m.end():]
+    rest = re.sub(r"^\s*[\):.\-]?\s*\(?\s*problem\b\)?", "", rest, flags=re.I)  # drop a trailing "Problem"
+    return rest.strip(" .:：、)）-—\t\n")
 
 
 def _solution_statement(page_text, kind, chapter, num):
@@ -138,32 +157,41 @@ def _solution_statement(page_text, kind, chapter, num):
 
 
 def extract_lecture_items(pages):
-    """Pair each `<kind> X.Y` problem with ALL its `<kind> X.Y Solution` pages (including
-    `Solution (Continued ...)`), assign stable IDs, and flag asset dependence. De-dups problems by
-    (kind, chapter, num). Solution pages are claimed per key, so they survive intervening problems
-    and out-of-order (solution-before-problem) layouts."""
+    """Pair each `<kind> X.Y` problem with its matching `Solution` pages (incl. `(Continued)`), assign
+    stable IDs, and flag asset dependence. De-dups problems by (kind, chapter, num, source_file) — a
+    marker reused across files (lecture/ch01.pdf + homework/ch01.pdf both `Quiz 1.1`) yields two
+    distinct, file-namespaced items. Solutions are claimed same-file-first (a continuation in a file
+    with no competing problem still merges), surviving intervening problems and solution-before-problem."""
     marked = _markers_with_pages(pages)
-    # index every solution marker position by key, in page order: key -> [(marker_idx, page_idx)]
     sol_by_key = {}
     for mj, (pj, mk2) in enumerate(marked):
         if mk2["role"] == "solution":
             sol_by_key.setdefault(_key(mk2), []).append((mj, pj))
+    prob_files = {}    # key -> set of files that contain a PROBLEM marker for it
+    for (pj, mk2) in marked:
+        if mk2["role"] == "problem":
+            prob_files.setdefault(_key(mk2), set()).add(pages[pj]["file"])
+    ambiguous = {k for k, fs in prob_files.items() if len(fs) > 1}   # same marker in >1 file → namespace id
+
     claimed = set()
     items, seen = [], set()
     for mi, (i, mk) in enumerate(marked):
         if mk["role"] != "problem":
             continue
         key = _key(mk)
-        if key in seen:
-            continue
-        seen.add(key)
         prob_page = pages[i]
+        pf = prob_page["file"]
+        if (key, pf) in seen:
+            continue
+        seen.add((key, pf))
         prob_text = prob_page.get("text", "")
 
-        # claim this key's solution pages — prefer those AFTER the problem; fall back to any (handles
-        # solution-before-problem). Gathering all of them merges continued pages across intervening problems.
-        cands = [(mj, pj) for (mj, pj) in sol_by_key.get(key, []) if mj not in claimed]
-        after = [(mj, pj) for (mj, pj) in cands if mj > mi]
+        # a solution is usable if it's in the problem's own file, OR in a file that has no competing
+        # problem for this key (i.e. a pure continuation) — so we never steal another item's solution.
+        other_prob_files = prob_files.get(key, set()) - {pf}
+        cands = [(mj, pj) for (mj, pj) in sol_by_key.get(key, []) if mj not in claimed
+                 and (pages[pj]["file"] == pf or pages[pj]["file"] not in other_prob_files)]
+        after = [c for c in cands if c[0] > mi]
         chosen = after if after else cands
         for (mj, pj) in chosen:
             claimed.add(mj)
@@ -171,30 +199,37 @@ def extract_lecture_items(pages):
 
         kind = mk["kind"]
         label = "Example" if kind == "example" else "Quiz"
-        # scope the asset heuristic to THIS problem's text slice (not the whole page) — else a Venn
-        # mention in a later problem on the same page would wrongly flag this one as figure-dependent.
+        # scope the asset heuristic to THIS problem's slice (not the whole page)
         stmt = _problem_statement(prob_text, kind, key[1], key[2])
         needs = requires_assets_heuristic(stmt or prob_text)
+        # marker-only: text extraction yielded just the heading (real prompt likely in an image) →
+        # it is NOT a standalone question; point at the page rather than asking an unanswerable title.
+        marker_only = (not needs) and len(_body_after_marker(stmt, kind, key[1], key[2])) < 3
         if needs:
-            # figure-dependent: text alone isn't the question; point at the page + require the asset
+            qts = "page_reference"
             question = ("（%s %d.%d）本题依赖原始讲义 %s 第 %d 页的图/表，须配合所附 asset 作答。"
-                        % (label, key[1], key[2], prob_page["file"], prob_page["page"]))
+                        % (label, key[1], key[2], pf, prob_page["page"]))
+        elif marker_only:
+            qts = "page_reference"
+            question = ("（%s %d.%d）题面未能从文本提取（可能在图片中），见原始讲义 %s 第 %d 页。"
+                        % (label, key[1], key[2], pf, prob_page["page"]))
         else:
-            # text-complete: use the ACTUAL problem text so the student sees a real, answerable question
-            question = stmt or ("（%s %d.%d）见原始讲义 %s 第 %d 页。"
-                                % (label, key[1], key[2], prob_page["file"], prob_page["page"]))
+            qts = "full"
+            question = stmt
+        item_id = "lecture_%s_%d_%d" % (kind, key[1], key[2])
+        if key in ambiguous:
+            item_id += "__" + re.sub(r"[^\w]", "_", os.path.splitext(pf)[0])   # disambiguate by file
         item = {
-            "id": "lecture_%s_%d_%d" % (kind, key[1], key[2]),
+            "id": item_id,
             "chapter": key[1],
             "type": "diagram" if needs else "subjective",
             "question": question,
             "source": "material",
-            "source_file": prob_page["file"],
+            "source_file": pf,
             "source_pages": [prob_page["page"]],
-            # per-(file,page) detail for the renderer (stripped from the emitted bank by build_raw_input)
-            "_question_pages": [(prob_page["file"], prob_page["page"])],
+            "_question_pages": [(pf, prob_page["page"])],   # stripped from the emitted bank
             "requires_assets": bool(needs),
-            "question_text_status": "page_reference" if needs else "full",
+            "question_text_status": qts,
         }
         if not needs:
             item["keywords"] = []  # subjective recommended field; left for the tutor/teacher to fill
@@ -202,16 +237,13 @@ def extract_lecture_items(pages):
             ans = sorted({(pages[j]["file"], pages[j]["page"]) for j in ans_idx}, key=lambda fp: (fp[1], fp[0]))
             first_file = ans[0][0]
             item["answer_source_file"] = first_file
-            # answer_source_pages lists ONLY pages from answer_source_file — don't claim another file's
-            # page number as this file's. Pages from other files still get rendered as assets below.
             item["answer_source_pages"] = [p for (f, p) in ans if f == first_file]
-            item["_answer_pages"] = ans              # internal: each answer page keeps its OWN source file
+            item["_answer_pages"] = ans
             ref = "见原始讲义 %s 第 %s 页的解答。" % (
                 first_file, "、".join(str(p) for (f, p) in ans if f == first_file))
-            if needs:
-                item["answer"] = ref + "（依赖图，须看原页/asset）"
+            if needs or marker_only:
+                item["answer"] = ref + ("（依赖图，须看原页/asset）" if needs else "")
             else:
-                # text-complete: store the ACTUAL extracted solution text so grading has a reference
                 sol = " ".join(t for t in (_solution_statement(pages[j].get("text", ""), kind, key[1], key[2])
                                            for j in ans_idx) if t).strip()
                 item["answer"] = sol or ref
@@ -439,8 +471,8 @@ def run(args, backend=None):
         report["warnings"].append("no_pdf_text_backend")
         return 3, {"error": "发现 %d 个 PDF，但没有可用的 PDF 文本后端。请安装可选依赖："
                             "`pip install pypdf`（PDF 文本提取需要它；把页面渲染成图还需 "
-                            "`pip install pypdfium2` 或 PyMuPDF）。纯 .txt/.md 材料无需任何依赖。"
-                            % len(pdfs)}, report
+                            "`pip install pymupdf` 或 `pypdfium2 Pillow`——只装 pypdfium2 而无 Pillow 不会启用渲染）。"
+                            "纯 .txt/.md 材料无需任何依赖。" % len(pdfs)}, report
 
     pages = []
     for tp in texts:
