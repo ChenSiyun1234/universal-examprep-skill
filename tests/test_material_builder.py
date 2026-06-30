@@ -303,6 +303,52 @@ class CoreExtraction(unittest.TestCase):
         self.assertNotIn("lecture_quiz_9_9", ids)     # leftover .md item NOT ingested
         self.assertTrue(any("pruned_non_material" in w for w in report["warnings"]))
 
+    # ---- round-6 (P0B r6) hardening ----
+    def test_toc_entry_not_extracted(self):
+        # 'Example 1.1 Counting subsets ....... 12' is a table-of-contents line, not a heading
+        self.assertEqual(B.extract_lecture_items(_pages("ch01.pdf", "Example 1.1 Counting subsets ........ 12")), [])
+        # ...but a 3-dot ellipsis in a REAL prompt must NOT be mistaken for TOC dot-leaders
+        self.assertEqual(len(B.detect_lecture_markers("Example 2.3 Problem  Compute 1+2+...+n.")), 1)
+
+    def test_problem_statement_skips_continued_solution_marker(self):
+        text = "Example 1.1 (Continued) Solution  ans part two.\nExample 1.1 Problem  the real question?"
+        stmt = B._problem_statement(text, "example", 1, 1)
+        self.assertIn("the real question", stmt)
+        self.assertNotIn("ans part two", stmt)
+
+    def test_solution_statement_handles_continued_before_solution(self):
+        sol = B._solution_statement("Example 1.1 (Continued) Solution  the worked answer.", "example", 1, 1)
+        self.assertIn("worked answer", sol)
+
+    def test_cjk_short_prompt_not_marker_only(self):
+        pages = _pages("ch01.pdf", "Example 1.1 求导", "Example 1.1 Solution  答案")
+        it = B.extract_lecture_items(pages)[0]
+        self.assertEqual(it["question_text_status"], "full")   # 求导 is a real (terse) prompt
+        self.assertIn("求导", it["question"])
+
+    def test_ambiguous_key_does_not_claim_shared_solution(self):
+        # Quiz 1.1 problem in two files + a separate solutions-only file → don't mis-assign the solution
+        pages = [{"file": "a.pdf", "page": 1, "text": "Quiz 1.1  q in a."},
+                 {"file": "b.pdf", "page": 1, "text": "Quiz 1.1  q in b."},
+                 {"file": "sol.pdf", "page": 1, "text": "Quiz 1.1 Solution  shared sol."}]
+        items = B.extract_lecture_items(pages)
+        self.assertEqual(len(items), 2)
+        for it in items:
+            self.assertNotIn("answer_source_pages", it)     # neither claims the ambiguous shared solution
+            self.assertEqual(it.get("answer_status"), "unknown")
+
+    def test_legitimate_references_dir_not_pruned(self):
+        # a course 'references/' of real PDFs (no wiki/assets signature) must NOT be pruned
+        d = tempfile.mkdtemp(prefix="mat-")
+        os.makedirs(os.path.join(d, "references"))
+        with open(os.path.join(d, "references", "ch02.pdf"), "wb") as f:
+            f.write(b"%PDF fake")
+        with open(os.path.join(d, "ch01.pdf"), "wb") as f:
+            f.write(b"%PDF fake")
+        pdfs, texts, pruned = B._scan_materials(d)
+        self.assertEqual(sorted(os.path.basename(p) for p in pdfs), ["ch01.pdf", "ch02.pdf"])
+        self.assertEqual(pruned, [])
+
     def test_section_grouping_from_headings(self):
         pages = (_pages("a.pdf", "Quiz 1.1  x") + _pages("b.pdf", "Example 2.1 Problem  y"))
         secs = B.group_sections(pages)

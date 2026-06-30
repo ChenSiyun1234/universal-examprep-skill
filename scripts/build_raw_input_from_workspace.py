@@ -69,6 +69,19 @@ def requires_assets_heuristic(text):
 # otherwise a problem whose text merely contains "solution" ("find the solution set") is misread.
 _ROLE_PROBLEM_RE = re.compile(r"^\s*[\)\.:\-]?\s*\(?\s*problem\b", re.I)
 _ROLE_SOLUTION_RE = re.compile(r"^\s*[\)\.:\-]?\s*\(?\s*solution\b", re.I)
+_TOC_RE = re.compile(r"\.{4,}")   # 4+ dot-leaders → a table-of-contents line, not a heading
+
+
+def _role_of_tail(tail):
+    """Role of a marker from the text right after its number. A leading "(Continued)" may precede the
+    role word ("Example 1.1 (Continued) Solution …"); strip it before matching. Used everywhere so
+    detect_lecture_markers and the text-slicers agree."""
+    tail_role = re.sub(r"^\s*\(?\s*continued[^)\n]*\)?", "", tail, flags=re.I)
+    if _ROLE_PROBLEM_RE.match(tail) or _ROLE_PROBLEM_RE.match(tail_role):
+        return "problem"
+    if _ROLE_SOLUTION_RE.match(tail) or _ROLE_SOLUTION_RE.match(tail_role):
+        return "solution"
+    return "problem"   # bare "Quiz 1.1" with no keyword → a problem
 
 
 def detect_lecture_markers(text):
@@ -78,17 +91,11 @@ def detect_lecture_markers(text):
     for kind, rx in (("example", _EXAMPLE_RE), ("quiz", _QUIZ_RE)):
         for m in rx.finditer(text or ""):
             tail = (text or "")[m.end():m.end() + 48]
-            # a leading "(Continued)" may sit before the role word ("Example 1.1 (Continued) Solution …")
-            tail_role = re.sub(r"^\s*\(?\s*continued[^)\n]*\)?", "", tail, flags=re.I)
-            if _ROLE_PROBLEM_RE.match(tail) or _ROLE_PROBLEM_RE.match(tail_role):
-                role = "problem"                       # explicit "Problem" right after the number
-            elif _ROLE_SOLUTION_RE.match(tail) or _ROLE_SOLUTION_RE.match(tail_role):
-                role = "solution"                      # explicit "Solution" (even after a "(Continued)")
-            else:
-                role = "problem"                       # bare "Quiz 1.1" with no keyword → a problem
-            cont = bool(re.search(r"\bContinued\b", tail, re.I))   # applies to problems AND solutions
+            if _TOC_RE.search(tail):   # "Example 1.1 Counting subsets ....... 12" → TOC entry, skip
+                continue
             out.append((m.start(), {"kind": kind, "chapter": int(m.group(1)), "num": int(m.group(2)),
-                                    "role": role, "continued": cont}))
+                                    "role": _role_of_tail(tail),
+                                    "continued": bool(re.search(r"\bContinued\b", tail, re.I))}))
     out.sort(key=lambda x: x[0])   # TEXT-POSITION order so markers[0] is the first-appearing marker
     return [mk for _pos, mk in out]
 
@@ -123,7 +130,7 @@ def _problem_statement(page_text, kind, chapter, num):
     s = None
     for m in rx.finditer(text):
         if int(m.group(1)) == chapter and int(m.group(2)) == num \
-                and not _ROLE_SOLUTION_RE.match(text[m.end():m.end() + 48]):
+                and _role_of_tail(text[m.end():m.end() + 48]) != "solution":   # skip continued-solution markers too
             s = m.start()
             break
     if s is None:
@@ -152,7 +159,8 @@ def _solution_statement(page_text, kind, chapter, num):
     text = page_text or ""
     rx = _EXAMPLE_RE if kind == "example" else _QUIZ_RE
     for m in rx.finditer(text):
-        if int(m.group(1)) == chapter and int(m.group(2)) == num and _ROLE_SOLUTION_RE.match(text[m.end():m.end() + 48]):
+        if int(m.group(1)) == chapter and int(m.group(2)) == num \
+                and _role_of_tail(text[m.end():m.end() + 48]) == "solution":   # incl. "(Continued) Solution"
             s = m.start()
             after = [mm.start() for mm in list(_EXAMPLE_RE.finditer(text)) + list(_QUIZ_RE.finditer(text))
                      if mm.start() > s]
@@ -201,11 +209,14 @@ def extract_lecture_items(pages):
                                   and pages[pj2]["file"] == pf and mk2.get("continued")})
         q_pages = sorted({(pages[k]["file"], pages[k]["page"]) for k in prob_idxs}, key=lambda fp: (fp[1], fp[0]))
 
-        # take ALL usable solutions (same file, OR a continuation file with no competing problem) —
-        # both before AND after the problem, so a pre-problem part + a later (Continued) part both stay.
+        # take ALL usable solutions (both before AND after the problem). For a key that is a problem in
+        # >1 file (ambiguous), only SAME-FILE solutions are usable — a separate solutions-only file's
+        # `Quiz X.Y Solution` can't be assigned to one of the competing problems, so don't claim it.
         other_prob_files = prob_files.get(key, set()) - {pf}
+        ambiguous_key = key in ambiguous
         chosen = [(mj, pj) for (mj, pj) in sol_by_key.get(key, []) if mj not in claimed
-                  and (pages[pj]["file"] == pf or pages[pj]["file"] not in other_prob_files)]
+                  and (pages[pj]["file"] == pf
+                       or (not ambiguous_key and pages[pj]["file"] not in other_prob_files))]
         for (mj, pj) in chosen:
             claimed.add(mj)
         ans_idx = sorted({pj for (mj, pj) in chosen})
@@ -218,9 +229,10 @@ def extract_lecture_items(pages):
         needs = requires_assets_heuristic(stmt or prob_text) or any(
             requires_assets_heuristic(pages[k].get("text", "")) for k in prob_idxs if k != i)
         # marker-only: extraction yielded just the heading on a single page (real prompt likely in an
-        # image) → NOT a standalone question; render/point at the page rather than ask a bare title.
+        # image) → NOT a standalone question. Detect by ABSENCE of any word/CJK content after the
+        # heading (not a char-length cutoff — a terse CJK prompt like "求导"/"证明" is a real question).
         marker_only = ((not needs) and len(prob_idxs) == 1
-                       and len(_body_after_marker(stmt, kind, key[1], key[2])) < 3)
+                       and not re.search(r"[A-Za-z0-9一-鿿]", _body_after_marker(stmt, kind, key[1], key[2])))
         if needs:
             qts = "page_reference"
             question = ("（%s %d.%d）本题依赖原始讲义 %s 第 %d 页的图/表，须配合所附 asset 作答。"
@@ -419,24 +431,39 @@ def _under(root, child):
     return child_r == root_r or child_r.startswith(root_r + os.sep)
 
 
-# Directories a course folder may contain that are NOT source material and must not be re-ingested:
-# a PRIOR skill workspace (`references/` wiki+assets, `scratch/` extraction), plus vcs/venv/IDE junk.
-# (Real case: D:\EEC 160 held a previous ad-hoc workspace → without pruning, every lecture marker was
-#  triplicated across the pdf + extracted .txt + wiki .md, blowing up the bank with broken items.)
-PRUNE_DIRS = {"references", "scratch", ".git", ".hg", ".svn", "node_modules", "__pycache__",
-              ".venv", "venv", "env", ".idea", ".vscode", ".pytest_cache", ".ipynb_checkpoints"}
+# Tooling/VCS dirs that NEVER hold course material → always pruned from the materials scan.
+ALWAYS_PRUNE = {".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv", "env",
+                ".idea", ".vscode", ".pytest_cache", ".ipynb_checkpoints"}
+
+
+def _is_leftover_workspace(path, name):
+    """True only if a `references`/`scratch` dir looks like a generated skill workspace / prior-attempt
+    scratch — NOT a legitimate course `references/` of real PDFs. Keyed on the workspace SIGNATURE
+    (references/wiki, scratch/extracted|images) so we don't drop a real `materials/references/ch02.pdf`."""
+    low = name.lower()
+    if low == "references":
+        return os.path.isdir(os.path.join(path, "wiki")) or os.path.isdir(os.path.join(path, "assets"))
+    if low == "scratch":
+        return any(os.path.isdir(os.path.join(path, s)) for s in ("extracted", "images"))
+    return False
 
 
 def _scan_materials(materials_dir):
-    """Return sorted (pdf_paths, text_paths, pruned_dirs). Prunes leftover workspace/tooling dirs
-    (see PRUNE_DIRS) so a prior `references/`+`scratch/` workspace sitting inside the course folder
-    isn't scanned as source material."""
+    """Return sorted (pdf_paths, text_paths, pruned_dirs). Prunes tooling/VCS dirs unconditionally, and
+    a `references/`+`scratch/` dir ONLY when it carries a generated-workspace signature — so a prior
+    workspace inside the course folder isn't re-ingested, but a real course `references/` of PDFs is kept.
+    (Real case: D:\\EEC 160 held a previous ad-hoc workspace → without pruning every lecture marker was
+    triplicated across the pdf + extracted .txt + wiki .md, blowing up the bank with broken items.)"""
     pdfs, texts, pruned = [], [], []
     for dirpath, dirs, files in os.walk(materials_dir):
+        keep = []
         for d in dirs:
-            if d.lower() in PRUNE_DIRS:
-                pruned.append(os.path.relpath(os.path.join(dirpath, d), materials_dir).replace(os.sep, "/"))
-        dirs[:] = [d for d in dirs if d.lower() not in PRUNE_DIRS]   # os.walk: prune in place
+            full = os.path.join(dirpath, d)
+            if d.lower() in ALWAYS_PRUNE or _is_leftover_workspace(full, d):
+                pruned.append(os.path.relpath(full, materials_dir).replace(os.sep, "/"))
+            else:
+                keep.append(d)
+        dirs[:] = keep   # os.walk: prune in place
         for fn in sorted(files):
             low = fn.lower()
             full = os.path.join(dirpath, fn)
