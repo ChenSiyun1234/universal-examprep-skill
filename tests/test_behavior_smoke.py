@@ -82,6 +82,12 @@ class BehaviorSmokeTest(unittest.TestCase):
         # an invented tag on a NON-numbered (bullet) line must ALSO fail — scan all tags, any format
         self.assertFalse(H.assert_quiz_ids_in_bank("1. [#mc_q1] 合法\n- [#mc_q99] 项目符号编造", bank_ids),
                          "非编号行（项目符号）上的编造题号也应被抓")
+        # an UNTAGGED bullet question must fail too...
+        self.assertFalse(H.assert_quiz_ids_in_bank("1. [#mc_q1] 合法\n- 这是没标号的编造题", bank_ids),
+                         "未标号的项目符号问题也应被抓")
+        # ...but bullet OPTIONS (A./B.) under a question must NOT be treated as untagged questions
+        self.assertTrue(H.assert_quiz_ids_in_bank("1. [#mc_q1] 栈的顺序？\n- A. LIFO\n- B. FIFO", bank_ids),
+                        "选项行(A./B.)不应被误判为未标号问题")
 
     # 6
     def test_provenance_detector_recognizes_all_canonical_labels(self):
@@ -96,11 +102,17 @@ class BehaviorSmokeTest(unittest.TestCase):
     def test_zero_basic_detector_recognizes_sections(self):
         self.assertTrue(H.has_zero_basic_sections(_read("mock/sample_outputs/zero_basic_explain.txt")))
         self.assertFalse(H.has_zero_basic_sections("## 考点拆解\n只有一个小节"), "缺少其余小节时不应判通过")
+        # a one-line checklist that merely NAMES the sections (no real headings) must not pass
+        self.assertFalse(H.has_zero_basic_sections("请包含：考点拆解、标准答题步骤、易错点、3分钟速记"),
+                         "仅罗列小节名（无实际小节标题）不应判通过")
 
     # 8
     def test_hint_skip_detector_recognizes_recovery_offer(self):
         self.assertTrue(H.has_hint_skip_offer(_read("mock/sample_outputs/hint_skip_offer.txt")))
         self.assertFalse(H.has_hint_skip_offer("继续加油，你能答对的。"), "无逃生通道时不应判通过")
+        # an output that explicitly DENIES the escape hatch must not pass on keyword presence alone
+        self.assertFalse(H.has_hint_skip_offer("没有提示，不能跳过，也不会归档到错题本"),
+                         "明确否定『提示/跳过/归档』的文案应判不合格")
 
     # 9
     def test_mistake_archive_detector(self):
@@ -112,6 +124,9 @@ class BehaviorSmokeTest(unittest.TestCase):
         legacy = "## 错题本\n| 题号 | 状态 |\n| --- | --- |\n| mc_q2 | 已归档 |"
         self.assertTrue(H.progress_has_mistake_archive(std), "应识别标准模板表头『错题档案记录』")
         self.assertTrue(H.progress_has_mistake_archive(legacy), "应兼容旧表头『错题本』")
+        # an empty-state placeholder rendered AS a table row must NOT count as an archived mistake
+        empty = "## ❌ 错题档案记录\n| 错题ID | 章节 | 状态 |\n| --- | --- | --- |\n| 暂无错题 | - | - |"
+        self.assertFalse(H.progress_has_mistake_archive(empty), "空状态占位行不应被当成已归档错题")
 
     # 10
     def test_confusion_tracker_detector(self):
@@ -122,6 +137,10 @@ class BehaviorSmokeTest(unittest.TestCase):
     def test_checkpoint_recovery_reads_current_phase(self):
         phase = H.progress_current_phase(_read("fixtures/mini_course/study_progress.md"))
         self.assertEqual(phase, 2, "断点恢复探测器未能从进度读到当前阶段 2")
+        # completed phases listed BEFORE the current marker must not be misread as the current phase
+        reordered = "## 当前复习断点\n- 已完成：阶段 1\n- 当前进行阶段：阶段 2"
+        self.assertEqual(H.progress_current_phase(reordered), 2,
+                         "已完成阶段排在当前标记之前时，仍应读出当前阶段 2（而非 1）")
 
     # 11b — resume must point at the current phase, not restart at phase 1 (direct +/- coverage)
     def test_checkpoint_resume_refers_to_current_phase(self):
@@ -133,6 +152,11 @@ class BehaviorSmokeTest(unittest.TestCase):
                          "『从头开始』的续跑文案应判不合格")
         self.assertFalse(H.resume_refers_to_phase("当前在阶段 2，但先从阶段1开始", 2),
                          "紧凑写法『从阶段1开始』（无空格）也应判重启不合格")
+        # spacing / word-order variants of the CURRENT phase still count as a correct resume
+        self.assertTrue(H.resume_refers_to_phase("当前在阶段2：二叉树，我们继续", 2),
+                        "紧凑『阶段2』（无空格）应判为指向当前阶段")
+        self.assertTrue(H.resume_refers_to_phase("从第2阶段接着复习", 2),
+                        "『第2阶段』写法应判为指向当前阶段")
 
     # 12
     def test_no_python_fallback_workspace_is_complete(self):
