@@ -118,7 +118,8 @@
 | 老题库（不带这些字段） | ✅ 有效（向后兼容） |
 | `requires_assets=true` 但无 assets / asset 缺失或**不可读** / 路径不安全 | ❌ 错误（fail-closed） |
 | `requires_assets=true` 但只有答案侧 asset（无题面侧有效 asset） | ❌ 错误（出题前无可展示的题面） |
-| `question_text_status=stub` 但无 `source_pages` 且无**题面侧有效** asset | ❌ 错误 |
+| `question_text_status=stub` 但无 `source_file`+`source_pages` 且无**题面侧有效** asset | ❌ 错误 |
 | `question_text_status=page_reference` 但缺 `source_file`/`source_pages`（或 `source_file` 非字符串） | ❌ 错误 |
 | asset `role`/`type` 取值非法、`source_pages` 非正整数、`source_file`/`answer_source_file` 非字符串 | ❌ 错误 |
+| `source_file`/`answer_source_file` 为绝对路径 / 含 `..` 穿越 / URL | ❌ 错误（provenance 名不得指出材料外） |
 | `requires_assets` 非布尔，或 `role`/`type`/`question_text_status` 为非字符串 | ❌ 错误（结构化报错，不崩溃） |

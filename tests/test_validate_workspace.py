@@ -575,6 +575,29 @@ class TestValidateWorkspace(unittest.TestCase):
         self.assertEqual(V._exit_code(errors), 1)
         self.assertIn("不可读", err_text(errors))
 
+    # ---- Codex round-4 hardening (P2) ----
+    def test_p0a_source_file_escape_paths_fail(self):
+        for bad in ("../../etc/passwd", "/etc/passwd", "C:\\\\Windows\\\\x.pdf", "http://x/y.pdf"):
+            item = self._asset_item(question_text_status="page_reference", source_file=bad)
+            errors, _, _ = V.validate(self._ws_asset(item))
+            self.assertEqual(V._exit_code(errors), 1, "source_file=%r should fail" % bad)
+            self.assertIn("不安全", err_text(errors))
+
+    def test_p0a_subdir_source_file_ok(self):
+        # a subdir provenance name (from the P0B builder) is fine — not traversal
+        item = self._asset_item(question_text_status="page_reference", source_file="lecture/ch01.pdf")
+        errors, _, _ = V.validate(self._ws_asset(item))
+        self.assertEqual(V._exit_code(errors), 0, err_text(errors))
+
+    def test_p0a_stub_with_source_pages_but_no_source_file_fails(self):
+        item = self._asset_item(question_text_status="stub", requires_assets=False,
+                                source_file=None, source_pages=[12], assets=None)
+        item.pop("source_file", None)
+        item.pop("assets", None)
+        errors, _, _ = V.validate(self._ws_asset(item, create=False))
+        self.assertEqual(V._exit_code(errors), 1)   # source_pages alone (no source_file) is ambiguous
+        self.assertIn("stub", err_text(errors))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

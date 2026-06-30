@@ -37,6 +37,19 @@ ASSET_TYPES = {"page_image", "crop_image", "diagram", "table_image", "other_imag
 QUESTION_TEXT_STATUS = {"full", "stub", "page_reference"}
 
 
+def _unsafe_ref(s):
+    """Reason a provenance file name (source_file/answer_source_file) is unsafe, or None. Subdir
+    names like 'lecture/ch01.pdf' are fine; absolute / `..`-traversal / URL names are not — the quiz
+    flow is told to surface the referenced page, so the name must not point outside the materials."""
+    if "://" in s:
+        return "URL"
+    if s.startswith("/") or s.startswith("\\") or re.match(r"^[A-Za-z]:[\\/]", s):
+        return "绝对路径"
+    if ".." in re.split(r"[\\/]", s):
+        return ".. 穿越"
+    return None
+
+
 def _read(path):
     with open(path, "r", encoding="utf-8") as f:
         return f.read()
@@ -306,14 +319,18 @@ def validate(ws):
                 sv = q.get(sf)
                 if sv is not None and not (isinstance(sv, str) and sv.strip()):
                     err(f"{tag} {sf} 必须是非空字符串（原始文件名），当前 {sv!r}")
+                elif isinstance(sv, str) and _unsafe_ref(sv):
+                    err(f"{tag} {sf} 路径不安全（{_unsafe_ref(sv)}）: {sv!r}——provenance 文件名不得绝对/穿越/URL")
             qts = q.get("question_text_status")
             if qts is not None and (not isinstance(qts, str) or qts not in QUESTION_TEXT_STATUS):
                 err(f"{tag} question_text_status 非法: {qts!r}（应为 {sorted(QUESTION_TEXT_STATUS)} 中的字符串）")
-            if qts == "stub" and not (q.get("source_pages") or q_side_ok):
-                err(f"{tag} question_text_status=stub 必须至少有 source_pages 或一个『题面侧』有效 asset"
-                    "（答案侧 asset 不能在出题前展示；仅声明但缺失/不安全的 asset 也不算；否则题面无法独立成题）")
             sfile = q.get("source_file")
-            if qts == "page_reference" and not (isinstance(sfile, str) and sfile.strip() and q.get("source_pages")):
+            has_src_ref = isinstance(sfile, str) and sfile.strip() and q.get("source_pages")
+            if qts == "stub" and not (has_src_ref or q_side_ok):
+                err(f"{tag} question_text_status=stub 必须有 source_file+source_pages 或一个『题面侧』有效 asset"
+                    "（光给 source_pages 而无 source_file 指不到哪个文件；答案侧 asset 不能在出题前展示；"
+                    "仅声明但缺失/不安全的 asset 也不算；否则题面无法独立成题）")
+            if qts == "page_reference" and not has_src_ref:
                 err(f"{tag} question_text_status=page_reference 必须有非空字符串 source_file + source_pages（指向原始页）")
 
             # provenance + answer presence
