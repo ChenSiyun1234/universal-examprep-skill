@@ -66,14 +66,14 @@
 
 - **两个并存的 runner，臂口径不同**：
   - `run_benchmark.py` 是**较早的两臂脚手架**（`baseline` / `skill`），不可断点续跑、且**丢弃成本**。
-  - `gen.py` 是**较新的矩阵答案生成**路径，支持全部四臂（`closedbook` / `material` / `rawfiles` / `skill`）、**可断点续跑、按格记录成本**。但它是**按可行性排序的增量补齐器，不是从零全量生成**：`build_tasks()` 实际只排入 rawfiles（两门课）、PSYC 的 closedbook/skill、**仅 algo `material` 中报错的那些重跑**（从既有 `results/matrix/answers.jsonl` 读取），以及 PSYC material——它**依赖一份既有的 `answers.jsonl`**，不会重建 algo 的 closedbook/skill 单元格。因此**已发布矩阵无法仅凭本仓库脚本从零复现**，这也是下条「缺聚合器」之外的另一处再现性缺口。
+  - `gen.py` 是**较新的矩阵答案生成**路径，支持全部四臂（`closedbook` / `material` / `rawfiles` / `skill`）、**可断点续跑、按格记录成本**。但它是**按可行性排序的增量补齐器，不是从零全量生成**：`build_tasks()` 实际只排入 rawfiles（两门课）、PSYC 的 closedbook/skill、**仅 algo `material` 中报错的那些重跑**（从既有 `results/matrix/answers.jsonl` 读取），以及 PSYC material——它**依赖一份既有的 `answers.jsonl`**（`build_tasks()` 无条件打开它），而该文件**并未提交**——故在干净 checkout 上 `python benchmark/gen.py` 会直接 `FileNotFoundError`、**根本跑不起来**；它还**硬编了 MIT/PSYC 的题面与工作区**、只接受 `--limit`，并不读用户的 `config.json`/`items.jsonl`。因此**已发布矩阵既不能从干净 checkout 跑起来、也无法仅凭本仓库脚本从零复现**，这是「缺聚合器」之外的另一处再现性缺口。
 - **主对照三臂统一为 `closedbook` / `rawfiles` / `skill`**：
   - `closedbook`：不给任何课程材料。
   - `rawfiles`：原始文件 + 通用 agent、不装技能——**最公平的对照**。
   - `skill`：建好的 wiki + quiz_bank、使用本技能。
   - **遗留/压力臂 `material` / dump-all**：整门课全文塞进一次提问；**非主对照**，保留为**压力脚注**（实测会淹没弱模型并触发上下文/用量上限而跑崩）。
 - **`report_matrix.py` 只渲染、不计算**：它读取预先算好的 `results/matrix/summary.json` 出图。
-- **`summary.json` 缺提交版聚合器**：当前 `summary.json` 是**预先计算（precomputed）**的产物；仓库里**还没有**一条从「`gen.py` 生成的答案 + 判分缓存」聚合出 `summary.json` 的提交版脚本。补齐这个**聚合器（aggregator）是未来 PR T3**。
+- **`summary.json` 缺提交版聚合器**：当前 `summary.json` 是**预先计算（precomputed）**的产物；仓库里**还没有**一条从「`gen.py` 生成的答案 + 判分缓存」聚合出 `summary.json` 的提交版脚本。补齐这个**聚合器（aggregator）是未来 PR T3**。（另注：`rejudge.py` 重判后写的是 `summary_corrected.json`，而 `report_matrix.py` **只读** `summary.json`——二者不接，重判结果不会自动进矩阵报告。）
 - **判分已有确定性快路径**：越界弃答 / 数值题 / 词面精确匹配在调用 LLM 裁判前就先确定，只有未决的事实/定义题才走 LLM 裁判。
 - **`--mock` 只验管线**：mock 答案与 mock 裁判都是预设的，能验证管线连通，**无法捕捉真实判分质量回归**。
 

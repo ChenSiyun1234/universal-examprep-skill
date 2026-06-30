@@ -124,9 +124,12 @@ class BenchmarkDocsConsistencyTest(unittest.TestCase):
     def test_audit_states_tier2_not_implemented(self):
         a = read(AUDIT)
         self.assertIn("Tier 2", a, "审计文档未提 Tier 2")
+        # tie the not-implemented claim to the Tier 2 + 行为冒烟 line, so a Tier-4-only「未实现」别处出现不能蒙混
+        t2_lines = [ln for ln in a.splitlines() if "Tier 2" in ln and BEHAVIORAL_SMOKE in ln]
+        self.assertTrue(t2_lines, "审计文档无「Tier 2 … 行为冒烟」行")
         self.assertTrue(
-            ("未实现" in a) or ("not implemented" in a) or ("尚未" in a),
-            "审计文档未诚实声明 Tier 2 行为冒烟尚未实现",
+            any(any(m in ln for m in NOT_IMPLEMENTED) for ln in t2_lines),
+            "审计文档未在 Tier 2 行为冒烟处声明尚未实现（不能靠文档别处的『未实现』蒙混）",
         )
 
     def test_audit_states_summary_is_precomputed(self):
@@ -158,10 +161,13 @@ class BenchmarkDocsConsistencyTest(unittest.TestCase):
 
     def test_test_tiers_defines_tier2_as_unimplemented_behavioral_smoke(self):
         t = read(TIERS_DOC)
-        self.assertIn("Tier 2", t, "test_tiers.md 未提 Tier 2")
-        self.assertIn(BEHAVIORAL_SMOKE, t, "test_tiers.md 的 Tier 2 应定义为「行为冒烟」")
-        self.assertTrue(any(m in t for m in NOT_IMPLEMENTED),
-                        "test_tiers.md 未声明 Tier 2 行为冒烟尚未实现")
+        # the Tier 2 row itself must name 行为冒烟 AND its not-implemented status (not a whole-doc search)
+        t2_lines = [ln for ln in t.splitlines() if "Tier 2" in ln and BEHAVIORAL_SMOKE in ln]
+        self.assertTrue(t2_lines, "test_tiers.md 无「Tier 2 … 行为冒烟」行（Tier 2 应定义为行为冒烟）")
+        self.assertTrue(
+            any(any(m in ln for m in NOT_IMPLEMENTED) for ln in t2_lines),
+            "test_tiers.md 未在 Tier 2 行为冒烟处声明尚未实现",
+        )
 
     def test_test_tiers_tier2_is_not_the_old_pipeline_item_smoke(self):
         # the retired definition ("3–5 题" benchmark-pipeline smoke) must not be Tier 2 anymore

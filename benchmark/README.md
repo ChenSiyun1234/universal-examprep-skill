@@ -52,16 +52,17 @@
 
 4. **配置**：复制 `config.example.json` 为 `config.json`，按需改 `generator_model` / `judge_repeats` 等。
 
-5. **真跑**——分两条路径，**主对照口径是三臂矩阵**：
+5. **真跑**：
 
-   - **主对照三臂 × 多模型矩阵（推荐口径）**：走 `gen.py`（生成答案）→ `rejudge.py`（判分）→ `report_matrix.py`（渲染 `results/matrix/report.html`）。臂为 `closedbook` / `rawfiles` / `skill`。
-     > ⚠️ **目前还不能一键复现**：把「答案 + 判分」聚合成 `results/matrix/summary.json` 的提交版聚合器**尚缺（未来 PR T3）**，故这条路径暂**无法仅凭本仓库脚本端到端跑通**；已发布的 `summary.json` 是预先计算的产物（详见 [`docs/testing-audit.md`](docs/testing-audit.md)）。
-
-   - **遗留两臂快路径（目前唯一能一键端到端跑通的脚本）**：
+   - **用你自己的课程跑（目前唯一能一键端到端跑通的脚本）**：
      ```
      python run_benchmark.py --config config.json
      ```
-     产出 `results/report.html`（**中英双语可视化报告**：图表 + 指标超链接到权威基准 + 末尾 References）、`results/report.md`、`results/raw.jsonl`（逐题原始答案+评分）。但它只跑 `baseline`（只给原始材料，≈ material/dump 类）vs `skill`，**不含主对照臂 `closedbook` / `rawfiles`**——产出的是**遗留两臂报告**，不是主对照矩阵。
+     它读上面第 3–4 步的 `config.json` + `items/items.jsonl`，产出 `results/report.html`（**中英双语可视化报告**：图表 + 指标超链接到权威基准 + 末尾 References）、`results/report.md`、`results/raw.jsonl`（逐题原始答案+评分）。
+     > **它只跑两臂**：`baseline`（只给原始材料，≈ material/dump 类）vs `skill`，**不含 `closedbook` / `rawfiles`**——产出的是**遗留两臂报告**，不是主对照矩阵。
+
+   - **已发布的主对照三臂矩阵是怎么来的（provenance，非用户可一键复现）**：`closedbook` / `rawfiles` / `skill` 矩阵由内部管线 `gen.py`（生成答案）→ `rejudge.py`（判分）→ `report_matrix.py`（渲染）产出。**它专用于既有的 MIT/PSYC 矩阵，既不读你上面的 `config.json` / `items.jsonl`，也不能从干净 checkout 跑起来**：
+     > ⚠️ `gen.py` **硬编了 MIT/PSYC 的题面文件与工作区**、只接受 `--limit`；且 `build_tasks()` 会**无条件打开一份未提交的** `results/matrix/answers.jsonl` 种子——干净 checkout 上 `python gen.py` 会直接 `FileNotFoundError`、根本跑不起来。即便补上种子，`rejudge.py` 写的是 `summary_corrected.json`，而 `report_matrix.py` 只读 `summary.json`，二者间的**提交版聚合器尚缺（未来 PR T3）**。所以已发布的 `summary.json` 是预先计算的产物，本仓库脚本**无法从零端到端复现**（详见 [`docs/testing-audit.md`](docs/testing-audit.md)）。
 
 6. **裁判可信度校准（出报告前必做）**：人工标注 30~50 题子集放进 `calibration/`，用 `stats.cohen_kappa`
    算"人工 vs LLM 裁判"的一致性。**kappa ≥ 0.6 左右才信任裁判的数字**；否则先改进裁判/题目再说。

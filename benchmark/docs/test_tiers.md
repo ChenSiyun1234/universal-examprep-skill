@@ -13,7 +13,7 @@
 | **Tier 0 单元/静态测试** | `python -m unittest discover -s tests`（ingest、validator、技能结构、语言策略等，纯 stdlib，无网络/LLM） | 秒级、$0 | **每次提交 / CI 必跑** |
 | **Tier 1 工作区校验** | `python scripts/validate_workspace.py <ws>`（已建工作区的结构 / 题库 schema / 来源标注 / 路径安全） | 秒级、$0 | 改 schema/ingest/技能时（本地或手动）；其校验逻辑已由 Tier 0 在 `tests/fixtures/` 上覆盖 |
 | **Tier 2 行为冒烟（behavioral smoke，尚未实现）** | **scripted agent 行为冒烟**：极小的**自撰 fixture 工作区** + **脚本化提示** + 对**产出文件/输出的确定性断言**；默认**不**做付费真跑。验证如**惰性加载 / quiz_bank-only 抽题 / 来源标注 / 提示·跳过 / 疑难追踪 / 断点恢复 / 无 Python 降级**等**行为是否真的发生** | 分钟级、近 $0 | 改技能行为时（**待实现**，本 PR 不实现） |
-| **Tier 3 完整 benchmark 矩阵** | 现有三臂×多模型矩阵（6.006 / PSYC 全量，臂 = `closedbook`/`rawfiles`/`skill`），数据见 [`testing-audit.md`](testing-audit.md) | 几十美元、几小时 | **仅手动触发**，发布数据/方法变更时 |
+| **Tier 3 完整 benchmark 矩阵** | **6.006 为全量三臂**（`closedbook`/`rawfiles`/`skill`）；**PSYC 为部分**（`closedbook`/`skill` 全量，`rawfiles` 仅 Opus 全、Sonnet 少量、无 Haiku，`report_matrix.py` 里 PSYC 也只定义了 closedbook/skill）。数据见 [`testing-audit.md`](testing-audit.md) | 几十美元、几小时 | **仅手动触发**，发布数据/方法变更时 |
 | **Tier 4 长程漂移 benchmark** | 模拟 15–30 轮连续辅导会话（**未来工作**，见下） | 以天计额度 | 重大版本、专门排期时手动 |
 
 > **Tier 2 ≠ 「基准管线 mock 自检」**：`run_benchmark.py --mock`（用 `items/items.example.jsonl` 空跑、
