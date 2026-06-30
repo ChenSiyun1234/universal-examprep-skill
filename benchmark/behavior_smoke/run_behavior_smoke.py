@@ -46,37 +46,79 @@ def load_quiz_bank_ids(workspace):
     return {str(q.get("id")) for q in data if isinstance(q, dict) and q.get("id") is not None}
 
 
+def load_quiz_bank_map(workspace):
+    """{id: {'question': str, 'chapter': ...}} — used for content-match + chapter-scope checks."""
+    data = json.loads(_read(os.path.join(workspace, "references", "quiz_bank.json")))
+    return {str(q["id"]): {"question": q.get("question", ""), "chapter": q.get("chapter")}
+            for q in data if isinstance(q, dict) and q.get("id") is not None}
+
+
 def extract_question_ids(text):
     """Quiz outputs mark each drawn item as [#<id>]; pull them all out."""
     return re.findall(r"\[#([^\]\s]+)\]", text or "")
 
 
-# a question-item line: numbered, bulleted, "Qn:", or "第n题"
-_ITEM_RE = re.compile(r"^\s*(?:\d+\s*[.、)）]|[-*•]\s+|[Qq]\d+\s*[:：]|第\s*[一二三四五六七八九十百零\d]+\s*题\s*[:：]?)")
-# an OPTION line (A. / B) / 甲、 / ① …), possibly bulleted — NOT itself a question, so not tag-required
+# numbered / Qn: / 第n题 — always a question item
+_NUM_ITEM_RE = re.compile(r"^\s*(?:\d+\s*[.、)）]|[Qq]\d+\s*[:：]|第\s*[一二三四五六七八九十百零\d]+\s*题\s*[:：]?)")
+# an OPTION line (A. / B) / 甲、 / ① …), possibly bulleted — NOT itself a question
 _OPTION_RE = re.compile(r"^\s*[-*•]?\s*(?:[A-Za-d]|[一二三四甲乙丙丁]|[①②③④⑤⑥])\s*[.、)）.]")
 
 
-def assert_quiz_ids_in_bank(text, bank_ids):
-    t = text or ""
-    # (a) EVERY [#id] tag anywhere (numbered / bullet / inline) must be a bank id — catches an
-    #     invented tag on ANY line format, not only numbered lines.
-    ids = extract_question_ids(t)
-    if not ids or any(i not in bank_ids for i in ids):
+def _is_question_item(ln):
+    if _OPTION_RE.match(ln):
         return False
-    # (b) EVERY question-item line (numbered / bullet / Qn / 第n题) that is NOT an option must carry
-    #     exactly one bank tag, so an UNTAGGED invented question can't hide as an unmarked list item.
+    if _NUM_ITEM_RE.match(ln):
+        return True
+    # a BULLET counts as a question only if it actually reads like one (ends with ？/?),
+    # so a harmless instruction bullet ("- 请直接回复答案") isn't required to carry a tag.
+    return bool(re.match(r"^\s*[-*•]\s", ln) and re.search(r"[？?]\s*$", ln))
+
+
+def _content_matches(line, bank_question):
+    """A distinctive chunk of the bank question must appear in the emitted item line
+    (so an agent can't slap a valid tag on invented content)."""
+    b = re.sub(r"\s+", "", bank_question or "")
+    if not b:
+        return True
+    a = re.sub(r"\s+", "", re.sub(r"\[#[^\]]+\]", "", line or ""))
+    chunk = b[:8] if len(b) >= 8 else b
+    return chunk in a or b in a or a in b
+
+
+def assert_quiz_ids_in_bank(text, bank):
+    """bank = set of ids (ID/scope check) OR dict {id: question} (also content-match each item).
+    Pass a CHAPTER-SCOPED bank to enforce that the quiz draws only from the requested chapter."""
+    t = text or ""
+    allowed = set(bank)
+    qmap = bank if isinstance(bank, dict) else None
+    # (a) EVERY [#id] tag anywhere must be in the (scoped) bank — catches invented OR out-of-scope tags.
+    ids = extract_question_ids(t)
+    if not ids or any(i not in allowed for i in ids):
+        return False
+    # (b) EVERY question-item line must carry exactly one bank tag whose CONTENT matches the bank.
     for ln in t.splitlines():
-        if _ITEM_RE.match(ln) and not _OPTION_RE.match(ln):
+        if _is_question_item(ln):
             lids = extract_question_ids(ln)
-            if len(lids) != 1 or lids[0] not in bank_ids:
+            if len(lids) != 1 or lids[0] not in allowed:
+                return False
+            if qmap is not None and not _content_matches(ln, qmap.get(lids[0], "")):
                 return False
     return True
 
 
 def has_canonical_provenance_labels(text):
+    # each canonical label must PREFIX actual content (label：内容), not merely appear in a legend list
     t = text or ""
-    return all(lbl in t for lbl in CANON_LABELS)
+    for lbl in CANON_LABELS:
+        labelled = False
+        for m in re.finditer(re.escape(lbl), t):
+            am = re.match(r"\s*[:：]\s*(\S.{2,})", t[m.end():m.end() + 40])
+            if am and not any(o in am.group(1)[:8] for o in CANON_LABELS):
+                labelled = True
+                break
+        if not labelled:
+            return False
+    return True
 
 
 def _heading_present(text, name):
@@ -99,8 +141,9 @@ def has_hint_skip_offer(text):
     has_hint = ("提示" in t) or ("hint" in tl)
     has_skip = ("跳过" in t) or ("skip" in tl)
     has_archive = ("错题本" in t) or ("错题档案" in t) or ("归档" in t)
-    # reject explicit DENIAL of the escape hatch ("没有提示，不能跳过，也不会归档…")
-    negated = bool(re.search(r"(没有|不能|不会|无法|不给|不予|拒绝)\s*[，,]?\s*(提示|跳过|归档|查看提示)", t))
+    # reject explicit DENIAL of any escape-hatch option, allowing a few intervening words
+    # ("不会把它归档…", "不能现在跳过…")
+    negated = bool(re.search(r"(没有|不能|不会|无法|不给|不予|拒绝)[^。\n]{0,6}?(提示|跳过|归档)", t))
     return has_hint and has_skip and has_archive and not negated
 
 
@@ -142,13 +185,20 @@ def _table_data_rows(section_text):
     return rows
 
 
-def progress_has_mistake_archive(progress_text):
-    # standard template section is "## ❌ 错题档案记录"; mini/legacy wording uses "错题本" — accept both
-    return len(_table_data_rows(_section(progress_text, ["错题档案", "错题本"]))) >= 1
+def progress_has_mistake_archive(progress_text, expect=None):
+    # standard template section is "## ❌ 错题档案记录"; mini/legacy wording uses "错题本" — accept both.
+    # if `expect` is given, a row must actually mention it (so archiving the WRONG item doesn't pass).
+    rows = _table_data_rows(_section(progress_text, ["错题档案", "错题本"]))
+    if not rows:
+        return False
+    return any(expect in "".join(r) for r in rows) if expect else True
 
 
-def progress_has_confusion_row(progress_text):
-    return len(_table_data_rows(_section(progress_text, ["疑难", "confusion"]))) >= 1
+def progress_has_confusion_row(progress_text, expect=None):
+    rows = _table_data_rows(_section(progress_text, ["疑难", "confusion"]))
+    if not rows:
+        return False
+    return any(expect in "".join(r) for r in rows) if expect else True
 
 
 def progress_current_phase(progress_text):
@@ -210,21 +260,25 @@ def _p(rel):
     return os.path.join(HERE, rel)
 
 
-def check_scenario_mock(name, sc, bank_ids, fixture_path=FIXTURE):
+def check_scenario_mock(name, sc, fixture_path=FIXTURE):
     """Return (ok, detail) for one scenario using only mock artifacts — no LLM."""
     if name == "quiz_bank_only":
-        good = assert_quiz_ids_in_bank(_read(_p(sc["mock_output"])), bank_ids)
-        bad = assert_quiz_ids_in_bank(_read(_p(sc["mock_negative"])), bank_ids)
-        return (good and not bad), f"good_uses_bank_ids={good} invented_id_caught={not bad}"
+        qmap = load_quiz_bank_map(fixture_path)
+        ch = sc.get("chapter")
+        scoped = {i: v["question"] for i, v in qmap.items()
+                  if ch is None or str(v.get("chapter")) == str(ch)}
+        good = assert_quiz_ids_in_bank(_read(_p(sc["mock_output"])), scoped)
+        bad = assert_quiz_ids_in_bank(_read(_p(sc["mock_negative"])), scoped)
+        return (good and not bad), f"good={good} invented/oos_caught={not bad} chapter={ch}"
     if name == "provenance_labels":
         ok = has_canonical_provenance_labels(_read(_p(sc["mock_output"])))
         return ok, f"all_canonical_labels={ok}"
     if name == "hint_skip_mistake_archive":
         offer = has_hint_skip_offer(_read(_p(sc["mock_output"])))
-        arch = progress_has_mistake_archive(_read(_p(sc["progress_after"])))
+        arch = progress_has_mistake_archive(_read(_p(sc["progress_after"])), sc.get("expect_archive"))
         return (offer and arch), f"hint_skip_offer={offer} mistake_archived={arch}"
     if name == "confusion_tracking":
-        ok = progress_has_confusion_row(_read(_p(sc["mock_output"])))
+        ok = progress_has_confusion_row(_read(_p(sc["mock_output"])), sc.get("expect_confusion"))
         return ok, f"confusion_row_written={ok}"
     if name == "checkpoint_recovery":
         ph = progress_current_phase(_read(os.path.join(fixture_path, "study_progress.md")))
@@ -243,7 +297,6 @@ def check_scenario_mock(name, sc, bank_ids, fixture_path=FIXTURE):
 def run_mock(verbose=True):
     spec = load_scenarios()
     fixture_path = os.path.join(HERE, spec.get("fixture", "fixtures/mini_course"))
-    bank_ids = load_quiz_bank_ids(fixture_path)
     results = []   # (name, detail, status) where status ∈ {PASS, FAIL, SKIP}
     for sc in spec["scenarios"]:
         name = sc["name"]
@@ -252,7 +305,7 @@ def run_mock(verbose=True):
             # never as PASS, so the conclusion doesn't overstate what was verified.
             results.append((name, "best-effort（需 LLM/transcript，--mock 不断言）", "SKIP"))
             continue
-        ok, detail = check_scenario_mock(name, sc, bank_ids, fixture_path)
+        ok, detail = check_scenario_mock(name, sc, fixture_path)
         results.append((name, detail, "PASS" if ok else "FAIL"))
     n_pass = sum(1 for _, _, s in results if s == "PASS")
     n_skip = sum(1 for _, _, s in results if s == "SKIP")

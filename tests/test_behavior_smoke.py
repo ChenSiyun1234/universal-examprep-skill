@@ -82,12 +82,26 @@ class BehaviorSmokeTest(unittest.TestCase):
         # an invented tag on a NON-numbered (bullet) line must ALSO fail — scan all tags, any format
         self.assertFalse(H.assert_quiz_ids_in_bank("1. [#mc_q1] 合法\n- [#mc_q99] 项目符号编造", bank_ids),
                          "非编号行（项目符号）上的编造题号也应被抓")
-        # an UNTAGGED bullet question must fail too...
-        self.assertFalse(H.assert_quiz_ids_in_bank("1. [#mc_q1] 合法\n- 这是没标号的编造题", bank_ids),
-                         "未标号的项目符号问题也应被抓")
-        # ...but bullet OPTIONS (A./B.) under a question must NOT be treated as untagged questions
+        # an UNTAGGED bullet QUESTION (ends with ？) must fail...
+        self.assertFalse(H.assert_quiz_ids_in_bank("1. [#mc_q1] 合法\n- 红黑树怎么删除？", bank_ids),
+                         "未标号的项目符号问题（以？结尾）也应被抓")
+        # ...but an instruction bullet (no ？) and option bullets (A./B.) must NOT be flagged as questions
+        self.assertTrue(H.assert_quiz_ids_in_bank("1. [#mc_q1] 栈的顺序？\n- 请直接回复答案", bank_ids),
+                        "非问题的指令项目符号不应被误判为未标号问题")
         self.assertTrue(H.assert_quiz_ids_in_bank("1. [#mc_q1] 栈的顺序？\n- A. LIFO\n- B. FIFO", bank_ids),
                         "选项行(A./B.)不应被误判为未标号问题")
+
+    def test_quiz_detector_content_and_chapter_scope(self):
+        qmap = H.load_quiz_bank_map(H.FIXTURE)
+        ch1 = {i: v["question"] for i, v in qmap.items() if str(v["chapter"]) == "1"}
+        # a valid tag slapped on INVENTED content must fail the content check
+        self.assertFalse(H.assert_quiz_ids_in_bank("1. [#mc_q1] 请证明红黑树删除算法的复杂度", ch1),
+                         "把合法题号贴到编造题面上应被内容校验抓住")
+        # a chapter-2 id used in a chapter-1 quiz must fail the scope check
+        self.assertFalse(H.assert_quiz_ids_in_bank("1. [#mc_q4] 二叉树最多多少节点？", ch1),
+                         "第1章测验里抽到第2章题号应被章节范围抓住")
+        # the matching bank content within scope passes
+        self.assertTrue(H.assert_quiz_ids_in_bank("1. [#mc_q1] " + qmap["mc_q1"]["question"], ch1))
 
     # 6
     def test_provenance_detector_recognizes_all_canonical_labels(self):
@@ -97,6 +111,10 @@ class BehaviorSmokeTest(unittest.TestCase):
         for lbl in H.CANON_LABELS:
             self.assertFalse(H.has_canonical_provenance_labels(text.replace(lbl, "")),
                              f"缺少标注「{lbl}」时仍判通过，说明未检查全部 canonical 标注")
+        # a mere LEGEND listing the labels (no labelled answer content) must NOT pass
+        legend = "可用标签：🟢 来自资料 / 🟡 AI补充，可能与你老师讲的不完全一致 / ⚠️ AI生成答案，非老师/教材提供\n答案是栈。"
+        self.assertFalse(H.has_canonical_provenance_labels(legend),
+                         "只罗列标签图例、答案却不带标注，不应判通过")
 
     # 7
     def test_zero_basic_detector_recognizes_sections(self):
@@ -113,6 +131,9 @@ class BehaviorSmokeTest(unittest.TestCase):
         # an output that explicitly DENIES the escape hatch must not pass on keyword presence alone
         self.assertFalse(H.has_hint_skip_offer("没有提示，不能跳过，也不会归档到错题本"),
                          "明确否定『提示/跳过/归档』的文案应判不合格")
+        # negation with intervening words must also be caught
+        self.assertFalse(H.has_hint_skip_offer("可以提示、可以跳过，但不会把它归档到错题本"),
+                         "中间夹词的否定（『不会把它归档』）也应判不合格")
 
     # 9
     def test_mistake_archive_detector(self):
@@ -127,6 +148,11 @@ class BehaviorSmokeTest(unittest.TestCase):
         # an empty-state placeholder rendered AS a table row must NOT count as an archived mistake
         empty = "## ❌ 错题档案记录\n| 错题ID | 章节 | 状态 |\n| --- | --- | --- |\n| 暂无错题 | - | - |"
         self.assertFalse(H.progress_has_mistake_archive(empty), "空状态占位行不应被当成已归档错题")
+        # scenario-specific: the archived row must mention the SIMULATED wrong item, not just any row
+        m = _read("mock/sample_outputs/progress_after_mistake.md")
+        self.assertTrue(H.progress_has_mistake_archive(m, expect="mc_q2"))
+        self.assertFalse(H.progress_has_mistake_archive(m, expect="mc_q1"),
+                         "归档了错误的题（非本场景模拟的 mc_q2）不应判通过")
 
     # 10
     def test_confusion_tracker_detector(self):

@@ -4,9 +4,10 @@
   "scenarios": [
     {
       "name": "quiz_bank_only",
-      "claim": "生成的测验题号必须全部来自 quiz_bank.json，不得即兴编题",
+      "claim": "生成的测验题号必须全部来自 quiz_bank.json（且题面与题库一致、限于所问章节），不得即兴编题",
       "prompt": "请从第 1 章出一套 3 题的小测验，只能用题库里的题。",
       "detector": "assert_quiz_ids_in_bank",
+      "chapter": 1,
       "mock_output": "mock/sample_outputs/quiz_output_good.txt",
       "mock_negative": "mock/sample_outputs/quiz_output_invented.txt",
       "best_effort": false
@@ -27,6 +28,7 @@
       "mock_output": "mock/sample_outputs/hint_skip_offer.txt",
       "progress_after": "mock/sample_outputs/progress_after_mistake.md",
       "progress_detector": "progress_has_mistake_archive",
+      "expect_archive": "mc_q2",
       "best_effort": false
     },
     {
@@ -35,6 +37,7 @@
       "prompt": "为什么栈是先进后出？我不太理解，能讲讲吗。",
       "detector": "progress_has_confusion_row",
       "mock_output": "mock/sample_outputs/progress_after_confusion.md",
+      "expect_confusion": "为什么栈",
       "best_effort": false
     },
     {
