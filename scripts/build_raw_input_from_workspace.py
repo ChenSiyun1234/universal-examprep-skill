@@ -133,18 +133,19 @@ def _key(mk):
 
 
 def _problem_statement(page_text, kind, chapter, num):
-    """Extract the problem text after the `<kind> X.Y` PROBLEM marker on its page, cut at the next
-    marker. Uses the shared iterator so it skips TOC lines and `Solution` markers of the same number
-    (a solution-before-problem layout) exactly like detect_lecture_markers does."""
+    """Extract the problem text for `<kind> X.Y` on a page — concatenating EVERY problem-role slice for
+    that key (so a same-page `Problem …` + `Problem (Continued) …` are both captured), each cut at the
+    next marker. Skips TOC lines and `Solution` markers of the same number (solution-before-problem)."""
     text = page_text or ""
     mks = _iter_markers(text)
     starts = [d["start"] for d in mks]
+    parts = []
     for d in mks:
         if d["kind"] == kind and d["chapter"] == chapter and d["num"] == num and d["role"] != "solution":
             after = [st for st in starts if st > d["start"]]
             e = min(after) if after else len(text)
-            return " ".join(text[d["start"]:e].split()).strip()
-    return ""
+            parts.append(" ".join(text[d["start"]:e].split()).strip())
+    return " ".join(parts).strip()
 
 
 def _body_after_marker(stmt, kind, chapter, num):
@@ -241,8 +242,10 @@ def extract_lecture_items(pages):
         # marker-only: extraction yielded just the heading on a single page (real prompt likely in an
         # image) → NOT a standalone question. Detect by ABSENCE of any word/CJK content after the
         # heading (not a char-length cutoff — a terse CJK prompt like "求导"/"证明" is a real question).
+        # real prompt content = a LETTER or CJK char. A digits-only body is a slide/page footer
+        # ("Quiz 1.1\n12"), not a question → marker_only (point at the page, don't ask a bare title).
         marker_only = ((not needs) and len(prob_idxs) == 1
-                       and not re.search(r"[A-Za-z0-9一-鿿]", _body_after_marker(stmt, kind, key[1], key[2])))
+                       and not re.search(r"[A-Za-z一-鿿]", _body_after_marker(stmt, kind, key[1], key[2])))
         if needs:
             qts = "page_reference"
             question = ("（%s %d.%d）本题依赖原始讲义 %s 第 %d 页的图/表，须配合所附 asset 作答。"
@@ -471,6 +474,14 @@ def _is_leftover_workspace(path, name):
     return False
 
 
+def _is_workspace_root(path):
+    """True if a directory IS a generated skill workspace (a prior run's output nested under
+    --materials, e.g. `skill_workspace/`) — has `references/wiki/` or `references/quiz_bank.json`.
+    The WHOLE dir is pruned so its study_progress.md / wiki / etc. never leak in as materials."""
+    return (os.path.isdir(os.path.join(path, "references", "wiki"))
+            or os.path.isfile(os.path.join(path, "references", "quiz_bank.json")))
+
+
 def _scan_materials(materials_dir):
     """Return sorted (pdf_paths, text_paths, pruned_dirs). Prunes tooling/VCS dirs unconditionally, and
     a `references/`+`scratch/` dir ONLY when it carries a generated-workspace signature — so a prior
@@ -482,7 +493,7 @@ def _scan_materials(materials_dir):
         keep = []
         for d in dirs:
             full = os.path.join(dirpath, d)
-            if d.lower() in ALWAYS_PRUNE or _is_leftover_workspace(full, d):
+            if d.lower() in ALWAYS_PRUNE or _is_leftover_workspace(full, d) or _is_workspace_root(full):
                 pruned.append(os.path.relpath(full, materials_dir).replace(os.sep, "/"))
             else:
                 keep.append(d)

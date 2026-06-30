@@ -443,6 +443,38 @@ class CoreExtraction(unittest.TestCase):
         self.assertIn("part one", sol)
         self.assertIn("part two", sol)
 
+    # ---- round-10 (P0B r10) hardening ----
+    def test_nested_workspace_dir_fully_pruned(self):
+        # a prior run's output (skill_workspace/ with references/wiki + study_progress.md) nested under
+        # --materials must be pruned WHOLE — its study_progress.md must not leak in as a .md material
+        d = tempfile.mkdtemp(prefix="mat-")
+        ws = os.path.join(d, "skill_workspace")
+        os.makedirs(os.path.join(ws, "references", "wiki"))
+        for p in (os.path.join(ws, "study_progress.md"), os.path.join(ws, "references", "wiki", "ch1.md")):
+            with open(p, "w", encoding="utf-8") as f:
+                f.write("Quiz 9.9  leftover")
+        with open(os.path.join(d, "ch01.pdf"), "wb") as f:
+            f.write(b"%PDF fake")
+        pdfs, texts, pruned = B._scan_materials(d)
+        self.assertEqual(texts, [])                              # nothing from skill_workspace/
+        self.assertEqual([os.path.basename(p) for p in pdfs], ["ch01.pdf"])
+        self.assertIn("skill_workspace", pruned)
+
+    def test_same_page_continued_problem_captured(self):
+        text = "Quiz 1.1 Problem  part one.\nQuiz 1.1 Problem (Continued)  part two of the prompt."
+        stmt = B._problem_statement(text, "quiz", 1, 1)
+        self.assertIn("part one", stmt)
+        self.assertIn("part two", stmt)
+
+    def test_numeric_only_footer_is_marker_only(self):
+        # 'Quiz 1.1\n12' (heading + slide number) → marker_only/page_reference, not an unanswerable full title
+        it = B.extract_lecture_items(_pages("ch01.pdf", "Quiz 1.1\n12", "Quiz 1.1 Solution  ans"))[0]
+        self.assertEqual(it["question_text_status"], "page_reference")
+        # ...but a heading + a real letter/CJK prompt stays full
+        it2 = B.extract_lecture_items(_pages("ch01.pdf", "Quiz 1.1  Define a set.",
+                                             "Quiz 1.1 Solution  ans"))[0]
+        self.assertEqual(it2["question_text_status"], "full")
+
     def test_section_grouping_from_headings(self):
         pages = (_pages("a.pdf", "Quiz 1.1  x") + _pages("b.pdf", "Example 2.1 Problem  y"))
         secs = B.group_sections(pages)
