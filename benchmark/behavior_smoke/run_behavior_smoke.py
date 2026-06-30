@@ -74,17 +74,6 @@ def _is_question_item(ln):
     return bool(re.match(r"^\s*[-*•]\s", ln) and re.search(r"[？?]\s*$", ln))
 
 
-def _content_matches(line, bank_question):
-    """A distinctive chunk of the bank question must appear in the emitted item line
-    (so an agent can't slap a valid tag on invented content)."""
-    b = re.sub(r"\s+", "", bank_question or "")
-    if not b:
-        return True
-    a = re.sub(r"\s+", "", re.sub(r"\[#[^\]]+\]", "", line or ""))
-    chunk = b[:8] if len(b) >= 8 else b
-    return chunk in a or b in a or a in b
-
-
 def assert_quiz_ids_in_bank(text, bank):
     """bank = set of ids (ID/scope check) OR dict {id: question} (also content-match each item).
     Pass a CHAPTER-SCOPED bank to enforce that the quiz draws only from the requested chapter."""
@@ -95,29 +84,39 @@ def assert_quiz_ids_in_bank(text, bank):
     ids = extract_question_ids(t)
     if not ids or any(i not in allowed for i in ids):
         return False
-    # (b) ANY tag-bearing line must carry exactly one in-bank tag whose CONTENT matches the bank
-    #     (covers bullet/inline tagged items too); an UNTAGGED question-item line is invention.
+    # (b) no malformed multi-tag lines, and no UNTAGGED question-item line (untagged question = invention).
     for ln in t.splitlines():
         lids = extract_question_ids(ln)
-        if lids:
-            if len(lids) != 1 or lids[0] not in allowed:
-                return False
-            if qmap is not None and not _content_matches(ln, qmap.get(lids[0], "")):
-                return False
-        elif _is_question_item(ln):
+        if len(lids) > 1:
             return False
+        if not lids and _is_question_item(ln):
+            return False
+    # (c) CONTENT: each tagged id's bank question must actually APPEAR somewhere in the output
+    #     (same-line OR multi-line), so a valid tag slapped on invented content is caught.
+    if qmap is not None:
+        norm = re.sub(r"\s+|\[#[^\]]+\]", "", t)
+        for i in set(ids):
+            b = re.sub(r"\s+", "", qmap.get(i, ""))
+            if b and (b[:8] if len(b) >= 8 else b) not in norm:
+                return False
     return True
 
 
 def has_canonical_provenance_labels(text):
-    # all three canonical labels must be present and used as REAL labels (prefix `label：内容` or
-    # suffix `内容（label）`), not merely listed together in a legend like `🟢… / 🟡… / ⚠️…`.
+    # each canonical label must ANNOTATE content — prefix `label：内容` OR suffix `内容（label）` —
+    # not sit in a legend (single- or multi-line) of bare labels with no labelled answer.
     t = text or ""
-    if not all(lbl in t for lbl in CANON_LABELS):
-        return False
-    alt = "|".join(re.escape(l) for l in CANON_LABELS)
-    chained_legend = re.search(rf"(?:{alt})\s*[/、,，|]\s*(?:{alt})\s*[/、,，|]\s*(?:{alt})", t)
-    return not chained_legend
+    for lbl in CANON_LABELS:
+        used = False
+        for m in re.finditer(re.escape(lbl), t):
+            prefix_use = re.match(r"\s*[:：]\s*\S", t[m.end():m.end() + 24])          # label：内容
+            suffix_use = re.search(r"\S\s*[（(]\s*$", t[max(0, m.start() - 16):m.start()])  # 内容（label
+            if prefix_use or suffix_use:
+                used = True
+                break
+        if not used:
+            return False
+    return True
 
 
 def _heading_present(text, name):
@@ -143,10 +142,10 @@ def has_hint_skip_offer(text):
     has_hint = ("提示" in t) or ("hint" in tl)
     has_skip = ("跳过" in t) or ("skip" in tl)
     has_archive = ("错题本" in t) or ("错题档案" in t) or ("归档" in t)
-    # reject explicit DENIAL of any escape-hatch option, allowing a few intervening words
-    # ("不会把它归档…", "不会写入错题本…", "不能现在跳过…")
+    # reject explicit DENIAL of any escape-hatch option. Anchor archiving denial on 错题本/错题档案/归档
+    # (with a wider window) so "不会把这道题自动记录进错题档案" is caught regardless of the verb.
     negated = bool(re.search(
-        r"(没有|不能|不会|无法|不给|不予|拒绝)[^。\n]{0,8}?(提示|跳过|归档|写入|记入|存入|加入)", t))
+        r"(没有|不能|不会|无法|不给|不予|拒绝)[^。\n]{0,10}?(提示|跳过|归档|错题本|错题档案)", t))
     return has_hint and has_skip and has_archive and not negated
 
 
@@ -230,8 +229,8 @@ def resume_refers_to_phase(resume_text, phase):
     """
     t = resume_text or ""
     mentions = bool(re.search(rf"阶段\s*{phase}(?!\d)|第\s*{phase}\s*阶段", t))
-    # reject negation of the current phase ("你现在不是阶段2，而是阶段1")
-    negated = bool(re.search(rf"不是\s*第?\s*阶段\s*{phase}|不在\s*第?\s*阶段\s*{phase}", t))
+    # reject negation of the current phase, both 阶段2 and 第2阶段 forms
+    negated = bool(re.search(rf"(?:不是|不在)\s*(?:第\s*{phase}\s*阶段|第?\s*阶段\s*{phase})", t))
     return mentions and not negated and not _RESTART_RE.search(t)
 
 
@@ -330,12 +329,17 @@ def run_mock(verbose=True):
 
 def check_fixture(verbose=True):
     ok, errors, warnings, stats = validate_fixture_workspace(FIXTURE)
+    # the fixture is documented as 0-error AND 0-warning — a warning means a recommended field
+    # (keywords / diagram_type / code tests …) was lost, which would weaken the six-type smoke.
+    clean = ok and not warnings
     if verbose:
         print(f"fixture: {FIXTURE}")
-        print(f"  valid={ok}  stats={stats}")
+        print(f"  valid={ok}  warnings={len(warnings)}  stats={stats}")
         for e in errors:
             print(f"  [error] {e['msg']}")
-    return ok
+        for w in warnings:
+            print(f"  [warning] {w['msg']}")
+    return clean
 
 
 def run_llm():

@@ -38,8 +38,10 @@ def _silent(fn, *a, **k):
 class BehaviorSmokeTest(unittest.TestCase):
     # 1
     def test_fixture_passes_validate_workspace(self):
-        ok, errors, _, _ = H.validate_fixture_workspace(H.FIXTURE)
+        ok, errors, warnings, _ = H.validate_fixture_workspace(H.FIXTURE)
         self.assertTrue(ok, f"mini-course fixture 未通过校验: {[e['msg'] for e in errors]}")
+        # the documented fixture must be 0-error AND 0-warning (a warning = a lost recommended field)
+        self.assertEqual(warnings, [], f"fixture 不应有告警（会削弱 6 题型 smoke）: {[w['msg'] for w in warnings]}")
 
     # 2
     def test_fixture_quiz_bank_covers_all_six_types(self):
@@ -105,6 +107,9 @@ class BehaviorSmokeTest(unittest.TestCase):
         # a TAGGED BULLET with invented content must be content-checked too (not skipped)
         self.assertFalse(H.assert_quiz_ids_in_bank("- [#mc_q1] 请证明红黑树删除算法", ch1),
                          "项目符号格式的『合法题号 + 编造题面』也应被内容校验抓住")
+        # tag on its OWN line + invented content on the next line must fail (no vacuous empty-text match)
+        self.assertFalse(H.assert_quiz_ids_in_bank("[#mc_q1]\n请证明红黑树删除算法的复杂度。", ch1),
+                         "题号单独一行、下一行是编造题面，也应被内容校验抓住")
 
     # 6
     def test_provenance_detector_recognizes_all_canonical_labels(self):
@@ -122,6 +127,11 @@ class BehaviorSmokeTest(unittest.TestCase):
         suffix = ("栈是 LIFO（🟢 来自资料）。红黑树较复杂（🟡 AI补充，可能与你老师讲的不完全一致）。"
                   "以下为伪代码（⚠️ AI生成答案，非老师/教材提供）。")
         self.assertTrue(H.has_canonical_provenance_labels(suffix), "标签放在内容之后（括注）也应判通过")
+        # a MULTI-LINE legend (labels each on their own line, answer unlabelled) must also fail
+        ml_legend = ("标签说明：\n🟢 来自资料\n🟡 AI补充，可能与你老师讲的不完全一致\n"
+                     "⚠️ AI生成答案，非老师/教材提供\n答案：栈是 LIFO。")
+        self.assertFalse(H.has_canonical_provenance_labels(ml_legend),
+                         "多行图例（标签各自成行、答案不带标注）也不应判通过")
 
     # 7
     def test_zero_basic_detector_recognizes_sections(self):
@@ -146,6 +156,8 @@ class BehaviorSmokeTest(unittest.TestCase):
                          "中间夹词的否定（『不会把它归档』）也应判不合格")
         self.assertFalse(H.has_hint_skip_offer("可以给提示，也可以跳过，但不会写入错题本"),
                          "『不会写入错题本』的归档否定也应判不合格")
+        self.assertFalse(H.has_hint_skip_offer("可以提示、跳过，但不会把这道题自动记录进错题档案"),
+                         "夹词较长的归档否定（…记录进错题档案）也应判不合格")
 
     # 9
     def test_mistake_archive_detector(self):
@@ -202,6 +214,8 @@ class BehaviorSmokeTest(unittest.TestCase):
         # negating the current phase must be rejected even though 阶段2 is mentioned
         self.assertFalse(H.resume_refers_to_phase("你现在不是阶段2，而是阶段1。", 2),
                          "否定当前阶段（『不是阶段2』）应判不合格")
+        self.assertFalse(H.resume_refers_to_phase("你现在不是第2阶段，而是第1阶段。", 2),
+                         "否定『第2阶段』形式也应判不合格")
 
     # 12
     def test_no_python_fallback_workspace_is_complete(self):
