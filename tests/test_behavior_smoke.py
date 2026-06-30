@@ -119,6 +119,16 @@ class BehaviorSmokeTest(unittest.TestCase):
         self.assertFalse(H.assert_quiz_ids_in_bank(swapped, ch1),
                          "题号与题面错配（每题题面对应别的题号）应被分段内容校验抓住")
 
+    def test_quiz_size_requirement(self):
+        spec = H.load_scenarios()
+        quiz = next(s for s in spec["scenarios"] if s["name"] == "quiz_bank_only")
+        self.assertGreaterEqual(quiz.get("min_questions", 1), 3, "quiz_bank_only 场景应要求 ≥3 题")
+        good = _read("mock/sample_outputs/quiz_output_good.txt")
+        self.assertGreaterEqual(len(set(H.extract_question_ids(good))), quiz["min_questions"],
+                                "good mock 应满足请求的题量")
+        self.assertLess(len(set(H.extract_question_ids("1. [#mc_q1] 栈的顺序？"))), quiz["min_questions"],
+                        "只出 1 题不应满足请求的 3 题")
+
     # 6
     def test_provenance_detector_recognizes_all_canonical_labels(self):
         text = _read("mock/sample_outputs/provenance_answer.txt")
@@ -156,6 +166,9 @@ class BehaviorSmokeTest(unittest.TestCase):
         # ordered-list headings (1. 考点拆解 / 2. 标准答题步骤 …) are valid section headings
         ordered = "1. 考点拆解\n讲解\n2. 标准答题步骤\n步骤\n3. 易错点\n注意\n4. 3分钟速记\n口诀"
         self.assertTrue(H.has_zero_basic_sections(ordered), "有序列表小节标题(1. 考点拆解)也应判通过")
+        # the skill's documented bracket block format 【考点拆解】 must be accepted as headings
+        bracket = "【考点拆解】讲解\n【标准答题步骤】步骤\n【易错点】注意\n【3分钟速记】口诀"
+        self.assertTrue(H.has_zero_basic_sections(bracket), "【…】文档块格式的小节标题也应判通过")
 
     # 8
     def test_hint_skip_detector_recognizes_recovery_offer(self):
@@ -253,7 +266,10 @@ class BehaviorSmokeTest(unittest.TestCase):
         try:
             self.assertEqual(_silent(H.main, ["--llm"]), 2, "未设置 env 时 --llm 应被拒绝（返回 2）")
             os.environ["RUN_SKILL_BEHAVIOR_LLM"] = "1"
-            self.assertEqual(_silent(H.main, ["--llm"]), 0, "设 env 后 --llm 应进入 skeleton（不调用模型，返回 0）")
+            # even WITH the env opt-in the skeleton must NOT return 0 (a no-op must not record success)
+            rc = _silent(H.main, ["--llm"])
+            self.assertNotEqual(rc, 0, "未实现的 LLM skeleton 不能返回 0（避免把空跑记成通过）")
+            self.assertEqual(rc, 3)
         finally:
             os.environ.pop("RUN_SKILL_BEHAVIOR_LLM", None)
             if saved is not None:

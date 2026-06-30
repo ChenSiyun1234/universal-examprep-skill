@@ -8,6 +8,7 @@
       "prompt": "请从第 1 章出一套 3 题的小测验，只能用题库里的题。",
       "detector": "assert_quiz_ids_in_bank",
       "chapter": 1,
+      "min_questions": 3,
       "mock_output": "mock/sample_outputs/quiz_output_good.txt",
       "mock_negative": "mock/sample_outputs/quiz_output_invented.txt",
       "best_effort": false

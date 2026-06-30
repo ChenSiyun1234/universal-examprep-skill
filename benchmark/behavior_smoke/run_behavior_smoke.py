@@ -47,9 +47,10 @@ def load_quiz_bank_ids(workspace):
 
 
 def load_quiz_bank_map(workspace):
-    """{id: {'question': str, 'chapter': ...}} — used for content-match + chapter-scope checks."""
+    """{id: {'question', 'chapter', 'phase'}} — used for content-match + chapter/phase-scope checks."""
     data = json.loads(_read(os.path.join(workspace, "references", "quiz_bank.json")))
-    return {str(q["id"]): {"question": q.get("question", ""), "chapter": q.get("chapter")}
+    return {str(q["id"]): {"question": q.get("question", ""), "chapter": q.get("chapter"),
+                           "phase": q.get("phase")}
             for q in data if isinstance(q, dict) and q.get("id") is not None}
 
 
@@ -127,12 +128,12 @@ def has_canonical_provenance_labels(text):
 
 
 def _heading_present(text, name):
-    """True if `name` is a section HEADING — markdown (## / **bold**) OR an ordered-list heading
-    (`1. 考点拆解`) — not just an inline keyword mention."""
-    pat = (rf"(?m)^\s{{0,3}}"
-           rf"(?:#{{1,4}}\s*|\*\*\s*|[0-9一二三四五六七八九十]+\s*[、.．)）]\s*){{1,3}}"
-           rf"{re.escape(name)}")
-    return bool(re.search(pat, text or ""))
+    """True if `name` is a section HEADING — markdown (## / **bold**), an ordered-list heading
+    (`1. 考点拆解`), OR the skill's documented bracket block (`【考点拆解】`) — not an inline mention."""
+    n = re.escape(name)
+    md = (rf"(?m)^\s{{0,3}}"
+          rf"(?:#{{1,4}}\s*|\*\*\s*|[0-9一二三四五六七八九十]+\s*[、.．)）]\s*){{1,3}}{n}")
+    return bool(re.search(md, text or "")) or bool(re.search(rf"[【〖]\s*{n}\s*[】〗]", text or ""))
 
 
 def has_zero_basic_sections(text):
@@ -284,10 +285,13 @@ def check_scenario_mock(name, sc, fixture_path=FIXTURE):
         qmap = load_quiz_bank_map(fixture_path)
         ch = sc.get("chapter")
         scoped = {i: v["question"] for i, v in qmap.items()
-                  if ch is None or str(v.get("chapter")) == str(ch)}
-        good = assert_quiz_ids_in_bank(_read(_p(sc["mock_output"])), scoped)
+                  if ch is None or str(v.get("chapter")) == str(ch) or str(v.get("phase")) == str(ch)}
+        min_q = sc.get("min_questions", 1)
+        good_txt = _read(_p(sc["mock_output"]))
+        n_good = len(set(extract_question_ids(good_txt)))
+        good = assert_quiz_ids_in_bank(good_txt, scoped) and n_good >= min_q
         bad = assert_quiz_ids_in_bank(_read(_p(sc["mock_negative"])), scoped)
-        return (good and not bad), f"good={good} invented/oos_caught={not bad} chapter={ch}"
+        return (good and not bad), f"good={good} n={n_good}>={min_q} invented/oos_caught={not bad} ch/phase={ch}"
     if name == "provenance_labels":
         ok = has_canonical_provenance_labels(_read(_p(sc["mock_output"])))
         return ok, f"all_canonical_labels={ok}"
@@ -359,10 +363,11 @@ def run_llm():
     # Skeleton only — T2 ships the harness, not the paid runs. The real path would, per scenario:
     #   1) copy FIXTURE into a tempdir, 2) run `claude -p <scenario.prompt>` (subscription, no API key),
     #   3) capture output/files into RESULTS_DIR, 4) apply the SAME deterministic detectors as --mock.
-    print("RUN_SKILL_BEHAVIOR_LLM=1 detected — LLM smoke harness skeleton (no model wired in this PR).")
-    print("Scenarios available for the opt-in run:",
+    print("RUN_SKILL_BEHAVIOR_LLM=1 detected, but the real-agent smoke is NOT YET WIRED in this PR.")
+    print("This is a skeleton: it does not run `claude`, capture output, or apply any detector.")
+    print("Scenarios it WILL drive once implemented:",
           ", ".join(s["name"] for s in load_scenarios()["scenarios"]))
-    return 0
+    return 3   # NOT 0 — a no-op must not be recorded as a passing smoke run
 
 
 def main(argv=None):
