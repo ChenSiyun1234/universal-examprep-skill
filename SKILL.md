@@ -39,6 +39,7 @@ metadata:
 
 ### 第三步：标准真题通关测验 (Quiz-Bank Assessment)
 1. **标准抽题**：从 `references/quiz_bank.json` 中过滤并提取属于当前章节的题目。**禁止**现场随机编造不符合大纲的题目。
+   * **依赖图的题 fail-closed**：题项可带 `requires_assets` / `assets` / `question_text_status`（见 [`docs/file-format.md`](docs/file-format.md) §4）。出 `requires_assets=true` 的题前必须先展示其题面侧图片（`question_context`/`figure`/`diagram`/`table`）；**图缺失/不可读、或网页端无法显示图时，绝不出这道题**，改出 `full` 全文题。`stub`/`page_reference` 题须先呈现原页/资源上下文，无法呈现则跳过。
 2. **主观题语义判分**：若为计算或简答题，执行**“要点检索制”**。核对学生作答是否覆盖了该题的 `keywords` 和解题步骤，只要意思对即判定通过，给出相似度反馈。
 3. **画图题：先跑算法再画 (`type: "diagram"`)**：若题目类型为画图题（如二叉树/AVL 旋转、红黑树、B 树、图遍历、哈夫曼树、状态机等），智能体**禁止凭记忆手绘或用文字脑补最终图形**，必须遵循以下流程，让图的正确性由确定性程序保证：
    * **先跑算法再画图**：写一段实现标准算法的 Python 代码（用 `matplotlib` / `graphviz` 等），真实运行得到结构，再渲染成图片供学生查看。绝不直接「想象」最终形态。

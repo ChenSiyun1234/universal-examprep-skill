@@ -577,7 +577,8 @@ class TestValidateWorkspace(unittest.TestCase):
 
     # ---- Codex round-4 hardening (P2) ----
     def test_p0a_source_file_escape_paths_fail(self):
-        for bad in ("../../etc/passwd", "/etc/passwd", "C:\\\\Windows\\\\x.pdf", "http://x/y.pdf"):
+        # incl. C:lecture.pdf — a drive-RELATIVE path (no slash) that still resolves outside materials
+        for bad in ("../../etc/passwd", "/etc/passwd", "C:\\\\Windows\\\\x.pdf", "C:lecture.pdf", "http://x/y.pdf"):
             item = self._asset_item(question_text_status="page_reference", source_file=bad)
             errors, _, _ = V.validate(self._ws_asset(item))
             self.assertEqual(V._exit_code(errors), 1, "source_file=%r should fail" % bad)

@@ -43,8 +43,8 @@ def _unsafe_ref(s):
     flow is told to surface the referenced page, so the name must not point outside the materials."""
     if "://" in s:
         return "URL"
-    if s.startswith("/") or s.startswith("\\") or re.match(r"^[A-Za-z]:[\\/]", s):
-        return "绝对路径"
+    if s.startswith("/") or s.startswith("\\") or re.match(r"^[A-Za-z]:", s):
+        return "绝对路径"   # incl. drive-relative like C:lecture.pdf (no slash), which resolves oddly
     if ".." in re.split(r"[\\/]", s):
         return ".. 穿越"
     return None
