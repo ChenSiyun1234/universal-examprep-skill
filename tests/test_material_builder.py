@@ -53,7 +53,8 @@ def _pages(file, *texts):
 def _materials_with_pdf(basename="ch01.pdf"):
     """A temp materials dir holding one empty .pdf on disk (the fake backend supplies its text)."""
     d = tempfile.mkdtemp(prefix="mat-")
-    open(os.path.join(d, basename), "wb").write(b"%PDF-1.4 fake")
+    with open(os.path.join(d, basename), "wb") as f:
+        f.write(b"%PDF-1.4 fake")
     return d
 
 
@@ -189,8 +190,10 @@ class CoreExtraction(unittest.TestCase):
 
 class CliAndRun(unittest.TestCase):
     def test_cli_help_without_pdf_deps(self):
+        # the script emits UTF-8 (it reconfigures stdout); decode UTF-8 explicitly so the test is
+        # independent of the OS console locale (cp1252 on CI / gbk on a zh Windows box).
         r = subprocess.run([sys.executable, os.path.join(SCRIPTS, "build_raw_input_from_workspace.py"), "--help"],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
         self.assertEqual(r.returncode, 0)
         self.assertIn("materials", r.stdout)
 
@@ -203,7 +206,8 @@ class CliAndRun(unittest.TestCase):
 
     def test_txt_materials_work_without_backend(self):
         d = tempfile.mkdtemp(prefix="mat-")
-        open(os.path.join(d, "notes.txt"), "w", encoding="utf-8").write("Example 1.1 Problem  hi\n")
+        with open(os.path.join(d, "notes.txt"), "w", encoding="utf-8") as f:
+            f.write("Example 1.1 Problem  hi\n")
         code, ri, report = B.run(_args(d), backend=B.NoBackend())  # no PDFs -> stdlib path works
         self.assertEqual(code, 0)
         self.assertGreaterEqual(report["pages_extracted"], 1)
@@ -280,7 +284,8 @@ class IngestIntegration(unittest.TestCase):
             json.dump(ri, f, ensure_ascii=False)
         ws = os.path.join(d, "ws")
         self.assertEqual(_ingest(args.out, ws).returncode, 0)
-        qb = json.load(open(os.path.join(ws, "references", "quiz_bank.json"), encoding="utf-8"))
+        with open(os.path.join(ws, "references", "quiz_bank.json"), encoding="utf-8") as f:
+            qb = json.load(f)
         item = next(q for q in qb if q["id"] == "lecture_quiz_1_1")
         for k in ("source_file", "source_pages", "assets", "requires_assets", "question_text_status"):
             self.assertIn(k, item)
@@ -311,7 +316,8 @@ class IngestIntegration(unittest.TestCase):
               "quiz_bank": [{"id": "q1", "chapter": 1, "type": "choice", "question": "?",
                              "options": ["A", "B"], "answer": "A", "source": "material"}]}
         p = os.path.join(d, "raw_input.json")
-        json.dump(ri, open(p, "w", encoding="utf-8"))
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(ri, f)
         ws = os.path.join(d, "ws")
         self.assertEqual(_ingest(p, ws).returncode, 0)
 

@@ -461,11 +461,14 @@ def run(args, backend=None):
 
 
 def main(argv=None, backend=None):
+    # reconfigure BEFORE parse_args so argparse's Chinese --help text prints on Windows consoles
+    # (cp1252) without a UnicodeEncodeError that would make `--help` exit non-zero.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     args = build_arg_parser().parse_args(argv)
-    try:
-        sys.stdout.reconfigure(encoding="utf-8")
-    except Exception:
-        pass
     code, raw_input, report = run(args, backend=backend)
     if code != 0:
         sys.stderr.write((raw_input or {}).get("error", "失败") + "\n")
