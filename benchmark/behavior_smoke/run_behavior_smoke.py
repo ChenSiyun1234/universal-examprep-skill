@@ -51,16 +51,23 @@ def extract_question_ids(text):
     return re.findall(r"\[#([^\]\s]+)\]", text or "")
 
 
+_ITEM_RE = re.compile(r"^\s*(?:\d+\s*[.、)）]|[Qq]\d+\s*[:：]|第\s*[一二三四五六七八九十百零\d]+\s*题\s*[:：]?)")
+
+
 def assert_quiz_ids_in_bank(text, bank_ids):
-    # every NUMBERED quiz item must carry exactly one [#<id>] tag whose id is in the bank.
-    # (checking only the extracted tags would let an UNTAGGED invented question slip through.)
-    item_lines = [ln for ln in (text or "").splitlines() if re.match(r"\s*\d+\s*[.、)）]", ln)]
-    if not item_lines:
+    t = text or ""
+    # (a) EVERY [#id] tag anywhere (numbered / bullet / inline) must be a bank id — catches an
+    #     invented tag on ANY line format, not only numbered lines.
+    ids = extract_question_ids(t)
+    if not ids or any(i not in bank_ids for i in ids):
         return False
-    for ln in item_lines:
-        ids = extract_question_ids(ln)
-        if len(ids) != 1 or ids[0] not in bank_ids:
-            return False
+    # (b) EVERY explicit question-item line (numbered / Qn: / 第n题) must carry exactly one bank tag,
+    #     so an UNTAGGED invented question can't hide as an unmarked item line.
+    for ln in t.splitlines():
+        if _ITEM_RE.match(ln):
+            lids = extract_question_ids(ln)
+            if len(lids) != 1 or lids[0] not in bank_ids:
+                return False
     return True
 
 
@@ -86,12 +93,14 @@ def has_hint_skip_offer(text):
     return has_hint and has_skip and has_archive
 
 
-def _section(text, header_keyword):
-    """Lines under the first markdown '## ' header containing header_keyword, until the next '## '."""
+def _section(text, header_keywords):
+    """Lines under the first '## ' header containing ANY of header_keywords, until the next '## '."""
+    if isinstance(header_keywords, str):
+        header_keywords = [header_keywords]
     out, grab = [], False
     for ln in (text or "").splitlines():
         if ln.startswith("## "):
-            grab = header_keyword in ln
+            grab = any(k in ln for k in header_keywords)
             continue
         if grab:
             out.append(ln)
@@ -117,11 +126,12 @@ def _table_data_rows(section_text):
 
 
 def progress_has_mistake_archive(progress_text):
-    return len(_table_data_rows(_section(progress_text, "错题本"))) >= 1
+    # standard template section is "## ❌ 错题档案记录"; mini/legacy wording uses "错题本" — accept both
+    return len(_table_data_rows(_section(progress_text, ["错题档案", "错题本"]))) >= 1
 
 
 def progress_has_confusion_row(progress_text):
-    return len(_table_data_rows(_section(progress_text, "疑难"))) >= 1
+    return len(_table_data_rows(_section(progress_text, ["疑难", "confusion"]))) >= 1
 
 
 def progress_current_phase(progress_text):
@@ -129,8 +139,10 @@ def progress_current_phase(progress_text):
     return int(m.group(1)) if m else None
 
 
-# restart-at-1 / from-scratch language a resume message must NOT contain
-_RESTART_RE = re.compile(r"从\s*头\s*开始|从\s*阶段\s*1\b|重新\s*开始|重头\s*开始|从头(重新)?来")
+# restart-at-1 / from-scratch language a resume message must NOT contain.
+# NB: no \b after the digit — between a digit and a CJK char there is no word boundary, so
+# "从阶段1开始" (no space) would otherwise slip; (?!\d) guards against matching 阶段 10/11.
+_RESTART_RE = re.compile(r"从\s*头\s*开始|从\s*阶段\s*1(?!\d)|重新\s*开始|重头\s*开始|从头(重新)?来")
 
 
 def resume_refers_to_phase(resume_text, phase):
@@ -175,7 +187,7 @@ def _p(rel):
     return os.path.join(HERE, rel)
 
 
-def check_scenario_mock(name, sc, bank_ids):
+def check_scenario_mock(name, sc, bank_ids, fixture_path=FIXTURE):
     """Return (ok, detail) for one scenario using only mock artifacts — no LLM."""
     if name == "quiz_bank_only":
         good = assert_quiz_ids_in_bank(_read(_p(sc["mock_output"])), bank_ids)
@@ -192,7 +204,7 @@ def check_scenario_mock(name, sc, bank_ids):
         ok = progress_has_confusion_row(_read(_p(sc["mock_output"])))
         return ok, f"confusion_row_written={ok}"
     if name == "checkpoint_recovery":
-        ph = progress_current_phase(_read(os.path.join(FIXTURE, "study_progress.md")))
+        ph = progress_current_phase(_read(os.path.join(fixture_path, "study_progress.md")))
         resume = _read(_p(sc["mock_output"]))
         refers = resume_refers_to_phase(resume, sc["expected_phase"])
         return (ph == sc["expected_phase"] and refers), f"current_phase={ph} resume_refers_current={refers}"
@@ -207,7 +219,8 @@ def check_scenario_mock(name, sc, bank_ids):
 
 def run_mock(verbose=True):
     spec = load_scenarios()
-    bank_ids = load_quiz_bank_ids(FIXTURE)
+    fixture_path = os.path.join(HERE, spec.get("fixture", "fixtures/mini_course"))
+    bank_ids = load_quiz_bank_ids(fixture_path)
     results = []   # (name, detail, status) where status ∈ {PASS, FAIL, SKIP}
     for sc in spec["scenarios"]:
         name = sc["name"]
@@ -216,7 +229,7 @@ def run_mock(verbose=True):
             # never as PASS, so the conclusion doesn't overstate what was verified.
             results.append((name, "best-effort（需 LLM/transcript，--mock 不断言）", "SKIP"))
             continue
-        ok, detail = check_scenario_mock(name, sc, bank_ids)
+        ok, detail = check_scenario_mock(name, sc, bank_ids, fixture_path)
         results.append((name, detail, "PASS" if ok else "FAIL"))
     n_pass = sum(1 for _, _, s in results if s == "PASS")
     n_skip = sum(1 for _, _, s in results if s == "SKIP")

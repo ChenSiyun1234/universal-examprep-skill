@@ -79,6 +79,9 @@ class BehaviorSmokeTest(unittest.TestCase):
         )
         # a good output where EVERY numbered item is bank-tagged still passes
         self.assertTrue(H.assert_quiz_ids_in_bank("1. [#mc_q1] a\n2. [#mc_q2] b", bank_ids))
+        # an invented tag on a NON-numbered (bullet) line must ALSO fail — scan all tags, any format
+        self.assertFalse(H.assert_quiz_ids_in_bank("1. [#mc_q1] 合法\n- [#mc_q99] 项目符号编造", bank_ids),
+                         "非编号行（项目符号）上的编造题号也应被抓")
 
     # 6
     def test_provenance_detector_recognizes_all_canonical_labels(self):
@@ -102,8 +105,13 @@ class BehaviorSmokeTest(unittest.TestCase):
     # 9
     def test_mistake_archive_detector(self):
         self.assertTrue(H.progress_has_mistake_archive(_read("mock/sample_outputs/progress_after_mistake.md")))
-        # base fixture progress has an empty 错题本 -> no archived row
+        # base fixture progress has an empty 错题档案 -> no archived row
         self.assertFalse(H.progress_has_mistake_archive(_read("fixtures/mini_course/study_progress.md")))
+        # accept BOTH the standard template header (错题档案) and legacy mini wording (错题本)
+        std = "## ❌ 错题档案记录\n| ID | 章节 | 状态 |\n| --- | --- | --- |\n| mc_q1 | 1 | 已归档 |"
+        legacy = "## 错题本\n| 题号 | 状态 |\n| --- | --- |\n| mc_q2 | 已归档 |"
+        self.assertTrue(H.progress_has_mistake_archive(std), "应识别标准模板表头『错题档案记录』")
+        self.assertTrue(H.progress_has_mistake_archive(legacy), "应兼容旧表头『错题本』")
 
     # 10
     def test_confusion_tracker_detector(self):
@@ -123,6 +131,8 @@ class BehaviorSmokeTest(unittest.TestCase):
                          "虽提到阶段 2 但仍从阶段 1 重启，应判不合格")
         self.assertFalse(H.resume_refers_to_phase("从头开始复习，先看阶段 2 的目录", 2),
                          "『从头开始』的续跑文案应判不合格")
+        self.assertFalse(H.resume_refers_to_phase("当前在阶段 2，但先从阶段1开始", 2),
+                         "紧凑写法『从阶段1开始』（无空格）也应判重启不合格")
 
     # 12
     def test_no_python_fallback_workspace_is_complete(self):
