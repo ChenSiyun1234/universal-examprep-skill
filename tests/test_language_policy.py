@@ -3,8 +3,8 @@
 
 Locks: docs/language-policy.md defines an English control plane + a Simplified-Chinese
 student-facing layer with ONE canonical provenance wording; every direct entrypoint uses
-the canonical labels and NO old competing labels; exam-ingest defaults to Chinese; V2.1 /
-web-portability preserved; and this PR is scoped as a policy bridge (not a full English rewrite).
+the canonical labels and NO old competing labels; exam-ingest defaults to Chinese; the
+anti-hallucination protocol and web-portability are preserved; root stays Chinese-first.
 """
 import os
 import unittest
@@ -126,11 +126,12 @@ class LanguagePolicyTest(unittest.TestCase):
         for sec in ("必背", "老师强调", "易错", "3分钟速记"):
             self.assertIn(sec, c, f"小抄缺少栏目: {sec}")
 
-    # ---- root SKILL.md: V2.1 preserved + language policy mirrored ----
-    def test_root_skill_exists_with_v21_provenance(self):
+    # ---- root SKILL.md: source-labeling rules preserved + language policy mirrored ----
+    def test_root_skill_exists_with_provenance_rules(self):
         self.assertTrue(os.path.isfile(os.path.join(ROOT, "SKILL.md")), "根 SKILL.md 不存在")
         root = read("SKILL.md")
-        self.assertIn("知识来源透明化", root, "根 SKILL.md 缺少 V2.1 知识来源透明化协议")
+        self.assertIn("知识来源标注", root, "根 SKILL.md 缺少「知识来源标注」段")
+        self.assertIn(CANON_AMBER, root, "根 SKILL.md 缺少 ⚠️ AI生成答案来源标注")
 
     def test_root_skill_mirrors_language_default(self):
         root = read("SKILL.md")
