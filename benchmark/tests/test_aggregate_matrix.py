@@ -383,6 +383,33 @@ class AggregateMatrix(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertIn("--answers-out", r.stderr)
 
+    def test_rejudge_scores_out_answers_out_must_differ(self):
+        # same filename for both halves would truncate over each other → refuse (exit 2), before any
+        # private file is read.
+        same = os.path.join(tempfile.mkdtemp(), "both.jsonl")
+        r = _run([os.path.join(BENCH, "rejudge.py"), "--scores-out", same, "--answers-out", same])
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("同一个文件", r.stderr)
+
+    def test_unified_rows_uses_rerun_cost_when_patching_material(self):
+        # when a material infra-error answer is patched with a clean rerun, the exported row must use
+        # the RERUN's cost, not the stale failed-attempt cost — else total_cost_usd/cost_per_q are wrong.
+        try:
+            import rejudge as RJ
+        except Exception as e:   # pragma: no cover
+            self.skipTest("rejudge import unavailable: %s" % e)
+        from unittest import mock
+        algo_ans = [{"tag": "matrix", "arm": "material", "model": "opus", "id": "m1",
+                     "answer": "usage limit reached", "cost": 0.9}]            # failed attempt, $0.9
+        gen = [{"course": "algo", "arm": "material", "model": "opus", "id": "m1",
+                "answer": "clean rerun answer", "cost": 0.5}]                  # clean rerun, $0.5
+        with mock.patch.object(RJ, "load_jsonl", return_value=algo_ans), \
+                mock.patch.object(RJ, "_gen_rows", return_value=gen):
+            rows = RJ.unified_rows("algo")
+        m1 = [r for r in rows if r["id"] == "m1" and r["arm"] == "material"][0]
+        self.assertEqual(m1["answer"], "clean rerun answer")    # answer patched from the rerun
+        self.assertAlmostEqual(m1["cost"], 0.5, places=4)       # ...and ITS cost, not the stale 0.9
+
     def test_rejudge_export_fails_loud_on_duplicate_rows(self):
         # a duplicate (course,model,arm,item_id) in the source rows must FAIL LOUD on export — never a
         # silent drop that would diverge from rejudge.aggregate()'s own (duplicate-counting) output.

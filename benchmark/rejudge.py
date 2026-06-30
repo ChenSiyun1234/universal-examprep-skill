@@ -99,15 +99,17 @@ def unified_rows(course):
     items that errored out the first time are PATCHED with their reruns from gen_answers.jsonl."""
     rows, gen = [], _gen_rows()
     if course in ("algo", "both"):
-        rerun = {(d["model"], d["id"]): d["answer"] for d in gen
+        rerun = {(d["model"], d["id"]): d for d in gen
                  if d["course"] == "algo" and d["arm"] == "material"}
         for d in load_jsonl(ALGO_ANS):
-            ans = d.get("answer", "")
+            ans, cost = d.get("answer", ""), d.get("cost")
             if d["tag"] == "matrix" and d["arm"] == "material" and is_infra_error(ans) \
                     and (d["model"], d["id"]) in rerun:
-                ans = rerun[(d["model"], d["id"])]                 # patch error with a clean rerun
+                rd = rerun[(d["model"], d["id"])]
+                ans = rd.get("answer", "")                         # patch error with a clean rerun
+                cost = rd.get("cost", cost)                        # and ITS OWN cost, not the failed attempt's
             rows.append({"course": "algo", "tag": d["tag"], "model": d["model"],
-                         "arm": d["arm"], "id": d["id"], "answer": ans, "cost": d.get("cost")})
+                         "arm": d["arm"], "id": d["id"], "answer": ans, "cost": cost})
         for d in gen:                                              # NEW: fair no-skill agentic arm
             if d["course"] == "algo" and d["arm"] == "rawfiles":
                 rows.append({"course": "algo", "tag": "matrix", "model": d["model"], "arm": "rawfiles",
@@ -221,6 +223,12 @@ def main():
         # the aggregator miss infra exclusions and costs — so require the aligned answer export too.
         sys.stderr.write("rejudge: --scores-out 需同时给 --answers-out——导出的 answer 行带 status/cost，"
                          "aggregate_matrix.py 要靠它排除 infra 失败并统计成本；缺了会把失败误计为可答题\n")
+        raise SystemExit(2)
+    if args.scores_out and args.answers_out \
+            and os.path.abspath(args.scores_out) == os.path.abspath(args.answers_out):
+        # two open(...,"w") to the same file would truncate over each other → a corrupt, half-written
+        # export. The bridge needs TWO distinct JSONL files.
+        sys.stderr.write("rejudge: --scores-out 与 --answers-out 不能指向同一个文件（会互相截断覆盖）\n")
         raise SystemExit(2)
 
     gold = {"algo": load_gold(ALGO_GOLD), "psyc": load_gold(PSYC_GOLD)}
