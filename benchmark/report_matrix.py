@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """三臂×三模型 防幻觉报告渲染器（6.006）。读取 results/matrix/summary.json → 中英双语 report.html。
 纯标准库；复用 report.py 的 MATERIALS / REFERENCES。面向普通用户：通俗 + 图表 + 引用 + 诚实 caveats。"""
-import os, sys, json, html
+import os, sys, json, html, argparse
 BENCH = os.path.dirname(os.path.abspath(__file__))   # portable: this file lives in benchmark/
 sys.path.insert(0, BENCH)
 import report as R
@@ -231,25 +231,35 @@ def block(lang, S):
     o.append("</ol></div>")
     return "\n".join(o)
 
-def _write_standalone_svgs(S):
+def _write_standalone_svgs(S, out_dir):
     """Also emit standalone chart SVGs (zh/en) so the README can embed the comparison charts."""
     m, conv, psyc = S.get("matrix", {}), S.get("convergence", {}), S.get("psyc", {})
     for en, suf in ((False, "zh"), (True, "en")):
         for metric, name in (("correct", "correct"), ("hallucination", "hallu"),
                              ("abstention_oos", "oos")):
-            open(os.path.join(OUT, f"chart_{name}_{suf}.svg"), "w", encoding="utf-8").write(
+            open(os.path.join(out_dir, f"chart_{name}_{suf}.svg"), "w", encoding="utf-8").write(
                 svg_grouped(m, metric, en))
-        open(os.path.join(OUT, f"chart_convergence_{suf}.svg"), "w", encoding="utf-8").write(
+        open(os.path.join(out_dir, f"chart_convergence_{suf}.svg"), "w", encoding="utf-8").write(
             svg_convergence(conv, en))
         if psyc:   # PSYC 110：两条件（不给资料 / 使用本技能）× 三模型
             for metric, name in (("correct", "psyc_correct"), ("abstention_oos", "psyc_oos")):
-                open(os.path.join(OUT, f"chart_{name}_{suf}.svg"), "w", encoding="utf-8").write(
+                open(os.path.join(out_dir, f"chart_{name}_{suf}.svg"), "w", encoding="utf-8").write(
                     svg_grouped(psyc, metric, en, arms=PSYC_ARMS, key_prefix="psyc|"))
 
 
-def main():
-    S = json.load(open(os.path.join(OUT, "summary.json"), encoding="utf-8"))
-    _write_standalone_svgs(S)
+def main(argv=None):
+    # Default behavior (no args) is unchanged: render the committed results/matrix/summary.json into
+    # results/matrix/. --summary renders an EXPLICIT summary; --out-dir writes elsewhere (e.g. a tmp
+    # dir for fixture pipelines) — so it no longer FORCES the stale committed summary.
+    ap = argparse.ArgumentParser(description="渲染矩阵 summary.json → 中英双语 report.html + 图表 SVG。")
+    ap.add_argument("--summary", default=os.path.join(OUT, "summary.json"),
+                    help="要渲染的 summary.json（默认 results/matrix/summary.json）")
+    ap.add_argument("--out-dir", default=OUT, help="输出目录（默认 results/matrix/）")
+    args = ap.parse_args(argv)
+    out_dir = args.out_dir
+    os.makedirs(out_dir, exist_ok=True)
+    S = json.load(open(args.summary, encoding="utf-8"))
+    _write_standalone_svgs(S, out_dir)
     css = ("body{max-width:860px;margin:0 auto;padding:24px 18px;color:#202124;"
            "font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;line-height:1.65}"
            "h1{font-size:24px}h2{font-size:19px;margin-top:32px;border-bottom:2px solid #e8eaed;padding-bottom:6px}"
@@ -271,7 +281,7 @@ def main():
             "<div class='langbar'><button id='btn-zh' class='on' onclick=\"setLang('zh')\">中文</button>"
             "<button id='btn-en' onclick=\"setLang('en')\">English</button></div>",
             block("zh", S), block("en", S), f"<script>{js}</script>", "</body></html>"]
-    path = os.path.join(OUT, "report.html")
+    path = os.path.join(out_dir, "report.html")
     open(path, "w", encoding="utf-8").write("\n".join(page))
     print("[+] 写出", path)
 

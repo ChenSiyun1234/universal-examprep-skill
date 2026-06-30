@@ -13,7 +13,7 @@
 | **Tier 0 单元/静态测试** | `python -m unittest discover -s tests`（ingest、validator、技能结构、语言策略等，纯 stdlib，无网络/LLM） | 秒级、$0 | **每次提交 / CI 必跑** |
 | **Tier 1 工作区校验** | `python scripts/validate_workspace.py <ws>`（已建工作区的结构 / 题库 schema / 来源标注 / 路径安全） | 秒级、$0 | 改 schema/ingest/技能时（本地或手动）；其校验逻辑已由 Tier 0 在 `tests/fixtures/` 上覆盖 |
 | **Tier 2 行为冒烟（behavioral smoke）** | **scripted agent 行为冒烟**：极小的**自撰 fixture 工作区** + **脚本化提示** + 对**产出文件/输出的确定性断言**（覆盖 quiz_bank-only / 来源标注 / 提示·跳过·错题归档 / 疑难追踪 / 断点恢复 / 无 Python 降级 / 0 基础精讲）。**确定性 mock 层已落地**（见 [`../behavior_smoke/`](../behavior_smoke/)，纯 stdlib、进 CI）；**真 LLM 行为验证仍 opt-in、不进 CI（尚未实现，仅 skeleton）**；惰性加载为 best-effort | 默认近 $0 | mock 层每次改技能行为时（进 CI）；真 agent 冒烟 opt-in 手动 |
-| **Tier 3 完整 benchmark 矩阵** | **6.006 为全量三臂**（`closedbook`/`rawfiles`/`skill`）；**PSYC 为部分**（`closedbook`/`skill` 全量，`rawfiles` 仅 Opus 全、Sonnet 少量、无 Haiku，`report_matrix.py` 里 PSYC 也只定义了 closedbook/skill）。数据见 [`testing-audit.md`](testing-audit.md) | 几十美元、几小时 | **仅手动触发**，发布数据/方法变更时 |
+| **Tier 3 完整 benchmark 矩阵** | **6.006 为全量三臂**（`closedbook`/`rawfiles`/`skill`）；**PSYC 为部分**（`closedbook`/`skill` 全量，`rawfiles` 仅 Opus 全、Sonnet 少量、无 Haiku，`report_matrix.py` 里 PSYC 也只定义了 closedbook/skill）。**T3 起聚合层 [`aggregate_matrix.py`](matrix_pipeline.md) + fixture 流水线已提交、机制可从干净 checkout 复现**；但**完整发布矩阵仍需私有/中间产物 + 付费运行**。数据见 [`testing-audit.md`](testing-audit.md) | 几十美元、几小时（fixture 机制 $0） | **仅手动触发**，发布数据/方法变更时 |
 | **Tier 4 长程漂移 benchmark** | 模拟 15–30 轮连续辅导会话（**未来工作**，见下） | 以天计额度 | 重大版本、专门排期时手动 |
 
 > **Tier 2 ≠ 「基准管线 mock 自检」**：`run_benchmark.py --mock`（用 `items/items.example.jsonl` 空跑、

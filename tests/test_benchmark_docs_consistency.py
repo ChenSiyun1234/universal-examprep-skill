@@ -10,10 +10,11 @@ WITHOUT running any paid benchmark:
 2. Benchmark docs must consistently name the primary matrix arms: closedbook / rawfiles / skill.
 3. Benchmark docs must describe material / dump-all as a legacy/stress/footnote arm,
    not the primary fair control.
-4. The audit doc must honestly state: Tier 2 behavioral smoke is not implemented yet;
-   summary.json is a precomputed artifact; the committed aggregator is future work.
+4. The audit doc must honestly state: Tier 2 behavioral smoke is not implemented yet; the published
+   summary.json is a precomputed artifact; T3 added the committed aggregator (aggregate_matrix.py),
+   while the full published MIT/PSYC matrix still needs private/intermediate artifacts + paid runs.
 
-It does NOT add Tier 2, an aggregator, or any LLM/paid run.
+This is a doc/test consistency guard only — it adds no Tier 2, no benchmark run, no LLM/paid run.
 """
 import os
 import re
@@ -140,15 +141,17 @@ class BenchmarkDocsConsistencyTest(unittest.TestCase):
             "审计文档未说明 summary.json 是预先计算（precomputed）的产物",
         )
 
-    def test_audit_states_aggregator_is_future(self):
+    def test_audit_states_aggregator_added_in_t3(self):
+        # T3 added the committed aggregator (benchmark/aggregate_matrix.py). The audit must now name it,
+        # AND still be honest that the FULL published MIT/PSYC matrix needs private/intermediate
+        # artifacts + paid runs — the aggregator alone does not reproduce the published numbers.
         a = read(AUDIT)
+        self.assertTrue(("aggregator" in a) or ("聚合器" in a), "审计文档未提聚合器（aggregator）")
+        self.assertTrue(("aggregate_matrix.py" in a) or ("T3" in a),
+                        "审计文档未把聚合器关联到 T3 / aggregate_matrix.py")
         self.assertTrue(
-            ("aggregator" in a) or ("聚合器" in a),
-            "审计文档未提聚合器（aggregator）",
-        )
-        self.assertTrue(
-            ("未来" in a) or ("future" in a) or ("T3" in a),
-            "审计文档未把聚合器标注为未来工作（future / PR T3）",
+            ("私有" in a) or ("付费" in a) or ("private" in a) or ("paid" in a),
+            "审计文档未说明完整发布矩阵仍依赖私有/付费产物",
         )
 
     # ---- Tier 2 definition must be consistent across the three tier docs ----

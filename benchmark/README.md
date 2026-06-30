@@ -62,7 +62,8 @@
      > **它只跑两臂**：`baseline`（只给原始材料，≈ material/dump 类）vs `skill`，**不含 `closedbook` / `rawfiles`**——产出的是**遗留两臂报告**，不是主对照矩阵。
 
    - **已发布的主对照三臂矩阵是怎么来的（provenance，非用户可一键复现）**：`closedbook` / `rawfiles` / `skill` 矩阵由内部管线 `gen.py`（生成答案）→ `rejudge.py`（判分）→ `report_matrix.py`（渲染）产出。**它专用于既有的 MIT/PSYC 矩阵，既不读你上面的 `config.json` / `items.jsonl`，也不能从干净 checkout 跑起来**：
-     > ⚠️ `gen.py` **硬编了 MIT/PSYC 的题面文件与工作区**、只接受 `--limit`；且 `build_tasks()` 会**无条件打开一份未提交的** `results/matrix/answers.jsonl` 种子——干净 checkout 上 `python gen.py` 会直接 `FileNotFoundError`、根本跑不起来。即便补上种子，`rejudge.py` 写的是 `summary_corrected.json`，而 `report_matrix.py` 只读 `summary.json`，二者间的**提交版聚合器尚缺（未来 PR T3）**。所以已发布的 `summary.json` 是预先计算的产物，本仓库脚本**无法从零端到端复现**（详见 [`docs/testing-audit.md`](docs/testing-audit.md)）。
+     > ⚠️ `gen.py` **硬编了 MIT/PSYC 的题面文件与工作区**、只接受 `--limit`；且 `build_tasks()` 会**无条件打开一份未提交的** `results/matrix/answers.jsonl` 种子——干净 checkout 上 `python gen.py` 会直接 `FileNotFoundError`、根本跑不起来。所以已发布的 `summary.json` 是预先计算的产物，**完整 MIT/PSYC 矩阵仍依赖私有/中间产物 + 付费运行**，本仓库脚本无法从零端到端复现（详见 [`docs/testing-audit.md`](docs/testing-audit.md)）。
+     > ✅ **T3 已补上提交版聚合器** [`aggregate_matrix.py`](aggregate_matrix.py)：从**显式**的 answer/score 行聚合出 `summary.json`，再 `report_matrix.py --summary <file> --out-dir <dir>` 渲染——**流水线机制**用微型 fixture 即可从干净 checkout 复现（见 [`docs/matrix_pipeline.md`](docs/matrix_pipeline.md)）。这只复现**机制**，不复现已发布的付费跑数字。
 
 6. **裁判可信度校准（出报告前必做）**：人工标注 30~50 题子集放进 `calibration/`，用 `stats.cohen_kappa`
    算"人工 vs LLM 裁判"的一致性。**kappa ≥ 0.6 左右才信任裁判的数字**；否则先改进裁判/题目再说。
@@ -89,9 +90,10 @@ benchmark/
   gen.py               # 较新的矩阵答案生成：按可行性增量补齐(依赖既有 answers.jsonl)、可断点续跑、记录每格成本
   judge.py             # 判分：数值题确定性 + 事实/定义题 claim 级忠实度（LLM 裁判）
   rejudge.py           # 用修正后的 judge 重判已存答案，写 summary_corrected.json
+  aggregate_matrix.py  # (T3) 显式 answer/score 行 → summary.json 兼容矩阵 summary；纯标准库、无网络/LLM
   stats.py             # McNemar + 配对 bootstrap CI + Cohen's kappa（纯标准库）
   report.py            # 两臂报告器（中英双语 HTML + 引用）
-  report_matrix.py     # 矩阵报告器：渲染预先算好的 results/matrix/summary.json，本身不计算
+  report_matrix.py     # 矩阵报告器：渲染 summary.json（默认 results/matrix/；T3 起支持 --summary/--out-dir）
   config.example.json  # 配置模板（复制为 config.json）
   items/               # 金标题集（items.example.jsonl + 编写规范）
   materials/           # 你的原始课件/作业（+ _combined.txt）
@@ -102,7 +104,7 @@ benchmark/
   docs/related_benchmarks.md  # 权威幻觉基准综述（报告的 related work 草稿）
 ```
 
-> **管线现状（诚实标注）**：`run_benchmark.py` 是较早的两臂脚手架；矩阵结果由较新的 `gen.py` 生成答案、`rejudge.py` 判分、`report_matrix.py` 渲染。`report_matrix.py` 只**渲染**预先算好的 `results/matrix/summary.json`，本身不计算；而**从「生成的答案 + 判分缓存」聚合出 `summary.json` 的提交版聚合器目前尚缺**，当前 `summary.json` 是预先计算的产物——补齐这个聚合器是未来 PR T3。
+> **管线现状（诚实标注）**：`run_benchmark.py` 是较早的两臂脚手架；矩阵结果由较新的 `gen.py` 生成答案、`rejudge.py` 判分、`report_matrix.py` 渲染。**T3 补上了提交版聚合器 `aggregate_matrix.py`**（显式 answer/score 行 → `summary.json`）+ `report_matrix.py --summary`，**流水线机制**用微型 fixture 即可从干净 checkout 复现（见 [`docs/matrix_pipeline.md`](docs/matrix_pipeline.md)）。但已发布的 `summary.json` 仍是**预先计算**的产物，**完整 MIT/PSYC 矩阵仍依赖私有/中间产物 + 付费运行**；聚合器只复现机制、不复现已发布数字。`aggregate_matrix.py`/材料构建器（P0A/P0B）是两回事——后者把 PDF 课件建成工作区，与本基准聚合无关。
 
 ## 路线（后续）
 - **v2 portfolio 升级**：买了 API key 后可移植到 **Inspect AI**（UK AISI，Task/Solver/Scorer + 模型判分），
