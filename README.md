@@ -185,6 +185,7 @@ python scripts/validate_workspace.py path/to/workspace
   * 📄 `skill-architecture.md`：技能集合结构说明（子技能 ↔ 备考生命周期映射）。
   * 📄 `agent-portability.md`：不同代理的加载方式与支持矩阵。
   * 📄 `file-format.md`：工作区文件格式规范（quiz_bank.json schema、6 大题型字段、来源标注规则）。
+  * 📄 `localization.md`：本地化边界——当前学生侧中文模板与控制逻辑同文件、暂不拆 `locales/`，及将来加第二语言时的拆分规则。
 * 📂 **`prompts/`**：存放提示词。
   * 📄 `web_prompt.md`：**【网页端一键平替提示词】** —— 专为不支持本地写盘的网页版 AI（ChatGPT / DeepSeek 网页端 / 豆包）准备，复制直接用。
 * 📂 **`templates/`**：备考基准模板文件。
