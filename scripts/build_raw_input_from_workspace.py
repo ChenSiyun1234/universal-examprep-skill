@@ -169,16 +169,18 @@ def extract_lecture_items(pages):
             claimed.add(mj)
         ans_idx = sorted({pj for (mj, pj) in chosen})
 
-        needs = requires_assets_heuristic(prob_text)
         kind = mk["kind"]
         label = "Example" if kind == "example" else "Quiz"
+        # scope the asset heuristic to THIS problem's text slice (not the whole page) — else a Venn
+        # mention in a later problem on the same page would wrongly flag this one as figure-dependent.
+        stmt = _problem_statement(prob_text, kind, key[1], key[2])
+        needs = requires_assets_heuristic(stmt or prob_text)
         if needs:
             # figure-dependent: text alone isn't the question; point at the page + require the asset
             question = ("（%s %d.%d）本题依赖原始讲义 %s 第 %d 页的图/表，须配合所附 asset 作答。"
                         % (label, key[1], key[2], prob_page["file"], prob_page["page"]))
         else:
             # text-complete: use the ACTUAL problem text so the student sees a real, answerable question
-            stmt = _problem_statement(prob_text, kind, key[1], key[2])
             question = stmt or ("（%s %d.%d）见原始讲义 %s 第 %d 页。"
                                 % (label, key[1], key[2], prob_page["file"], prob_page["page"]))
         item = {
@@ -246,8 +248,9 @@ def group_sections(pages):
 
 
 def _safe_asset_name(file, page, item_id, suffix=""):
-    stem = re.sub(r"[^\w.\-]", "_", os.path.splitext(os.path.basename(file or "src"))[0])
-    if re.fullmatch(r"[.\-]*", stem):          # all-dots/dashes (e.g. a ".." filename) → a plain token
+    # keep subdirs (sanitized) so lecture/ch01.pdf and solutions/ch01.pdf don't collide on the same page
+    stem = re.sub(r"[^\w.\-]", "_", os.path.splitext(file or "src")[0])
+    if re.fullmatch(r"[.\-_]*", stem):         # all-dots/dashes/underscores (e.g. a ".." name) → a token
         stem = "src"
     sid = re.sub(r"[^\w.\-]", "_", str(item_id))
     return "%s_p%03d_%s%s.png" % (stem, int(page), sid, suffix)
@@ -515,7 +518,11 @@ def run(args, backend=None):
             wrote = False
             pdf = page_pdf.get((file, page))
             if can_write and pdf is not None:
-                png = backend.render_page_png(pdf, page - 1)
+                try:
+                    png = backend.render_page_png(pdf, page - 1)
+                except Exception as e:   # a single malformed/encrypted page must not crash the whole run
+                    png = None
+                    report["skipped"].append({"file": file, "why": "渲染失败 p.%d: %s" % (page, e)})
                 if png:
                     full = os.path.join(asset_root, name)
                     if not _under(asset_root, full):   # name is sanitized; defensive belt-and-braces

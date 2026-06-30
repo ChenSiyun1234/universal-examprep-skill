@@ -169,6 +169,24 @@ class CoreExtraction(unittest.TestCase):
                   "The graph theory chapter is hard."):
             self.assertFalse(B.requires_assets_heuristic(t), "false positive: %r" % t)
 
+    def test_heuristic_scoped_to_problem_slice(self):
+        # round-3 P2: a Venn mention in a LATER problem on the same page must not flag THIS plain problem
+        pages = [{"file": "ch01.pdf", "page": 1,
+                  "text": "Quiz 1.1  Compute 2+2.  Quiz 1.2  Shade the Venn diagram at right."},
+                 {"file": "ch01.pdf", "page": 2,
+                  "text": "Quiz 1.1 Solution  4.  Quiz 1.2 Solution  the region."}]
+        items = {it["id"]: it for it in B.extract_lecture_items(pages)}
+        self.assertFalse(items["lecture_quiz_1_1"]["requires_assets"])  # plain → not asset-required
+        self.assertTrue(items["lecture_quiz_1_2"]["requires_assets"])   # Venn slice → asset-required
+
+    def test_subdir_asset_names_distinct(self):
+        # round-3 P2: same-named files in different subdirs must not collide on the same page
+        a = B._safe_asset_name("lecture/ch01.pdf", 12, "lecture_quiz_1_1")
+        b = B._safe_asset_name("solutions/ch01.pdf", 12, "lecture_quiz_1_1")
+        self.assertNotEqual(a, b)
+        self.assertIn("lecture", a)
+        self.assertIn("solutions", b)
+
     def test_section_grouping_from_headings(self):
         pages = (_pages("a.pdf", "Quiz 1.1  x") + _pages("b.pdf", "Example 2.1 Problem  y"))
         secs = B.group_sections(pages)
@@ -334,6 +352,19 @@ class CliAndRun(unittest.TestCase):
         code, payload, report = B.run(_args(d, render_pages="required"), backend=FakeBackend({}))
         self.assertEqual(code, 3)
         self.assertIn("必需页图未能渲染", payload["error"])
+
+    def test_render_failure_on_one_page_does_not_crash(self):
+        # round-3 P2: a backend that throws on a page must be caught + reported, not crash the CLI
+        d = _materials_with_pdf()
+
+        class Boom(FakeBackend):
+            def render_page_png(self, pdf_path, page_index):
+                raise RuntimeError("bad page")
+
+        be = Boom({"ch01.pdf": ["Quiz 1.1  Shade the Venn diagram at right.", "Quiz 1.1 Solution  s."]})
+        code, ri, report = B.run(_args(d), backend=be)            # render auto
+        self.assertEqual(code, 0)                                 # did not crash
+        self.assertTrue(any("渲染失败" in s.get("why", "") for s in report["skipped"]))
 
     def test_renders_all_continued_answer_pages(self):
         d = _materials_with_pdf()
