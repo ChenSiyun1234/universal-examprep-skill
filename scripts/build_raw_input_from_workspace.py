@@ -79,8 +79,8 @@ def requires_assets_heuristic(text, renderable=True):
 
 # role is decided by the word IMMEDIATELY after the marker number (anchored), NOT a loose tail scan —
 # otherwise a problem whose text merely contains "solution" ("find the solution set") is misread.
-_ROLE_PROBLEM_RE = re.compile(r"^\s*[\)\.:\-]?\s*\(?\s*problems?\b", re.I)    # incl. plural "Problems"
-_ROLE_SOLUTION_RE = re.compile(r"^\s*[\)\.:\-]?\s*\(?\s*solutions?\b", re.I)  # incl. plural "Solutions"
+_ROLE_PROBLEM_RE = re.compile(r"^\s*[\)\.:\-]?\s*\(?\s*problems?\b", re.I)             # incl. plural "Problems"
+_ROLE_SOLUTION_RE = re.compile(r"^\s*[\)\.:\-]?\s*\(?\s*(?:solutions?|answers?)\b", re.I)  # Solution(s)/Answer(s)
 _TOC_RE = re.compile(r"\.{4,}")   # 4+ dot-leaders → a table-of-contents line, not a heading
 
 
@@ -248,8 +248,11 @@ def extract_lecture_items(pages):
         # STRONG figure-shown cues fire on any source (a .txt "shade the Venn at right" is fail-closed);
         # WEAK figure-noun cues fire only for a renderable PDF (a .txt "draw the graph" stays text-complete).
         renderable = pf.lower().endswith(".pdf")
+        # scope the heuristic to THIS problem's sliced text on every page (anchor + continued) — a
+        # continued page that also starts the next item must not lend that item's "Venn" to this one.
         needs = (requires_assets_heuristic(stmt or prob_text, renderable) or any(
-            requires_assets_heuristic(pages[k].get("text", ""), renderable) for k in prob_idxs if k != i))
+            requires_assets_heuristic(_problem_statement(pages[k].get("text", ""), kind, key[1], key[2]),
+                                      renderable) for k in prob_idxs if k != i))
         # marker-only: extraction yielded just the heading on a single page (real prompt likely in an
         # image) → NOT a standalone question. Detect by ABSENCE of any word/CJK content after the
         # heading (not a char-length cutoff — a terse CJK prompt like "求导"/"证明" is a real question).

@@ -501,6 +501,23 @@ class CoreExtraction(unittest.TestCase):
         self.assertTrue(it["requires_assets"])
         self.assertIn("shaded region", it["answer"])             # not just a page-reference string
 
+    # ---- round-12 (P0B r12) hardening ----
+    def test_answer_heading_recognized_as_solution(self):
+        # a worked page labeled 'Answer'/'Answers' (not 'Solution') is a solution, not a new problem
+        self.assertEqual(B.detect_lecture_markers("Quiz 1.1 Answers  the worked answer")[0]["role"], "solution")
+        it = B.extract_lecture_items(_pages("ch01.pdf", "Quiz 1.1  the question.",
+                                            "Quiz 1.1 Answer  the answer."))[0]
+        self.assertEqual(it["answer_source_pages"], [2])
+        self.assertNotEqual(it.get("answer_status"), "unknown")
+
+    def test_continued_page_asset_scoped_to_this_item(self):
+        # a continued page that also starts the next item must not lend THAT item's Venn to this one
+        pages = _pages("ch01.pdf", "Quiz 1.1 Problem  plain text part one.",
+                       "Quiz 1.1 Problem (Continued)  still plain.\nQuiz 1.2 Problem  Shade the Venn at right.")
+        items = {it["id"]: it for it in B.extract_lecture_items(pages)}
+        self.assertFalse(items["lecture_quiz_1_1"]["requires_assets"])  # Quiz 1.1 stays plain
+        self.assertTrue(items["lecture_quiz_1_2"]["requires_assets"])   # Quiz 1.2 owns the Venn
+
     def test_section_grouping_from_headings(self):
         pages = (_pages("a.pdf", "Quiz 1.1  x") + _pages("b.pdf", "Example 2.1 Problem  y"))
         secs = B.group_sections(pages)
