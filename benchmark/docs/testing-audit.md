@@ -11,11 +11,11 @@
 | :-- | :-- | :--: | :-- | :-- |
 | **Tier 0** | `python -m unittest discover -s tests`（stdlib 单元/静态测试套件） | ✅ Ubuntu + Windows × Py 3.8 + 3.12 | $0，纯标准库、无网络、无 API key | CI **唯一**实际运行的一层 |
 | **Tier 1** | `python scripts/validate_workspace.py <工作区>`（已建工作区结构/schema/来源标注/路径安全） | ❌ 仅文档化 | $0 | 校验器**逻辑**通过 Tier 0 的单测在 `tests/fixtures/` 上被执行；但**没有单独的 CI 步骤**在真实「ingest 产物」上跑该 CLI，也**没有 `ingest → validate` 的集成步骤** |
-| **Tier 2** | 行为冒烟（scripted 提示 + 对产物的结构断言） | ❌ | — | **尚未实现（not implemented）**，见 §4 |
+| **Tier 2** | **行为冒烟**：确定性 mock 层（见 [`behavior_smoke/`](../behavior_smoke/)） | ✅ mock 进 CI | 近 $0 | 确定性层已落地；**真 LLM 行为验证尚未实现（opt-in skeleton）**，见 §4 |
 | **Tier 3** | 完整 benchmark（`gen.py` → 判分 → 矩阵报告） | ❌ | **昂贵**：单轮矩阵约几十美元 / 数小时 | 手动、临时触发 |
 | **Tier 4** | 长程漂移（long-horizon drift） | ❌ | 以天计额度 | **未来工作（future work）**，目前无 harness |
 
-**CI 现状**：`.github/workflows/ci.yml` 只有一步 `python -m unittest discover -s tests -v`，即只跑 Tier 0；全部零成本。README 也已据此澄清为「CI 实际只跑 Tier 0」——Tier 1 校验器的逻辑由 Tier 0 单测在 `tests/fixtures/` 上覆盖，但该 CLI 本身不是独立 CI 步骤，也没有 `ingest → validate` 的集成步骤。
+**CI 现状**：`.github/workflows/ci.yml` 只有一步 `python -m unittest discover -s tests -v`，即只跑 Tier 0（**现已包含 `tests/test_behavior_smoke.py`——Tier 2 的确定性 mock 层**）；全部零成本。README 也已据此澄清为「CI 实际只跑 Tier 0」——Tier 1 校验器的逻辑由 Tier 0 单测在 `tests/fixtures/` 上覆盖，但该 CLI 本身不是独立 CI 步骤，也没有 `ingest → validate` 的集成步骤。
 
 ---
 
@@ -35,22 +35,19 @@
 
 `scripts/validate_workspace.py` 对一个**已建好的备考工作区**做零成本校验：目录结构、`quiz_bank.json` schema（题型/选项/答案在选项内/主观题关键词/diagram_type/true_false 布尔/source 枚举/`ai_generated` 标记）、`references/wiki/` 路径安全、进度文件一致性；退出码 `0` 通过 / `1` 有错 / `2` 致命（结构损坏或非法 JSON）。当前它由 Tier 0 单测在 fixtures 上驱动，缺少「真实 ingest 产物上跑 CLI」的独立 CI 步骤。
 
-## 4. Tier 2 行为冒烟：尚未实现 (not implemented)
+## 4. Tier 2 行为冒烟：确定性层已落地，真 LLM 行为仍 opt-in（未进 CI）
 
-**目前没有任何一层执行技能的真实交互行为。** Tier 0 是静态的、Tier 3 是 Q&A grounding。技能的下列行为**既没有单测、也没有 benchmark**：
+本 PR（T2）落地了 Tier 2 的**确定性 mock 层**——自撰小型 fixture（`benchmark/behavior_smoke/fixtures/mini_course`，过 Tier-1 校验、覆盖全 6 题型）+ 一组**确定性探测器**，对 mock 产物断言下列行为，全部进 CI、零成本：
 
-- LLM Wiki 惰性加载（是否只读相关一章，而非全量）
-- quiz_bank-only 出题（是否只从题库抽题、不即兴编题）
-- 六种题型的**实际判分**（题库 schema 有，行为没有）
-- 画图题先跑算法再画
-- 0 基础重点题精讲
-- 提示 / 跳过 / 错题归档
-- 概念疑难点追踪行为
-- study_progress 断点恢复
-- 运行时来源标注（🟢/🟡/⚠️）的实际输出
-- 无 Python 环境降级写盘
+- quiz_bank-only 出题（题号必须 ∈ 题库；编造题号被抓）
+- 来源标注 🟢/🟡/⚠️ canonical 输出
+- 提示 / 跳过 / 错题归档（逃生通道 + 错题行写入）
+- 概念疑难点追踪（疑难行写入进度）
+- study_progress 断点恢复（读出当前阶段）
+- 无 Python 环境降级写盘（手写工作区过校验）
+- 0 基础重点题精讲（四小节齐全）
 
-这些目前**只有「指令文本存在」被静态测到，行为未被执行验证**——这正是 Tier 2 要补的缺口（见 [`coverage-matrix.md`](coverage-matrix.md)）。本 PR 不实现 Tier 2，只为它铺路。
+**仍诚实**：确定性层只证明探测器对**预期产物**成立，**不证明真 LLM agent 一定产出这些行为**。**真 LLM 行为验证仍 opt-in、不进 CI、尚未实现**（`--llm` 仅 skeleton，需 `RUN_SKILL_BEHAVIOR_LLM=1`）；**LLM Wiki 惰性加载**与**画图先跑算法再画**仍为 best-effort / 未覆盖。详见 [`../behavior_smoke/README.md`](../behavior_smoke/README.md) 与 [`coverage-matrix.md`](coverage-matrix.md)。
 
 ## 5. Tier 3 完整 benchmark：手动、昂贵
 
