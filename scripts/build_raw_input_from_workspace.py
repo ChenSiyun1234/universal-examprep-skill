@@ -121,6 +121,22 @@ def _problem_statement(page_text, kind, chapter, num):
     return " ".join(text[s:e].split()).strip()
 
 
+def _solution_statement(page_text, kind, chapter, num):
+    """Extract the solution text following a `<kind> X.Y Solution` marker on a page (cut at the next
+    Example/Quiz marker). Used as the real `answer` for text-complete items so grading has something
+    to compare against, instead of a bare 'see the page' pointer."""
+    text = page_text or ""
+    rx = _EXAMPLE_RE if kind == "example" else _QUIZ_RE
+    for m in rx.finditer(text):
+        if int(m.group(1)) == chapter and int(m.group(2)) == num and _ROLE_SOLUTION_RE.match(text[m.end():m.end() + 48]):
+            s = m.start()
+            after = [mm.start() for mm in list(_EXAMPLE_RE.finditer(text)) + list(_QUIZ_RE.finditer(text))
+                     if mm.start() > s]
+            e = min(after) if after else len(text)
+            return " ".join(text[s:e].split()).strip()
+    return ""
+
+
 def extract_lecture_items(pages):
     """Pair each `<kind> X.Y` problem with ALL its `<kind> X.Y Solution` pages (including
     `Solution (Continued ...)`), assign stable IDs, and flag asset dependence. De-dups problems by
@@ -182,11 +198,21 @@ def extract_lecture_items(pages):
             item["keywords"] = []  # subjective recommended field; left for the tutor/teacher to fill
         if ans_idx:
             ans = sorted({(pages[j]["file"], pages[j]["page"]) for j in ans_idx}, key=lambda fp: (fp[1], fp[0]))
-            item["answer_source_file"] = ans[0][0]
-            item["answer_source_pages"] = [p for (_f, p) in ans]
+            first_file = ans[0][0]
+            item["answer_source_file"] = first_file
+            # answer_source_pages lists ONLY pages from answer_source_file — don't claim another file's
+            # page number as this file's. Pages from other files still get rendered as assets below.
+            item["answer_source_pages"] = [p for (f, p) in ans if f == first_file]
             item["_answer_pages"] = ans              # internal: each answer page keeps its OWN source file
-            item["answer"] = "见原始讲义 %s 第 %s 页的解答。" % (
-                ans[0][0], "、".join(str(p) for (_f, p) in ans))
+            ref = "见原始讲义 %s 第 %s 页的解答。" % (
+                first_file, "、".join(str(p) for (f, p) in ans if f == first_file))
+            if needs:
+                item["answer"] = ref + "（依赖图，须看原页/asset）"
+            else:
+                # text-complete: store the ACTUAL extracted solution text so grading has a reference
+                sol = " ".join(t for t in (_solution_statement(pages[j].get("text", ""), kind, key[1], key[2])
+                                           for j in ans_idx) if t).strip()
+                item["answer"] = sol or ref
         else:
             item["answer_status"] = "unknown"   # honest: no solution page detected
         items.append(item)
@@ -419,16 +445,23 @@ def run(args, backend=None):
     for pdf in pdfs:
         rel = _rel(pdf, materials)   # subdir-qualified identifier, not bare basename (avoids collisions)
         try:
+            nonblank = 0
             for i, txt in enumerate(backend.page_texts(pdf)):
                 pages.append({"file": rel, "page": i + 1, "text": txt, "_pdf": pdf})
+                if (txt or "").strip():
+                    nonblank += 1
+            if nonblank == 0:   # image-only/scanned PDF: pypdf returns "" per page → no usable text
+                report["skipped"].append({"file": rel, "why": "PDF 文本为空（可能是扫描件/图片 PDF，需 OCR，本工具不做）"})
+                report["warnings"].append("pdf_no_text: %s" % rel)
         except Exception as e:  # backend present but failed on this one file → skip it, keep going
             report["skipped"].append({"file": rel, "why": "PDF 文本提取失败: %s" % e})
 
     report["pages_extracted"] = len(pages)
-    if not pages:
-        report["warnings"].append("no_pages_extracted")
-        return 4, {"error": "未从 --materials 提取到任何页面内容。请确认目录下有可解析的 PDF/.txt/.md "
-                            "（PDF 文本需 pypdf；若全是图片/扫描件，本工具不做 OCR，无法提取）。"}, report
+    # require some ACTUAL text, not just blank pages from a scanned PDF (else we'd emit an empty wiki and exit 0)
+    if not any((p.get("text") or "").strip() for p in pages):
+        report["warnings"].append("no_text_extracted")
+        return 4, {"error": "未从 --materials 提取到任何文本内容（页面为空或全是扫描件/图片）。请确认有可解析的 "
+                            "PDF/.txt/.md（PDF 文本需 pypdf；图片/扫描件需 OCR，本工具不做）。"}, report
 
     lecture_items = []
     if args.extract_lecture_questions != "never":
@@ -463,7 +496,7 @@ def run(args, backend=None):
                                   "请把 --asset-root 指向 <workspace>/references/assets，否则文件与路径会对不上")
 
     can_write = bool(asset_root) and want_render and backend.can_render()
-    rendered = 0
+    rendered, missing_required = 0, []
     for it in lecture_items:
         ans_files = {f for (f, _p) in it.get("_answer_pages", [])}
         if len(ans_files) > 1:   # answer pages span >1 source file → page numbers are ambiguous
@@ -502,8 +535,16 @@ def run(args, backend=None):
                        else "渲染返回空")
                 report["warnings"].append(
                     "likely_asset_required_but_no_image: %s (%s, %s)" % (it["id"], role, why))
+                missing_required.append("%s (%s, %s)" % (it["id"], role, why))
         it["assets"] = assets
     report["pages_rendered"] = rendered
+
+    # --render-pages required must FAIL (not just warn) when a required figure couldn't be produced,
+    # else we'd emit requires_assets=true items with missing images that the validator then rejects.
+    if args.render_pages == "required" and missing_required:
+        return 3, {"error": "render-pages=required 但有 %d 个必需页图未能渲染：%s。请确保对应源为可渲染的 "
+                            "PDF、渲染后端可用（pymupdf 或 pypdfium2+Pillow）、并已指定 --asset-root。"
+                            % (len(missing_required), "；".join(missing_required[:6]))}, report
 
     course = args.course_name or os.path.basename(os.path.abspath(materials)) or "未命名科目"
     raw_input = build_raw_input(course, group_sections(pages), lecture_items)

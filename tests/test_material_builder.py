@@ -197,6 +197,24 @@ class CoreExtraction(unittest.TestCase):
         self.assertIn("Compute the sum", it["question"])
         self.assertNotIn("见原始讲义", it["question"])
 
+    def test_full_item_answer_carries_real_solution_text(self):
+        # round-2 P1: a text-complete item's answer is the EXTRACTED solution, not a page pointer
+        pages = _pages("ch01.pdf", "Example 2.3 Problem  Compute the sum.",
+                       "Example 2.3 Solution  The result is n(n+1)/2.")
+        it = B.extract_lecture_items(pages)[0]
+        self.assertIn("n(n+1)/2", it["answer"])
+        self.assertNotIn("见原始讲义", it["answer"])
+
+    def test_multi_file_answer_source_pages_only_first_file(self):
+        # round-2 P2: don't claim another file's page number under answer_source_file
+        pages = [{"file": "a.pdf", "page": 1, "text": "Quiz 1.1  q."},
+                 {"file": "a.pdf", "page": 2, "text": "Quiz 1.1 Solution  part1."},
+                 {"file": "b.pdf", "page": 1, "text": "Quiz 1.1 Solution (Continued)  part2."}]
+        it = B.extract_lecture_items(pages)[0]
+        self.assertEqual(it["answer_source_file"], "b.pdf")     # first by (page,file): (b.pdf,1)
+        self.assertEqual(it["answer_source_pages"], [1])        # ONLY b.pdf's page, not [1,2]
+        self.assertEqual({f for f, p in it["_answer_pages"]}, {"a.pdf", "b.pdf"})  # both still rendered
+
     def test_rel_keeps_subdir_same_named_files_distinct(self):
         # P2: same-named PDFs in different subdirs get distinct file ids (no page_pdf collision)
         base = os.path.join("x", "mats")
@@ -281,7 +299,16 @@ class CliAndRun(unittest.TestCase):
         d = tempfile.mkdtemp(prefix="mat-")                  # no parseable files at all
         code, payload, report = B.run(_args(d), backend=B.NoBackend())
         self.assertEqual(code, 4)
-        self.assertIn("no_pages_extracted", report["warnings"])
+        self.assertIn("no_text_extracted", report["warnings"])
+
+    def test_scanned_pdf_blank_pages_fail(self):
+        # an image-only PDF: pypdf returns "" per page → must NOT pass as a valid (empty) workspace
+        d = _materials_with_pdf()
+        be = FakeBackend({"ch01.pdf": ["", "", ""]})         # 3 blank pages
+        code, payload, report = B.run(_args(d), backend=be)
+        self.assertEqual(code, 4)
+        self.assertIn("no_text_extracted", report["warnings"])
+        self.assertTrue(any("pdf_no_text" in w for w in report["warnings"]))
 
     def test_render_required_without_asset_root_errors(self):
         d = _materials_with_pdf()
@@ -297,6 +324,16 @@ class CliAndRun(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertTrue(any("asset_root_not_set" in w for w in report["warnings"]))
         self.assertEqual(report["pages_rendered"], 0)                     # nothing written to a wrong place
+
+    def test_render_required_fails_when_asset_page_unrenderable(self):
+        # round-2 P2: render=required must ERROR (not just warn) if a required figure can't be produced —
+        # here the asset-required item's page comes from .txt (no PDF to render), backend CAN render
+        d = tempfile.mkdtemp(prefix="mat-")
+        with open(os.path.join(d, "ch01.txt"), "w", encoding="utf-8") as f:
+            f.write("Quiz 1.1  Shade the Venn diagram at right.\fQuiz 1.1 Solution  region A.")
+        code, payload, report = B.run(_args(d, render_pages="required"), backend=FakeBackend({}))
+        self.assertEqual(code, 3)
+        self.assertIn("必需页图未能渲染", payload["error"])
 
     def test_renders_all_continued_answer_pages(self):
         d = _materials_with_pdf()
