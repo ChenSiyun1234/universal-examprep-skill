@@ -93,7 +93,9 @@ def detect_lecture_markers(text):
     for kind, rx in (("example", _EXAMPLE_RE), ("quiz", _QUIZ_RE)):
         for m in rx.finditer(text or ""):
             tail = (text or "")[m.end():m.end() + 48]
-            if _TOC_RE.search(tail):   # "Example 1.1 Counting subsets ....... 12" → TOC entry, skip
+            nl = (text or "").find("\n", m.end())
+            line = (text or "")[m.start():(nl if nl >= 0 else len(text))][:300]   # the whole heading line
+            if _TOC_RE.search(line):   # dot-leaders anywhere on the line → TOC entry (even a long title), skip
                 continue
             out.append((m.start(), {"kind": kind, "chapter": int(m.group(1)), "num": int(m.group(2)),
                                     "role": _role_of_tail(tail),
@@ -228,8 +230,12 @@ def extract_lecture_items(pages):
         # scope the asset heuristic to THIS problem's slice on the anchor page; continued pages (which
         # wholly belong to this problem) are scanned whole.
         stmt = _problem_statement(prob_text, kind, key[1], key[2])
-        needs = requires_assets_heuristic(stmt or prob_text) or any(
-            requires_assets_heuristic(pages[k].get("text", "")) for k in prob_idxs if k != i)
+        # requires_assets only makes sense for a renderable PDF source — a .txt/.md source has no hidden
+        # image (its text is already complete), so a textual "Draw the graph of y=x^2" must NOT become
+        # an asset-required item the validator can never satisfy (no page to render).
+        renderable = pf.lower().endswith(".pdf")
+        needs = renderable and (requires_assets_heuristic(stmt or prob_text) or any(
+            requires_assets_heuristic(pages[k].get("text", "")) for k in prob_idxs if k != i))
         # marker-only: extraction yielded just the heading on a single page (real prompt likely in an
         # image) → NOT a standalone question. Detect by ABSENCE of any word/CJK content after the
         # heading (not a char-length cutoff — a terse CJK prompt like "求导"/"证明" is a real question).
@@ -245,8 +251,11 @@ def extract_lecture_items(pages):
                         % (label, key[1], key[2], pf, prob_page["page"]))
         else:
             qts = "full"
-            question = " ".join([stmt] + [" ".join((pages[k].get("text") or "").split())
-                                          for k in prob_idxs if k != i]).strip()
+            # slice each continued page to THIS problem's portion (cut at the next marker on that page)
+            # so a `Quiz 1.1 Problem (Continued) … Quiz 1.2 Problem …` page doesn't append Quiz 1.2's text.
+            cont_parts = [_problem_statement(pages[k].get("text", ""), kind, key[1], key[2])
+                          or " ".join((pages[k].get("text") or "").split()) for k in prob_idxs if k != i]
+            question = " ".join([stmt] + cont_parts).strip()
         item_id = "lecture_%s_%d_%d" % (kind, key[1], key[2])
         if key in ambiguous:   # readable stem + injective index (so a/b.pdf vs a_b.pdf don't collide)
             item_id += "__%s_%d" % (re.sub(r"[^\w]", "_", os.path.splitext(pf)[0]), file_idx[(key, pf)])
@@ -470,10 +479,11 @@ def _scan_materials(materials_dir):
             else:
                 keep.append(d)
         dirs[:] = keep   # os.walk: prune in place
+        at_root = os.path.realpath(dirpath) == os.path.realpath(materials_dir)
         for fn in sorted(files):
             low = fn.lower()
-            if low in SKIP_FILES:   # a generated workspace file (study_plan/progress/…), not material
-                continue
+            if at_root and low in SKIP_FILES:   # generated workspace file at the ROOT (study_plan/progress/…)
+                continue                          # a same-named file in a subfolder is kept (could be real)
             full = os.path.join(dirpath, fn)
             if low.endswith(".pdf"):
                 pdfs.append(full)
@@ -635,6 +645,11 @@ def run(args, backend=None):
                             f.write(png)
                         wrote = True
                         rendered += 1
+            if not wrote and role == "answer_context":
+                # don't DECLARE a missing answer-side asset — it would fail-close an otherwise-valid
+                # question whose own figure rendered fine (the text `answer` already covers it).
+                report["warnings"].append("answer_image_unavailable: %s (p.%d)" % (it["id"], page))
+                continue
             assets.append({"path": rel_path, "role": role, "type": "page_image",
                            "caption": "%s p.%d (%s)" % (file, page, role)})
             if not wrote:

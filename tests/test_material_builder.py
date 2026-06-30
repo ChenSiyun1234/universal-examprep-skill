@@ -377,6 +377,43 @@ class CoreExtraction(unittest.TestCase):
         names = sorted(os.path.basename(p) for p in texts)
         self.assertEqual(names, ["lecture_notes.md"])   # real notes kept, generated files skipped
 
+    # ---- round-8 (P0B r8) hardening ----
+    def test_txt_drawing_prompt_not_requires_assets(self):
+        # a .txt source can't hide an image → 'Draw the graph' stays text-complete (full), not asset-required
+        it = B.extract_lecture_items(_pages("notes.txt", "Quiz 1.1  Draw the graph of y=x^2.",
+                                            "Quiz 1.1 Solution  parabola."))[0]
+        self.assertFalse(it["requires_assets"])
+        self.assertEqual(it["question_text_status"], "full")
+        # the SAME prompt from a .pdf IS asset-flagged (renderable)
+        it2 = B.extract_lecture_items(_pages("ch01.pdf", "Quiz 1.1  Draw the graph of y=x^2.",
+                                             "Quiz 1.1 Solution  parabola."))[0]
+        self.assertTrue(it2["requires_assets"])
+
+    def test_long_title_toc_entry_skipped(self):
+        # TOC dot-leaders may sit far past the 48-char tail (long title) → scan the whole heading line
+        long = "Example 1.1 A very long descriptive section title that exceeds forty eight characters ...... 12"
+        self.assertEqual(B.detect_lecture_markers(long), [])
+
+    def test_continued_problem_page_sliced_at_next_marker(self):
+        # a continued problem page that also starts the next item must not append the next item's text
+        pages = _pages("ch01.pdf", "Quiz 1.1 Problem  first part.",
+                       "Quiz 1.1 Problem (Continued)  second part.\nQuiz 1.2 Problem  unrelated next.")
+        it = next(q for q in B.extract_lecture_items(pages) if q["id"] == "lecture_quiz_1_1")
+        self.assertIn("second part", it["question"])
+        self.assertNotIn("unrelated next", it["question"])
+
+    def test_skip_files_only_at_root(self):
+        # study_plan.md skipped at the materials ROOT but KEPT in a subfolder (could be a real file)
+        d = tempfile.mkdtemp(prefix="mat-")
+        os.makedirs(os.path.join(d, "lectures"))
+        with open(os.path.join(d, "study_plan.md"), "w", encoding="utf-8") as f:
+            f.write("x")
+        with open(os.path.join(d, "lectures", "study_plan.md"), "w", encoding="utf-8") as f:
+            f.write("y")
+        pdfs, texts, pruned = B._scan_materials(d)
+        rels = sorted(os.path.relpath(t, d).replace(os.sep, "/") for t in texts)
+        self.assertEqual(rels, ["lectures/study_plan.md"])   # root skipped, subfolder kept
+
     def test_section_grouping_from_headings(self):
         pages = (_pages("a.pdf", "Quiz 1.1  x") + _pages("b.pdf", "Example 2.1 Problem  y"))
         secs = B.group_sections(pages)
@@ -463,6 +500,23 @@ class CliAndRun(unittest.TestCase):
         self.assertIn("pypdf", payload["error"])
         self.assertIn("no_pdf_text_backend", report["warnings"])
 
+    def test_unrenderable_answer_does_not_block_question(self):
+        # round-8: a valid PDF question figure + an unrenderable answer page → the answer asset is NOT
+        # declared (so the otherwise-valid question isn't fail-closed); only the question figure is kept
+        d = _materials_with_pdf()
+
+        class QOnly(FakeBackend):
+            def render_page_png(self, pdf_path, page_index):   # page 2 (index 1, the solution) can't render
+                return None if page_index == 1 else FakeBackend.render_page_png(self, pdf_path, page_index)
+
+        be = QOnly({"ch01.pdf": ["Quiz 1.1  Shade the Venn diagram at right.", "Quiz 1.1 Solution  region A."]})
+        code, ri, report = B.run(_args(d), backend=be)
+        it = next(q for q in ri["quiz_bank"] if q["id"] == "lecture_quiz_1_1")
+        roles = [a["role"] for a in it["assets"]]
+        self.assertIn("question_context", roles)       # question figure declared (it rendered)
+        self.assertNotIn("answer_context", roles)       # answer figure NOT declared (it couldn't render)
+        self.assertTrue(any("answer_image_unavailable" in w for w in report["warnings"]))
+
     def test_txt_materials_work_without_backend(self):
         d = tempfile.mkdtemp(prefix="mat-")
         with open(os.path.join(d, "notes.txt"), "w", encoding="utf-8") as f:
@@ -534,12 +588,17 @@ class CliAndRun(unittest.TestCase):
         self.assertEqual(report["pages_rendered"], 0)                     # nothing written to a wrong place
 
     def test_render_required_fails_when_asset_page_unrenderable(self):
-        # round-2 P2: render=required must ERROR (not just warn) if a required figure can't be produced —
-        # here the asset-required item's page comes from .txt (no PDF to render), backend CAN render
-        d = tempfile.mkdtemp(prefix="mat-")
-        with open(os.path.join(d, "ch01.txt"), "w", encoding="utf-8") as f:
-            f.write("Quiz 1.1  Shade the Venn diagram at right.\fQuiz 1.1 Solution  region A.")
-        code, payload, report = B.run(_args(d, render_pages="required"), backend=FakeBackend({}))
+        # round-2 P2: render=required must ERROR (not just warn) if a required figure can't be produced.
+        # The asset-required item must come from a PDF (round-8: .txt items are never requires_assets);
+        # here the render backend returns None for the page so the figure can't be produced.
+        d = _materials_with_pdf()
+
+        class NullRender(FakeBackend):
+            def render_page_png(self, pdf_path, page_index):
+                return None
+
+        be = NullRender({"ch01.pdf": ["Quiz 1.1  Shade the Venn diagram at right.", "Quiz 1.1 Solution  s."]})
+        code, payload, report = B.run(_args(d, render_pages="required"), backend=be)
         self.assertEqual(code, 3)
         self.assertIn("必需页图未能渲染", payload["error"])
 
