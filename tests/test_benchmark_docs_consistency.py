@@ -53,6 +53,19 @@ MATERIAL_TOKENS = ["material", "dump-all", "一股脑全塞", "给全材料"]
 # the material/dump-all arm must be bound to a legacy/stress framing, not just have the words scattered:
 LEGACY_BIND = re.compile(r"(遗留|压力|legacy|stress)[^。\n]{0,16}(臂|脚注|footnote)")
 
+# the three tier docs must agree on the Tier 2 concept = behavioral smoke (not the retired
+# "3–5 item benchmark-pipeline smoke"). 行为冒烟 is the shared canonical token.
+TIER_FILES = [
+    os.path.join("benchmark", "docs", "test_tiers.md"),
+    os.path.join("benchmark", "docs", "testing-audit.md"),
+    os.path.join("benchmark", "docs", "coverage-matrix.md"),
+]
+TIERS_DOC = os.path.join("benchmark", "docs", "test_tiers.md")
+BEHAVIORAL_SMOKE = "行为冒烟"
+NOT_IMPLEMENTED = ["未实现", "尚未实现", "not implemented"]
+# the retired Tier-2 definition ("3–5 题" benchmark-pipeline smoke) must not come back:
+OLD_TIER2_ITEMS = re.compile(r"3\s*[-–—]\s*5\s*题")
+
 
 def read(rel):
     with open(os.path.join(ROOT, rel), encoding="utf-8") as f:
@@ -133,6 +146,30 @@ class BenchmarkDocsConsistencyTest(unittest.TestCase):
         self.assertTrue(
             ("未来" in a) or ("future" in a) or ("T3" in a),
             "审计文档未把聚合器标注为未来工作（future / PR T3）",
+        )
+
+    # ---- Tier 2 definition must be consistent across the three tier docs ----
+    def test_tier2_is_behavioral_smoke_in_all_tier_docs(self):
+        # test_tiers.md / testing-audit.md / coverage-matrix.md must share the SAME Tier 2 concept
+        for rel in TIER_FILES:
+            txt = read(rel)
+            self.assertIn(BEHAVIORAL_SMOKE, txt,
+                          f"{rel} 未用统一的 Tier 2 概念「{BEHAVIORAL_SMOKE}」（三份分层文档须一致）")
+
+    def test_test_tiers_defines_tier2_as_unimplemented_behavioral_smoke(self):
+        t = read(TIERS_DOC)
+        self.assertIn("Tier 2", t, "test_tiers.md 未提 Tier 2")
+        self.assertIn(BEHAVIORAL_SMOKE, t, "test_tiers.md 的 Tier 2 应定义为「行为冒烟」")
+        self.assertTrue(any(m in t for m in NOT_IMPLEMENTED),
+                        "test_tiers.md 未声明 Tier 2 行为冒烟尚未实现")
+
+    def test_test_tiers_tier2_is_not_the_old_pipeline_item_smoke(self):
+        # the retired definition ("3–5 题" benchmark-pipeline smoke) must not be Tier 2 anymore
+        t = read(TIERS_DOC)
+        self.assertIsNone(
+            OLD_TIER2_ITEMS.search(t),
+            "test_tiers.md 仍把 Tier 2 定义成「3–5 题」的 benchmark 管线冒烟——应改为行为冒烟，"
+            "管线 mock 自检请另命名（benchmark pipeline mock check）",
         )
 
 
