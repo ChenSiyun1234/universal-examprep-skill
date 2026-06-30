@@ -194,6 +194,23 @@ def main():
 
     course_name, phases, quiz_bank, missing_answer_ids = validate(data)
 
+    # ── 后处理：补全 id + 规范化 true_false 答案 ──────────────────
+    TRUE_FALSE_NORMALIZE = {
+        "正确": True, "对": True, "是": True, "真": True,
+        "true": True, "yes": True, "√": True,
+        "错误": False, "错": False, "否": False, "假": False,
+        "false": False, "no": False, "×": False,
+    }
+    for i, q in enumerate(quiz_bank):
+        # 补全 id（validate 不强制 id，但出口文件需要）
+        if not q.get("id"):
+            q["id"] = f"q{i + 1}"
+        # 规范化 true_false 答案
+        if q.get("type") == "true_false" and isinstance(q.get("answer"), str):
+            normalized = TRUE_FALSE_NORMALIZE.get(q["answer"].strip().lower(), q["answer"])
+            q["answer"] = normalized
+    # ────────────────────────────────────────────────────────────────
+
     print(f"[+] 识别到科目: {course_name}")
     print(f"[+] 阶段数量: {len(phases)} 个")
     print(f"[+] 题目数量: {len(quiz_bank)} 道")
