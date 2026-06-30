@@ -252,6 +252,24 @@ class CoreExtraction(unittest.TestCase):
         it = B.extract_lecture_items(pages)[0]
         self.assertEqual(it["answer_source_pages"], [1, 3])  # not just the continuation page
 
+    # ---- round-5 (P0B r5) hardening ----
+    def test_markdown_heading_marker_detected(self):
+        # '## Quiz 1.1' (a Markdown heading in .md materials) must match the anchored prefix
+        pages = _pages("ch01.md", "## Quiz 1.1 Problem  State it.", "## Quiz 1.1 Solution  Answer.")
+        ids = [it["id"] for it in B.extract_lecture_items(pages)]
+        self.assertIn("lecture_quiz_1_1", ids)
+
+    def test_continued_before_solution_is_solution(self):
+        # 'Example 1.1 (Continued) Solution ...' is a SOLUTION continuation, not a problem
+        ms = B.detect_lecture_markers("Example 1.1 (Continued) Solution  more steps.")
+        self.assertEqual(ms[0]["role"], "solution")
+        self.assertTrue(ms[0]["continued"])
+
+    def test_shown_below_and_tree_are_asset_cues(self):
+        self.assertTrue(B.requires_assets_heuristic("Given the tree shown below, find the leaves."))
+        self.assertTrue(B.requires_assets_heuristic("Draw the circuit."))
+        self.assertFalse(B.requires_assets_heuristic("Compute 2 + 2."))  # still no false positive
+
     def test_section_grouping_from_headings(self):
         pages = (_pages("a.pdf", "Quiz 1.1  x") + _pages("b.pdf", "Example 2.1 Problem  y"))
         secs = B.group_sections(pages)

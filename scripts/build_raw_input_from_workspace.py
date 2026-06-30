@@ -36,9 +36,10 @@ import sys
 # ---------------------------------------------------------------------------
 
 _NUM = r"(\d+)\s*\.\s*(\d+)"
-# anchor markers to a line START (after optional bullet/number prefix) so inline prose like
-# "see Example 1.1" or a table-of-contents entry doesn't get mistaken for a lecture heading.
-_HEAD = r"^[ \t>*•·\-\d.)）、]*"
+# anchor markers to a line START (after optional bullet/number/markdown-heading prefix) so inline
+# prose like "see Example 1.1" or a TOC entry isn't mistaken for a heading, while `## Quiz 1.1` (a
+# Markdown heading in .md materials) and `- Example 1.1` (a bullet) still match.
+_HEAD = r"^[ \t>*•·\-\d.)）、#]*"
 _EXAMPLE_RE = re.compile(_HEAD + r"Example\s+" + _NUM, re.I | re.M)
 _QUIZ_RE = re.compile(_HEAD + r"Quiz\s+" + _NUM, re.I | re.M)
 
@@ -48,8 +49,9 @@ _QUIZ_RE = re.compile(_HEAD + r"Quiz\s+" + _NUM, re.I | re.M)
 ASSET_EXCLUDE = ("table of contents", "figure it out", "figure out", "graph theory", "figure caption")
 ASSET_PATTERNS = [re.compile(p, re.I) for p in (
     r"venn", r"\bdiagram\b", r"\bfigure\b", r"\btable\b", r"\bgraph\b", r"\bplot\b",
-    r"at right", r"shown on the right", r"as shown", r"\bshaded?\b", r"\bdraw\b", r"\baxes\b",
-    r"\brectangle\b", r"\btriangle\b",
+    r"\btree\b", r"\bcircuit\b",
+    r"at right", r"shown on the right", r"shown below", r"drawn below", r"as shown",
+    r"\bshaded?\b", r"\bdraw\b", r"\baxes\b", r"\brectangle\b", r"\btriangle\b",
     "文氏图", "图示", "如图", "阴影", "区域", "示意图",
 )]
 
@@ -76,10 +78,12 @@ def detect_lecture_markers(text):
     for kind, rx in (("example", _EXAMPLE_RE), ("quiz", _QUIZ_RE)):
         for m in rx.finditer(text or ""):
             tail = (text or "")[m.end():m.end() + 48]
-            if _ROLE_PROBLEM_RE.match(tail):
+            # a leading "(Continued)" may sit before the role word ("Example 1.1 (Continued) Solution …")
+            tail_role = re.sub(r"^\s*\(?\s*continued[^)\n]*\)?", "", tail, flags=re.I)
+            if _ROLE_PROBLEM_RE.match(tail) or _ROLE_PROBLEM_RE.match(tail_role):
                 role = "problem"                       # explicit "Problem" right after the number
-            elif _ROLE_SOLUTION_RE.match(tail):
-                role = "solution"                      # explicit "Solution" right after the number
+            elif _ROLE_SOLUTION_RE.match(tail) or _ROLE_SOLUTION_RE.match(tail_role):
+                role = "solution"                      # explicit "Solution" (even after a "(Continued)")
             else:
                 role = "problem"                       # bare "Quiz 1.1" with no keyword → a problem
             cont = bool(re.search(r"\bContinued\b", tail, re.I))   # applies to problems AND solutions
