@@ -118,6 +118,15 @@ class BehaviorSmokeTest(unittest.TestCase):
                    "2. [#mc_q2] " + qmap["mc_q1"]["question"])
         self.assertFalse(H.assert_quiz_ids_in_bank(swapped, ch1),
                          "题号与题面错配（每题题面对应别的题号）应被分段内容校验抓住")
+        # bank prefix + appended invented tail (END differs) must fail the both-ends content check
+        self.assertFalse(H.assert_quiz_ids_in_bank("[#mc_q1] 栈（stack）的存取顺序是请证明红黑树删除算法的复杂度", ch1),
+                         "题面前缀对、结尾被编造替换，应被首尾内容校验抓住")
+        # a prefix-collision different question (shares prefix, different end) must fail
+        self.assertFalse(H.assert_quiz_ids_in_bank("[#mc_q1] 栈（stack）的时间复杂度是多少？", ch1),
+                         "共享前缀但结尾不同的题应被首尾内容校验抓住")
+        # a MIDDLE paraphrase (both ends intact, drops 「（queue）」) still passes
+        self.assertTrue(H.assert_quiz_ids_in_bank("1. [#mc_q2] 用一句话说明队列与栈在存取顺序上的区别。", ch1),
+                        "中段改写（首尾仍在）应通过")
 
     def test_quiz_size_requirement(self):
         spec = H.load_scenarios()
@@ -196,6 +205,8 @@ class BehaviorSmokeTest(unittest.TestCase):
                          "名词后否定（错题本暂不记录）也应判不合格")
         self.assertFalse(H.has_hint_skip_offer("可以提示、可以跳过，但不归档到错题本"),
                          "裸『不归档』否定也应判不合格")
+        self.assertFalse(H.has_hint_skip_offer("可以给你一个提示，但不可以跳过；错题本会保留当前进度。"),
+                         "『不可以跳过』否定也应判不合格")
 
     # 9
     def test_mistake_archive_detector(self):
@@ -256,6 +267,8 @@ class BehaviorSmokeTest(unittest.TestCase):
                          "否定『第2阶段』形式也应判不合格")
         self.assertFalse(H.resume_refers_to_phase("当前在阶段2，但先从第1阶段开始", 2),
                          "『从第1阶段开始』重启也应判不合格")
+        self.assertFalse(H.resume_refers_to_phase("当前在阶段 3，但先从阶段 2 开始", 3),
+                         "从非当前阶段（阶段2，当前是3）重启也应判不合格")
 
     # 12
     def test_no_python_fallback_workspace_is_complete(self):

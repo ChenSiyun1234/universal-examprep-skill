@@ -103,8 +103,13 @@ def assert_quiz_ids_in_bank(text, bank):
                 seg += nxt
             seg = re.sub(r"\s+", "", seg)
             b = re.sub(r"\s+", "", qmap.get(lids[0], ""))
-            if b and (b[:8] if len(b) >= 8 else b) not in seg:
-                return False
+            if b:
+                k = min(8, len(b))
+                # require BOTH ends of the bank question to appear: a prefix-collision or an appended
+                # invented body changes the END, so it fails; a middle paraphrase (dropping e.g.
+                # "（queue）") keeps both ends, so it passes.
+                if b[:k] not in seg or b[-k:] not in seg:
+                    return False
     return True
 
 
@@ -157,7 +162,7 @@ def has_hint_skip_offer(text):
     # reject explicit DENIAL of any escape-hatch option — negation BEFORE the verb/noun
     # ("不会…记录进错题档案") OR AFTER the noun ("错题本暂不记录此题").
     negated = (bool(re.search(
-                   r"(没有|不能|不会|无法|不给|不予|拒绝)[^。\n]{0,10}?(提示|跳过|归档|错题本|错题档案)", t))
+                   r"(没有|不能|不会|不可以|不可|无法|不给|不予|不许|不准|拒绝)[^。\n]{0,10}?(提示|跳过|归档|错题本|错题档案)", t))
                or bool(re.search(r"(错题本|错题档案)[^。\n]{0,6}?(暂不|不记|不写|不归|未记|不予记|不会记|不加入)", t))
                # bare 不 + verb ("不归档到错题本" / "不写入" / "不让跳过")
                or bool(re.search(r"不\s*(归档|写入|记入|记录|存入|加入|放入)|不\s*(给|让|许|准)\s*(提示|跳过)", t)))
@@ -247,6 +252,10 @@ def resume_refers_to_phase(resume_text, phase):
     mentions = bool(re.search(rf"阶段\s*{phase}(?!\d)|第\s*{phase}\s*阶段", t))
     # reject negation of the current phase, both 阶段2 and 第2阶段 forms
     negated = bool(re.search(rf"(?:不是|不在)\s*(?:第\s*{phase}\s*阶段|第?\s*阶段\s*{phase})", t))
+    # reject restarting from a NON-current phase ("从阶段 2 开始" when the current phase is 3)
+    rm = re.search(r"从\s*第?\s*阶段?\s*(\d+)\s*(?:阶段)?\s*(?:开始|起|做起|学起|重新)", t)
+    if rm and rm.group(1) != str(phase):
+        return False
     return mentions and not negated and not _RESTART_RE.search(t)
 
 
