@@ -67,8 +67,8 @@ def requires_assets_heuristic(text):
 
 # role is decided by the word IMMEDIATELY after the marker number (anchored), NOT a loose tail scan —
 # otherwise a problem whose text merely contains "solution" ("find the solution set") is misread.
-_ROLE_PROBLEM_RE = re.compile(r"^\s*[\)\.:\-]?\s*\(?\s*problem\b", re.I)
-_ROLE_SOLUTION_RE = re.compile(r"^\s*[\)\.:\-]?\s*\(?\s*solution\b", re.I)
+_ROLE_PROBLEM_RE = re.compile(r"^\s*[\)\.:\-]?\s*\(?\s*problems?\b", re.I)    # incl. plural "Problems"
+_ROLE_SOLUTION_RE = re.compile(r"^\s*[\)\.:\-]?\s*\(?\s*solutions?\b", re.I)  # incl. plural "Solutions"
 _TOC_RE = re.compile(r"\.{4,}")   # 4+ dot-leaders → a table-of-contents line, not a heading
 
 
@@ -86,22 +86,29 @@ def _role_of_tail(tail):
     return "problem"   # bare "Quiz 1.1" with no keyword → a problem
 
 
-def detect_lecture_markers(text):
-    """Find lecture Example/Quiz markers on one page. Returns a list of
-    {kind: 'example'|'quiz', chapter: int, num: int, role: 'problem'|'solution', continued: bool}."""
+def _iter_markers(text):
+    """Every NON-TOC lecture marker in TEXT-POSITION order — the single source of truth shared by
+    detect_lecture_markers AND the text-slicers, so TOC-skip / role / plural never diverge between
+    them. Returns dicts: {start, kind, chapter, num, role, continued}."""
+    text = text or ""
     out = []
     for kind, rx in (("example", _EXAMPLE_RE), ("quiz", _QUIZ_RE)):
-        for m in rx.finditer(text or ""):
-            tail = (text or "")[m.end():m.end() + 48]
-            nl = (text or "").find("\n", m.end())
-            line = (text or "")[m.start():(nl if nl >= 0 else len(text))][:300]   # the whole heading line
-            if _TOC_RE.search(line):   # dot-leaders anywhere on the line → TOC entry (even a long title), skip
+        for m in rx.finditer(text):
+            nl = text.find("\n", m.end())
+            line = text[m.start():(nl if nl >= 0 else len(text))][:300]   # the whole heading line
+            if _TOC_RE.search(line):   # dot-leaders anywhere on the line → TOC entry (even long titles), skip
                 continue
-            out.append((m.start(), {"kind": kind, "chapter": int(m.group(1)), "num": int(m.group(2)),
-                                    "role": _role_of_tail(tail),
-                                    "continued": bool(re.search(r"\bContinued\b", tail, re.I))}))
-    out.sort(key=lambda x: x[0])   # TEXT-POSITION order so markers[0] is the first-appearing marker
-    return [mk for _pos, mk in out]
+            tail = text[m.end():m.end() + 48]
+            out.append({"start": m.start(), "kind": kind, "chapter": int(m.group(1)), "num": int(m.group(2)),
+                        "role": _role_of_tail(tail), "continued": bool(re.search(r"\bContinued\b", tail, re.I))})
+    out.sort(key=lambda d: d["start"])
+    return out
+
+
+def detect_lecture_markers(text):
+    """Find lecture Example/Quiz markers on one page (TEXT-POSITION order). Returns a list of
+    {kind: 'example'|'quiz', chapter: int, num: int, role: 'problem'|'solution', continued: bool}."""
+    return [{k: d[k] for k in ("kind", "chapter", "num", "role", "continued")} for d in _iter_markers(text)]
 
 
 def orphan_solution_keys(pages):
@@ -126,22 +133,18 @@ def _key(mk):
 
 
 def _problem_statement(page_text, kind, chapter, num):
-    """Extract the actual problem text that follows the `<kind> X.Y` PROBLEM marker on its page, cut
-    at the next Example/Quiz marker. Picks the problem-role marker (not a `Solution` of the same
-    number that may sit earlier on the page in a solution-before-problem layout)."""
+    """Extract the problem text after the `<kind> X.Y` PROBLEM marker on its page, cut at the next
+    marker. Uses the shared iterator so it skips TOC lines and `Solution` markers of the same number
+    (a solution-before-problem layout) exactly like detect_lecture_markers does."""
     text = page_text or ""
-    rx = _EXAMPLE_RE if kind == "example" else _QUIZ_RE
-    s = None
-    for m in rx.finditer(text):
-        if int(m.group(1)) == chapter and int(m.group(2)) == num \
-                and _role_of_tail(text[m.end():m.end() + 48]) != "solution":   # skip continued-solution markers too
-            s = m.start()
-            break
-    if s is None:
-        return ""
-    after = [m.start() for m in list(_EXAMPLE_RE.finditer(text)) + list(_QUIZ_RE.finditer(text)) if m.start() > s]
-    e = min(after) if after else len(text)
-    return " ".join(text[s:e].split()).strip()
+    mks = _iter_markers(text)
+    starts = [d["start"] for d in mks]
+    for d in mks:
+        if d["kind"] == kind and d["chapter"] == chapter and d["num"] == num and d["role"] != "solution":
+            after = [st for st in starts if st > d["start"]]
+            e = min(after) if after else len(text)
+            return " ".join(text[d["start"]:e].split()).strip()
+    return ""
 
 
 def _body_after_marker(stmt, kind, chapter, num):
@@ -152,25 +155,24 @@ def _body_after_marker(stmt, kind, chapter, num):
     if not m:
         return (stmt or "").strip()
     rest = stmt[m.end():]
-    rest = re.sub(r"^\s*[\):.\-]?\s*\(?\s*problem\b\)?", "", rest, flags=re.I)  # drop a trailing "Problem"
+    rest = re.sub(r"^\s*[\):.\-]?\s*\(?\s*problems?\b\)?", "", rest, flags=re.I)  # drop a trailing "Problem(s)"
     return rest.strip(" .:：、)）-—\t\n")
 
 
 def _solution_statement(page_text, kind, chapter, num):
-    """Extract the solution text following a `<kind> X.Y Solution` marker on a page (cut at the next
-    Example/Quiz marker). Used as the real `answer` for text-complete items so grading has something
-    to compare against, instead of a bare 'see the page' pointer."""
+    """Extract the solution text for `<kind> X.Y` on a page — concatenating EVERY solution slice for
+    that key (so a same-page `Solution …` + `Solution (Continued) …` are both captured), each cut at
+    the next marker. The real `answer` for text-complete items so grading has something to compare to."""
     text = page_text or ""
-    rx = _EXAMPLE_RE if kind == "example" else _QUIZ_RE
-    for m in rx.finditer(text):
-        if int(m.group(1)) == chapter and int(m.group(2)) == num \
-                and _role_of_tail(text[m.end():m.end() + 48]) == "solution":   # incl. "(Continued) Solution"
-            s = m.start()
-            after = [mm.start() for mm in list(_EXAMPLE_RE.finditer(text)) + list(_QUIZ_RE.finditer(text))
-                     if mm.start() > s]
+    mks = _iter_markers(text)
+    starts = [d["start"] for d in mks]
+    parts = []
+    for d in mks:
+        if d["kind"] == kind and d["chapter"] == chapter and d["num"] == num and d["role"] == "solution":
+            after = [st for st in starts if st > d["start"]]
             e = min(after) if after else len(text)
-            return " ".join(text[s:e].split()).strip()
-    return ""
+            parts.append(" ".join(text[d["start"]:e].split()).strip())
+    return " ".join(parts).strip()
 
 
 def extract_lecture_items(pages):
@@ -295,18 +297,24 @@ def extract_lecture_items(pages):
 
 
 def group_sections(pages):
-    """Group pages into chapters. A chapter number comes from a lecture marker on the page, else
-    from a `ch<NN>` token in the filename, else 1. Returns ordered list of
-    {chapter, files, pages, text}."""
+    """Group pages into chapters. A chapter number comes from a lecture marker on the page, else from
+    a `ch<NN>` token in the filename, else the chapter CARRIED FORWARD from the previous page of the
+    same file (so an unmarked ch-2 prose page after `Example 2.1` stays in ch 2, not ch 1), else 1.
+    Returns ordered list of {chapter, files, pages, text}."""
     by_ch = {}
     order = []
+    last_ch_by_file = {}
     for pg in pages:
+        f = pg.get("file")
         markers = detect_lecture_markers(pg.get("text", ""))
+        m = re.search(r"ch(?:apter)?[ _-]?0*(\d+)", os.path.basename(f or ""), re.I)
         if markers:
             ch = markers[0]["chapter"]
+        elif m:
+            ch = int(m.group(1))
         else:
-            m = re.search(r"ch(?:apter)?[ _-]?0*(\d+)", os.path.basename(pg.get("file", "")), re.I)
-            ch = int(m.group(1)) if m else 1
+            ch = last_ch_by_file.get(f, 1)   # carry forward the previous marked page's chapter (same file)
+        last_ch_by_file[f] = ch
         if ch not in by_ch:
             by_ch[ch] = {"chapter": ch, "files": [], "pages": [], "text_blocks": []}
             order.append(ch)

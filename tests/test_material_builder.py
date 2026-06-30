@@ -414,6 +414,35 @@ class CoreExtraction(unittest.TestCase):
         rels = sorted(os.path.relpath(t, d).replace(os.sep, "/") for t in texts)
         self.assertEqual(rels, ["lectures/study_plan.md"])   # root skipped, subfolder kept
 
+    # ---- round-9 (P0B r9) hardening ----
+    def test_plural_solution_heading_recognized(self):
+        # 'Quiz 1.1 Solutions' (plural) is a solution → the preceding problem isn't lost/mis-paired
+        self.assertEqual(B.detect_lecture_markers("Quiz 1.1 Solutions  x")[0]["role"], "solution")
+        it = B.extract_lecture_items(_pages("ch01.pdf", "Quiz 1.1  the question.",
+                                            "Quiz 1.1 Solutions  the answers."))[0]
+        self.assertEqual(it["answer_source_pages"], [2])
+
+    def test_chapter_carried_forward_for_unmarked_pages(self):
+        # a deck with no chNN filename: an unmarked page after 'Example 2.1' stays in chapter 2, not 1
+        pages = [{"file": "lecture.pdf", "page": 1, "text": "Example 2.1 Problem  q."},
+                 {"file": "lecture.pdf", "page": 2, "text": "ordinary chapter-2 prose, no marker."}]
+        secs = {s["chapter"]: s for s in B.group_sections(pages)}
+        self.assertIn(2, secs)
+        self.assertEqual(secs[2]["pages"], [1, 2])   # both pages in ch 2
+        self.assertNotIn(1, secs)                     # page 2 NOT dumped into ch 1
+
+    def test_problem_statement_skips_toc_line(self):
+        # a TOC 'Quiz 1.1 ...... 12' before the real 'Quiz 1.1 Problem' → slice the REAL one
+        text = "Quiz 1.1 Intro to sets ........ 12\nQuiz 1.1 Problem  the real prompt here."
+        self.assertIn("the real prompt", B._problem_statement(text, "quiz", 1, 1))
+
+    def test_same_page_solution_continuation_captured(self):
+        # two solution slices on one page → BOTH captured (not just the first)
+        text = "Quiz 1.1 Solution  part one.\nQuiz 1.1 Solution (Continued)  part two."
+        sol = B._solution_statement(text, "quiz", 1, 1)
+        self.assertIn("part one", sol)
+        self.assertIn("part two", sol)
+
     def test_section_grouping_from_headings(self):
         pages = (_pages("a.pdf", "Quiz 1.1  x") + _pages("b.pdf", "Example 2.1 Problem  y"))
         secs = B.group_sections(pages)
