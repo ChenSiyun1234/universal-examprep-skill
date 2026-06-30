@@ -57,6 +57,7 @@
    python run_benchmark.py --config config.json
    ```
    产出 `results/report.html`（**给用户看的中英双语可视化报告**：图表 + 每个指标超链接到对应权威基准 + 末尾 References）、`results/report.md`（数据版）、`results/raw.jsonl`（逐题原始答案+评分）。
+   > **注（这一步跑的是遗留两臂）**：`run_benchmark.py` 是**早期的两臂脚手架**，只跑 `baseline`（只给原始材料，≈ material/dump 类）vs `skill`，**不含主对照臂 `closedbook` / `rawfiles`**。要产出**主对照三臂 × 多模型矩阵**，走 `gen.py`（生成答案）→ `rejudge.py`（判分）→ `report_matrix.py`（渲染）这条路径；其中「答案 + 判分 → `summary.json`」的提交版聚合器**尚缺（未来 PR T3）**，当前 `summary.json` 是预先计算的产物。
 
 6. **裁判可信度校准（出报告前必做）**：人工标注 30~50 题子集放进 `calibration/`，用 `stats.cohen_kappa`
    算"人工 vs LLM 裁判"的一致性。**kappa ≥ 0.6 左右才信任裁判的数字**；否则先改进裁判/题目再说。
@@ -80,7 +81,7 @@
 ```
 benchmark/
   run_benchmark.py     # 较早的两臂脚手架（baseline vs skill）；--mock 可空跑验证管线
-  gen.py               # 较新的矩阵答案生成路径：课程 × 模型 × 臂 逐格生成、可断点续跑、记录每格成本
+  gen.py               # 较新的矩阵答案生成：按可行性增量补齐(依赖既有 answers.jsonl)、可断点续跑、记录每格成本
   judge.py             # 判分：数值题确定性 + 事实/定义题 claim 级忠实度（LLM 裁判）
   rejudge.py           # 用修正后的 judge 重判已存答案，写 summary_corrected.json
   stats.py             # McNemar + 配对 bootstrap CI + Cohen's kappa（纯标准库）

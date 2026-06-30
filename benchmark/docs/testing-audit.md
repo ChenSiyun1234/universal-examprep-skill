@@ -66,7 +66,7 @@
 
 - **两个并存的 runner，臂口径不同**：
   - `run_benchmark.py` 是**较早的两臂脚手架**（`baseline` / `skill`），不可断点续跑、且**丢弃成本**。
-  - `gen.py` 是**较新的矩阵答案生成**路径（`closedbook` / `material` / `rawfiles` / `skill`），**可断点续跑、按格记录成本**——真正产出已发布矩阵结果的是它，而非 `run_benchmark.py`。
+  - `gen.py` 是**较新的矩阵答案生成**路径，支持全部四臂（`closedbook` / `material` / `rawfiles` / `skill`）、**可断点续跑、按格记录成本**。但它是**按可行性排序的增量补齐器，不是从零全量生成**：`build_tasks()` 实际只排入 rawfiles（两门课）、PSYC 的 closedbook/skill、**仅 algo `material` 中报错的那些重跑**（从既有 `results/matrix/answers.jsonl` 读取），以及 PSYC material——它**依赖一份既有的 `answers.jsonl`**，不会重建 algo 的 closedbook/skill 单元格。因此**已发布矩阵无法仅凭本仓库脚本从零复现**，这也是下条「缺聚合器」之外的另一处再现性缺口。
 - **主对照三臂统一为 `closedbook` / `rawfiles` / `skill`**：
   - `closedbook`：不给任何课程材料。
   - `rawfiles`：原始文件 + 通用 agent、不装技能——**最公平的对照**。
