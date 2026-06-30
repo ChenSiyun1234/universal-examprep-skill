@@ -186,6 +186,9 @@ class BehaviorSmokeTest(unittest.TestCase):
         # but 【…】 names crammed inline into one checklist line (not line-start headings) must NOT pass
         self.assertFalse(H.has_zero_basic_sections("请包含：【考点拆解】【标准答题步骤】【易错点】【3分钟速记】"),
                          "把【…】块名塞进一句话清单（非行首标题）不应判通过")
+        # four headings with NO body text under any of them must not pass
+        self.assertFalse(H.has_zero_basic_sections("## 考点拆解\n## 标准答题步骤\n## 易错点\n## 3分钟速记"),
+                         "只有空小节标题、无正文不应判通过")
 
     # 8
     def test_hint_skip_detector_recognizes_recovery_offer(self):
@@ -207,6 +210,8 @@ class BehaviorSmokeTest(unittest.TestCase):
                          "裸『不归档』否定也应判不合格")
         self.assertFalse(H.has_hint_skip_offer("可以给你一个提示，但不可以跳过；错题本会保留当前进度。"),
                          "『不可以跳过』否定也应判不合格")
+        self.assertFalse(H.has_hint_skip_offer("可以提示、可以跳过，但不把这道题自动记录进错题档案"),
+                         "『不把…记录进错题档案』否定也应判不合格")
 
     # 9
     def test_mistake_archive_detector(self):
@@ -230,6 +235,10 @@ class BehaviorSmokeTest(unittest.TestCase):
         m20 = "## ❌ 错题档案记录\n| 错题ID | 章节 | 状态 |\n| --- | --- | --- |\n| mc_q20 | 2 | 已归档 |"
         self.assertFalse(H.progress_has_mistake_archive(m20, expect="mc_q2"),
                          "mc_q20 的行不应满足 expect=mc_q2（前缀相同不算命中）")
+        # a row marked 未归档 (not actually archived) must NOT count even if the ID matches
+        notarch = "## ❌ 错题档案记录\n| 错题ID | 章节 | 状态 |\n| --- | --- | --- |\n| mc_q2 | 1 | 未归档 |"
+        self.assertFalse(H.progress_has_mistake_archive(notarch, expect="mc_q2"),
+                         "状态为『未归档』的行不应算作已归档错题")
 
     # 10
     def test_confusion_tracker_detector(self):
@@ -269,6 +278,8 @@ class BehaviorSmokeTest(unittest.TestCase):
                          "『从第1阶段开始』重启也应判不合格")
         self.assertFalse(H.resume_refers_to_phase("当前在阶段 3，但先从阶段 2 开始", 3),
                          "从非当前阶段（阶段2，当前是3）重启也应判不合格")
+        self.assertFalse(H.resume_refers_to_phase("当前在阶段3，但先从第2阶段开始", 3),
+                         "『从第2阶段开始』（第N语序、非当前阶段）重启也应判不合格")
 
     # 12
     def test_no_python_fallback_workspace_is_complete(self):

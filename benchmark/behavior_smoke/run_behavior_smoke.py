@@ -145,12 +145,31 @@ def _heading_present(text, name):
     return bool(re.search(md, text or "")) or bool(re.search(bracket, text or ""))
 
 
+def _heading_has_body(text, name):
+    """The section under `name`'s heading must have actual body content (not an empty heading)."""
+    n = re.escape(name)
+    m = re.search(rf"(?:#{{1,4}}\s*|\*\*\s*|[0-9一二三四五六七八九十]+\s*[、.．)）]\s*|[【〖]\s*)+{n}\s*[】〗]?",
+                  text or "")
+    if not m:
+        return False
+    rest = (text or "")[m.end():]
+    # cut the body at the next markdown/bracket heading only — NOT at numbered lines, since a section
+    # body legitimately contains ordered lists (e.g. "1. 判断结构类型 …").
+    nxt = re.search(r"(?m)^\s{0,3}(?:#{1,4}\s|\*\*|[【〖])", rest)
+    body = rest[:nxt.start()] if nxt else rest
+    return len(re.sub(r"\s+", "", body)) >= 2
+
+
+def _zb(text, *variants):
+    return any(_heading_present(text, v) and _heading_has_body(text, v) for v in variants)
+
+
 def has_zero_basic_sections(text):
-    # require the four parts to be real SECTIONS (headings), not merely a checklist that names them
-    return (_heading_present(text, "考点拆解")
-            and (_heading_present(text, "标准答题步骤") or _heading_present(text, "标准答题模板"))
-            and _heading_present(text, "易错点")
-            and (_heading_present(text, "3分钟速记") or _heading_present(text, "三分钟速记")))
+    # each of the four parts must be a real heading AND have actual body content under it
+    return (_zb(text, "考点拆解")
+            and _zb(text, "标准答题步骤", "标准答题模板")
+            and _zb(text, "易错点")
+            and _zb(text, "3分钟速记", "三分钟速记"))
 
 
 def has_hint_skip_offer(text):
@@ -164,8 +183,9 @@ def has_hint_skip_offer(text):
     negated = (bool(re.search(
                    r"(没有|不能|不会|不可以|不可|无法|不给|不予|不许|不准|拒绝)[^。\n]{0,10}?(提示|跳过|归档|错题本|错题档案)", t))
                or bool(re.search(r"(错题本|错题档案)[^。\n]{0,6}?(暂不|不记|不写|不归|未记|不予记|不会记|不加入)", t))
-               # bare 不 + verb ("不归档到错题本" / "不写入" / "不让跳过")
-               or bool(re.search(r"不\s*(归档|写入|记入|记录|存入|加入|放入)|不\s*(给|让|许|准)\s*(提示|跳过)", t)))
+               # bare 不 + verb ("不归档" / "不写入" / "不让跳过") and 不把/不将 + verb ("不把…记录")
+               or bool(re.search(r"不\s*(归档|写入|记入|记录|存入|加入|放入)|不\s*(给|让|许|准)\s*(提示|跳过)", t))
+               or bool(re.search(r"不\s*(把|将)[^。\n]{0,8}?(归档|记录|记入|写入|存入|加入)", t)))
     return has_hint and has_skip and has_archive and not negated
 
 
@@ -213,13 +233,21 @@ def _row_matches(rows, expect):
     return any(pat.search(" | ".join(r)) for r in rows)
 
 
+_ARCHIVE_NEG = re.compile(r"未\s*归档|未\s*记录|未\s*存|未\s*加入|待\s*归档|待\s*记录|暂不|尚未")
+
+
 def progress_has_mistake_archive(progress_text, expect=None):
     # standard template section is "## ❌ 错题档案记录"; mini/legacy wording uses "错题本" — accept both.
-    # if `expect` is given, a row must actually mention it (so archiving the WRONG item doesn't pass).
+    # a row must match `expect` (if given) AND not be marked 未归档/待归档 (i.e. actually archived).
     rows = _table_data_rows(_section(progress_text, ["错题档案", "错题本"]))
-    if not rows:
-        return False
-    return _row_matches(rows, expect) if expect else True
+
+    def archived(r):
+        joined = " | ".join(r)
+        if expect and not re.search(rf"(?<![0-9A-Za-z_]){re.escape(expect)}(?![0-9A-Za-z_])", joined):
+            return False
+        return not _ARCHIVE_NEG.search(joined)
+
+    return any(archived(r) for r in rows)
 
 
 def progress_has_confusion_row(progress_text, expect=None):
@@ -252,10 +280,12 @@ def resume_refers_to_phase(resume_text, phase):
     mentions = bool(re.search(rf"阶段\s*{phase}(?!\d)|第\s*{phase}\s*阶段", t))
     # reject negation of the current phase, both 阶段2 and 第2阶段 forms
     negated = bool(re.search(rf"(?:不是|不在)\s*(?:第\s*{phase}\s*阶段|第?\s*阶段\s*{phase})", t))
-    # reject restarting from a NON-current phase ("从阶段 2 开始" when the current phase is 3)
-    rm = re.search(r"从\s*第?\s*阶段?\s*(\d+)\s*(?:阶段)?\s*(?:开始|起|做起|学起|重新)", t)
-    if rm and rm.group(1) != str(phase):
-        return False
+    # reject restarting from a NON-current phase, both word orders: 阶段2 / 第2阶段
+    rm = re.search(r"从\s*(?:第\s*(\d+)\s*阶段|第?\s*阶段\s*(\d+))\s*(?:阶段)?\s*(?:开始|起|做起|学起|重新|重头)", t)
+    if rm:
+        rn = rm.group(1) or rm.group(2)
+        if rn != str(phase):
+            return False
     return mentions and not negated and not _RESTART_RE.search(t)
 
 
