@@ -82,10 +82,11 @@ def detect_lecture_markers(text):
                 role = "solution"                      # explicit "Solution" right after the number
             else:
                 role = "problem"                       # bare "Quiz 1.1" with no keyword → a problem
-            cont = role == "solution" and bool(re.search(r"\bContinued\b", tail, re.I))
-            out.append({"kind": kind, "chapter": int(m.group(1)), "num": int(m.group(2)),
-                        "role": role, "continued": cont})
-    return out
+            cont = bool(re.search(r"\bContinued\b", tail, re.I))   # applies to problems AND solutions
+            out.append((m.start(), {"kind": kind, "chapter": int(m.group(1)), "num": int(m.group(2)),
+                                    "role": role, "continued": cont}))
+    out.sort(key=lambda x: x[0])   # TEXT-POSITION order so markers[0] is the first-appearing marker
+    return [mk for _pos, mk in out]
 
 
 def orphan_solution_keys(pages):
@@ -172,6 +173,10 @@ def extract_lecture_items(pages):
         if mk2["role"] == "problem":
             prob_files.setdefault(_key(mk2), set()).add(pages[pj]["file"])
     ambiguous = {k for k, fs in prob_files.items() if len(fs) > 1}   # same marker in >1 file → namespace id
+    file_idx = {}      # injective per-file index within an ambiguous key (sanitized stems can collide)
+    for k in ambiguous:
+        for n, f in enumerate(sorted(prob_files[k])):
+            file_idx[(k, f)] = n
 
     claimed = set()
     items, seen = [], set()
@@ -186,25 +191,32 @@ def extract_lecture_items(pages):
         seen.add((key, pf))
         prob_text = prob_page.get("text", "")
 
-        # a solution is usable if it's in the problem's own file, OR in a file that has no competing
-        # problem for this key (i.e. a pure continuation) — so we never steal another item's solution.
+        # a problem may span pages: gather later `Problem (Continued)` pages of the same key+file.
+        prob_idxs = sorted({i} | {pj2 for (pj2, mk2) in marked
+                                  if _key(mk2) == key and mk2["role"] == "problem"
+                                  and pages[pj2]["file"] == pf and mk2.get("continued")})
+        q_pages = sorted({(pages[k]["file"], pages[k]["page"]) for k in prob_idxs}, key=lambda fp: (fp[1], fp[0]))
+
+        # take ALL usable solutions (same file, OR a continuation file with no competing problem) —
+        # both before AND after the problem, so a pre-problem part + a later (Continued) part both stay.
         other_prob_files = prob_files.get(key, set()) - {pf}
-        cands = [(mj, pj) for (mj, pj) in sol_by_key.get(key, []) if mj not in claimed
-                 and (pages[pj]["file"] == pf or pages[pj]["file"] not in other_prob_files)]
-        after = [c for c in cands if c[0] > mi]
-        chosen = after if after else cands
+        chosen = [(mj, pj) for (mj, pj) in sol_by_key.get(key, []) if mj not in claimed
+                  and (pages[pj]["file"] == pf or pages[pj]["file"] not in other_prob_files)]
         for (mj, pj) in chosen:
             claimed.add(mj)
         ans_idx = sorted({pj for (mj, pj) in chosen})
 
         kind = mk["kind"]
         label = "Example" if kind == "example" else "Quiz"
-        # scope the asset heuristic to THIS problem's slice (not the whole page)
+        # scope the asset heuristic to THIS problem's slice on the anchor page; continued pages (which
+        # wholly belong to this problem) are scanned whole.
         stmt = _problem_statement(prob_text, kind, key[1], key[2])
-        needs = requires_assets_heuristic(stmt or prob_text)
-        # marker-only: text extraction yielded just the heading (real prompt likely in an image) →
-        # it is NOT a standalone question; point at the page rather than asking an unanswerable title.
-        marker_only = (not needs) and len(_body_after_marker(stmt, kind, key[1], key[2])) < 3
+        needs = requires_assets_heuristic(stmt or prob_text) or any(
+            requires_assets_heuristic(pages[k].get("text", "")) for k in prob_idxs if k != i)
+        # marker-only: extraction yielded just the heading on a single page (real prompt likely in an
+        # image) → NOT a standalone question; render/point at the page rather than ask a bare title.
+        marker_only = ((not needs) and len(prob_idxs) == 1
+                       and len(_body_after_marker(stmt, kind, key[1], key[2])) < 3)
         if needs:
             qts = "page_reference"
             question = ("（%s %d.%d）本题依赖原始讲义 %s 第 %d 页的图/表，须配合所附 asset 作答。"
@@ -215,10 +227,11 @@ def extract_lecture_items(pages):
                         % (label, key[1], key[2], pf, prob_page["page"]))
         else:
             qts = "full"
-            question = stmt
+            question = " ".join([stmt] + [" ".join((pages[k].get("text") or "").split())
+                                          for k in prob_idxs if k != i]).strip()
         item_id = "lecture_%s_%d_%d" % (kind, key[1], key[2])
-        if key in ambiguous:
-            item_id += "__" + re.sub(r"[^\w]", "_", os.path.splitext(pf)[0])   # disambiguate by file
+        if key in ambiguous:   # readable stem + injective index (so a/b.pdf vs a_b.pdf don't collide)
+            item_id += "__%s_%d" % (re.sub(r"[^\w]", "_", os.path.splitext(pf)[0]), file_idx[(key, pf)])
         item = {
             "id": item_id,
             "chapter": key[1],
@@ -226,8 +239,9 @@ def extract_lecture_items(pages):
             "question": question,
             "source": "material",
             "source_file": pf,
-            "source_pages": [prob_page["page"]],
-            "_question_pages": [(pf, prob_page["page"])],   # stripped from the emitted bank
+            "source_pages": [p for (f, p) in q_pages],
+            "_question_pages": q_pages,                     # stripped from the emitted bank
+            "_render": bool(needs or marker_only),          # render the page for figure- AND image-prompt items
             "requires_assets": bool(needs),
             "question_text_status": qts,
         }
@@ -537,7 +551,7 @@ def run(args, backend=None):
         if len(ans_files) > 1:   # answer pages span >1 source file → page numbers are ambiguous
             report["warnings"].append("answer_spans_multiple_files: %s (%s)"
                                       % (it["id"], "、".join(sorted(ans_files))))
-        if not it.get("requires_assets"):
+        if not it.get("_render"):   # figure-dependent (requires_assets) OR image-prompt (marker_only)
             continue
         assets = []
         # one asset PER (file, page) — render every question page AND every (continued) answer page,
@@ -574,7 +588,8 @@ def run(args, backend=None):
                        else "渲染返回空")
                 report["warnings"].append(
                     "likely_asset_required_but_no_image: %s (%s, %s)" % (it["id"], role, why))
-                missing_required.append("%s (%s, %s)" % (it["id"], role, why))
+                if it.get("requires_assets"):   # only a HARD-required figure fails `--render-pages required`
+                    missing_required.append("%s (%s, %s)" % (it["id"], role, why))
         it["assets"] = assets
     report["pages_rendered"] = rendered
 

@@ -222,6 +222,36 @@ class CoreExtraction(unittest.TestCase):
         self.assertEqual(it["question_text_status"], "page_reference")
         self.assertFalse(it.get("requires_assets"))
 
+    # ---- round-4 (P0B r4) hardening ----
+    def test_continued_problem_pages_merged(self):
+        pages = _pages("ch01.pdf", "Example 1.1 Problem  Prove part one.",
+                       "Example 1.1 Problem (Continued)  and also part two.",
+                       "Example 1.1 Solution  done.")
+        it = B.extract_lecture_items(pages)[0]
+        self.assertEqual(it["source_pages"], [1, 2])         # both problem pages kept, not just the first
+
+    def test_ambiguous_ids_are_injective(self):
+        # a/b.pdf and a_b.pdf sanitize to the same stem → ids must still be distinct
+        pages = [{"file": "a/b.pdf", "page": 1, "text": "Quiz 1.1  q1."},
+                 {"file": "a_b.pdf", "page": 1, "text": "Quiz 1.1  q2."}]
+        ids = [it["id"] for it in B.extract_lecture_items(pages)]
+        self.assertEqual(len(ids), 2)
+        self.assertEqual(len(ids), len(set(ids)))            # no duplicate quiz_bank ids
+
+    def test_section_uses_first_marker_on_mixed_page(self):
+        # boundary page: Quiz 1.9 appears before Example 2.1 → chapter 1, not 2
+        pages = [{"file": "ch.pdf", "page": 1,
+                  "text": "Quiz 1.9  last of ch1.\nExample 2.1 Problem  first of ch2."}]
+        self.assertEqual(B.group_sections(pages)[0]["chapter"], 1)
+
+    def test_pre_problem_solution_kept_with_continuation(self):
+        # solution part-1 BEFORE the problem + a later (Continued) part → BOTH kept
+        pages = _pages("ch.pdf", "Example 1.1 Solution  part one.",
+                       "Example 1.1 Problem  the question.",
+                       "Example 1.1 Solution (Continued)  part two.")
+        it = B.extract_lecture_items(pages)[0]
+        self.assertEqual(it["answer_source_pages"], [1, 3])  # not just the continuation page
+
     def test_section_grouping_from_headings(self):
         pages = (_pages("a.pdf", "Quiz 1.1  x") + _pages("b.pdf", "Example 2.1 Problem  y"))
         secs = B.group_sections(pages)
@@ -400,6 +430,20 @@ class CliAndRun(unittest.TestCase):
         code, ri, report = B.run(_args(d), backend=be)            # render auto
         self.assertEqual(code, 0)                                 # did not crash
         self.assertTrue(any("渲染失败" in s.get("why", "") for s in report["skipped"]))
+
+    def test_marker_only_renders_page_when_backend_available(self):
+        # round-4 P2: a marker-only item (prompt in image) should still get its page rendered so it's
+        # displayable — even though requires_assets stays false
+        d = _materials_with_pdf()
+        be = FakeBackend({"ch01.pdf": ["Quiz 1.1", "Quiz 1.1 Solution  see fig."]})  # heading only
+        args = _args(d)
+        code, ri, report = B.run(args, backend=be)
+        it = next(q for q in ri["quiz_bank"] if q["id"] == "lecture_quiz_1_1")
+        self.assertEqual(it["question_text_status"], "page_reference")
+        self.assertFalse(it["requires_assets"])                   # soft, not hard-required
+        qside = [a for a in it["assets"] if a["role"] == "question_context"]
+        self.assertTrue(qside)                                    # but the page WAS rendered
+        self.assertTrue(os.path.isfile(os.path.join(args.asset_root, os.path.basename(qside[0]["path"]))))
 
     def test_renders_all_continued_answer_pages(self):
         d = _materials_with_pdf()
