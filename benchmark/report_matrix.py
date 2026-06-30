@@ -231,6 +231,54 @@ def block(lang, S):
     o.append("</ol></div>")
     return "\n".join(o)
 
+_ARM_COLORS = {"closedbook": "#d93025", "rawfiles": "#f9ab00", "skill": "#1a7f64", "material": "#9aa0a6"}
+
+
+def block_generic(lang, S):
+    """Minimal DATA-only render for an EXPLICIT --summary (fixture / custom aggregate): the summary's
+    OWN `models`/`arms` as plain tables, with NO hard-coded MIT 6.006 / PSYC narrative or numbers."""
+    en = lang == "en"
+    tr = lambda zh, e: e if en else zh
+    arms = [a for a in S.get("arms", [])]
+    models = [m for m in S.get("models", [])]
+    mx = S.get("matrix", {})
+    o = [f'<div id="{lang}">']
+    o.append(f'<h1>{tr("矩阵 summary（显式渲染）", "Matrix summary (explicit render)")}</h1>')
+    o.append('<p class="muted">' + tr(
+        "数据全部来自所提供的 summary（含其自带的 models / arms）；本视图不含已发布报告的任何叙述或写死数字。",
+        "All numbers come from the provided summary (its own models / arms); this view contains none of the "
+        "published report's narrative or hard-coded figures.") + '</p>')
+
+    def metric_table(title, metric, matrix, key_prefix=""):
+        out = [f'<h2>{html.escape(title)}</h2>',
+               '<table><tr><th class=l>' + tr("模型 / Model", "Model") + '</th>'
+               + "".join(f'<th>{html.escape(a)}</th>' for a in arms) + "</tr>"]
+        for mk in models:
+            cells = "".join(f'<td>{pct((matrix.get(f"{key_prefix}{mk}|{ak}") or {}).get(metric))}</td>' for ak in arms)
+            out.append(f'<tr><td class=l>{html.escape(mk)}</td>{cells}</tr>')
+        out.append("</table>")
+        return out
+
+    for title, metric in ((tr("正确率 Correctness", "Correctness"), "correct"),
+                          (tr("幻觉率 Hallucination", "Hallucination"), "hallucination"),
+                          (tr("越界弃答 OOS abstention", "OOS abstention"), "abstention_oos")):
+        o += metric_table(title, metric, mx)
+    cpq = S.get("cost_per_q") or {}
+    if cpq:
+        o.append(f'<h2>{tr("每题成本 Cost/question", "Cost per question")}</h2><ul>')
+        for course in sorted(cpq):
+            pairs = "  ·  ".join(f"{html.escape(a)}=${cpq[course].get(a)}" for a in sorted(cpq[course]))
+            o.append(f'<li>{html.escape(course)}: {pairs}</li>')
+        o.append("</ul>")
+    if S.get("psyc"):
+        o += metric_table(tr("psyc 块（secondary course）正确率", "psyc block (secondary course) correctness"),
+                          "correct", S["psyc"], key_prefix="psyc|")
+    o.append('<p class="muted">' + f'n_items={S.get("n_items")} · total_cost_usd=${S.get("total_cost_usd")} · '
+             + f'courses={html.escape(str(S.get("courses")))} · judge_model={html.escape(str(S.get("judge_model")))}</p>')
+    o.append("</div>")
+    return "\n".join(o)
+
+
 def _write_standalone_svgs(S, out_dir):
     """Also emit standalone chart SVGs (zh/en) so the README can embed the comparison charts."""
     m, conv, psyc = S.get("matrix", {}), S.get("convergence", {}), S.get("psyc", {})
@@ -263,7 +311,8 @@ def main(argv=None):
     # / custom aggregate) reuses that template with DIFFERENT numbers → banner it so it's never mistaken
     # for the published benchmark.
     explicit = os.path.abspath(args.summary) != os.path.abspath(os.path.join(OUT, "summary.json"))
-    _write_standalone_svgs(S, out_dir)
+    if not explicit:
+        _write_standalone_svgs(S, out_dir)   # the README's published comparison charts — default render only
     css = ("body{max-width:860px;margin:0 auto;padding:24px 18px;color:#202124;"
            "font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;line-height:1.65}"
            "h1{font-size:24px}h2{font-size:19px;margin-top:32px;border-bottom:2px solid #e8eaed;padding-bottom:6px}"
@@ -285,14 +334,17 @@ def main(argv=None):
             "<div class='langbar'><button id='btn-zh' class='on' onclick=\"setLang('zh')\">中文</button>"
             "<button id='btn-en' onclick=\"setLang('en')\">English</button></div>"]
     if explicit:
+        # explicit / custom / fixture summary → a generic DATA-only render of the summary's own
+        # models·arms (no published MIT/PSYC narrative or hard-coded numbers), under a clear banner.
         page.append(
             "<div class='card' style='background:#fef7e0;border-color:#f9d57a'>⚠️ "
-            f"本报告由 <code>--summary {html.escape(os.path.basename(args.summary))}</code> 显式渲染：正文叙述沿用"
-            "已发布报告模板，但**数字来自所提供的 summary**，<b>并非已发布的 MIT 6.006 / Yale PSYC 110 实测</b>"
-            "（例如 fixture / 自定义聚合输出）。/ Rendered from an explicit <code>--summary</code>: the prose "
-            "reuses the published template, but the <b>numbers come from the provided summary — this is NOT "
-            "the published MIT/PSYC benchmark</b>.</div>")
-    page += [block("zh", S), block("en", S), f"<script>{js}</script>", "</body></html>"]
+            f"本视图由 <code>--summary {html.escape(os.path.basename(args.summary))}</code> 显式渲染："
+            "数字全部来自所提供的 summary，<b>并非已发布的 MIT 6.006 / Yale PSYC 110 实测</b>"
+            "（如 fixture / 自定义聚合输出）。/ Rendered from an explicit <code>--summary</code>: the numbers "
+            "come entirely from the provided summary — <b>this is NOT the published MIT/PSYC benchmark</b>.</div>")
+        page += [block_generic("zh", S), block_generic("en", S), f"<script>{js}</script>", "</body></html>"]
+    else:
+        page += [block("zh", S), block("en", S), f"<script>{js}</script>", "</body></html>"]
     path = os.path.join(out_dir, "report.html")
     open(path, "w", encoding="utf-8").write("\n".join(page))
     print("[+] 写出", path)

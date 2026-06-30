@@ -44,7 +44,7 @@ def _die(msg):
     raise SystemExit(2)
 
 
-def _load_jsonl(path, required, label):
+def _load_jsonl(path, required, label, alias=None):
     if not os.path.isfile(path):
         _die("找不到 %s 文件: %s" % (label, path))
     rows = []
@@ -59,6 +59,8 @@ def _load_jsonl(path, required, label):
                 _die("%s 第 %d 行不是合法 JSON: %s" % (label, ln, e))
             if not isinstance(d, dict):
                 _die("%s 第 %d 行必须是 JSON 对象" % (label, ln))
+            if alias:
+                alias(d)   # normalize repo-native aliases (id→item_id, cost→cost_usd) before the field check
             missing = [k for k in required if k not in d]
             if missing:
                 _die("%s 第 %d 行缺必需字段 %s" % (label, ln, missing))
@@ -71,13 +73,28 @@ def _key(d):
 
 
 def _validate_score(s):
-    # reject string-encoded booleans etc. — "false" is truthy and would silently corrupt the rates.
+    # accept JSON booleans OR 0/1 (this repo's judge.py emits integer flags); reject string-encoded
+    # booleans etc. — "false" is truthy and would silently corrupt the rates. rate() treats 0/1 right.
     for b in ("correct", "hallucinated", "abstained", "judge_error"):
-        if s.get(b) is not None and not isinstance(s[b], bool):
-            _die("scores %s 的 %s 必须是布尔值（或省略/null），不能是 %r" % (_key(s), b, s[b]))
+        v = s.get(b)
+        if v is not None and not (isinstance(v, bool) or (isinstance(v, int) and v in (0, 1))):
+            _die("scores %s 的 %s 必须是布尔值或 0/1（或省略/null），不能是 %r" % (_key(s), b, v))
     f = s.get("faithfulness")
     if f is not None and (isinstance(f, bool) or not isinstance(f, (int, float))):
         _die("scores %s 的 faithfulness 必须是数值（或省略/null），不能是 %r" % (_key(s), f))
+
+
+def _alias_answer(d):
+    # accept this repo's gen.py row shape: `id` → item_id, `cost` → cost_usd
+    if "item_id" not in d and "id" in d:
+        d["item_id"] = d["id"]
+    if "cost_usd" not in d and "cost" in d:
+        d["cost_usd"] = d["cost"]
+
+
+def _alias_score(d):
+    if "item_id" not in d and "id" in d:   # judge.py / rejudge.py score dicts carry `id`
+        d["item_id"] = d["id"]
 
 
 def _cell(items):
@@ -230,8 +247,8 @@ def main(argv=None):
     ap.add_argument("--judge-model", default="unknown", help="判分模型标注（仅写入 summary，不调用）")
     args = ap.parse_args(argv)
 
-    answers = _load_jsonl(args.answers, REQ_ANSWER, "answers")
-    scores = _load_jsonl(args.scores, REQ_SCORE, "scores")
+    answers = _load_jsonl(args.answers, REQ_ANSWER, "answers", _alias_answer)
+    scores = _load_jsonl(args.scores, REQ_SCORE, "scores", _alias_score)
     if not answers:
         _die("answers 为空——无可聚合的作答")
     merged = merge_rows(answers, scores)

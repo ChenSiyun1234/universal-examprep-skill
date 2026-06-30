@@ -147,6 +147,41 @@ class AggregateMatrix(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertIn("必须是布尔值", r.stderr)
 
+    def test_accepts_int_0_1_boolean_flags(self):
+        # this repo's judge.py emits integer 0/1 flags — must be accepted and counted correctly
+        d = tempfile.mkdtemp()
+        a, sc = os.path.join(d, "a.jsonl"), os.path.join(d, "s.jsonl")
+        with open(a, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"course": "c", "model": "m", "arm": "skill", "item_id": "q1", "answerable": True}) + "\n")
+            f.write(json.dumps({"course": "c", "model": "m", "arm": "skill", "item_id": "q2", "answerable": True}) + "\n")
+        with open(sc, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"course": "c", "model": "m", "arm": "skill", "item_id": "q1",
+                                "correct": 1, "hallucinated": 0, "faithfulness": 1.0}) + "\n")
+            f.write(json.dumps({"course": "c", "model": "m", "arm": "skill", "item_id": "q2",
+                                "correct": 0, "hallucinated": 1, "faithfulness": 0.0}) + "\n")
+        out = os.path.join(d, "s.json")
+        A.main(["--answers", a, "--scores", sc, "--out", out])
+        with open(out, encoding="utf-8") as f:
+            cell = json.load(f)["matrix"]["m|skill"]
+        self.assertEqual(cell["correct"], 0.5)        # 1 of 2 correct — 0/1 handled like booleans
+        self.assertEqual(cell["hallucination"], 0.5)
+
+    def test_accepts_gen_row_aliases(self):
+        # gen.py answer rows use `id`/`cost`; judge score dicts use `id` — aliased to item_id/cost_usd
+        d = tempfile.mkdtemp()
+        a, sc = os.path.join(d, "a.jsonl"), os.path.join(d, "s.jsonl")
+        with open(a, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"course": "c", "model": "m", "arm": "skill", "id": "q1",
+                                "answerable": True, "cost": 0.05}) + "\n")
+        with open(sc, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"course": "c", "model": "m", "arm": "skill", "id": "q1", "correct": True}) + "\n")
+        out = os.path.join(d, "s.json")
+        A.main(["--answers", a, "--scores", sc, "--out", out])
+        with open(out, encoding="utf-8") as f:
+            cell = json.load(f)["matrix"]["m|skill"]
+        self.assertEqual(cell["correct"], 1.0)
+        self.assertAlmostEqual(cell["cost_usd"], 0.05, places=4)   # `cost` aliased to cost_usd
+
     def test_orphan_score_fails_loud(self):
         # a score with no matching answer must fail loudly, not be silently ignored
         d = tempfile.mkdtemp()
@@ -227,6 +262,15 @@ class ReportMatrixExplicitSummary(unittest.TestCase):
             html = f.read()
         self.assertIn("NOT the published MIT/PSYC benchmark", html)
         self.assertIn("并非已发布的 MIT 6.006", html)
+
+    def test_explicit_render_uses_own_arms_no_published_prose(self):
+        d = tempfile.mkdtemp()
+        self._render(d)
+        with open(os.path.join(d, "report.html"), encoding="utf-8") as f:
+            html = f.read()
+        self.assertIn("material", html)            # the summary's OWN material arm rendered
+        self.assertNotIn("98%", html)              # no hard-coded published PSYC conclusion
+        self.assertNotIn("kappa", html.lower())    # no published narrative leaks into a custom render
 
 
 if __name__ == "__main__":
