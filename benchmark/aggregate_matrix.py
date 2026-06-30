@@ -70,6 +70,16 @@ def _key(d):
     return (d["course"], d["model"], d["arm"], str(d["item_id"]))
 
 
+def _validate_score(s):
+    # reject string-encoded booleans etc. — "false" is truthy and would silently corrupt the rates.
+    for b in ("correct", "hallucinated", "abstained", "judge_error"):
+        if s.get(b) is not None and not isinstance(s[b], bool):
+            _die("scores %s 的 %s 必须是布尔值（或省略/null），不能是 %r" % (_key(s), b, s[b]))
+    f = s.get("faithfulness")
+    if f is not None and (isinstance(f, bool) or not isinstance(f, (int, float))):
+        _die("scores %s 的 faithfulness 必须是数值（或省略/null），不能是 %r" % (_key(s), f))
+
+
 def _cell(items):
     """Compute one matrix cell from merged per-item dicts. Mirrors benchmark/rejudge.aggregate()
     (+ a cost_usd total). `items` carry: answerable, infra_error, judge_error, correct, faithfulness,
@@ -103,6 +113,7 @@ def merge_rows(answers, scores):
         k = _key(s)
         if k in score_by:
             _die("scores 中出现重复 (course,model,arm,item_id): %s" % (k,))
+        _validate_score(s)
         score_by[k] = s
     seen = set()
     merged = []
@@ -113,6 +124,9 @@ def merge_rows(answers, scores):
         seen.add(k)
         if not isinstance(a["answerable"], bool):
             _die("answers %s 的 answerable 必须是布尔值" % (k,))
+        cost = a.get("cost_usd", 0) or 0
+        if isinstance(cost, bool) or not isinstance(cost, (int, float)):
+            _die("answers %s 的 cost_usd 必须是数值，当前 %r" % (k, cost))
         status = a.get("status", "ok")
         if status not in ("ok", "infra_error"):
             _die("answers %s 的 status 必须是 'ok' 或 'infra_error'，当前 %r" % (k, status))
@@ -129,15 +143,21 @@ def merge_rows(answers, scores):
         # trustworthy lower bound. Neither a missing nor an undecided judgment may inflate correctness.
         if a["answerable"] and not infra and (judge_error or correct is None):
             judge_error, correct = True, False
+        # symmetric lower bound for OOS: a completed out-of-scope item with no abstention verdict
+        # (missing score, or a score without `abstained`) counts NOT-abstained — it never inflates
+        # abstention_oos (i.e. we don't credit an unverified abstention).
+        abstained = (s or {}).get("abstained")
+        if (not a["answerable"]) and not infra and abstained is None:
+            abstained = False
         merged.append({
             "course": a["course"], "model": a["model"], "arm": a["arm"], "item_id": str(a["item_id"]),
             "answerable": a["answerable"], "infra_error": infra, "judge_error": judge_error,
             "correct": correct,
             "faithfulness": (s or {}).get("faithfulness"),
             "hallucinated": (s or {}).get("hallucinated"),
-            "abstained": (s or {}).get("abstained"),
+            "abstained": abstained,
             "scored_by": (s or {}).get("scored_by"),
-            "cost_usd": a.get("cost_usd", 0) or 0,
+            "cost_usd": cost,
         })
     # scores with no matching answer would be silently ignored — fail loud instead
     orphan = [k for k in score_by if k not in seen]

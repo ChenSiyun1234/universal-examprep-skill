@@ -259,6 +259,10 @@ def main(argv=None):
     out_dir = args.out_dir
     os.makedirs(out_dir, exist_ok=True)
     S = json.load(open(args.summary, encoding="utf-8"))
+    # the HTML prose is the PUBLISHED MIT 6.006 / PSYC story; an explicit non-default --summary (fixture
+    # / custom aggregate) reuses that template with DIFFERENT numbers → banner it so it's never mistaken
+    # for the published benchmark.
+    explicit = os.path.abspath(args.summary) != os.path.abspath(os.path.join(OUT, "summary.json"))
     _write_standalone_svgs(S, out_dir)
     css = ("body{max-width:860px;margin:0 auto;padding:24px 18px;color:#202124;"
            "font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;line-height:1.65}"
@@ -279,8 +283,16 @@ def main(argv=None):
             "<title>6.006 防幻觉实测 / Hallucination Benchmark</title>",
             f"<style>{css}</style></head><body>",
             "<div class='langbar'><button id='btn-zh' class='on' onclick=\"setLang('zh')\">中文</button>"
-            "<button id='btn-en' onclick=\"setLang('en')\">English</button></div>",
-            block("zh", S), block("en", S), f"<script>{js}</script>", "</body></html>"]
+            "<button id='btn-en' onclick=\"setLang('en')\">English</button></div>"]
+    if explicit:
+        page.append(
+            "<div class='card' style='background:#fef7e0;border-color:#f9d57a'>⚠️ "
+            f"本报告由 <code>--summary {html.escape(os.path.basename(args.summary))}</code> 显式渲染：正文叙述沿用"
+            "已发布报告模板，但**数字来自所提供的 summary**，<b>并非已发布的 MIT 6.006 / Yale PSYC 110 实测</b>"
+            "（例如 fixture / 自定义聚合输出）。/ Rendered from an explicit <code>--summary</code>: the prose "
+            "reuses the published template, but the <b>numbers come from the provided summary — this is NOT "
+            "the published MIT/PSYC benchmark</b>.</div>")
+    page += [block("zh", S), block("en", S), f"<script>{js}</script>", "</body></html>"]
     path = os.path.join(out_dir, "report.html")
     open(path, "w", encoding="utf-8").write("\n".join(page))
     print("[+] 写出", path)

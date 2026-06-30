@@ -119,6 +119,34 @@ class AggregateMatrix(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertIn("缺必需字段", r.stderr)
 
+    def test_unscored_oos_counts_not_abstained(self):
+        # symmetric lower bound: a completed OOS item with no abstention verdict counts NOT-abstained
+        d = tempfile.mkdtemp()
+        a, sc = os.path.join(d, "a.jsonl"), os.path.join(d, "s.jsonl")
+        with open(a, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"course": "c", "model": "m", "arm": "skill", "item_id": "o1", "answerable": False}) + "\n")
+            f.write(json.dumps({"course": "c", "model": "m", "arm": "skill", "item_id": "o2", "answerable": False}) + "\n")
+        with open(sc, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"course": "c", "model": "m", "arm": "skill", "item_id": "o2", "abstained": True}) + "\n")
+        out = os.path.join(d, "s.json")
+        A.main(["--answers", a, "--scores", sc, "--out", out])
+        with open(out, encoding="utf-8") as f:
+            cell = json.load(f)["matrix"]["m|skill"]
+        self.assertEqual(cell["n_oos"], 2)
+        self.assertEqual(cell["abstention_oos"], 0.5)   # o2 abstained; o1 unscored → not-abstained (1/2)
+
+    def test_string_boolean_score_fails(self):
+        # a string-encoded boolean ("false" is truthy) must FAIL, not silently corrupt the rate
+        d = tempfile.mkdtemp()
+        a, sc = os.path.join(d, "a.jsonl"), os.path.join(d, "s.jsonl")
+        with open(a, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"course": "c", "model": "m", "arm": "skill", "item_id": "q", "answerable": True}) + "\n")
+        with open(sc, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"course": "c", "model": "m", "arm": "skill", "item_id": "q", "correct": "false"}) + "\n")
+        r = _run_agg(["--answers", a, "--scores", sc, "--out", os.path.join(d, "o.json")])
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("必须是布尔值", r.stderr)
+
     def test_orphan_score_fails_loud(self):
         # a score with no matching answer must fail loudly, not be silently ignored
         d = tempfile.mkdtemp()
@@ -190,6 +218,15 @@ class ReportMatrixExplicitSummary(unittest.TestCase):
         self._render(tempfile.mkdtemp())
         after = os.path.getmtime(committed) if os.path.isfile(committed) else None
         self.assertEqual(before, after)   # committed results/matrix/report.html untouched
+
+    def test_explicit_summary_has_not_published_banner(self):
+        # an explicit (non-default) --summary render must be banner'd "NOT the published benchmark"
+        d = tempfile.mkdtemp()
+        self._render(d)
+        with open(os.path.join(d, "report.html"), encoding="utf-8") as f:
+            html = f.read()
+        self.assertIn("NOT the published MIT/PSYC benchmark", html)
+        self.assertIn("并非已发布的 MIT 6.006", html)
 
 
 if __name__ == "__main__":
