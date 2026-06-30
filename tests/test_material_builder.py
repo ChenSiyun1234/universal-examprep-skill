@@ -349,6 +349,34 @@ class CoreExtraction(unittest.TestCase):
         self.assertEqual(sorted(os.path.basename(p) for p in pdfs), ["ch01.pdf", "ch02.pdf"])
         self.assertEqual(pruned, [])
 
+    # ---- round-7 (P0B r7) hardening ----
+    def test_unparenthesized_continued_solution_is_solution(self):
+        # 'Continued Solution' / 'Continued: Solution' (no parens) must still classify as a solution
+        for tail in ("Example 1.1 Continued Solution  ans.", "Example 1.1 Continued: Solution  ans."):
+            ms = B.detect_lecture_markers(tail)
+            self.assertEqual(ms[0]["role"], "solution", tail)
+            self.assertTrue(ms[0]["continued"])
+
+    def test_references_assets_pdfs_not_pruned(self):
+        # a course storing PDFs under references/assets/ (no references/wiki) must NOT be pruned
+        d = tempfile.mkdtemp(prefix="mat-")
+        os.makedirs(os.path.join(d, "references", "assets"))
+        with open(os.path.join(d, "references", "assets", "fig.pdf"), "wb") as f:
+            f.write(b"%PDF fake")
+        pdfs, texts, pruned = B._scan_materials(d)
+        self.assertIn("fig.pdf", [os.path.basename(p) for p in pdfs])
+        self.assertEqual(pruned, [])
+
+    def test_generated_progress_files_skipped(self):
+        # study_plan.md / study_progress.md at the materials root are workspace files, not material
+        d = tempfile.mkdtemp(prefix="mat-")
+        for fn in ("study_plan.md", "study_progress.md", "lecture_notes.md"):
+            with open(os.path.join(d, fn), "w", encoding="utf-8") as f:
+                f.write("Quiz 1.1  x\nQuiz 1.1 Solution  y")
+        pdfs, texts, pruned = B._scan_materials(d)
+        names = sorted(os.path.basename(p) for p in texts)
+        self.assertEqual(names, ["lecture_notes.md"])   # real notes kept, generated files skipped
+
     def test_section_grouping_from_headings(self):
         pages = (_pages("a.pdf", "Quiz 1.1  x") + _pages("b.pdf", "Example 2.1 Problem  y"))
         secs = B.group_sections(pages)

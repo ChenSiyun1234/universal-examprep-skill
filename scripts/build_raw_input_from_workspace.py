@@ -76,7 +76,9 @@ def _role_of_tail(tail):
     """Role of a marker from the text right after its number. A leading "(Continued)" may precede the
     role word ("Example 1.1 (Continued) Solution …"); strip it before matching. Used everywhere so
     detect_lecture_markers and the text-slicers agree."""
-    tail_role = re.sub(r"^\s*\(?\s*continued[^)\n]*\)?", "", tail, flags=re.I)
+    # strip ONLY a leading "continued" token (+ optional number/parens/separators) — not the words
+    # after it, so "Continued Solution" / "Continued: Solution" (no parens) still leaves "Solution".
+    tail_role = re.sub(r"^\s*\(?\s*continued\b\s*\d*\s*\)?[\s:.\-]*", "", tail, flags=re.I)
     if _ROLE_PROBLEM_RE.match(tail) or _ROLE_PROBLEM_RE.match(tail_role):
         return "problem"
     if _ROLE_SOLUTION_RE.match(tail) or _ROLE_SOLUTION_RE.match(tail_role):
@@ -434,6 +436,8 @@ def _under(root, child):
 # Tooling/VCS dirs that NEVER hold course material → always pruned from the materials scan.
 ALWAYS_PRUNE = {".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv", "env",
                 ".idea", ".vscode", ".pytest_cache", ".ipynb_checkpoints"}
+# generated skill-workspace files (not course material) → skipped even if they sit at the materials root.
+SKIP_FILES = {"study_plan.md", "study_progress.md", "walkthrough.md", "raw_input.json", "parse_report.json"}
 
 
 def _is_leftover_workspace(path, name):
@@ -442,7 +446,9 @@ def _is_leftover_workspace(path, name):
     (references/wiki, scratch/extracted|images) so we don't drop a real `materials/references/ch02.pdf`."""
     low = name.lower()
     if low == "references":
-        return os.path.isdir(os.path.join(path, "wiki")) or os.path.isdir(os.path.join(path, "assets"))
+        # only `references/wiki` is a reliable skill-workspace signature (ingest always creates it);
+        # `references/assets` alone is NOT — a course may legitimately store PDFs under references/assets.
+        return os.path.isdir(os.path.join(path, "wiki"))
     if low == "scratch":
         return any(os.path.isdir(os.path.join(path, s)) for s in ("extracted", "images"))
     return False
@@ -466,6 +472,8 @@ def _scan_materials(materials_dir):
         dirs[:] = keep   # os.walk: prune in place
         for fn in sorted(files):
             low = fn.lower()
+            if low in SKIP_FILES:   # a generated workspace file (study_plan/progress/…), not material
+                continue
             full = os.path.join(dirpath, fn)
             if low.endswith(".pdf"):
                 pdfs.append(full)
