@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """三臂×三模型 防幻觉报告渲染器（6.006）。读取 results/matrix/summary.json → 中英双语 report.html。
 纯标准库；复用 report.py 的 MATERIALS / REFERENCES。面向普通用户：通俗 + 图表 + 引用 + 诚实 caveats。"""
-import os, sys, json, html
+import os, sys, json, html, argparse
 BENCH = os.path.dirname(os.path.abspath(__file__))   # portable: this file lives in benchmark/
 sys.path.insert(0, BENCH)
 import report as R
@@ -231,25 +231,91 @@ def block(lang, S):
     o.append("</ol></div>")
     return "\n".join(o)
 
-def _write_standalone_svgs(S):
+_ARM_COLORS = {"closedbook": "#d93025", "rawfiles": "#f9ab00", "skill": "#1a7f64", "material": "#9aa0a6"}
+
+
+def block_generic(lang, S):
+    """Minimal DATA-only render for an EXPLICIT --summary (fixture / custom aggregate): the summary's
+    OWN `models`/`arms` as plain tables, with NO hard-coded MIT 6.006 / PSYC narrative or numbers."""
+    en = lang == "en"
+    tr = lambda zh, e: e if en else zh
+    arms = [a for a in S.get("arms", [])]
+    models = [m for m in S.get("models", [])]
+    mx = S.get("matrix", {})
+    o = [f'<div id="{lang}">']
+    o.append(f'<h1>{tr("矩阵 summary（显式渲染）", "Matrix summary (explicit render)")}</h1>')
+    o.append('<p class="muted">' + tr(
+        "数据全部来自所提供的 summary（含其自带的 models / arms）；本视图不含已发布报告的任何叙述或写死数字。",
+        "All numbers come from the provided summary (its own models / arms); this view contains none of the "
+        "published report's narrative or hard-coded figures.") + '</p>')
+
+    def metric_table(title, metric, matrix, key_prefix=""):
+        out = [f'<h2>{html.escape(title)}</h2>',
+               '<table><tr><th class=l>' + tr("模型 / Model", "Model") + '</th>'
+               + "".join(f'<th>{html.escape(a)}</th>' for a in arms) + "</tr>"]
+        for mk in models:
+            cells = "".join(f'<td>{pct((matrix.get(f"{key_prefix}{mk}|{ak}") or {}).get(metric))}</td>' for ak in arms)
+            out.append(f'<tr><td class=l>{html.escape(mk)}</td>{cells}</tr>')
+        out.append("</table>")
+        return out
+
+    for title, metric in ((tr("正确率 Correctness", "Correctness"), "correct"),
+                          (tr("幻觉率 Hallucination", "Hallucination"), "hallucination"),
+                          (tr("越界弃答 OOS abstention", "OOS abstention"), "abstention_oos")):
+        o += metric_table(title, metric, mx)
+    cpq = S.get("cost_per_q") or {}
+    if cpq:
+        o.append(f'<h2>{tr("每题成本 Cost/question", "Cost per question")}</h2><ul>')
+        for course in sorted(cpq):
+            pairs = "  ·  ".join(f"{html.escape(a)}=${cpq[course].get(a)}" for a in sorted(cpq[course]))
+            o.append(f'<li>{html.escape(course)}: {pairs}</li>')
+        o.append("</ul>")
+    if S.get("psyc"):
+        o += metric_table(tr("psyc 块（secondary course）正确率", "psyc block (secondary course) correctness"),
+                          "correct", S["psyc"], key_prefix="psyc|")
+    o.append('<p class="muted">' + f'n_items={S.get("n_items")} · total_cost_usd=${S.get("total_cost_usd")} · '
+             + f'courses={html.escape(str(S.get("courses")))} · judge_model={html.escape(str(S.get("judge_model")))}</p>')
+    o.append("</div>")
+    return "\n".join(o)
+
+
+def _write_standalone_svgs(S, out_dir):
     """Also emit standalone chart SVGs (zh/en) so the README can embed the comparison charts."""
     m, conv, psyc = S.get("matrix", {}), S.get("convergence", {}), S.get("psyc", {})
     for en, suf in ((False, "zh"), (True, "en")):
         for metric, name in (("correct", "correct"), ("hallucination", "hallu"),
                              ("abstention_oos", "oos")):
-            open(os.path.join(OUT, f"chart_{name}_{suf}.svg"), "w", encoding="utf-8").write(
+            open(os.path.join(out_dir, f"chart_{name}_{suf}.svg"), "w", encoding="utf-8").write(
                 svg_grouped(m, metric, en))
-        open(os.path.join(OUT, f"chart_convergence_{suf}.svg"), "w", encoding="utf-8").write(
+        open(os.path.join(out_dir, f"chart_convergence_{suf}.svg"), "w", encoding="utf-8").write(
             svg_convergence(conv, en))
         if psyc:   # PSYC 110：两条件（不给资料 / 使用本技能）× 三模型
             for metric, name in (("correct", "psyc_correct"), ("abstention_oos", "psyc_oos")):
-                open(os.path.join(OUT, f"chart_{name}_{suf}.svg"), "w", encoding="utf-8").write(
+                open(os.path.join(out_dir, f"chart_{name}_{suf}.svg"), "w", encoding="utf-8").write(
                     svg_grouped(psyc, metric, en, arms=PSYC_ARMS, key_prefix="psyc|"))
 
 
-def main():
-    S = json.load(open(os.path.join(OUT, "summary.json"), encoding="utf-8"))
-    _write_standalone_svgs(S)
+def main(argv=None):
+    # Default behavior (no args) is unchanged: render the committed results/matrix/summary.json into
+    # results/matrix/. --summary renders an EXPLICIT summary; --out-dir writes elsewhere (e.g. a tmp
+    # dir for fixture pipelines) — so it no longer FORCES the stale committed summary.
+    ap = argparse.ArgumentParser(description="渲染矩阵 summary.json → 中英双语 report.html + 图表 SVG。")
+    ap.add_argument("--summary", default=os.path.join(OUT, "summary.json"),
+                    help="要渲染的 summary.json（默认 results/matrix/summary.json）")
+    ap.add_argument("--out-dir", default=OUT, help="输出目录（默认 results/matrix/）")
+    args = ap.parse_args(argv)
+    out_dir = args.out_dir
+    explicit = os.path.abspath(args.summary) != os.path.abspath(os.path.join(OUT, "summary.json"))
+    # rendering a CUSTOM --summary into the default results/matrix/ would overwrite the committed
+    # published report — refuse and require --out-dir for any explicit summary.
+    if explicit and os.path.abspath(out_dir) == os.path.abspath(OUT):
+        sys.stderr.write("report_matrix: 用自定义 --summary 渲染到默认 results/matrix/ 会覆盖已发布报告；"
+                         "请用 --out-dir 指定其他目录。\n")
+        return 2
+    os.makedirs(out_dir, exist_ok=True)
+    S = json.load(open(args.summary, encoding="utf-8"))
+    if not explicit:
+        _write_standalone_svgs(S, out_dir)   # the README's published comparison charts — default render only
     css = ("body{max-width:860px;margin:0 auto;padding:24px 18px;color:#202124;"
            "font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;line-height:1.65}"
            "h1{font-size:24px}h2{font-size:19px;margin-top:32px;border-bottom:2px solid #e8eaed;padding-bottom:6px}"
@@ -269,11 +335,23 @@ def main():
             "<title>6.006 防幻觉实测 / Hallucination Benchmark</title>",
             f"<style>{css}</style></head><body>",
             "<div class='langbar'><button id='btn-zh' class='on' onclick=\"setLang('zh')\">中文</button>"
-            "<button id='btn-en' onclick=\"setLang('en')\">English</button></div>",
-            block("zh", S), block("en", S), f"<script>{js}</script>", "</body></html>"]
-    path = os.path.join(OUT, "report.html")
+            "<button id='btn-en' onclick=\"setLang('en')\">English</button></div>"]
+    if explicit:
+        # explicit / custom / fixture summary → a generic DATA-only render of the summary's own
+        # models·arms (no published MIT/PSYC narrative or hard-coded numbers), under a clear banner.
+        page.append(
+            "<div class='card' style='background:#fef7e0;border-color:#f9d57a'>⚠️ "
+            f"本视图由 <code>--summary {html.escape(os.path.basename(args.summary))}</code> 显式渲染："
+            "数字全部来自所提供的 summary，<b>并非已发布的 MIT 6.006 / Yale PSYC 110 实测</b>"
+            "（如 fixture / 自定义聚合输出）。/ Rendered from an explicit <code>--summary</code>: the numbers "
+            "come entirely from the provided summary — <b>this is NOT the published MIT/PSYC benchmark</b>.</div>")
+        page += [block_generic("zh", S), block_generic("en", S), f"<script>{js}</script>", "</body></html>"]
+    else:
+        page += [block("zh", S), block("en", S), f"<script>{js}</script>", "</body></html>"]
+    path = os.path.join(out_dir, "report.html")
     open(path, "w", encoding="utf-8").write("\n".join(page))
     print("[+] 写出", path)
+    return 0
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -1,7 +1,7 @@
 # 测试与 Benchmark 审计 (Testing & Benchmark Audit)
 
 > 这是一份**诚实的现状快照**，用来在投入昂贵测试之前，把「我们到底测了什么、没测什么」说清楚。
-> 非营销文档。结论指向 PR 路线（见文末）。当前进度：**T1**（审计文档 + 一致性守卫）与 **T2**（Tier 2 确定性行为冒烟层）已落地进 CI；T2 的**真 LLM 行为**与 **T3–T5** 仍待做。本文件是跨 PR 维护的活快照，不跑付费 benchmark。
+> 非营销文档。结论指向 PR 路线（见文末）。当前进度：**T1**（审计文档 + 一致性守卫）、**T2**（Tier 2 确定性行为冒烟层）、**T3**（提交版聚合器 `aggregate_matrix.py` + fixture 流水线）已落地；T2 的**真 LLM 行为**与 **T4–T5** 仍待做（完整发布矩阵仍需私有/付费产物）。本文件是跨 PR 维护的活快照，不跑付费 benchmark。
 
 ---
 
@@ -69,8 +69,8 @@
   - `rawfiles`：原始文件 + 通用 agent、不装技能——**最公平的对照**。
   - `skill`：建好的 wiki + quiz_bank、使用本技能。
   - **遗留/压力臂 `material` / dump-all**：整门课全文塞进一次提问；**非主对照**，保留为**压力脚注**（实测会淹没弱模型并触发上下文/用量上限而跑崩）。
-- **`report_matrix.py` 只渲染、不计算**：它读取预先算好的 `results/matrix/summary.json` 出图。
-- **`summary.json` 缺提交版聚合器**：当前 `summary.json` 是**预先计算（precomputed）**的产物；仓库里**还没有**一条从「`gen.py` 生成的答案 + 判分缓存」聚合出 `summary.json` 的提交版脚本。补齐这个**聚合器（aggregator）是未来 PR T3**。（另注：`rejudge.py` 重判后写的是 `summary_corrected.json`，而 `report_matrix.py` **只读** `summary.json`——二者不接，重判结果不会自动进矩阵报告。）
+- **`report_matrix.py` 只渲染、不计算**：默认渲染 `results/matrix/summary.json`；T3 起支持 `--summary <file> --out-dir <dir>`，可渲染**显式**的 summary（不再被迫只渲染那份已提交的）。
+- **`summary.json` 聚合器已由 T3 补上**：`benchmark/aggregate_matrix.py`（**T3 新增**，纯标准库）从**显式**的 answer/score 行聚合出 `summary.json` 兼容的矩阵 summary，并有 fixture 级可复现流水线（见 [`matrix_pipeline.md`](matrix_pipeline.md)）。**但已发布的 MIT/PSYC `summary.json` 仍是预先计算（precomputed）的产物**：完整矩阵依旧依赖**私有/中间产物 + 付费模型运行**（真实答案日志、私有金标未提交），聚合器本身**不**重现已发布数字。（另注：`rejudge.py` 重判后写的是 `summary_corrected.json`，其结构是**嵌套的** `algo` / `psyc` 块，**不是** `report_matrix.py` 读的顶层 `matrix`/`n_items` 形状，故**不能**直接 `--summary summary_corrected.json` 渲染——需先转成顶层 matrix 形状，重判结果才不会自动进矩阵报告。）
 - **判分已有确定性快路径**：越界弃答 / 数值题 / 词面精确匹配在调用 LLM 裁判前就先确定，只有未决的事实/定义题才走 LLM 裁判。
 - **`--mock` 只验管线**：mock 答案与 mock 裁判都是预设的，能验证管线连通，**无法捕捉真实判分质量回归**。
 
@@ -96,6 +96,6 @@
 
 - **T1** ✅：审计文档 + 覆盖矩阵 + benchmark 文档一致性守卫（零成本，纯文档/测试）。
 - **T2** ✅（确定性层）：Tier 2 行为冒烟——自撰非版权 fixture + harness + 确定性探测器（进 CI）；**真 LLM 行为冒烟为 opt-in、未进 CI、尚未实现**。
-- **T3**：benchmark 缓存/续跑/成本日志 + **`summary.json` 聚合器**。
+- **T3** ✅（聚合层）：提交版 `summary.json` 聚合器 [`aggregate_matrix.py`](matrix_pipeline.md) + fixture 级可复现流水线 + `report_matrix.py --summary`。**完整发布矩阵仍依赖私有/付费产物**；benchmark 缓存/续跑/成本日志为后续增量。
 - **T4**：长程漂移 harness。
 - **T5**：判分校准（扩 kappa 样本、加 near-miss 越界探针、跨家族裁判、修正数值抽取）。
