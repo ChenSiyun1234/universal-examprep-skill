@@ -52,12 +52,16 @@
 
 4. **配置**：复制 `config.example.json` 为 `config.json`，按需改 `generator_model` / `judge_repeats` 等。
 
-5. **真跑（遗留两臂快路径）**——这是目前唯一能**端到端一键跑通**的脚本，但它只产出遗留两臂结果：
-   ```
-   python run_benchmark.py --config config.json
-   ```
-   产出 `results/report.html`（**给用户看的中英双语可视化报告**：图表 + 每个指标超链接到对应权威基准 + 末尾 References）、`results/report.md`（数据版）、`results/raw.jsonl`（逐题原始答案+评分）。
-   > **⚠️ 这一步不是主对照三臂**：`run_benchmark.py` 是**早期的两臂脚手架**，只跑 `baseline`（只给原始材料，≈ material/dump 类）vs `skill`，**不含主对照臂 `closedbook` / `rawfiles`**——照它跑出的是遗留两臂报告。**主对照三臂 × 多模型矩阵**走 `gen.py`（生成答案）→ `rejudge.py`（判分）→ `report_matrix.py`（渲染）这条路径；但其中「答案 + 判分 → `summary.json`」的提交版聚合器**尚缺（未来 PR T3）**，因此该矩阵目前**还不能一键复现**，当前 `summary.json` 是预先计算的产物。
+5. **真跑**——分两条路径，**主对照口径是三臂矩阵**：
+
+   - **主对照三臂 × 多模型矩阵（推荐口径）**：走 `gen.py`（生成答案）→ `rejudge.py`（判分）→ `report_matrix.py`（渲染 `results/matrix/report.html`）。臂为 `closedbook` / `rawfiles` / `skill`。
+     > ⚠️ **目前还不能一键复现**：把「答案 + 判分」聚合成 `results/matrix/summary.json` 的提交版聚合器**尚缺（未来 PR T3）**，故这条路径暂**无法仅凭本仓库脚本端到端跑通**；已发布的 `summary.json` 是预先计算的产物（详见 [`docs/testing-audit.md`](docs/testing-audit.md)）。
+
+   - **遗留两臂快路径（目前唯一能一键端到端跑通的脚本）**：
+     ```
+     python run_benchmark.py --config config.json
+     ```
+     产出 `results/report.html`（**中英双语可视化报告**：图表 + 指标超链接到权威基准 + 末尾 References）、`results/report.md`、`results/raw.jsonl`（逐题原始答案+评分）。但它只跑 `baseline`（只给原始材料，≈ material/dump 类）vs `skill`，**不含主对照臂 `closedbook` / `rawfiles`**——产出的是**遗留两臂报告**，不是主对照矩阵。
 
 6. **裁判可信度校准（出报告前必做）**：人工标注 30~50 题子集放进 `calibration/`，用 `stats.cohen_kappa`
    算"人工 vs LLM 裁判"的一致性。**kappa ≥ 0.6 左右才信任裁判的数字**；否则先改进裁判/题目再说。
