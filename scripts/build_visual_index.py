@@ -137,13 +137,12 @@ class RealBackend(object):
             self._fitz = fitz
         except Exception:
             pass
-        if self._fitz is None:
-            try:
-                import pypdfium2
-                from PIL import Image  # noqa: F401 — pypdfium2 render needs Pillow to save PNG
-                self._pdfium = pypdfium2
-            except Exception:
-                pass
+        try:                                           # ALWAYS load the render fallback when available —
+            import pypdfium2                           # fitz may fail on a particular PDF/page and the
+            from PIL import Image  # noqa: F401 — pypdfium2 render needs Pillow to save PNG
+            self._pdfium = pypdfium2
+        except Exception:
+            pass
         self.name = "+".join(n for n, m in (("pypdf", self._pypdf), ("pymupdf", self._fitz),
                                             ("pypdfium2", self._pdfium)) if m) or "none"
 
@@ -193,22 +192,25 @@ class RealBackend(object):
             doc.close()
 
     def render_page_png(self, pdf_path, page_index):
-        try:
-            if self._fitz is not None:
+        if self._fitz is not None:
+            try:
                 doc = self._fitz.open(pdf_path)
                 try:
                     return doc[page_index].get_pixmap(dpi=150).tobytes("png")
                 finally:
                     doc.close()
-            if self._pdfium is not None:
+            except Exception:
+                pass                                   # fall through: pdfium may still render this page
+        if self._pdfium is not None:
+            try:
                 import io
                 pdf = self._pdfium.PdfDocument(pdf_path)
                 img = pdf[page_index].render(scale=2.0).to_pil()
                 buf = io.BytesIO()
                 img.save(buf, format="PNG")
                 return buf.getvalue()
-        except Exception:
-            return None
+            except Exception:
+                return None
         return None
 
 
@@ -290,6 +292,14 @@ def _usable_prompt_asset(ws, a):
     return (not unsafe) and full and os.path.isfile(full) and os.access(full, os.R_OK)
 
 
+def _file_indexed(fig_files, source_file):
+    """Was this source_file actually scanned into the figure index (exact or basename match)?"""
+    if not source_file:
+        return False
+    sf = str(source_file).replace("\\", "/")
+    return sf in fig_files or any(os.path.basename(r) == os.path.basename(sf) for r in fig_files)
+
+
 def _visual_hits(fig_files, source_file, pages):
     """Which of `pages` are visual pages of `source_file`. EXACT relative-path match wins; only when no
     exact match exists do we fall back to basename matches — and then take the UNION across duplicates
@@ -307,10 +317,12 @@ def _visual_hits(fig_files, source_file, pages):
     return sorted(hits)
 
 
-def build_question_index(ws, bank, fig_files):
+def build_question_index(ws, bank, fig_files, warnings=None):
     """Per-question visual profile + per-chapter rollup + suspects (recall net)."""
     questions, suspects = [], []
     per_chapter = {}
+    warnings = warnings if warnings is not None else []
+    unindexed = set()
     for q in bank:
         if not isinstance(q, dict) or q.get("id") is None:
             continue
@@ -328,6 +340,15 @@ def build_question_index(ws, bank, fig_files):
         q_hits = _visual_hits(fig_files, q.get("source_file"), q.get("source_pages"))
         a_hits = _visual_hits(fig_files, q.get("answer_source_file") or q.get("source_file"),
                               q.get("answer_source_pages"))
+        # a provenance PDF that was never scanned means this item is UNVERIFIABLE, not non-visual —
+        # stay silent and the recall net looks trusted while whole files slipped through
+        if fig_files and q.get("source_file") and q.get("source_pages") \
+                and not _file_indexed(fig_files, q.get("source_file")):
+            sf_disp = str(q.get("source_file"))
+            if sf_disp not in unindexed:
+                unindexed.add(sf_disp)
+                warnings.append("source_pdf_not_indexed: %s（题目出处 PDF 不在 --materials 扫描结果里，"
+                                "这些题的疑漏不可核对）" % sf_disp)
         chap = q.get("chapter") if q.get("chapter") is not None else q.get("phase")   # phase-tagged banks
         rec = {
             "id": qid, "chapter": chap,
@@ -427,6 +448,17 @@ def apply_suspects(ws, materials, bank, suspects, backend, asset_root, warnings)
             continue
         if not isinstance(q.get("assets"), list):      # normalize "assets": null / non-list before append
             q["assets"] = []
+        # flipping maybe_requires_assets=true upgrades EVERY declared asset to fail-closed (the validator
+        # errors on any unreadable one) — prune stale/unsafe leftovers first, loudly, so the applied
+        # workspace stays valid (quiz_bank.json.bak already preserves the original)
+        kept = []
+        for a in q["assets"]:
+            if isinstance(a, dict) and _usable_prompt_asset(ws, a):
+                kept.append(a)
+            else:
+                warnings.append("apply_pruned_stale_asset: %s（移除不可用旧 asset %r，避免回写后校验失败）"
+                                % (s["id"], a.get("path") if isinstance(a, dict) else a))
+        q["assets"] = kept
         digest = hashlib.sha1(s["id"].encode("utf-8")).hexdigest()[:8]   # distinct ids never collide on
         for page, png in renders:                                        # sanitization/truncation
             name = "%s_%s_p%d.png" % (_SAFE_NAME_RE.sub("_", s["id"])[:60], digest, page)
@@ -469,7 +501,7 @@ def run(argv=None, backend=None):
     else:
         warnings.append("no_materials: 未给 --materials——只建题目索引，无法交叉核对疑漏（召回网关闭）")
 
-    questions, per_chapter, suspects = build_question_index(ws, bank, fig_files)
+    questions, per_chapter, suspects = build_question_index(ws, bank, fig_files, warnings)
 
     applied = 0
     if args.apply and suspects:

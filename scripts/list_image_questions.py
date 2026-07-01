@@ -58,9 +58,10 @@ def run(argv=None):
             # a PDF that failed to scan AT ALL leaves that file's suspects invisible — also untrustworthy
             if any(w.startswith("no_materials") for w in idx_warnings):
                 recall_net, recall_note = False, "索引构建时未给 --materials，疑漏交叉核对未运行"
-            elif any(w.startswith("pdf_text_failed") for w in idx_warnings):
-                bad = [w.split(":", 1)[1].strip() for w in idx_warnings if w.startswith("pdf_text_failed")]
-                recall_net, recall_note = False, "有 PDF 完全未能扫描（%s）——这些文件的疑漏不可见" % "; ".join(bad)
+            elif any(w.startswith(("pdf_text_failed", "source_pdf_not_indexed")) for w in idx_warnings):
+                bad = [w.split(":", 1)[1].strip() for w in idx_warnings
+                       if w.startswith(("pdf_text_failed", "source_pdf_not_indexed"))]
+                recall_net, recall_note = False, "有出处 PDF 未被扫描/未被索引（%s）——这些文件的疑漏不可见" % "; ".join(bad)
             elif any(w.startswith(("no_media_backend", "media_failed")) for w in idx_warnings):
                 recall_net, recall_note = True, "结构信号缺失/部分失败（PyMuPDF）——疑漏口径仅靠文字信号，可能有漏"
             else:

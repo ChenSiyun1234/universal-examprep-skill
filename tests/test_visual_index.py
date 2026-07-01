@@ -633,6 +633,86 @@ class OfficialTools(unittest.TestCase):
         self.assertFalse(data["recall_net"])                      # a wholly-unscanned PDF → untrustworthy
         self.assertIn("ch02", data["recall_note"])
 
+    # ---- regression guards for Codex round-4 (4 findings) ----
+
+    def test_unindexed_source_pdf_warned_and_untrusted(self):
+        # a question whose provenance PDF was never scanned is UNVERIFIABLE, not silently non-visual
+        tmp = tempfile.mkdtemp()
+        ws, _bank = self._ws_with(tmp, [
+            {"id": "lost_src", "chapter": 9, "type": "subjective", "question": "图题。",
+             "source": "material", "ai_generated": False,
+             "source_file": "lectures/missing_ch09.pdf", "source_pages": [1]}])
+        mat = os.path.join(tmp, "mat")
+        _mk_materials(mat, ["ch01.pdf", "ch02.pdf"])
+        BVI.run(["--workspace", ws, "--materials", mat], backend=_default_backend())
+        qidx = _load(ws, "image_question_index.json")
+        self.assertTrue(any(w.startswith("source_pdf_not_indexed") and "missing_ch09" in w
+                            for w in qidx["warnings"]))
+        rc, out = self._capture(LIQ.run, ["--workspace", ws, "--json"])
+        data = json.loads(out)
+        self.assertFalse(data["recall_net"])                      # untrusted, names the missing file
+        self.assertIn("missing_ch09", data["recall_note"])
+
+    def test_apply_prunes_stale_asset_and_stays_valid(self):
+        # flipping maybe=true must not turn an old stale (warning-level) asset into a validator ERROR
+        tmp = tempfile.mkdtemp()
+        ws, bank_path = self._ws_with(tmp, [
+            {"id": "stale_flip", "chapter": 1, "type": "subjective", "question": "图题。",
+             "source": "material", "ai_generated": False,
+             "source_file": "lectures/ch01.pdf", "source_pages": [2],
+             "assets": [{"path": "references/assets/long_gone.png", "role": "figure", "type": "page_image"}]}])
+        mat = os.path.join(tmp, "mat")
+        _mk_materials(mat, ["ch01.pdf", "ch02.pdf"])
+        rc = BVI.run(["--workspace", ws, "--materials", mat, "--apply"], backend=_default_backend())
+        self.assertEqual(rc, 0)
+        q = next(x for x in json.load(open(bank_path, encoding="utf-8")) if x["id"] == "stale_flip")
+        self.assertIs(q["maybe_requires_assets"], True)
+        paths = [a["path"] for a in q["assets"]]
+        self.assertNotIn("references/assets/long_gone.png", paths)   # stale asset pruned, loudly
+        self.assertTrue(any(p.endswith("_p2.png") for p in paths))
+        qidx = _load(ws, "image_question_index.json")
+        self.assertTrue(any(w.startswith("apply_pruned_stale_asset") for w in qidx["warnings"]))
+        r = subprocess.run([sys.executable, os.path.join(SCRIPTS, "validate_workspace.py"), ws],
+                           capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)       # applied workspace still validates
+
+    def test_figure_pages_surfaces_scan_failures(self):
+        tmp = tempfile.mkdtemp()
+        be = _default_backend()
+        del be.texts["ch02.pdf"]                                  # ch02 scan fails entirely
+        ws, _m, _rc = _build(tmp, backend=be)
+        rc, out = self._capture(LFP.run, ["--workspace", ws])
+        self.assertEqual(rc, 0)
+        self.assertIn("pdf_text_failed", out)                     # the missing-file gap is visible
+        rc, out2 = self._capture(LFP.run, ["--workspace", ws, "--json"])
+        self.assertTrue(any(w.startswith("pdf_text_failed") for w in json.loads(out2)["warnings"]))
+
+    def test_render_falls_back_to_pdfium_when_fitz_fails(self):
+        rb = BVI.RealBackend.__new__(BVI.RealBackend)
+
+        class _FitzBroken(object):
+            @staticmethod
+            def open(path):
+                raise RuntimeError("fitz cannot render this PDF")
+
+        class _PdfiumPage(object):
+            def render(self, scale):
+                class _Bmp(object):
+                    def to_pil(self):
+                        class _Img(object):
+                            def save(self, buf, format):
+                                buf.write(b"PNGBYTES")
+                        return _Img()
+                return _Bmp()
+
+        class _Pdfium(object):
+            @staticmethod
+            def PdfDocument(path):
+                return {0: _PdfiumPage()}
+
+        rb._pypdf, rb._fitz, rb._pdfium = None, _FitzBroken(), _Pdfium()
+        self.assertEqual(rb.render_page_png("x.pdf", 0), b"PNGBYTES")   # pdfium rescues the page
+
     def test_no_network_llm_or_dep_in_new_scripts(self):
         for name in ("build_visual_index.py", "list_image_questions.py",
                      "list_figure_pages.py", "show_question_assets.py"):

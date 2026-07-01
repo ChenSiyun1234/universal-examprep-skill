@@ -53,12 +53,16 @@ def run(argv=None):
         if pages:
             out[rel] = {"pages_total": info.get("pages"), "visual": pages}
 
+    scan_warnings = [str(w) for w in (idx.get("warnings") or [])
+                     if str(w).startswith(("pdf_text_failed", "media_failed", "no_media_backend"))]
     if args.json:
-        print(json.dumps({"files": out, "media_signals": idx.get("media_signals")},
-                         ensure_ascii=False, indent=2))
+        print(json.dumps({"files": out, "media_signals": idx.get("media_signals"),
+                          "warnings": scan_warnings}, ensure_ascii=False, indent=2))
         return 0
     if not idx.get("media_signals", True):
         print("[!] 本索引缺结构信号（无 PyMuPDF）——仅词面判定，可能有漏")
+    for w in scan_warnings:                            # a skipped/degraded PDF = missing pages in this metric
+        print("[!] " + w)
     total = 0
     for rel, info in out.items():
         total += len(info["visual"])
