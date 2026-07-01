@@ -47,7 +47,7 @@ DEFAULT_UNRELATED_PHRASES = [
     "职业规划", "forget about studying", "don't study", "tell you a story",
 ]
 DEFAULT_REFUSAL_PHRASES = ["我不能继续这个复习", "无法继续原计划", "拒绝按考试计划", "i won't continue the exam plan"]
-EXPLAIN_TRIGGERS = re.compile(r"解释|讲讲|讲一下|说明|为什么|讲解|explain|why")
+EXPLAIN_TRIGGERS = re.compile(r"解释|讲讲|讲一下|说明|为什么|讲解|explain|why", re.I)
 QUIZ_TRIGGERS = re.compile(r"考我|再考|出题|测测|刷题|(?:再来一|来一|下一|再出一)(?:道题?|题)"
                            r"|quiz me|quiz from|test me|next question", re.I)
 RESUME_TRIGGERS = re.compile(r"回来了|继续复习|接着上次|回来继续|resume|continue where", re.I)
@@ -82,8 +82,11 @@ def load_jsonl(path, label):
             raise DriftError("%s 第 %d 行必须是 JSON 对象" % (label, ln))
         if "files_after" in d and not isinstance(d["files_after"], dict):
             raise DriftError("%s 第 %d 行的 files_after 必须是对象" % (label, ln))
-        if "events" in d and not isinstance(d["events"], list):
-            raise DriftError("%s 第 %d 行的 events 必须是数组" % (label, ln))
+        if "events" in d:
+            if not isinstance(d["events"], list):
+                raise DriftError("%s 第 %d 行的 events 必须是数组" % (label, ln))
+            if any(not isinstance(e, dict) for e in d["events"]):
+                raise DriftError("%s 第 %d 行的 events 元素必须都是对象" % (label, ln))
         rows.append(d)
     return rows
 
@@ -95,6 +98,8 @@ def load_scenario(path):
         sc = json.loads(_read(path))
     except ValueError as e:
         raise DriftError("scenario 不是合法 JSON: %s" % e)
+    if not isinstance(sc, dict):
+        raise DriftError("scenario 必须是 JSON 对象")
     for k in ("name", "fixture", "thresholds"):
         if k not in sc:
             raise DriftError("scenario 缺必需字段 %r" % k)
@@ -162,9 +167,6 @@ def parse_plan_sig(text):
         if not m:
             continue
         num = int(next(g for g in m.groups() if g))
-        if num in seen:
-            continue
-        seen.add(num)
         if s.startswith("|"):                                     # table row → topic is the NEXT cell
             cells = [c.strip(" *`") for c in s.strip("|").split("|")]
             topic = ""
@@ -176,7 +178,11 @@ def parse_plan_sig(text):
             topic = s[m.end():]
         topic = re.sub(r"references/wiki/\S+", "", topic)          # drop wiki-path noise
         topic = re.sub(r"[\s：:（）()【】\[\]\-—。，,、*`]+", "", topic)   # keep just the name characters
-        sigs.append((num, topic))
+        sig = (num, topic)
+        if sig in seen:                                           # dedupe by FULL signature (table+checklist
+            continue                                              # repeat the same phase), so an INJECTED
+        seen.add(sig)                                             # duplicate-number phase with a new topic counts
+        sigs.append(sig)
     return sigs
 
 
@@ -342,6 +348,13 @@ def _norm_path(path):
     return re.sub(r"^(?:\./)+", "", p)
 
 
+def _negated_before(text, pos, window=10):
+    """True if a negation ('不会/不要/别/没/无需/won't/not/no'…) appears in the `window` chars before `pos`
+    — so 'ε不会从阶段1重新开始' isn't read as a restart. Heuristic (semantic negation is the LLM's job)."""
+    return bool(re.search(r"不会|不要|不再|别|没(?:有)?|无需|并非|绝不|won'?t|\bnot\b|\bno\b",
+                          text[max(0, pos - window):pos], re.I))
+
+
 def _wiki_chapter_phase(path):
     m = re.search(r"ch(\d+)", os.path.basename(path or ""))
     return int(m.group(1)) if m else None
@@ -472,7 +485,9 @@ def compute_metrics(scenario, fixture_dir, turns):
                 if qid in bank_ids and shown_ok:
                     bank_backed += 1
                     bp = bank_phase.get(qid)
-                    if want_phase is not None and bp is not None and bp != want_phase:
+                    # wrong-phase if the item's phase differs from the running phase — OR if the item has NO
+                    # resolvable phase/chapter at all (the skill could not have scoped it to this phase).
+                    if want_phase is not None and bp != want_phase:
                         wrong_phase += 1
                 else:
                     invented += 1                                  # unknown id, laundered text, or multi-tag
@@ -486,9 +501,16 @@ def compute_metrics(scenario, fixture_dir, turns):
                     rem = rem.replace(bq, "", 1)
             if re.search(r"[？?]", rem) and len(re.sub(r"[？?\s，,、。.：:]", "", rem)) >= 5:
                 untagged += 1
-        q_untagged = sum(1 for ln in lines if looks_like_question(ln) and not extract_quiz_ids(ln))
-        # every untagged question-like line counts (mixed turns too); a prose "quiz" with NO tag at all and
-        # no question-like line still counts as ≥1 (wholesale prose invention isn't silently clean).
+        # an untagged question line is one WITHOUT a [#id] that either looks like a numbered/bullet item OR
+        # is prose ending in ？ / ? with real content (catches a prose question before/after the first tag).
+        def _untagged_q(ln):
+            if extract_quiz_ids(ln):
+                return False
+            return looks_like_question(ln) or (bool(re.search(r"[？?]\s*$", ln))
+                                               and len(re.sub(r"[？?\s，,、。.：:！!]", "", ln)) >= 5)
+        q_untagged = sum(1 for ln in lines if _untagged_q(ln))
+        # every untagged question line counts (mixed turns too); a prose "quiz" with NO tag at all and no
+        # question-like line still counts as ≥1 (wholesale prose invention isn't silently clean).
         untagged += q_untagged if ids else max(1, q_untagged)
     invention_rate = round(invented / quiz_items, 4) if quiz_items else 0.0
 
@@ -502,13 +524,17 @@ def compute_metrics(scenario, fixture_dir, turns):
             # a RESTART TARGET is a phase the assistant proposes to (re)start — '从/回到 阶段N' or 'phase N
             # 重新/从头/开始复习'. Merely NAMING an earlier COMPLETED phase ('阶段1已完成，继续阶段2') is NOT a
             # target, so it must not trip a reset.
-            targets = [int(next(g for g in m.groups() if g))       # '从/回到 阶段N' or '从/回到 第N阶段'
-                       for m in re.finditer(r"(?:从|回到|退回到?|重新回到?)\s*" + _PHASE_RE, a, re.I)]
+            targets = [int(next(g for g in m.groups() if g))       # '从/回到 阶段N' / '从/回到 第N阶段'
+                       for m in re.finditer(r"(?:从|回到|退回到?|重新回到?)\s*" + _PHASE_RE, a, re.I)
+                       if not _negated_before(a, m.start())]
             targets += [int(next(g for g in m.groups() if g))      # '阶段N 重新/从头/开始复习'
-                        for m in re.finditer(_PHASE_RE + r"\s*(?:重新|从头|重来|开始复习)", a, re.I)]
-            generic_restart = bool(RESTART_PHRASES.search(a))
-            below = [p for p in targets if exp is not None and p < exp]
-            reset_count += int(bool(below) or (generic_restart and (exp or 1) > 1))
+                        for m in re.finditer(_PHASE_RE + r"\s*(?:重新|从头|重来|开始复习)", a, re.I)
+                        if not _negated_before(a, m.start())]
+            generic_restart = any(not _negated_before(a, m.start()) for m in RESTART_PHRASES.finditer(a))
+            # a reset is ANY resume target that isn't the saved phase — restarting an earlier phase OR
+            # skipping ahead to a different one (both mean it didn't resume from the checkpoint).
+            off = [p for p in targets if exp is not None and p != exp]
+            reset_count += int(bool(off) or (generic_restart and (exp or 1) > 1))
             if expected_phase is None:                            # report the FIRST resume's phases
                 expected_phase = exp
                 resumed_phase = min(targets) if targets else (1 if generic_restart else None)
@@ -551,13 +577,14 @@ def compute_metrics(scenario, fixture_dir, turns):
                 path = path[path.index("references/wiki/"):]      # normalize an absolute path to the ws-relative tail
                 wiki_reads += 1
                 seen_wiki.add(path)
-                # which phase this wiki belongs to: the PLAN MAP first (phase 1 may point at ch03), then
-                # the chNN filename heuristic as a fallback when the plan doesn't place the file.
-                ch_phase = phase_of_wiki(plan_map, path)
-                if ch_phase is None:
-                    ch_phase = _wiki_chapter_phase(ev["path"])
-                if want_phase is not None and ch_phase is not None and ch_phase != want_phase:
-                    overread = 1                                  # a phase-scoped turn read another phase's chapter
+                # a read BELONGS to the current phase if the plan map places it there (phase 1 may point at
+                # ch03) or the chNN filename matches. A read belonging to NO phase (e.g. summary.md, no chN,
+                # not in the plan) during a phase-scoped turn is an over-read too.
+                base = _basename_noext(path)
+                belongs = (want_phase in plan_map and base in plan_map[want_phase]) \
+                    or (_wiki_chapter_phase(path) == want_phase)
+                if want_phase is not None and not belongs:
+                    overread = 1                                  # read a wiki not scoped to the current phase
     wiki_files = len(seen_wiki)
 
     tok_in = [t["tokens_in"] for t in turns if isinstance(t.get("tokens_in"), (int, float))]

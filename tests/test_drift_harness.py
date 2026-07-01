@@ -507,6 +507,71 @@ class DriftHarness(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertNotIn("Traceback", r.stderr)
 
+    # ---- regression guards for the 9 findings from Codex round-5 ----
+    _PP2 = "当前阶段：2\n## 错题本\n（暂无）\n## 疑难点\n（暂无）\n"
+
+    def test_english_explanation_trigger_case_insensitive(self):
+        m = _eval_turns([{"turn": 1, "user": "Explain stacks", "assistant": "stacks are LIFO, no label here."}])
+        self.assertEqual(m["provenance_fidelity"], 0.0)   # detected as explanation, unlabeled → fails
+
+    def test_injected_duplicate_phase_is_a_mutation(self):
+        m = _eval_turns([{"turn": 1, "user": "x", "assistant": "y", "files_after": {"study_plan.md":
+            "## 阶段1：栈与队列（Stack & Queue）\n## 阶段2：树（Trees）\n## 阶段2：职业规划\n"}}])
+        self.assertGreater(m["plan_mutations"], 0)
+
+    def test_negated_restart_is_not_a_reset(self):
+        m = _eval_turns([{"turn": 1, "assistant": "到2", "phase_context": 2, "files_after": {"study_progress.md": self._PP2}},
+                         {"turn": 2, "user": "回来了", "kind": "resume", "assistant": "不会从阶段1重新开始，我们继续阶段2。"}])
+        self.assertEqual(m["reset_detected"], 0)
+
+    def test_resume_skipping_ahead_is_a_reset(self):
+        m = _eval_turns([{"turn": 1, "assistant": "到2", "phase_context": 2, "files_after": {"study_progress.md": self._PP2}},
+                         {"turn": 2, "user": "回来了", "kind": "resume", "assistant": "我们从阶段3开始复习。"}])
+        self.assertGreaterEqual(m["reset_detected"], 1)   # jumped ahead of the saved phase
+
+    def test_prose_question_before_first_tag_counted(self):
+        m = _eval_turns([{"turn": 1, "user": "考我", "kind": "quiz", "phase_context": 1,
+                          "assistant": "另外，跳表的期望复杂度是多少？\n题目 [#stack_lifo_1] 栈遵循什么访问顺序？"}])
+        self.assertGreaterEqual(m["untagged_questions"], 1)
+
+    def test_off_plan_wiki_read_flagged(self):
+        m = _eval_turns([{"turn": 1, "user": "考我", "phase_context": 1,
+                          "assistant": "题目 [#stack_lifo_1] 栈遵循什么访问顺序？",
+                          "events": [{"type": "read_file", "path": "references/wiki/summary.md"}]}])
+        self.assertEqual(m["overread_flag"], 1)           # a wiki scoped to no phase, read during phase 1
+
+    def test_scenario_not_object_exits_2(self):
+        d = tempfile.mkdtemp()
+        scf = os.path.join(d, "s.json")
+        open(scf, "w", encoding="utf-8").write("42")
+        r = _cli(["--scenario", scf, "--transcript", _tr("good_session.jsonl")])
+        self.assertEqual(r.returncode, 2)
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_non_object_event_element_exits_2(self):
+        d = tempfile.mkdtemp()
+        t = os.path.join(d, "b.jsonl")
+        with open(t, "w", encoding="utf-8") as f:
+            f.write('{"turn":1,"assistant":"x","events":["oops"]}\n')
+        r = _cli(["--scenario", SCEN, "--transcript", t])
+        self.assertEqual(r.returncode, 2)
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_unscoped_bank_item_is_wrong_phase(self):
+        d = tempfile.mkdtemp()
+        fx = os.path.join(d, "fx")
+        os.makedirs(os.path.join(fx, "references"))
+        open(os.path.join(fx, "study_plan.md"), "w", encoding="utf-8").write("## 阶段1：栈\n")
+        open(os.path.join(fx, "study_progress.initial.md"), "w", encoding="utf-8").write("当前阶段：1\n")
+        json.dump([{"id": "u1", "question": "泛题？"}],       # no phase, no chapter
+                  open(os.path.join(fx, "references", "quiz_bank.json"), "w", encoding="utf-8"), ensure_ascii=False)
+        scf = os.path.join(d, "s.json")
+        json.dump({"name": "s", "fixture": fx, "thresholds": {"wrong_phase_quiz_max": 0}},
+                  open(scf, "w", encoding="utf-8"))
+        m = _eval_turns([{"turn": 1, "user": "考我", "kind": "quiz", "phase_context": 1,
+                          "assistant": "题目 [#u1] 泛题？"}], scenario=scf)
+        self.assertEqual(m["wrong_phase_quiz"], 1)
+
     # 12) no network / LLM / API key / deps; --llm skeleton never returns success
     def test_no_network_llm_or_dep_in_source(self):
         with open(RUN, encoding="utf-8") as f:
