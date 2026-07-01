@@ -1,0 +1,429 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""Build the workspace's UNIVERSAL visual indices (P0-V2) — recall-first, subject-agnostic.
+
+Primary goal: make sure NO image-dependent question slips through unlabeled. Produces two indices
+(JSON, written into <workspace>/references/) plus a "suspected missed visual question" report:
+
+  * image_question_index.json — every quiz_bank item's visual profile: requires/maybe flags, prompt/answer
+    asset paths, source file+pages, whether an official answer exists, whether the ANSWER pages are visual.
+    Per-chapter rollup (total × requires × maybe × suspects) so "which chapter has the most figures" style
+    cross-checks are one lookup.
+  * figure_page_index.json — every VISUAL page in the course materials (lecture/homework PDFs): which file,
+    which page, what kinds of visuals (figure/table/diagram/chart/graph/plot/screenshot/circuit/tree/map/
+    geometry/flowchart …), detected by LAYERED signals — strongest first:
+      1. structural: the page physically contains embedded images / many vector drawings (via optional
+         PyMuPDF; no LLM) — catches pages with NO caption keywords at all;
+      2. layout: figure/table numbering ("Figure 3", "表 2"), axis/legend vocabulary;
+      3. keyword classes (weakest, multi-domain zh+en; NEVER tied to one subject like PDF/CDF).
+  * suspects — quiz_bank items that carry source_file/source_pages landing on a visual page but are NOT
+    labeled requires/maybe_requires_assets and have no prompt-side asset. Default: report only.
+    --apply renders each suspect's page to references/assets/ (page_image, question_context role), attaches
+    it and sets maybe_requires_assets=true — so the fail-closed validator gate stays satisfiable.
+
+Pure stdlib core; pypdf (text) / PyMuPDF (structural signals + render) / pypdfium2+Pillow (render fallback)
+are OPTIONAL lazy imports. No network, no LLM, no API keys. Honest limits: the detector is a deterministic
+heuristic (recall-first: prefer over-flagging `maybe` to missing a figure question); semantic/AI-vision
+checking is a future opt-in, NOT implemented here.
+
+    python scripts/build_visual_index.py --workspace <ws> --materials <course-folder>
+    python scripts/build_visual_index.py --workspace <ws> --materials <dir> --apply   # render+attach suspects
+
+Exit codes: 0 ok · 2 bad input · 3 materials contain PDFs but the needed backend is missing.
+"""
+import argparse
+import json
+import os
+import re
+import sys
+
+for _s in ("stdout", "stderr"):
+    try:
+        getattr(sys, _s).reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+
+# workspace-leftover / tooling dirs to skip while scanning materials (same policy as the P0B builder)
+try:
+    from build_raw_input_from_workspace import ALWAYS_PRUNE, _is_leftover_workspace, _is_workspace_root
+except Exception:                                      # pragma: no cover - builder should always be present
+    ALWAYS_PRUNE = {".git", "__pycache__", "node_modules", ".venv", "venv", ".idea", ".vscode"}
+
+    def _is_leftover_workspace(path, name):
+        return False
+
+    def _is_workspace_root(path):
+        return False
+
+# ---------------- universal visual-kind vocabulary (multi-domain, zh+en; NOT subject-bound) ----------------
+VISUAL_KIND_WORDS = {
+    "figure": ("figure", "fig.", "illustration", "插图", "如图", "下图", "上图"),
+    "table": ("table", "tabular", "表格", "数据表"),
+    "diagram": ("diagram", "schematic", "示意图", "结构图", "装置图", "受力图", "解剖图", "机械结构", "状态机",
+                "state machine"),
+    "chart": ("chart", "bar chart", "pie chart", "柱状图", "饼图", "统计图"),
+    "graph": ("graph", "curve", "waveform", "曲线", "波形", "信号图", "函数图"),
+    "plot": ("plot", "scatter", "散点", "坐标图", "sample path"),
+    "screenshot": ("screenshot", "截图", "运行结果", "界面图", "console output"),
+    "circuit": ("circuit", "电路", "原理图"),
+    "tree": ("tree", "树状", "二叉树", "决策树"),
+    "map": ("map", "地图"),
+    "geometry": ("geometry", "几何图", "三角形", "venn", "文氏图", "韦恩图"),
+    "flowchart": ("flowchart", "flow chart", "流程图"),
+}
+_FIGREF_RE = re.compile(r"(?:figure|fig\.?|table|图|表)\s*\d", re.I)
+_AXIS_WORDS = ("x-axis", "y-axis", "x轴", "y轴", "横轴", "纵轴", "坐标轴", "图例", "legend", "axis")
+# structural thresholds — recall-first: any embedded image counts; >=6 vector drawings (below that is
+# usually just rules/underlines in text layout)
+_MIN_DRAWINGS = 6
+
+
+def classify_page(text, images=0, drawings=0):
+    """Deterministic layered judgment for ONE page. Returns {has_visual, visual_kinds, signals}.
+    Recall-first: structural evidence alone (a page with an embedded image but NO caption keywords)
+    is enough — the exact gap that made keyword-only detection miss figure pages."""
+    t = (text or "").lower()
+    kinds = sorted(k for k, words in VISUAL_KIND_WORDS.items() if any(w in t for w in words))
+    structural = (images or 0) > 0 or (drawings or 0) >= _MIN_DRAWINGS
+    figref = bool(_FIGREF_RE.search(t))
+    axis = any(w in t for w in _AXIS_WORDS)
+    return {
+        "has_visual": bool(structural or figref or axis or kinds),
+        "visual_kinds": kinds,
+        "signals": {"images": int(images or 0), "drawings": int(drawings or 0),
+                    "structural": structural, "figref": figref, "axis": axis},
+    }
+
+
+# ---------------- optional backends (lazy; injectable for tests) ----------------
+
+class RealBackend(object):
+    """text via pypdf · structural media counts + render via PyMuPDF · render fallback pypdfium2+Pillow."""
+
+    def __init__(self):
+        self._pypdf = self._fitz = self._pdfium = None
+        try:
+            import pypdf
+            self._pypdf = pypdf
+        except Exception:
+            pass
+        try:
+            import fitz
+            self._fitz = fitz
+        except Exception:
+            pass
+        if self._fitz is None:
+            try:
+                import pypdfium2
+                from PIL import Image  # noqa: F401 — pypdfium2 render needs Pillow to save PNG
+                self._pdfium = pypdfium2
+            except Exception:
+                pass
+        self.name = "+".join(n for n, m in (("pypdf", self._pypdf), ("pymupdf", self._fitz),
+                                            ("pypdfium2", self._pdfium)) if m) or "none"
+
+    def can_text(self):
+        return self._pypdf is not None or self._fitz is not None
+
+    def can_media(self):
+        return self._fitz is not None
+
+    def can_render(self):
+        return self._fitz is not None or self._pdfium is not None
+
+    def pages_text(self, pdf_path):
+        if self._pypdf is not None:
+            reader = self._pypdf.PdfReader(pdf_path)
+            return [(p.extract_text() or "") for p in reader.pages]
+        doc = self._fitz.open(pdf_path)
+        try:
+            return [doc[i].get_text() or "" for i in range(doc.page_count)]
+        finally:
+            doc.close()
+
+    def pages_media(self, pdf_path):
+        """[(image_count, drawing_count)] per page, or None when PyMuPDF is unavailable."""
+        if self._fitz is None:
+            return None
+        doc = self._fitz.open(pdf_path)
+        try:
+            out = []
+            for i in range(doc.page_count):
+                page = doc[i]
+                try:
+                    imgs = len(page.get_images(full=True))
+                except Exception:
+                    imgs = 0
+                try:
+                    draws = len(page.get_drawings())
+                except Exception:
+                    draws = 0
+                out.append((imgs, draws))
+            return out
+        finally:
+            doc.close()
+
+    def render_page_png(self, pdf_path, page_index):
+        try:
+            if self._fitz is not None:
+                doc = self._fitz.open(pdf_path)
+                try:
+                    return doc[page_index].get_pixmap(dpi=150).tobytes("png")
+                finally:
+                    doc.close()
+            if self._pdfium is not None:
+                import io
+                pdf = self._pdfium.PdfDocument(pdf_path)
+                img = pdf[page_index].render(scale=2.0).to_pil()
+                buf = io.BytesIO()
+                img.save(buf, format="PNG")
+                return buf.getvalue()
+        except Exception:
+            return None
+        return None
+
+
+def _die(msg, code=2):
+    sys.stderr.write("build_visual_index: " + msg + "\n")
+    raise SystemExit(code)
+
+
+def _read_json(path, label):
+    if not os.path.isfile(path):
+        _die("找不到%s: %s" % (label, path))
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except ValueError as e:
+        _die("%s 不是合法 JSON: %s" % (label, e))
+
+
+def _rel_posix(root, path):
+    return os.path.relpath(path, root).replace("\\", "/")
+
+
+def scan_materials(materials, backend, warnings):
+    """Walk the course folder for PDFs (skipping tooling/leftover-workspace dirs) and classify every page.
+    Returns {rel_pdf_path: {"pages": n, "visual": {page_no(1-based): classify_page(...)}}}"""
+    pdfs = []
+    for base, dirs, files in os.walk(materials):
+        pruned = []
+        for d in list(dirs):
+            full = os.path.join(base, d)
+            if d in ALWAYS_PRUNE or _is_leftover_workspace(full, d) or _is_workspace_root(full):
+                dirs.remove(d)
+                pruned.append(d)
+        for fn in sorted(files):
+            if fn.lower().endswith(".pdf"):
+                pdfs.append(os.path.join(base, fn))
+    if pdfs and not backend.can_text():
+        _die("材料里有 PDF 但缺文本后端——pip install pypdf（或 pymupdf）后重跑", 3)
+    if pdfs and not backend.can_media():
+        warnings.append("no_media_backend: 缺 PyMuPDF（pip install pymupdf），无法枚举页内图片/矢量对象——"
+                        "结构信号缺失，仅靠文字信号，召回会打折")
+    out = {}
+    for pdf in sorted(pdfs):
+        rel = _rel_posix(materials, pdf)
+        try:
+            texts = backend.pages_text(pdf)
+        except Exception as e:
+            warnings.append("pdf_text_failed: %s (%s)" % (rel, e))
+            continue
+        media = backend.pages_media(pdf) if backend.can_media() else None
+        visual = {}
+        for i, text in enumerate(texts):
+            imgs, draws = (media[i] if media and i < len(media) else (0, 0))
+            cls = classify_page(text, images=imgs, drawings=draws)
+            if cls["has_visual"]:
+                visual[i + 1] = cls                     # 1-based page numbers, matching source_pages
+        out[rel] = {"pages": len(texts), "visual": visual}
+    return out
+
+
+def _prompt_side_assets(q):
+    side = {"question_context", "figure", "diagram", "table"}
+    return [a for a in (q.get("assets") or []) if isinstance(a, dict) and a.get("role") in side]
+
+
+def _visual_hits(fig_files, source_file, pages):
+    """Which of `pages` are visual pages of `source_file` in the figure index (basename-tolerant match)."""
+    if not source_file or not pages:
+        return []
+    sf = str(source_file).replace("\\", "/")
+    for rel, info in fig_files.items():
+        if rel == sf or os.path.basename(rel) == os.path.basename(sf):
+            return sorted(p for p in pages if isinstance(p, int) and p in info["visual"])
+    return []
+
+
+def build_question_index(bank, fig_files):
+    """Per-question visual profile + per-chapter rollup + suspects (recall net)."""
+    questions, suspects = [], []
+    per_chapter = {}
+    for q in bank:
+        if not isinstance(q, dict) or q.get("id") is None:
+            continue
+        qid = str(q["id"])
+        requires = q.get("requires_assets") is True
+        maybe = q.get("maybe_requires_assets") is True
+        prompt_assets = [a.get("path") for a in _prompt_side_assets(q) if a.get("path")]
+        answer_assets = [a.get("path") for a in (q.get("assets") or [])
+                         if isinstance(a, dict) and a.get("role") in ("answer_context", "worked_solution")
+                         and a.get("path")]
+        has_answer = any(q.get(k) not in (None, "", []) for k in ("answer", "answer_keywords"))
+        q_hits = _visual_hits(fig_files, q.get("source_file"), q.get("source_pages"))
+        a_hits = _visual_hits(fig_files, q.get("answer_source_file") or q.get("source_file"),
+                              q.get("answer_source_pages"))
+        rec = {
+            "id": qid, "chapter": q.get("chapter"),
+            "requires_assets": requires, "maybe_requires_assets": maybe,
+            "prompt_assets": prompt_assets, "answer_assets": answer_assets,
+            "source_file": q.get("source_file"), "source_pages": q.get("source_pages"),
+            "has_official_answer": has_answer,
+            "answer_source_file": q.get("answer_source_file"),
+            "answer_source_pages": q.get("answer_source_pages"),
+            "question_pages_visual": q_hits,
+            "answer_pages_visual": (a_hits if q.get("answer_source_pages") else None),
+        }
+        questions.append(rec)
+        ch = str(q.get("chapter")) if q.get("chapter") is not None else "?"
+        c = per_chapter.setdefault(ch, {"questions": 0, "requires": 0, "maybe": 0, "suspects": 0})
+        c["questions"] += 1
+        c["requires"] += int(requires)
+        c["maybe"] += int(maybe)
+        if q_hits and not requires and not maybe and not prompt_assets:
+            c["suspects"] += 1
+            suspects.append({"id": qid, "chapter": q.get("chapter"),
+                             "source_file": q.get("source_file"), "visual_pages": q_hits,
+                             "reason": "题目出处页面命中视觉页（结构/排版/词面信号），但题库未标图依赖且无题面 asset"})
+    return questions, per_chapter, suspects
+
+
+_SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_\-]+")
+
+
+def apply_suspects(ws, materials, bank, suspects, backend, asset_root, warnings):
+    """Render each suspect's first visual page → attach as question_context page_image + set
+    maybe_requires_assets=true. Backs up quiz_bank.json first. Returns number applied."""
+    if not backend.can_render():
+        _die("--apply 需要渲染后端（pip install pymupdf，或 pypdfium2+Pillow）才能把原页截图挂上题面", 3)
+    ws_abs, root_abs = os.path.abspath(ws), os.path.abspath(asset_root)
+    if os.path.commonprefix([os.path.normcase(root_abs) + os.sep, os.path.normcase(ws_abs) + os.sep]) \
+            != os.path.normcase(ws_abs) + os.sep:
+        _die("--asset-root 必须位于工作区内（否则 quiz_bank 里的相对路径无法渲染）: %s" % asset_root)
+    os.makedirs(root_abs, exist_ok=True)
+    by_id = {str(q.get("id")): q for q in bank if isinstance(q, dict) and q.get("id") is not None}
+    applied = 0
+    for s in suspects:
+        q = by_id.get(s["id"])
+        if q is None:
+            continue
+        page = s["visual_pages"][0]
+        pdf = None
+        sf = str(q.get("source_file") or "").replace("\\", "/")
+        for cand in (os.path.join(materials, sf.replace("/", os.sep)),):
+            if os.path.isfile(cand):
+                pdf = cand
+        if pdf is None:                                # basename fallback (source_file may be bare name)
+            for base, dirs, files in os.walk(materials):
+                dirs[:] = [d for d in dirs if d not in ALWAYS_PRUNE]
+                if os.path.basename(sf) in files:
+                    pdf = os.path.join(base, os.path.basename(sf))
+                    break
+        if pdf is None:
+            warnings.append("apply_skip_no_pdf: %s（找不到 %s）" % (s["id"], sf))
+            continue
+        png = backend.render_page_png(pdf, page - 1)
+        if not png:
+            warnings.append("apply_skip_render_failed: %s p.%d" % (s["id"], page))
+            continue
+        name = "%s_p%d.png" % (_SAFE_NAME_RE.sub("_", s["id"])[:80], page)
+        with open(os.path.join(root_abs, name), "wb") as f:
+            f.write(png)
+        rel = _rel_posix(ws_abs, os.path.join(root_abs, name))
+        q.setdefault("assets", []).append({
+            "path": rel, "role": "question_context", "type": "page_image",
+            "caption": "原页截图 %s p.%d（疑似图依赖，保守展示）" % (sf, page)})
+        q["maybe_requires_assets"] = True
+        applied += 1
+    return applied
+
+
+def run(argv=None, backend=None):
+    ap = argparse.ArgumentParser(description="构建通用视觉双索引（召回优先；纯标准库 + 可选 PDF 后端；无 LLM/网络）。")
+    ap.add_argument("--workspace", required=True, help="备考工作区（含 references/quiz_bank.json）")
+    ap.add_argument("--materials", default=None, help="课程材料文件夹（扫描 PDF 建 figure_page_index）")
+    ap.add_argument("--out-dir", default=None, help="索引输出目录（默认 <workspace>/references/）")
+    ap.add_argument("--apply", action="store_true",
+                    help="把疑漏题渲染原页挂为题面 asset 并标 maybe_requires_assets=true（默认只报告不改）")
+    ap.add_argument("--asset-root", default=None, help="--apply 的截图目录（默认 <workspace>/references/assets）")
+    args = ap.parse_args(argv)
+
+    ws = args.workspace
+    bank_path = os.path.join(ws, "references", "quiz_bank.json")
+    bank = _read_json(bank_path, "quiz_bank.json")
+    if not isinstance(bank, list):
+        _die("quiz_bank.json 必须是数组")
+    out_dir = args.out_dir or os.path.join(ws, "references")
+    os.makedirs(out_dir, exist_ok=True)
+    warnings = []
+    backend = backend or RealBackend()
+
+    fig_files = {}
+    if args.materials:
+        if not os.path.isdir(args.materials):
+            _die("找不到材料目录: %s" % args.materials)
+        fig_files = scan_materials(args.materials, backend, warnings)
+    else:
+        warnings.append("no_materials: 未给 --materials——只建题目索引，无法交叉核对疑漏（召回网关闭）")
+
+    questions, per_chapter, suspects = build_question_index(bank, fig_files)
+
+    applied = 0
+    if args.apply and suspects:
+        applied = apply_suspects(ws, args.materials or "", bank, suspects,
+                                 backend, args.asset_root or os.path.join(ws, "references", "assets"), warnings)
+        if applied:
+            bak = bank_path + ".bak"
+            with open(bak, "w", encoding="utf-8") as f, open(bank_path, "r", encoding="utf-8") as src:
+                f.write(src.read())
+            with open(bank_path, "w", encoding="utf-8") as f:
+                json.dump(bank, f, ensure_ascii=False, indent=2)
+            questions, per_chapter, suspects = build_question_index(bank, fig_files)   # re-index post-apply
+
+    fig_index = {
+        "generated_by": "build_visual_index.py",
+        "media_signals": backend.can_media(),
+        "note": "确定性启发式（结构/排版/词面分层，召回优先）；不是语义判定，AI 识图为未来 opt-in",
+        "files": {rel: {"pages": info["pages"],
+                        "visual_pages": [{"page": p, **cls} for p, cls in sorted(info["visual"].items())]}
+                  for rel, info in sorted(fig_files.items())},
+        "warnings": warnings,
+    }
+    q_index = {
+        "generated_by": "build_visual_index.py",
+        "questions": questions, "per_chapter": per_chapter, "suspects": suspects,
+        "applied": applied, "warnings": warnings,
+    }
+    with open(os.path.join(out_dir, "figure_page_index.json"), "w", encoding="utf-8") as f:
+        json.dump(fig_index, f, ensure_ascii=False, indent=2)
+    with open(os.path.join(out_dir, "image_question_index.json"), "w", encoding="utf-8") as f:
+        json.dump(q_index, f, ensure_ascii=False, indent=2)
+
+    n_vis = sum(len(i["visual"]) for i in fig_files.values())
+    print("[+] figure_page_index: %d 个文件 / %d 个视觉页；image_question_index: %d 题 / 疑漏 %d / 已回写 %d"
+          % (len(fig_files), n_vis, len(questions), len(suspects), applied))
+    for w in warnings:
+        print("[!] " + w)
+    if suspects and not args.apply:
+        print("[!] 有 %d 道疑似漏标的图依赖题（详见 image_question_index.json 的 suspects）；"
+              "用 --apply 渲染原页并标 maybe_requires_assets" % len(suspects))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(run())
