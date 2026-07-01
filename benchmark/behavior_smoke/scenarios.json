@@ -73,6 +73,7 @@
       "detector": "visual_first_asset_display_ok",
       "mock_output": "mock/sample_outputs/visual_first_good.txt",
       "mock_negative": "mock/sample_outputs/visual_first_answer_side_first.txt",
+      "mock_negative_leak": "mock/sample_outputs/visual_first_answer_before_prompt.txt",
       "mock_negative_path": "mock/sample_outputs/visual_first_path_only.txt",
       "best_effort": false
     },

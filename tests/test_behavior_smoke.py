@@ -54,7 +54,10 @@ class BehaviorSmokeTest(unittest.TestCase):
         spec = H.load_scenarios()
         self.assertIn("scenarios", spec)
         self.assertTrue(os.path.isdir(_bs(spec["fixture"])), "scenarios.json 的 fixture 路径不存在")
-        file_keys = ("mock_output", "mock_negative", "mock_negative_path", "progress_after", "transcript")
+        file_keys = (
+            "mock_output", "mock_negative", "mock_negative_leak", "mock_negative_path",
+            "progress_after", "transcript",
+        )
         for sc in spec["scenarios"]:
             for k in file_keys:
                 if k in sc:
@@ -195,6 +198,9 @@ class BehaviorSmokeTest(unittest.TestCase):
         self.assertFalse(H.visual_first_asset_display_ok(
             _read("mock/sample_outputs/visual_first_answer_side_first.txt")),
             "答案侧 asset 抢在题面图前面时应不合格")
+        self.assertFalse(H.visual_first_asset_display_ok(
+            _read("mock/sample_outputs/visual_first_answer_before_prompt.txt")),
+            "题面图后、题目/作答前泄露答案侧 asset 时应不合格")
         self.assertFalse(H.visual_first_asset_display_ok(_read("mock/sample_outputs/visual_first_path_only.txt")),
                          "只打印路径、没有 Markdown 图片渲染时应不合格")
         self.assertFalse(H.visual_first_asset_display_ok(

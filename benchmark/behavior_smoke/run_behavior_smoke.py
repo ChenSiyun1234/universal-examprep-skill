@@ -187,11 +187,22 @@ def visual_first_asset_display_ok(text):
     if not qimg:
         return False
     qpos = qimg.start()
+    marker_patterns = (
+        r"(^|\n)\s*题目",
+        r"(^|\n)\s*请作答",
+        r"(^|\n)\s*提示",
+        r"(^|\n)\s*解析",
+        r"(^|\n)\s*答案[:：]",
+        r"(^|\n)\s*Question:",
+        r"(^|\n)\s*Hint:",
+        r"(^|\n)\s*Explanation:",
+        r"(^|\n)\s*Answer:",
+    )
+    positions = [m.start() for pat in marker_patterns for m in [re.search(pat, t, flags=re.MULTILINE)] if m]
+    first_action = min(positions, default=len(t))
     apos = t.find("答案图 / answer-side asset")
-    if apos != -1 and apos < qpos:
+    if apos != -1 and apos < first_action:
         return False
-    markers = ("题目", "请作答", "提示", "解析", "答案", "Question:", "Hint:", "Explanation:", "Answer:")
-    first_action = min((t.find(m) for m in markers if t.find(m) != -1), default=len(t))
     return qpos < first_action
 
 
@@ -385,9 +396,11 @@ def check_scenario_mock(name, sc, fixture_path=FIXTURE):
     if name == "visual_first_assets":
         good = visual_first_asset_display_ok(_read(_p(sc["mock_output"])))
         answer_first = visual_first_asset_display_ok(_read(_p(sc["mock_negative"])))
+        answer_before_prompt = visual_first_asset_display_ok(_read(_p(sc["mock_negative_leak"])))
         path_only = visual_first_asset_display_ok(_read(_p(sc["mock_negative_path"])))
-        return (good and not answer_first and not path_only), (
-            f"good={good} answer_side_first_caught={not answer_first} path_only_caught={not path_only}")
+        return (good and not answer_first and not answer_before_prompt and not path_only), (
+            f"good={good} answer_side_first_caught={not answer_first} "
+            f"answer_before_prompt_caught={not answer_before_prompt} path_only_caught={not path_only}")
     return False, "unknown scenario"
 
 
