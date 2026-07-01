@@ -545,6 +545,94 @@ class OfficialTools(unittest.TestCase):
         rb._pypdf, rb._fitz, rb._pdfium = _BadPypdf(), _Fitz(), None
         self.assertEqual(rb.pages_text("x.pdf"), ["fitz text 0", "fitz text 1"])   # fallback, not a skip
 
+    # ---- regression guards for Codex round-3 (7 findings) ----
+
+    def test_keyword_matching_uses_token_boundaries(self):
+        # 'paragraph' must not hit 'graph'; 'comfortable' must not hit 'table' (English = token match)
+        c = BVI.classify_page("This paragraph is comfortable to read and workable in maps of meaning.")
+        self.assertFalse(c["has_visual"])
+        self.assertTrue(BVI.classify_page("see the graph below")["has_visual"])   # real token still hits
+        self.assertTrue(BVI.classify_page("统计图见下")["has_visual"])            # CJK substring preserved
+
+    def test_ai_generated_answer_not_official(self):
+        tmp = tempfile.mkdtemp()
+        ws, _bank = self._ws_with(tmp, [
+            {"id": "ai_ans", "chapter": 1, "type": "subjective", "question": "AI 补题。",
+             "answer": "AI 写的答案", "source": "ai_generated", "ai_generated": True}])
+        BVI.run(["--workspace", ws], backend=_default_backend())
+        rec = {r["id"]: r for r in _load(ws, "image_question_index.json")["questions"]}
+        self.assertFalse(rec["ai_ans"]["has_official_answer"])    # AI answer ≠ official answer
+        self.assertTrue(rec["ansfig_1"]["has_official_answer"])   # material answer still counts
+
+    def test_phase_tagged_bank_grouped_by_phase(self):
+        tmp = tempfile.mkdtemp()
+        ws, _bank = self._ws_with(tmp, [
+            {"id": "ph_only", "phase": 3, "type": "subjective", "question": "phase 题。",
+             "source": "material", "ai_generated": False}])
+        BVI.run(["--workspace", ws], backend=_default_backend())
+        qidx = _load(ws, "image_question_index.json")
+        self.assertIn("3", qidx["per_chapter"])                   # phase fallback, not lumped under '?'
+        rc, out = self._capture(LIQ.run, ["--workspace", ws, "--chapter", "3", "--json"])
+        self.assertEqual(json.loads(out)["per_chapter"]["3"]["questions"], 1)
+
+    def test_applied_asset_names_do_not_collide(self):
+        # ids differing only in sanitized characters must yield DISTINCT screenshot files
+        tmp = tempfile.mkdtemp()
+        ws, bank_path = self._ws_with(tmp, [
+            {"id": "q:a", "chapter": 1, "type": "subjective", "question": "图1。", "source": "material",
+             "ai_generated": False, "source_file": "lectures/ch01.pdf", "source_pages": [2]},
+            {"id": "q/a", "chapter": 1, "type": "subjective", "question": "图2。", "source": "material",
+             "ai_generated": False, "source_file": "lectures/ch01.pdf", "source_pages": [2]}])
+        mat = os.path.join(tmp, "mat")
+        _mk_materials(mat, ["ch01.pdf", "ch02.pdf"])
+        rc = BVI.run(["--workspace", ws, "--materials", mat, "--apply"], backend=_default_backend())
+        self.assertEqual(rc, 0)
+        bank = json.load(open(bank_path, encoding="utf-8"))
+        paths = [q["assets"][0]["path"] for q in bank if q.get("id") in ("q:a", "q/a")]
+        self.assertEqual(len(paths), 2)
+        self.assertNotEqual(paths[0], paths[1])                   # sha1-suffixed names never collide
+
+    def test_broken_prompt_asset_does_not_suppress_suspect(self):
+        # a declared-but-missing prompt asset can't be displayed → item must STILL be a suspect
+        tmp = tempfile.mkdtemp()
+        ws, _bank = self._ws_with(tmp, [
+            {"id": "stale_asset", "chapter": 1, "type": "subjective", "question": "图题。",
+             "source": "material", "ai_generated": False,
+             "source_file": "lectures/ch01.pdf", "source_pages": [2],
+             "assets": [{"path": "references/assets/gone.png", "role": "figure", "type": "page_image"}]}])
+        mat = os.path.join(tmp, "mat")
+        _mk_materials(mat, ["ch01.pdf", "ch02.pdf"])
+        BVI.run(["--workspace", ws, "--materials", mat], backend=_default_backend())
+        qidx = _load(ws, "image_question_index.json")
+        self.assertIn("stale_asset", [s["id"] for s in qidx["suspects"]])
+
+    def test_url_source_file_rejected_in_apply(self):
+        tmp = tempfile.mkdtemp()
+        ws, bank_path = self._ws_with(tmp, [
+            {"id": "url_src", "chapter": 1, "type": "subjective", "question": "图题。",
+             "source": "material", "ai_generated": False,
+             "source_file": "https://example.com/ch01.pdf", "source_pages": [2]}])
+        mat = os.path.join(tmp, "mat")
+        _mk_materials(mat, ["ch01.pdf", "ch02.pdf"])
+        rc = BVI.run(["--workspace", ws, "--materials", mat, "--apply"], backend=_default_backend())
+        self.assertEqual(rc, 0)
+        qidx = _load(ws, "image_question_index.json")
+        self.assertTrue(any(w.startswith("apply_skip_unsafe_source") and "url_src" in w
+                            for w in qidx["warnings"]))
+        q = next(x for x in json.load(open(bank_path, encoding="utf-8")) if x["id"] == "url_src")
+        self.assertNotIn("maybe_requires_assets", q)              # never lends a local screenshot to a URL
+
+    def test_recall_net_degraded_by_failed_pdf_scan(self):
+        tmp = tempfile.mkdtemp()
+        be = _default_backend()
+        del be.texts["ch02.pdf"]                                  # pages_text raises → pdf_text_failed
+        ws, _m, rc = _build(tmp, backend=be)
+        self.assertEqual(rc, 0)
+        rcode, out = self._capture(LIQ.run, ["--workspace", ws, "--json"])
+        data = json.loads(out)
+        self.assertFalse(data["recall_net"])                      # a wholly-unscanned PDF → untrustworthy
+        self.assertIn("ch02", data["recall_note"])
+
     def test_no_network_llm_or_dep_in_new_scripts(self):
         for name in ("build_visual_index.py", "list_image_questions.py",
                      "list_figure_pages.py", "show_question_assets.py"):

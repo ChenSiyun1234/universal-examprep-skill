@@ -54,11 +54,15 @@ def run(argv=None):
             idx = json.load(open(idx_path, encoding="utf-8"))
             suspects_by_id = {s["id"]: s for s in idx.get("suspects", []) if isinstance(s, dict) and "id" in s}
             idx_warnings = [str(w) for w in (idx.get("warnings") or [])]
-            # an index built WITHOUT --materials never cross-checked anything: suspects=0 is NOT evidence
+            # an index built WITHOUT --materials never cross-checked anything: suspects=0 is NOT evidence;
+            # a PDF that failed to scan AT ALL leaves that file's suspects invisible — also untrustworthy
             if any(w.startswith("no_materials") for w in idx_warnings):
                 recall_net, recall_note = False, "索引构建时未给 --materials，疑漏交叉核对未运行"
-            elif any(w.startswith("no_media_backend") for w in idx_warnings):
-                recall_net, recall_note = True, "结构信号缺失（无 PyMuPDF）——疑漏口径仅靠文字信号，可能有漏"
+            elif any(w.startswith("pdf_text_failed") for w in idx_warnings):
+                bad = [w.split(":", 1)[1].strip() for w in idx_warnings if w.startswith("pdf_text_failed")]
+                recall_net, recall_note = False, "有 PDF 完全未能扫描（%s）——这些文件的疑漏不可见" % "; ".join(bad)
+            elif any(w.startswith(("no_media_backend", "media_failed")) for w in idx_warnings):
+                recall_net, recall_note = True, "结构信号缺失/部分失败（PyMuPDF）——疑漏口径仅靠文字信号，可能有漏"
             else:
                 recall_net = True
         except ValueError:
@@ -68,7 +72,8 @@ def run(argv=None):
     for q in bank:
         if not isinstance(q, dict) or q.get("id") is None:
             continue
-        ch = str(q.get("chapter")) if q.get("chapter") is not None else "?"
+        chap = q.get("chapter") if q.get("chapter") is not None else q.get("phase")   # phase-tagged banks
+        ch = str(chap) if chap is not None else "?"
         if args.chapter is not None and ch != str(args.chapter):
             continue
         requires = q.get("requires_assets") is True

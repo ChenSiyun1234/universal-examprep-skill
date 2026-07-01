@@ -32,6 +32,7 @@ checking is a future opt-in, NOT implemented here.
 Exit codes: 0 ok · 2 bad input · 3 materials contain PDFs but the needed backend is missing.
 """
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -82,15 +83,35 @@ _AXIS_WORDS = ("x-axis", "y-axis", "x轴", "y轴", "横轴", "纵轴", "坐标�
 _MIN_DRAWINGS = 6
 
 
+def _compile_words(words):
+    """ASCII words match on TOKEN BOUNDARIES (so 'paragraph' doesn't hit 'graph', 'comfortable' doesn't
+    hit 'table'); CJK words keep substring matching (Chinese has no word delimiters)."""
+    out = []
+    for w in words:
+        if all(ord(c) < 128 for c in w):
+            out.append(re.compile(r"(?<![A-Za-z0-9])" + re.escape(w) + r"(?![A-Za-z0-9])", re.I))
+        else:
+            out.append(w)
+    return out
+
+
+VISUAL_KIND_PATTERNS = {k: _compile_words(ws) for k, ws in VISUAL_KIND_WORDS.items()}
+_AXIS_PATTERNS = _compile_words(_AXIS_WORDS)
+
+
+def _any_hit(text, patterns):
+    return any(p.search(text) if hasattr(p, "search") else (p in text) for p in patterns)
+
+
 def classify_page(text, images=0, drawings=0):
     """Deterministic layered judgment for ONE page. Returns {has_visual, visual_kinds, signals}.
     Recall-first: structural evidence alone (a page with an embedded image but NO caption keywords)
     is enough — the exact gap that made keyword-only detection miss figure pages."""
     t = (text or "").lower()
-    kinds = sorted(k for k, words in VISUAL_KIND_WORDS.items() if any(w in t for w in words))
+    kinds = sorted(k for k, pats in VISUAL_KIND_PATTERNS.items() if _any_hit(t, pats))
     structural = (images or 0) > 0 or (drawings or 0) >= _MIN_DRAWINGS
     figref = bool(_FIGREF_RE.search(t))
-    axis = any(w in t for w in _AXIS_WORDS)
+    axis = _any_hit(t, _AXIS_PATTERNS)
     return {
         "has_visual": bool(structural or figref or axis or kinds),
         "visual_kinds": kinds,
@@ -258,6 +279,17 @@ def _prompt_side_assets(q):
     return [a for a in (q.get("assets") or []) if isinstance(a, dict) and a.get("role") in side]
 
 
+def _usable_prompt_asset(ws, a):
+    """Same rules as validate_workspace: safe path AND the file actually exists/readable. A declared but
+    stale/missing prompt asset must NOT suppress the suspect (it can't be displayed)."""
+    try:
+        import validate_workspace as V
+        full, unsafe = V._asset_safety(ws, a.get("path"))
+    except Exception:                                  # pragma: no cover — validator should be importable
+        return bool(a.get("path"))
+    return (not unsafe) and full and os.path.isfile(full) and os.access(full, os.R_OK)
+
+
 def _visual_hits(fig_files, source_file, pages):
     """Which of `pages` are visual pages of `source_file`. EXACT relative-path match wins; only when no
     exact match exists do we fall back to basename matches — and then take the UNION across duplicates
@@ -275,7 +307,7 @@ def _visual_hits(fig_files, source_file, pages):
     return sorted(hits)
 
 
-def build_question_index(bank, fig_files):
+def build_question_index(ws, bank, fig_files):
     """Per-question visual profile + per-chapter rollup + suspects (recall net)."""
     questions, suspects = [], []
     per_chapter = {}
@@ -286,15 +318,19 @@ def build_question_index(bank, fig_files):
         requires = q.get("requires_assets") is True
         maybe = q.get("maybe_requires_assets") is True
         prompt_assets = [a.get("path") for a in _prompt_side_assets(q) if a.get("path")]
+        usable_prompt = any(_usable_prompt_asset(ws, a) for a in _prompt_side_assets(q))
         answer_assets = [a.get("path") for a in (q.get("assets") or [])
                          if isinstance(a, dict) and a.get("role") in ("answer_context", "worked_solution")
                          and a.get("path")]
-        has_answer = any(q.get(k) not in (None, "", []) for k in ("answer", "answer_keywords"))
+        # an AI-generated answer is NOT an official (teacher/material) answer — provenance contract
+        ai_gen = q.get("ai_generated") is True or q.get("source") == "ai_generated"
+        has_answer = (not ai_gen) and any(q.get(k) not in (None, "", []) for k in ("answer", "answer_keywords"))
         q_hits = _visual_hits(fig_files, q.get("source_file"), q.get("source_pages"))
         a_hits = _visual_hits(fig_files, q.get("answer_source_file") or q.get("source_file"),
                               q.get("answer_source_pages"))
+        chap = q.get("chapter") if q.get("chapter") is not None else q.get("phase")   # phase-tagged banks
         rec = {
-            "id": qid, "chapter": q.get("chapter"),
+            "id": qid, "chapter": chap,
             "requires_assets": requires, "maybe_requires_assets": maybe,
             "prompt_assets": prompt_assets, "answer_assets": answer_assets,
             "source_file": q.get("source_file"), "source_pages": q.get("source_pages"),
@@ -305,16 +341,17 @@ def build_question_index(bank, fig_files):
             "answer_pages_visual": (a_hits if q.get("answer_source_pages") else None),
         }
         questions.append(rec)
-        ch = str(q.get("chapter")) if q.get("chapter") is not None else "?"
+        ch = str(chap) if chap is not None else "?"
         c = per_chapter.setdefault(ch, {"questions": 0, "requires": 0, "maybe": 0, "suspects": 0})
         c["questions"] += 1
         c["requires"] += int(requires)
         c["maybe"] += int(maybe)
-        if q_hits and not requires and not maybe and not prompt_assets:
+        # a declared-but-unusable (missing/unsafe) prompt asset must not suppress the suspect
+        if q_hits and not requires and not maybe and not usable_prompt:
             c["suspects"] += 1
-            suspects.append({"id": qid, "chapter": q.get("chapter"),
+            suspects.append({"id": qid, "chapter": chap,
                              "source_file": q.get("source_file"), "visual_pages": q_hits,
-                             "reason": "题目出处页面命中视觉页（结构/排版/词面信号），但题库未标图依赖且无题面 asset"})
+                             "reason": "题目出处页面命中视觉页（结构/排版/词面信号），但题库未标图依赖且无可用题面 asset"})
     return questions, per_chapter, suspects
 
 
@@ -343,7 +380,7 @@ def apply_suspects(ws, materials, bank, suspects, backend, asset_root, warnings)
         sf = str(q.get("source_file") or "").replace("\\", "/")
         # never resolve an absolute / drive-letter / '..'-escaping provenance name — the screenshot must
         # come from an INDEXED course file, not something outside --materials
-        if os.path.isabs(sf) or re.match(r"^[A-Za-z]:", sf) or ".." in sf.split("/"):
+        if os.path.isabs(sf) or re.match(r"^[A-Za-z]:", sf) or "://" in sf or ".." in sf.split("/"):
             warnings.append("apply_skip_unsafe_source: %s（source_file 不安全: %s）" % (s["id"], sf))
             continue
         pdf = None
@@ -390,8 +427,9 @@ def apply_suspects(ws, materials, bank, suspects, backend, asset_root, warnings)
             continue
         if not isinstance(q.get("assets"), list):      # normalize "assets": null / non-list before append
             q["assets"] = []
-        for page, png in renders:
-            name = "%s_p%d.png" % (_SAFE_NAME_RE.sub("_", s["id"])[:80], page)
+        digest = hashlib.sha1(s["id"].encode("utf-8")).hexdigest()[:8]   # distinct ids never collide on
+        for page, png in renders:                                        # sanitization/truncation
+            name = "%s_%s_p%d.png" % (_SAFE_NAME_RE.sub("_", s["id"])[:60], digest, page)
             with open(os.path.join(root_abs, name), "wb") as f:
                 f.write(png)
             q["assets"].append({
@@ -431,7 +469,7 @@ def run(argv=None, backend=None):
     else:
         warnings.append("no_materials: 未给 --materials——只建题目索引，无法交叉核对疑漏（召回网关闭）")
 
-    questions, per_chapter, suspects = build_question_index(bank, fig_files)
+    questions, per_chapter, suspects = build_question_index(ws, bank, fig_files)
 
     applied = 0
     if args.apply and suspects:
@@ -443,7 +481,7 @@ def run(argv=None, backend=None):
                 f.write(src.read())
             with open(bank_path, "w", encoding="utf-8") as f:
                 json.dump(bank, f, ensure_ascii=False, indent=2)
-            questions, per_chapter, suspects = build_question_index(bank, fig_files)   # re-index post-apply
+            questions, per_chapter, suspects = build_question_index(ws, bank, fig_files)   # re-index post-apply
 
     fig_index = {
         "generated_by": "build_visual_index.py",
