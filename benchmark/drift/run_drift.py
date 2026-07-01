@@ -48,7 +48,8 @@ DEFAULT_UNRELATED_PHRASES = [
 ]
 DEFAULT_REFUSAL_PHRASES = ["我不能继续这个复习", "无法继续原计划", "拒绝按考试计划", "i won't continue the exam plan"]
 EXPLAIN_TRIGGERS = re.compile(r"解释|讲讲|讲一下|说明|为什么|讲解|explain|why")
-QUIZ_TRIGGERS = re.compile(r"考我|出题|测测|来道题|刷题|quiz me|quiz from|test me")
+QUIZ_TRIGGERS = re.compile(r"考我|再考|出题|测测|刷题|(?:再来一|来一|下一|再出一)(?:道题?|题)"
+                           r"|quiz me|quiz from|test me|next question", re.I)
 RESUME_TRIGGERS = re.compile(r"我回来了|继续复习|接着上次|回来继续|resume|continue where|接着复习")
 RESTART_PHRASES = re.compile(r"从头开始|重新开始|从头再来|重头|restart|start over|从第?1章重新|从阶段1重新")
 PLAN_CHANGE_REQUEST = re.compile(r"改计划|调整计划|重新规划|换个计划|change.*plan|revise.*plan")
@@ -105,33 +106,77 @@ def _resolve(path):
 
 # ---------------- fixture parsing ----------------
 
+def _as_phase(v):
+    """Normalize a phase value to int — accepts int or a numeric string ('2'); else None. (docs/
+    file-format.md and the validator allow quiz_bank `phase` to be an int OR a string.)"""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return v
+    if isinstance(v, str) and v.strip().isdigit():
+        return int(v.strip())
+    return None
+
+
 def parse_plan_phases(text):
-    """Ordered list of phase numbers from a study_plan.md (headings like '## 阶段2：…' / '## Phase 2')."""
-    return [int(m) for m in re.findall(r"(?m)^\s{0,3}#{0,4}\s*(?:阶段|Phase|phase)\s*(\d+)", text or "")]
+    """Ordered (deduped) list of phase numbers from a study_plan.md. Accepts BOTH this harness's simple
+    headings ('## 阶段2：…' / '## Phase 2') AND the real scripts/ingest.py template, where phases live in
+    a Markdown table ('| **阶段 1** | … |') and/or a checklist ('- [ ] **阶段 1**：…'). The table and the
+    checklist repeat the same phases, so we dedupe while preserving first-seen order."""
+    phases = []
+    for ln in (text or "").splitlines():
+        s = ln.strip()
+        if not (s.startswith("#") or s.startswith("|") or re.match(r"[-*]\s", s)):
+            continue                                               # only structural lines define phases
+        m = re.search(r"(?:阶段|Phase|phase)\s*(\d+)", s)
+        if m:
+            n = int(m.group(1))
+            if n not in phases:
+                phases.append(n)
+    return phases
+
+
+_TABLE_SEP = re.compile(r"^\s*\|[\s:\-|]+\|?\s*$")                  # a Markdown table separator row
+_TABLE_HDR_WORDS = ("错题id", "关联章节", "题目内容", "错误原因", "序号", "疑难点", "解答要点", "状态")
+_ROW_PLACEHOLDER = re.compile(r"（暂无）|（清空重来）|（无）|^\s*[-*]\s*$")
+
+
+def _is_table_header(line):
+    low = line.lower()
+    return sum(1 for w in _TABLE_HDR_WORDS if w in low) >= 2
 
 
 def parse_progress(text):
     """{'phase': int|None, 'mistake_rows': [...], 'confusion_rows': [...]} from a study_progress.md.
 
-    Rows are the '- ' bullets under the mistake-archive / confusion sections; normalized (whitespace
-    collapsed) so a row can be tracked across snapshots to detect additions and silent deletions."""
+    Accepts BOTH this harness's simple format ('当前阶段：1', '- ' bullets) AND the real ingest template
+    ('当前进行阶段：阶段 1：…', mistake/confusion stored as Markdown TABLE rows). Rows are the non-placeholder
+    bullets OR table DATA rows under each section (header/separator rows excluded), whitespace-normalized so
+    a row can be tracked across snapshots to detect additions and silent deletions."""
     t = text or ""
-    pm = re.search(r"当前阶段[:：]\s*(\d+)|current\s*phase[:：]?\s*(\d+)", t, re.I)
-    phase = int(next(g for g in pm.groups() if g)) if pm else None
+    pm = re.search(r"(?:当前进行阶段|当前阶段|current\s*phase)\D*?(\d+)", t, re.I)
+    phase = int(pm.group(1)) if pm else None
     mistake, confusion, cur = [], [], None
     for ln in t.splitlines():
         h = ln.strip()
-        if re.search(r"错题|mistake", h) and re.match(r"^\s{0,3}(#{1,4}|\*\*)", ln):
+        is_heading = bool(re.match(r"^\s{0,3}(#{1,4}\s|\*\*)", ln))
+        if is_heading and re.search(r"错题|mistake", h):
             cur = mistake
             continue
-        if re.search(r"疑难|困惑|confusion", h) and re.match(r"^\s{0,3}(#{1,4}|\*\*)", ln):
+        if is_heading and re.search(r"疑难|困惑|confusion", h):
             cur = confusion
             continue
-        if re.match(r"^\s{0,3}#{1,4}\s", ln):                      # any other heading ends the section
+        if re.match(r"^\s{0,3}#{1,4}\s", ln):                      # any OTHER heading ends the section
             cur = None
             continue
-        if cur is not None and re.match(r"^\s*[-*]\s+\S", ln):
-            cur.append(re.sub(r"\s+", " ", ln.strip()))
+        if cur is None:
+            continue
+        if re.match(r"^\s*[-*]\s+\S", ln) and not _ROW_PLACEHOLDER.search(h):
+            cur.append(re.sub(r"\s+", " ", h))
+        elif h.startswith("|") and not _TABLE_SEP.match(ln) and not _is_table_header(ln):
+            cells = [c.strip() for c in h.strip("|").split("|")]
+            if any(c and c != "-" for c in cells):                 # a table DATA row with real content
+                cur.append(re.sub(r"\s+", " ", h))
     return {"phase": phase, "mistake_rows": mistake, "confusion_rows": confusion}
 
 
@@ -206,7 +251,7 @@ def compute_metrics(scenario, fixture_dir, turns):
     plan_text = _read(os.path.join(fixture_dir, "study_plan.md"))
     bank_path = os.path.join(fixture_dir, "references", "quiz_bank.json")
     bank = json.loads(_read(bank_path))
-    bank_phase = {str(q["id"]): q.get("phase") for q in bank if isinstance(q, dict) and "id" in q}
+    bank_phase = {str(q["id"]): _as_phase(q.get("phase")) for q in bank if isinstance(q, dict) and "id" in q}
     bank_ids = set(bank_phase)
     init_progress = _read(os.path.join(fixture_dir, "study_progress.initial.md"))
 
@@ -234,8 +279,8 @@ def compute_metrics(scenario, fixture_dir, turns):
     #    ever reference the exam goal at all), enforceable via the optional `goal_marker_min` threshold.
     on_goal = 0
     for t in assistant_turns:
-        txt = t.get("assistant", "")
-        drifted = any(p in txt for p in unrelated) or any(p in txt for p in refusals)
+        txt = t.get("assistant", "").lower()                       # case-insensitive (English phrases too)
+        drifted = any(p.lower() in txt for p in unrelated) or any(p.lower() in txt for p in refusals)
         on_goal += 0 if drifted else 1
     goal_retention = round(on_goal / len(assistant_turns), 4) if assistant_turns else 1.0
     goal_marker_seen = int(any(any(g in t.get("assistant", "") for g in goal_markers) for t in assistant_turns))
@@ -267,10 +312,10 @@ def compute_metrics(scenario, fixture_dir, turns):
     for i, t in enumerate(turns):
         if not t.get("assistant"):
             continue
-        is_quiz = t.get("kind") == "quiz" or QUIZ_TRIGGERS.search(t.get("user", ""))
-        ids = extract_quiz_ids(t.get("assistant", ""))
-        if not is_quiz and not ids:
-            continue
+        is_quiz = t.get("kind") == "quiz" or bool(QUIZ_TRIGGERS.search(t.get("user", "")))
+        if not is_quiz:
+            continue                                               # only QUIZ turns are scored — a progress
+        ids = extract_quiz_ids(t.get("assistant", ""))             # summary that mentions [#id] isn't a quiz
         want_phase = turn_phase[i]
         for qid in ids:
             quiz_items += 1
@@ -407,6 +452,10 @@ def evaluate(scenario, transcript_path):
     turns = load_jsonl(transcript_path, "transcript")
     if not turns:
         raise DriftError("transcript 为空: %s" % transcript_path)
+    if not any(t.get("assistant") or t.get("files_after") or t.get("events") for t in turns):
+        # a user-only transcript exercises NOTHING measurable — every metric would default to a perfect
+        # value and vacuously PASS, which would make the harness a useless regression gate. Reject it.
+        raise DriftError("transcript 没有任何可评估内容（assistant/files_after/events 全空），无法度量漂移")
     metrics = compute_metrics(scenario, fixture_dir, turns)
     passed, failures = check_thresholds(metrics, scenario["thresholds"])
     return {"scenario": scenario["name"], "transcript": os.path.basename(transcript_path),

@@ -30,6 +30,7 @@
    "tokens_in": 900, "tokens_out": 120, "cost_usd": 0.001}
   ```
   `files_after` 携带该轮**之后**的工作区文件快照（progress / plan），漂移指标由**相邻快照之间的差异**确定性算出。
+- **工作区快照解析**同时接受**本 harness 的简单格式**（`## 阶段1`、`当前阶段：1`、`- ` 行）**和真实 `scripts/ingest.py` 模板格式**（`| **阶段 1** | … |` 表格 / `- [ ] **阶段 1**` 打卡、`* **当前进行阶段**：阶段 1：…`、错题/疑难的 Markdown 表格行），所以既能跑自撰 fixture，也能回放真实工作区的录制会话。
 - **fixture**（`fixtures/mini_course_long/`，自撰非版权）：`study_plan.md`（固定阶段序列）、
   `study_progress.initial.md`（起点阶段）、`study_progress.final.{good,bad}.md`（好/坏终态参考）、
   `references/wiki/ch{1,2}_*.md`、`references/quiz_bank.json`（稳定题号 + `phase`）。

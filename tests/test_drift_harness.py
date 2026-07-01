@@ -276,6 +276,68 @@ class DriftHarness(unittest.TestCase):
         r = D.evaluate(D.load_scenario(scf), _tr("bad_quiz_invention.jsonl"))
         self.assertIn("goal_marker_min", _fail_thresholds(r))   # assistant never says 期末/复习 → fails
 
+    # ---- regression guards for the 8 P2s from Codex round-1 (real ingest-template + correctness) ----
+
+    def test_parses_real_ingest_plan_table_and_checklist(self):
+        plan = ("| 阶段 | 核心任务 | Wiki | 状态 |\n| :-- | :-- | :-- | :-- |\n"
+                "| **阶段 1** | 栈 | `references/wiki/ch1.md` | 未开始 |\n"
+                "| **阶段 2** | 树 | `references/wiki/ch2.md` | 未开始 |\n"
+                "- [ ] **阶段 1**：栈\n- [ ] **阶段 2**：树\n")
+        self.assertEqual(D.parse_plan_phases(plan), [1, 2])         # table+checklist deduped, order kept
+
+    def test_parses_real_ingest_progress_table_and_checkpoint(self):
+        prog = ("## ⏱️ 当前复习断点\n* **当前进行阶段**：阶段 2：树\n"
+                "## ❌ 错题档案记录\n| 错题ID | 关联章节 | 题目内容简述 | 错误原因分析 | 状态 |\n"
+                "| :--- | :--- | :--- | :--- | :--- |\n| [#stack_lifo_1] | 第1章 | 栈顺序 | 混淆LIFO | 未复习 |\n"
+                "## 💡 概念疑难点记录\n| 序号 | 章节 | 疑难点 | 解答要点 | 状态 |\n"
+                "| :--- | :--- | :--- | :--- | :--- |\n| 1 | 第1章 | 循环队列 | 取模 | 待复习 |\n")
+        p = D.parse_progress(prog)
+        self.assertEqual(p["phase"], 2)                            # '当前进行阶段：阶段 2' parsed
+        self.assertEqual(len(p["mistake_rows"]), 1)                # table DATA row counted (header/sep excluded)
+        self.assertEqual(len(p["confusion_rows"]), 1)
+
+    def test_non_quiz_turn_with_archived_id_not_scored_as_quiz(self):
+        # a progress/mistake summary that mentions an archived [#id] must NOT be scored as a quiz item
+        m = _eval_turns([{"turn": 1, "user": "看看我的错题", "assistant": "已保留错题 [#tree_height_1]，复习一下。"}])
+        self.assertEqual(m["wrong_phase_quiz"], 0)
+        self.assertEqual(m["quiz_items"], 0)
+
+    def test_followup_quiz_triggers_recognized(self):
+        for u in ("再来一道阶段1的", "再来一题", "下一题", "来一道题"):
+            m = _eval_turns([{"turn": 1, "user": u, "assistant": "跳表的期望复杂度是多少呢"}])
+            self.assertGreaterEqual(m["untagged_questions"], 1, u)  # detected as a quiz → untagged flagged
+
+    def test_goal_drift_matched_case_insensitively(self):
+        m = _eval_turns([{"turn": 1, "user": "x", "assistant": "Switch Course to CS101, forget the exam."}])
+        self.assertLess(m["goal_retention"], 1.0)
+
+    def test_string_phase_value_normalized(self):
+        self.assertEqual(D._as_phase("2"), 2)
+        self.assertEqual(D._as_phase(2), 2)
+        self.assertIsNone(D._as_phase("later"))
+        # integration: a bank entry with "phase":"1" must not be flagged wrong-phase during phase 1
+        d = tempfile.mkdtemp()
+        fx = os.path.join(d, "fx")
+        os.makedirs(os.path.join(fx, "references"))
+        open(os.path.join(fx, "study_plan.md"), "w", encoding="utf-8").write("## 阶段1：栈\n")
+        open(os.path.join(fx, "study_progress.initial.md"), "w", encoding="utf-8").write("当前阶段：1\n")
+        json.dump([{"id": "q_str", "phase": "1"}],
+                  open(os.path.join(fx, "references", "quiz_bank.json"), "w", encoding="utf-8"))
+        sc = {"name": "s", "fixture": fx, "thresholds": {"wrong_phase_quiz_max": 0}}
+        scf = os.path.join(d, "s.json")
+        json.dump(sc, open(scf, "w", encoding="utf-8"))
+        m = _eval_turns([{"turn": 1, "user": "从阶段1考我", "kind": "quiz", "phase_context": 1,
+                          "assistant": "题目 [#q_str] ?"}], scenario=scf)
+        self.assertEqual(m["wrong_phase_quiz"], 0)                 # "1" == 1, not a wrong-phase
+
+    def test_vacuous_user_only_transcript_rejected(self):
+        d = tempfile.mkdtemp()
+        t = os.path.join(d, "useronly.jsonl")
+        with open(t, "w", encoding="utf-8") as f:
+            f.write('{"turn":1,"user":"hi"}\n{"turn":2,"user":"anyone there?"}\n')
+        r = _cli(["--scenario", SCEN, "--transcript", t])
+        self.assertEqual(r.returncode, 2)                          # exercises nothing measurable → rejected
+
     # 12) no network / LLM / API key / deps; --llm skeleton never returns success
     def test_no_network_llm_or_dep_in_source(self):
         with open(RUN, encoding="utf-8") as f:
