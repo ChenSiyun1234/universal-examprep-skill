@@ -61,6 +61,7 @@ phase_context: 1
 
 ### Events
 - read_file: references/wiki/ch1_stack_queue.md
+- write_file: study_progress.md
 
 ### Files After: study_progress.md
 ```text

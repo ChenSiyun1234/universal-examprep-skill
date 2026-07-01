@@ -93,6 +93,14 @@ Supported sections:
 - `### Events` optional, with lines like `- read_file: references/wiki/ch1_stack_queue.md`
 - `### Files After: path` optional, with a fenced code block containing the full file snapshot
 
+Supported event types are deliberately narrow: `read_file` and `write_file`. Typos such as `readfile` are
+malformed and the converter exits with code `2`.
+
+Tracked writes must include snapshots in the same turn. If `### Events` records `- write_file:
+study_progress.md` or `- write_file: study_plan.md`, include the matching `### Files After:
+study_progress.md` or `### Files After: study_plan.md` block. Without that snapshot, T4 cannot score
+progress-row persistence or plan drift accurately, so the converter rejects the log.
+
 ## Convert To T4 JSONL
 
 Validate only:

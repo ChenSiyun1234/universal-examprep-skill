@@ -33,6 +33,14 @@ def _cli(args):
     )
 
 
+def _check_markdown(text):
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "session.md")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        return _cli(["--in", path, "--check"])
+
+
 @unittest.skipUnless(os.path.isfile(CONVERT), "live adapter not present")
 class DriftLiveAdapter(unittest.TestCase):
     def test_converter_reads_fixture_markdown_and_writes_expected_jsonl(self):
@@ -63,12 +71,137 @@ class DriftLiveAdapter(unittest.TestCase):
             "path": "references/wiki/ch1_stack_queue.md",
         })
         self.assertEqual(rows[1]["events"][1]["path"], "references/quiz_bank.json")
+        self.assertEqual(rows[2]["events"][1], {
+            "type": "write_file",
+            "path": "study_progress.md",
+        })
 
     def test_converter_parses_files_after_snapshot(self):
         rows = C.parse_session_log(_read(FIXTURE_MD))
         snap = rows[2]["files_after"]["study_progress.md"]
         self.assertIn("当前阶段：1", snap)
         self.assertIn("为什么 stack 是 LIFO：待回顾", snap)
+
+    def test_markdown_headings_inside_message_body_are_preserved(self):
+        heading = "### \u8fdb\u5ea6\u9762\u677f"
+        log = "\n".join([
+            "# Live Agent Session Log",
+            "",
+            "## Turn 1",
+            "kind: explanation",
+            "phase_context: 1",
+            "",
+            "### User",
+            "\u8bf7\u7ee7\u7eed\u8bb2\u89e3\u3002",
+            "",
+            "### Assistant",
+            "\U0001f7e2 \u6765\u81ea\u8d44\u6599\uff1a\u5148\u8bb2\u89e3\u6982\u5ff5\u3002",
+            heading,
+            "\u5f53\u524d\u9636\u6bb5\uff1a1",
+            "",
+            "### Events",
+            "- read_file: references/wiki/ch1_stack_queue.md",
+            "",
+        ])
+
+        rows = C.parse_session_log(log)
+
+        self.assertIn(heading, rows[0]["assistant"])
+        self.assertIn("\u5f53\u524d\u9636\u6bb5\uff1a1", rows[0]["assistant"])
+        self.assertEqual(rows[0]["events"], [{
+            "type": "read_file",
+            "path": "references/wiki/ch1_stack_queue.md",
+        }])
+
+    def test_unknown_event_type_exits_2(self):
+        bad = """# Live Agent Session Log
+
+## Turn 1
+kind: explanation
+phase_context: 1
+
+### User
+Resume.
+
+### Assistant
+Ready.
+
+### Events
+- readfile: study_progress.md
+"""
+        r = _check_markdown(bad)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("event type", r.stderr)
+        self.assertIn("readfile", r.stderr)
+
+    def test_write_file_study_progress_requires_snapshot(self):
+        bad = """# Live Agent Session Log
+
+## Turn 1
+kind: explanation
+phase_context: 1
+
+### User
+Why is stack LIFO?
+
+### Assistant
+Because the last pushed item is popped first.
+
+### Events
+- write_file: study_progress.md
+"""
+        r = _check_markdown(bad)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("requires matching", r.stderr)
+        self.assertIn("study_progress.md", r.stderr)
+
+    def test_write_file_study_plan_requires_snapshot(self):
+        bad = """# Live Agent Session Log
+
+## Turn 1
+kind: explanation
+phase_context: 1
+
+### User
+Plan the next step.
+
+### Assistant
+Keeping the same stage order.
+
+### Events
+- write_file: study_plan.md
+"""
+        r = _check_markdown(bad)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("requires matching", r.stderr)
+        self.assertIn("study_plan.md", r.stderr)
+
+    def test_tracked_write_with_matching_snapshot_passes_check_mode(self):
+        good = """# Live Agent Session Log
+
+## Turn 1
+kind: explanation
+phase_context: 1
+
+### User
+Plan the next step.
+
+### Assistant
+Keeping the same stage order.
+
+### Events
+- write_file: study_plan.md
+
+### Files After: study_plan.md
+```text
+# Study Plan
+
+Phase 1: stack and queue.
+```
+"""
+        r = _check_markdown(good)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("OK: 1 turns", r.stdout)
 
     def test_generated_jsonl_is_accepted_by_drift_harness(self):
         with tempfile.TemporaryDirectory() as d:

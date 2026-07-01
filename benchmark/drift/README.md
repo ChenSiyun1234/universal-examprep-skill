@@ -98,8 +98,10 @@ python benchmark/drift/run_drift.py \
 ```
 
 The adapter reads and writes UTF-8 explicitly, exits `2` on malformed input, and does not write tracked outputs
-unless you explicitly point `--out` into the repository. See [`docs/live_agent_pilot.md`](docs/live_agent_pilot.md)
-for the live pilot runbook and commit boundaries.
+unless you explicitly point `--out` into the repository. It also validates supported event names (`read_file` /
+`write_file`) and requires matching `files_after` snapshots when a turn records writes to `study_plan.md` or
+`study_progress.md`. See [`docs/live_agent_pilot.md`](docs/live_agent_pilot.md) for the live pilot runbook and
+commit boundaries.
 
 ## 边界与限制（诚实）
 

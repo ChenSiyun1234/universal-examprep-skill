@@ -25,6 +25,10 @@ FENCE_RE = re.compile(r"^```[A-Za-z0-9_-]*\s*$")
 TURN_FIELDS = {"kind", "phase_context", "tokens_in", "tokens_out", "cost_usd"}
 INT_FIELDS = {"phase_context", "tokens_in", "tokens_out"}
 FLOAT_FIELDS = {"cost_usd"}
+MESSAGE_SECTIONS = {"user", "assistant"}
+EVENT_SECTIONS = {"events"}
+EVENT_TYPES = {"read_file", "write_file"}
+TRACKED_WRITE_SNAPSHOTS = {"study_plan.md", "study_progress.md"}
 
 
 class SessionLogError(Exception):
@@ -75,6 +79,20 @@ def clean_block(lines):
     return "\n".join(lines[start:end])
 
 
+def adapter_section(line):
+    """Return the reserved adapter section name, or None for ordinary Markdown headings."""
+    m = SECTION_RE.match(line)
+    if not m:
+        return None
+    heading = m.group(1).strip()
+    lower = heading.lower()
+    if lower in MESSAGE_SECTIONS or lower in EVENT_SECTIONS:
+        return lower
+    if re.match(r"files\s+after\s*:\s*.+$", heading, re.I):
+        return "files_after"
+    return None
+
+
 def parse_scalar(key, value, turn):
     if key in INT_FIELDS:
         if not re.fullmatch(r"\d+", value.strip()):
@@ -99,10 +117,15 @@ def parse_events(lines, turn):
         line = raw.strip()
         if not line:
             continue
-        m = re.match(r"^[-*]\s*([A-Za-z_][\w-]*)\s*:\s*(.+?)\s*$", line)
+        m = re.match(r"^[-*]\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.+?)\s*$", line)
         if not m:
             raise SessionLogError("turn %d event must look like '- read_file: path'" % turn)
-        event_type = m.group(1).replace("-", "_")
+        event_type = m.group(1)
+        if event_type not in EVENT_TYPES:
+            raise SessionLogError(
+                "turn %d event type %r is not supported; use one of %s"
+                % (turn, event_type, ", ".join(sorted(EVENT_TYPES)))
+            )
         path = m.group(2).strip()
         if not path:
             raise SessionLogError("turn %d event path cannot be empty" % turn)
@@ -126,6 +149,24 @@ def parse_files_after(lines, start, turn, path):
     return content, i + 1
 
 
+def tracked_snapshot_name(path):
+    norm = str(path or "").replace("\\", "/").lstrip("./")
+    base = norm.rsplit("/", 1)[-1]
+    return base if base in TRACKED_WRITE_SNAPSHOTS else None
+
+
+def validate_tracked_writes(turn, events, files_after):
+    for ev in events or []:
+        if ev.get("type") != "write_file":
+            continue
+        required = tracked_snapshot_name(ev.get("path", ""))
+        if required and required not in files_after:
+            raise SessionLogError(
+                "turn %d write_file for %s requires matching ### Files After: %s"
+                % (turn, required, required)
+            )
+
+
 def parse_turn_body(turn, body):
     row = {"turn": turn}
     files_after = {}
@@ -138,7 +179,7 @@ def parse_turn_body(turn, body):
         if not line.strip():
             i += 1
             continue
-        if SECTION_RE.match(line):
+        if adapter_section(line):
             break
         m = FIELD_RE.match(line)
         if not m:
@@ -154,22 +195,23 @@ def parse_turn_body(turn, body):
         if not line.strip():
             i += 1
             continue
-        m = SECTION_RE.match(line)
-        if not m:
+        section = adapter_section(line)
+        if not section:
             raise SessionLogError("turn %d has content outside a section: %r" % (turn, line.strip()))
+        m = SECTION_RE.match(line)
         heading = m.group(1).strip()
         lower = heading.lower()
         i += 1
 
-        if lower in {"user", "assistant", "events"}:
+        if lower in MESSAGE_SECTIONS or lower in EVENT_SECTIONS:
             if lower in seen:
                 raise SessionLogError("turn %d repeats section %s" % (turn, heading))
             seen.add(lower)
             start = i
-            while i < len(body) and not SECTION_RE.match(body[i]):
+            while i < len(body) and not adapter_section(body[i]):
                 i += 1
             block = body[start:i]
-            if lower == "events":
+            if lower in EVENT_SECTIONS:
                 events = parse_events(block, turn)
             else:
                 value = clean_block(block)
@@ -198,6 +240,7 @@ def parse_turn_body(turn, body):
         row["events"] = events
     if files_after:
         row["files_after"] = files_after
+    validate_tracked_writes(turn, events, files_after)
     return row
 
 
