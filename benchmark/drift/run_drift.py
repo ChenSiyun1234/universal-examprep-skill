@@ -80,6 +80,9 @@ def load_jsonl(path, label):
             raise DriftError("%s 第 %d 行不是合法 JSON: %s" % (label, ln, e))
         if not isinstance(d, dict):
             raise DriftError("%s 第 %d 行必须是 JSON 对象" % (label, ln))
+        for k in ("assistant", "user"):                          # replay calls string methods on these
+            if k in d and not isinstance(d[k], str):
+                raise DriftError("%s 第 %d 行的 %s 必须是字符串" % (label, ln, k))
         if "files_after" in d and not isinstance(d["files_after"], dict):
             raise DriftError("%s 第 %d 行的 files_after 必须是对象" % (label, ln))
         if "events" in d:
@@ -105,6 +108,9 @@ def load_scenario(path):
             raise DriftError("scenario 缺必需字段 %r" % k)
     if not isinstance(sc["thresholds"], dict):
         raise DriftError("scenario.thresholds 必须是对象")
+    for k in ("fixture", "transcript"):                           # path fields must be strings before _resolve()
+        if k in sc and not isinstance(sc[k], str):
+            raise DriftError("scenario.%s 必须是字符串路径" % k)
     return sc
 
 
@@ -135,6 +141,11 @@ def _phase_num_in(s):
     """First phase number in a string (阶段N / 第N阶段 / phase N), else None."""
     m = re.search(_PHASE_RE, s or "")
     return int(next(g for g in m.groups() if g)) if m else None
+
+
+def _all_phase_nums(s):
+    """All phase numbers mentioned in a string (阶段N / 第N阶段 / phase N)."""
+    return [int(next(g for g in m.groups() if g)) for m in re.finditer(_PHASE_RE, s or "")]
 
 
 def _is_structural(line):
@@ -218,7 +229,8 @@ def phase_of_wiki(plan_map, path):
 
 
 def _chapter_num(name):
-    m = re.search(r"ch0*(\d+)", str(name or ""))
+    s = str(name or "")
+    m = re.search(r"ch0*(\d+)", s) or re.search(r"第\s*(\d+)\s*[章讲课节]", s)   # ch03 / 第1章 / 第1讲
     return int(m.group(1)) if m else None
 
 
@@ -314,10 +326,18 @@ def extract_quiz_ids(text):
 
 
 def _row_key(row):
-    """Identity of an archived progress row for persistence tracking: its [#id] when present (so
-    rewording a row isn't a false 'loss'), else its whitespace-normalized text."""
+    """Stable identity of an archived progress row for persistence tracking: its [#id] if present; else, for
+    a Markdown TABLE row (the real ingest format), its first cell (错题ID / 序号) — so an in-place STATUS
+    update like 待回顾 → 已回顾 isn't a false 'loss'; else the whitespace-normalized text."""
     ids = extract_quiz_ids(row)
-    return "id:" + ids[0] if ids else "tx:" + re.sub(r"\s+", "", row)
+    if ids:
+        return "id:" + ids[0]
+    s = row.strip()
+    if s.startswith("|"):
+        first = next((c.strip(" *`") for c in s.strip("|").split("|") if c.strip(" *`")), "")
+        if first:
+            return "cell:" + re.sub(r"\s+", "", first)
+    return "tx:" + re.sub(r"\s+", "", row)
 
 
 _NUM_ITEM_RE = re.compile(r"^\s*(?:\d+\s*[.、)）]|[Qq]\d*\s*[.、:：)）]|第\s*[一二三四五六七八九十\d]+\s*题)")
@@ -534,7 +554,10 @@ def compute_metrics(scenario, fixture_dir, turns):
             # a reset is ANY resume target that isn't the saved phase — restarting an earlier phase OR
             # skipping ahead to a different one (both mean it didn't resume from the checkpoint).
             off = [p for p in targets if exp is not None and p != exp]
-            reset_count += int(bool(off) or (generic_restart and (exp or 1) > 1))
+            # a GENERIC restart ('从头开始' with no phase) is a reset only if it isn't restarting the SAVED
+            # phase — i.e. it doesn't mention exp at all — and the saved phase is past 1.
+            generic_reset = generic_restart and (exp or 1) > 1 and exp not in _all_phase_nums(a)
+            reset_count += int(bool(off) or generic_reset)
             if expected_phase is None:                            # report the FIRST resume's phases
                 expected_phase = exp
                 resumed_phase = min(targets) if targets else (1 if generic_restart else None)
@@ -581,8 +604,10 @@ def compute_metrics(scenario, fixture_dir, turns):
                 # ch03) or the chNN filename matches. A read belonging to NO phase (e.g. summary.md, no chN,
                 # not in the plan) during a phase-scoped turn is an over-read too.
                 base = _basename_noext(path)
-                belongs = (want_phase in plan_map and base in plan_map[want_phase]) \
-                    or (_wiki_chapter_phase(path) == want_phase)
+                if want_phase in plan_map:                        # the plan places this phase's wikis → trust it
+                    belongs = base in plan_map[want_phase]        # (do NOT fall back to chNN, which can wrongly
+                else:                                             # accept ch01 when phase 1 is mapped to ch03)
+                    belongs = _wiki_chapter_phase(path) == want_phase
                 if want_phase is not None and not belongs:
                     overread = 1                                  # read a wiki not scoped to the current phase
     wiki_files = len(seen_wiki)

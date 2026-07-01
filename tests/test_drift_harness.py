@@ -572,6 +572,64 @@ class DriftHarness(unittest.TestCase):
                           "assistant": "题目 [#u1] 泛题？"}], scenario=scf)
         self.assertEqual(m["wrong_phase_quiz"], 1)
 
+    # ---- regression guards for the 6 findings from Codex round-6 (final) ----
+    _PPP2 = "当前阶段：2\n## 错题本\n（暂无）\n## 疑难点\n（暂无）\n"
+
+    def test_plan_map_preferred_over_chn_fallback(self):
+        d = tempfile.mkdtemp()
+        fx = os.path.join(d, "fx")
+        os.makedirs(os.path.join(fx, "references"))
+        open(os.path.join(fx, "study_plan.md"), "w", encoding="utf-8").write(
+            "| 阶段 | t | Wiki | s |\n| :- | :- | :- | :- |\n| **阶段 1** | x | `references/wiki/ch03_graphs.md` | x |\n")
+        open(os.path.join(fx, "study_progress.initial.md"), "w", encoding="utf-8").write("当前阶段：1\n")
+        json.dump([{"id": "g1", "chapter": "ch03_graphs", "question": "q?"}],
+                  open(os.path.join(fx, "references", "quiz_bank.json"), "w", encoding="utf-8"), ensure_ascii=False)
+        scf = os.path.join(d, "s.json")
+        json.dump({"name": "s", "fixture": fx, "thresholds": {"overread_max": 0}}, open(scf, "w", encoding="utf-8"))
+        # phase 1 is mapped to ch03; reading ch01 (chNN=1) during phase 1 is off-plan → overread
+        off = _eval_turns([{"turn": 1, "user": "x", "phase_context": 1, "assistant": "读",
+                            "events": [{"type": "read_file", "path": "references/wiki/ch01_basics.md"}]}], scenario=scf)
+        self.assertEqual(off["overread_flag"], 1)
+        own = _eval_turns([{"turn": 1, "user": "x", "phase_context": 1, "assistant": "读",
+                            "events": [{"type": "read_file", "path": "references/wiki/ch03_graphs.md"}]}], scenario=scf)
+        self.assertEqual(own["overread_flag"], 0)
+
+    def test_non_string_fixture_field_exits_2(self):
+        d = tempfile.mkdtemp()
+        scf = os.path.join(d, "s.json")
+        json.dump({"name": "s", "fixture": 123, "thresholds": {}}, open(scf, "w"))
+        r = _cli(["--scenario", scf, "--transcript", _tr("good_session.jsonl")])
+        self.assertEqual(r.returncode, 2)
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_non_string_assistant_field_exits_2(self):
+        d = tempfile.mkdtemp()
+        t = os.path.join(d, "b.jsonl")
+        with open(t, "w", encoding="utf-8") as f:
+            f.write('{"turn":1,"assistant":123}\n')
+        r = _cli(["--scenario", SCEN, "--transcript", t])
+        self.assertEqual(r.returncode, 2)
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_confusion_table_status_update_is_not_a_loss(self):
+        pa = ("当前阶段：1\n## 疑难点\n| 序号 | 疑难点 | 状态 |\n| :- | :- | :- |\n| 1 | 循环队列 | 待回顾 |\n")
+        pb = ("当前阶段：1\n## 疑难点\n| 序号 | 疑难点 | 状态 |\n| :- | :- | :- |\n| 1 | 循环队列 | 已回顾 |\n")
+        m = _eval_turns([{"turn": 1, "assistant": "记", "files_after": {"study_progress.md": pa}},
+                         {"turn": 2, "assistant": "改状态", "files_after": {"study_progress.md": pb}}])
+        self.assertEqual(m["progress_rows_lost"], 0)   # keyed by 序号, status change isn't a lost row
+
+    def test_restarting_the_saved_phase_is_not_a_reset(self):
+        ok = _eval_turns([{"turn": 1, "assistant": "到2", "phase_context": 2, "files_after": {"study_progress.md": self._PPP2}},
+                          {"turn": 2, "user": "回来了", "kind": "resume", "assistant": "我们重新开始阶段2的树复习。"}])
+        self.assertEqual(ok["reset_detected"], 0)
+        bad = _eval_turns([{"turn": 1, "assistant": "到2", "phase_context": 2, "files_after": {"study_progress.md": self._PPP2}},
+                           {"turn": 2, "user": "回来了", "kind": "resume", "assistant": "咱们从头开始吧。"}])
+        self.assertGreaterEqual(bad["reset_detected"], 1)   # 从头开始 (no phase named) still resets
+
+    def test_human_readable_chapter_string_resolved(self):
+        pm = D.parse_plan_map("| **阶段 1** | x | `references/wiki/ch01_basics.md` | x |\n")
+        self.assertEqual(D.phase_of_chapter(pm, "第1章"), 1)   # '第1章' → chapter 1 → ch01 (phase 1)
+
     # 12) no network / LLM / API key / deps; --llm skeleton never returns success
     def test_no_network_llm_or_dep_in_source(self):
         with open(RUN, encoding="utf-8") as f:
