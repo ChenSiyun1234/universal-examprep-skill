@@ -256,7 +256,8 @@ class OfficialTools(unittest.TestCase):
         ws, _m, _rc = _build(tmp, apply=True)
         rc, out = self._capture(SQA.run, ["--workspace", ws, "--id", "suspect_1"])
         self.assertEqual(rc, 0)
-        self.assertIn("![suspect_1 题面图](references/assets/", out)
+        self.assertIn("![题面图 / question-side asset:", out)     # canonical label (docs/file-format §4)
+        self.assertIn("references/assets/", out)
         self.assertNotIn("\\", out.split("(")[1].split(")")[0])   # renderable POSIX path
         # a visual item whose asset file is deleted → fail-closed exit 1
         bank = json.load(open(os.path.join(ws, "references", "quiz_bank.json"), encoding="utf-8"))
@@ -291,6 +292,110 @@ class OfficialTools(unittest.TestCase):
         rc, out2 = self._capture(SQA.run, ["--workspace", ws, "--id", "both_1", "--with-answer"])
         self.assertIn("s.png", out2)
         self.assertLess(out2.index("p.png"), out2.index("s.png"))  # prompt strictly before answer
+
+    # ---- regression guards for Codex round-1 (6 findings) ----
+
+    def test_show_fails_when_any_prompt_asset_unusable(self):
+        # strict-ALL: a visual item with TWO prompt assets must fail-close if ONE is missing —
+        # never show a partial prompt (figure without its table) as if complete
+        tmp = tempfile.mkdtemp()
+        ws = _mk_workspace(tmp)
+        bank_path = os.path.join(ws, "references", "quiz_bank.json")
+        bank = json.load(open(bank_path, encoding="utf-8"))
+        os.makedirs(os.path.join(ws, "references", "assets"), exist_ok=True)
+        with open(os.path.join(ws, "references", "assets", "fig.png"), "wb") as f:
+            f.write(PNG)
+        bank.append({"id": "two_asset", "chapter": 1, "type": "subjective", "question": "看图和表作答。",
+                     "source": "material", "ai_generated": False, "requires_assets": True,
+                     "assets": [{"path": "references/assets/fig.png", "role": "figure", "type": "page_image"},
+                                {"path": "references/assets/tbl.png", "role": "table", "type": "table_image"}]})
+        json.dump(bank, open(bank_path, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+        with self.assertRaises(SystemExit) as cm:                 # tbl.png missing → partial prompt → exit 1
+            SQA.run(["--workspace", ws, "--id", "two_asset"])
+        self.assertEqual(cm.exception.code, 1)
+
+    def test_show_gates_stub_and_page_reference(self):
+        # stub/page_reference items share the runtime contract: no displayable prompt asset → exit 1
+        tmp = tempfile.mkdtemp()
+        ws = _mk_workspace(tmp)
+        bank_path = os.path.join(ws, "references", "quiz_bank.json")
+        bank = json.load(open(bank_path, encoding="utf-8"))
+        bank.append({"id": "pageref_1", "chapter": 1, "type": "subjective",
+                     "question": "见讲义第 2 页的图示题。", "source": "material", "ai_generated": False,
+                     "question_text_status": "page_reference",
+                     "source_file": "lectures/ch01.pdf", "source_pages": [2]})
+        json.dump(bank, open(bank_path, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+        with self.assertRaises(SystemExit) as cm:
+            SQA.run(["--workspace", ws, "--id", "pageref_1"])
+        self.assertEqual(cm.exception.code, 1)                    # fail-closed, with the page pointer on stderr
+
+    def test_apply_attaches_every_visual_page(self):
+        # a suspect spanning MULTIPLE visual pages gets ALL of them attached, not just the first
+        tmp = tempfile.mkdtemp()
+        ws = _mk_workspace(tmp)
+        bank_path = os.path.join(ws, "references", "quiz_bank.json")
+        bank = json.load(open(bank_path, encoding="utf-8"))
+        bank.append({"id": "multi_page", "chapter": 1, "type": "subjective", "question": "跨页图题。",
+                     "source": "material", "ai_generated": False,
+                     "source_file": "lectures/ch01.pdf", "source_pages": [2, 3]})   # both visual pages
+        json.dump(bank, open(bank_path, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+        mat = os.path.join(tmp, "mat")
+        _mk_materials(mat, ["ch01.pdf", "ch02.pdf"])
+        rc = BVI.run(["--workspace", ws, "--materials", mat, "--apply"], backend=_default_backend())
+        self.assertEqual(rc, 0)
+        bank2 = json.load(open(bank_path, encoding="utf-8"))
+        q = next(x for x in bank2 if x["id"] == "multi_page")
+        self.assertEqual(len(q["assets"]), 2)                     # p.2 AND p.3 attached
+        pages = sorted(a["path"] for a in q["assets"])
+        self.assertTrue(pages[0].endswith("_p2.png") and pages[1].endswith("_p3.png"))
+
+    def test_visual_hits_exact_match_beats_duplicate_basename(self):
+        fig = {"lectures/ch01.pdf": {"pages": 5, "visual": {2: {}}},
+               "homework/ch01.pdf": {"pages": 5, "visual": {5: {}}}}
+        # exact relative path → ONLY that file's pages considered
+        self.assertEqual(BVI._visual_hits(fig, "lectures/ch01.pdf", [2, 5]), [2])
+        # bare basename (ambiguous) → UNION across duplicates, recall-first
+        self.assertEqual(BVI._visual_hits(fig, "ch01.pdf", [2, 5]), [2, 5])
+
+    def test_apply_skips_ambiguous_duplicate_basename(self):
+        tmp = tempfile.mkdtemp()
+        ws = _mk_workspace(tmp)
+        bank_path = os.path.join(ws, "references", "quiz_bank.json")
+        bank = json.load(open(bank_path, encoding="utf-8"))
+        for q in bank:                                            # make suspect_1's source ambiguous
+            if q["id"] == "suspect_1":
+                q["source_file"] = "ch01.pdf"
+        json.dump(bank, open(bank_path, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+        mat = os.path.join(tmp, "mat")
+        _mk_materials(mat, ["ch01.pdf", "ch02.pdf"])
+        os.makedirs(os.path.join(mat, "homework"), exist_ok=True)
+        with open(os.path.join(mat, "homework", "ch01.pdf"), "wb") as f:   # duplicate basename
+            f.write(b"%PDF-fake")
+        be = _default_backend()
+        be.texts["ch01.pdf"] = be.texts["ch01.pdf"]               # both resolve by basename in the fake
+        rc = BVI.run(["--workspace", ws, "--materials", mat, "--apply"], backend=be)
+        self.assertEqual(rc, 0)
+        qidx = _load(ws, "image_question_index.json")
+        self.assertTrue(any(w.startswith("apply_skip_ambiguous") for w in qidx["warnings"]))
+        bank2 = json.load(open(bank_path, encoding="utf-8"))
+        q = next(x for x in bank2 if x["id"] == "suspect_1")
+        self.assertNotIn("maybe_requires_assets", q)              # NOT flagged against the wrong file
+
+    def test_list_reports_recall_net_state(self):
+        # index built WITHOUT --materials: suspects=0 must be flagged untrustworthy, not silently trusted
+        tmp = tempfile.mkdtemp()
+        ws, _m, _rc = _build(tmp, materials=False)
+        rc, out = self._capture(LIQ.run, ["--workspace", ws, "--json"])
+        data = json.loads(out)
+        self.assertTrue(data["index_present"])
+        self.assertFalse(data["recall_net"])
+        rc, out2 = self._capture(LIQ.run, ["--workspace", ws])
+        self.assertIn("疑漏口径=0 不可信", out2)
+        # with materials → recall_net true
+        tmp2 = tempfile.mkdtemp()
+        ws2, _m2, _rc2 = _build(tmp2)
+        rc, out3 = self._capture(LIQ.run, ["--workspace", ws2, "--json"])
+        self.assertTrue(json.loads(out3)["recall_net"])
 
     def test_no_network_llm_or_dep_in_new_scripts(self):
         for name in ("build_visual_index.py", "list_image_questions.py",

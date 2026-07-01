@@ -250,14 +250,20 @@ def _prompt_side_assets(q):
 
 
 def _visual_hits(fig_files, source_file, pages):
-    """Which of `pages` are visual pages of `source_file` in the figure index (basename-tolerant match)."""
+    """Which of `pages` are visual pages of `source_file`. EXACT relative-path match wins; only when no
+    exact match exists do we fall back to basename matches — and then take the UNION across duplicates
+    (homework/ch01.pdf vs lectures/ch01.pdf): recall-first, a hit in any candidate must not be hidden."""
     if not source_file or not pages:
         return []
     sf = str(source_file).replace("\\", "/")
+    if sf in fig_files:
+        vis = fig_files[sf]["visual"]
+        return sorted(p for p in pages if isinstance(p, int) and p in vis)
+    hits = set()
     for rel, info in fig_files.items():
-        if rel == sf or os.path.basename(rel) == os.path.basename(sf):
-            return sorted(p for p in pages if isinstance(p, int) and p in info["visual"])
-    return []
+        if os.path.basename(rel) == os.path.basename(sf):
+            hits.update(p for p in pages if isinstance(p, int) and p in info["visual"])
+    return sorted(hits)
 
 
 def build_question_index(bank, fig_files):
@@ -322,34 +328,45 @@ def apply_suspects(ws, materials, bank, suspects, backend, asset_root, warnings)
         q = by_id.get(s["id"])
         if q is None:
             continue
-        page = s["visual_pages"][0]
-        pdf = None
         sf = str(q.get("source_file") or "").replace("\\", "/")
-        for cand in (os.path.join(materials, sf.replace("/", os.sep)),):
-            if os.path.isfile(cand):
-                pdf = cand
-        if pdf is None:                                # basename fallback (source_file may be bare name)
+        pdf = None
+        exact = os.path.join(materials, sf.replace("/", os.sep))
+        if os.path.isfile(exact):
+            pdf = exact
+        else:                                          # basename fallback — but ONLY when unambiguous
+            cands = []
             for base, dirs, files in os.walk(materials):
                 dirs[:] = [d for d in dirs if d not in ALWAYS_PRUNE]
                 if os.path.basename(sf) in files:
-                    pdf = os.path.join(base, os.path.basename(sf))
-                    break
+                    cands.append(os.path.join(base, os.path.basename(sf)))
+            if len(cands) == 1:
+                pdf = cands[0]
+            elif len(cands) > 1:
+                warnings.append("apply_skip_ambiguous: %s（%s 在材料里有 %d 个同名文件，无法确定出处，"
+                                "请把 source_file 写成相对路径）" % (s["id"], sf, len(cands)))
+                continue
         if pdf is None:
             warnings.append("apply_skip_no_pdf: %s（找不到 %s）" % (s["id"], sf))
             continue
-        png = backend.render_page_png(pdf, page - 1)
-        if not png:
-            warnings.append("apply_skip_render_failed: %s p.%d" % (s["id"], page))
-            continue
-        name = "%s_p%d.png" % (_SAFE_NAME_RE.sub("_", s["id"])[:80], page)
-        with open(os.path.join(root_abs, name), "wb") as f:
-            f.write(png)
-        rel = _rel_posix(ws_abs, os.path.join(root_abs, name))
-        q.setdefault("assets", []).append({
-            "path": rel, "role": "question_context", "type": "page_image",
-            "caption": "原页截图 %s p.%d（疑似图依赖，保守展示）" % (sf, page)})
-        q["maybe_requires_assets"] = True
-        applied += 1
+        # render EVERY visual source page — a question spanning several visual pages must not surface
+        # with only its first page attached (the student would silently miss the continuation).
+        attached = 0
+        for page in s["visual_pages"]:
+            png = backend.render_page_png(pdf, page - 1)
+            if not png:
+                warnings.append("apply_skip_render_failed: %s p.%d" % (s["id"], page))
+                continue
+            name = "%s_p%d.png" % (_SAFE_NAME_RE.sub("_", s["id"])[:80], page)
+            with open(os.path.join(root_abs, name), "wb") as f:
+                f.write(png)
+            rel = _rel_posix(ws_abs, os.path.join(root_abs, name))
+            q.setdefault("assets", []).append({
+                "path": rel, "role": "question_context", "type": "page_image",
+                "caption": "原页截图 %s p.%d（疑似图依赖，保守展示）" % (sf, page)})
+            attached += 1
+        if attached:
+            q["maybe_requires_assets"] = True
+            applied += 1
     return applied
 
 

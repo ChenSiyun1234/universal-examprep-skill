@@ -47,11 +47,20 @@ def run(argv=None):
         _die("quiz_bank.json 必须是数组")
 
     suspects_by_id = {}
+    recall_net, recall_note = False, None
     idx_path = os.path.join(args.workspace, "references", "image_question_index.json")
     if os.path.isfile(idx_path):
         try:
             idx = json.load(open(idx_path, encoding="utf-8"))
             suspects_by_id = {s["id"]: s for s in idx.get("suspects", []) if isinstance(s, dict) and "id" in s}
+            idx_warnings = [str(w) for w in (idx.get("warnings") or [])]
+            # an index built WITHOUT --materials never cross-checked anything: suspects=0 is NOT evidence
+            if any(w.startswith("no_materials") for w in idx_warnings):
+                recall_net, recall_note = False, "索引构建时未给 --materials，疑漏交叉核对未运行"
+            elif any(w.startswith("no_media_backend") for w in idx_warnings):
+                recall_net, recall_note = True, "结构信号缺失（无 PyMuPDF）——疑漏口径仅靠文字信号，可能有漏"
+            else:
+                recall_net = True
         except ValueError:
             sys.stderr.write("[!] image_question_index.json 损坏，忽略疑漏口径\n")
 
@@ -80,7 +89,8 @@ def run(argv=None):
 
     if args.json:
         print(json.dumps({"per_chapter": per, "items": rows,
-                          "index_present": bool(suspects_by_id) or os.path.isfile(idx_path)},
+                          "index_present": os.path.isfile(idx_path),
+                          "recall_net": recall_net, "recall_note": recall_note},
                          ensure_ascii=False, indent=2))
         return 0
     print("章节 | 题目总数 | requires | maybe | 疑漏(未标)")
@@ -91,6 +101,10 @@ def run(argv=None):
     print("合计 | %8d | %8d | %5d | %d" % (tot["questions"], tot["requires"], tot["maybe"], tot["suspects"]))
     if not os.path.isfile(idx_path):
         print("[!] 尚未构建 image_question_index.json（疑漏口径=0 不可信）——先跑 build_visual_index.py")
+    elif not recall_net:
+        print("[!] 疑漏口径=0 不可信：%s——用 --materials 重跑 build_visual_index.py" % (recall_note or "召回网未运行"))
+    elif recall_note:
+        print("[!] " + recall_note)
     for r in rows:
         print("  [%s] %s (ch%s) assets=%s" % (r["flag"], r["id"], r["chapter"], ",".join(r["prompt_assets"]) or "-"))
     return 0

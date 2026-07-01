@@ -61,28 +61,42 @@ def run(argv=None):
     if q is None:
         _die("题库里没有 id=%s 的题" % args.id)
 
-    visual = q.get("requires_assets") is True or q.get("maybe_requires_assets") is True
+    # runtime visual contract covers requires/maybe AND stub/page_reference (their text isn't standalone —
+    # the original page/prompt asset must be shown first; see exam-tutor SKILL)
+    qts = q.get("question_text_status")
+    why = ("requires" if q.get("requires_assets") is True
+           else "maybe" if q.get("maybe_requires_assets") is True
+           else qts if qts in ("stub", "page_reference") else None)
+    visual = why is not None
     assets = [a for a in (q.get("assets") or []) if isinstance(a, dict)]
-    prompt = [a for a in assets if a.get("role") in QUESTION_SIDE and _usable(args.workspace, a)]
+    prompt_all = [a for a in assets if a.get("role") in QUESTION_SIDE]
+    prompt = [a for a in prompt_all if _usable(args.workspace, a)]
+    broken = [a for a in prompt_all if not _usable(args.workspace, a)]
     answer = [a for a in assets if a.get("role") in ANSWER_SIDE and _usable(args.workspace, a)]
 
-    if visual and not prompt:
-        sys.stderr.write("show_question_assets: %s 是图依赖题（%s），但没有任何可展示的题面侧 asset——"
-                         "按 fail-closed 契约必须跳过此题，不得无图出题/讲解\n"
-                         % (args.id, "requires" if q.get("requires_assets") is True else "maybe"))
+    if visual and (not prompt or broken):
+        # strict-ALL: a visual item's prompt is complete only when EVERY question-side asset displays —
+        # a question needing both a figure and a table must not be asked with one silently missing.
+        pointer = ""
+        if q.get("source_file") and q.get("source_pages"):
+            pointer = "；原页出处 %s p.%s" % (q["source_file"], ",".join(str(p) for p in q["source_pages"]))
+        sys.stderr.write("show_question_assets: %s 的题面不完整（%s）——%s%s。"
+                         "按 fail-closed 契约必须跳过此题，不得按完整题面出题/讲解\n"
+                         % (args.id, why,
+                            ("缺失/不可用的题面侧 asset: " + ", ".join(str(a.get("path")) for a in broken))
+                            if broken else "没有任何可展示的题面侧 asset", pointer))
         raise SystemExit(1)
 
-    for a in prompt:                                   # POSIX relative paths → renderable Markdown
-        rel = str(a["path"]).replace("\\", "/")
-        print("![%s 题面图](%s)" % (args.id, rel))
-        if a.get("caption"):
-            print("*%s*" % a["caption"])
+    for a in prompt:                                   # POSIX relative paths → renderable Markdown,
+        rel = str(a["path"]).replace("\\", "/")        # canonical label per docs/file-format.md §4
+        print("![题面图 / question-side asset: %s](%s)" % (a.get("caption") or args.id, rel))
     if not prompt:
         print("（该题不依赖图片，无题面 asset）")
     if args.with_answer and answer:
         print("\n---（以下为答案/解析侧图片，讲解或复盘时才展示）---")
         for a in answer:
-            print("![%s 解答图](%s)" % (args.id, str(a["path"]).replace("\\", "/")))
+            print("![答案图 / answer-side asset: %s](%s)"
+                  % (a.get("caption") or args.id, str(a["path"]).replace("\\", "/")))
     return 0
 
 
