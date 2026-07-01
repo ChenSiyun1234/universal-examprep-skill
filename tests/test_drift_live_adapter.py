@@ -344,6 +344,30 @@ Give me a quiz.
         self.assertIn("### Events", rows[0]["assistant"])
         self.assertIn("kind: quiz", rows[0]["assistant"])
 
+    def test_unclosed_message_code_fence_exits_2(self):
+        bad = """# Live Agent Session Log
+
+## Turn 1
+kind: explanation
+phase_context: 1
+
+### User
+Show me the transcript format.
+
+### Assistant
+🟢 来自资料：示例开始。
+
+```md
+## Turn 2
+kind: quiz
+
+### Events
+- read_file: references/wiki/ch1_stack_queue.md
+"""
+        r = _check_markdown(bad)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("fence is not closed", r.stderr)
+
     def test_typoed_scalar_field_after_turn_header_exits_2(self):
         bad = """# Live Agent Session Log
 
@@ -370,6 +394,34 @@ Quiz me.
         self.assertEqual(r.returncode, 2)
         self.assertIn("unknown field", r.stderr)
         self.assertIn("phase_contex", r.stderr)
+
+    def test_tracked_files_after_paths_are_canonicalized(self):
+        good = """# Live Agent Session Log
+
+## Turn 1
+kind: explanation
+phase_context: 1
+
+### User
+Save progress.
+
+### Assistant
+🟢 来自资料：已保存。
+
+### Events
+- write_file: ./study_progress.md
+
+### Files After: .\\study_progress.md
+```text
+# 复习进度
+
+当前阶段：1
+```
+"""
+        rows = C.parse_session_log(good)
+        self.assertIn("study_progress.md", rows[0]["files_after"])
+        self.assertNotIn(".\\study_progress.md", rows[0]["files_after"])
+        self.assertEqual(_check_markdown(good).returncode, 0)
 
     def test_tracked_write_with_matching_snapshot_passes_check_mode(self):
         good = """# Live Agent Session Log
@@ -455,6 +507,15 @@ Phase 1: stack and queue.
             r = _cli(["--in", path, "--check"])
             self.assertEqual(r.returncode, 2)
             self.assertIn("UTF-8", r.stderr)
+
+    def test_utf8_bom_input_is_accepted(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "bom.md")
+            with open(path, "wb") as f:
+                f.write(b"\xef\xbb\xbf" + _read(FIXTURE_MD).encode("utf-8"))
+            r = _cli(["--in", path, "--check"])
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("OK: 3 turns", r.stdout)
 
     def test_converter_has_no_network_llm_api_or_dependency_hooks(self):
         source = _read(CONVERT).lower()

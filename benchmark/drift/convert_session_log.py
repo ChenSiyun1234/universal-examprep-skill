@@ -38,7 +38,7 @@ class SessionLogError(Exception):
 
 def read_utf8(path):
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8-sig") as f:
             return f.read()
     except UnicodeDecodeError as e:
         raise SessionLogError("cannot read %s as UTF-8: %s" % (path, e))
@@ -222,7 +222,7 @@ def parse_turn_body(turn, body):
             seen.add(lower)
             start = i
             if lower in MESSAGE_SECTIONS:
-                i = next_adapter_section(body, i)
+                i = next_adapter_section(body, i, turn, heading)
             else:
                 while i < len(body) and not adapter_section(body[i]):
                     i += 1
@@ -241,10 +241,11 @@ def parse_turn_body(turn, body):
             path = fm.group(1).strip()
             if not path:
                 raise SessionLogError("turn %d Files After path cannot be empty" % turn)
-            if path in files_after:
+            snapshot_key = tracked_snapshot_name(path) or path
+            if snapshot_key in files_after:
                 raise SessionLogError("turn %d repeats Files After for %s" % (turn, path))
             content, i = parse_files_after(body, i, turn, path)
-            files_after[path] = content
+            files_after[snapshot_key] = content
             continue
 
         raise SessionLogError("turn %d has unknown section %r" % (turn, heading))
@@ -304,7 +305,7 @@ def is_turn_start(lines, index):
     return bool(FIELD_RE.match(lines[i]))
 
 
-def next_adapter_section(lines, start):
+def next_adapter_section(lines, start, turn, section):
     fence_len = None
     i = start
     while i < len(lines):
@@ -322,6 +323,8 @@ def next_adapter_section(lines, start):
         if adapter_section(lines[i]):
             break
         i += 1
+    if fence_len is not None:
+        raise SessionLogError("turn %d section %s fence is not closed" % (turn, section))
     return i
 
 

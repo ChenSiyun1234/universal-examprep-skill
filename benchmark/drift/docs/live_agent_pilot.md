@@ -105,6 +105,8 @@ Tracked writes must include snapshots in the same turn. If `### Events` records 
 study_progress.md` or `- write_file: study_plan.md`, include the matching `### Files After:
 study_progress.md` or `### Files After: study_plan.md` block. Without that snapshot, T4 cannot score
 progress-row persistence or plan drift accurately, so the converter rejects the log.
+For these tracked files, `./` prefixes and Windows-style backslashes are normalized to the canonical
+`study_progress.md` / `study_plan.md` keys before JSONL is emitted.
 
 ## Convert To T4 JSONL
 
