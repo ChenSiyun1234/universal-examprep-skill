@@ -1,0 +1,312 @@
+# -*- coding: utf-8 -*-
+"""Root-level, CI-reachable tests for the Tier 4 long-horizon drift harness (benchmark/drift/run_drift.py).
+
+CI only discovers the repo-root tests/, so the T4 harness is covered HERE. Pure stdlib; no network / LLM /
+API keys / deps / paid run. Verifies: the good long-session transcript passes all thresholds; each bad
+transcript fails for its intended reason; malformed input exits 2; token/cost accounting; overread and
+row-loss detection; the --llm skeleton never returns success; and the fixture is self-authored text."""
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DRIFT = os.path.join(ROOT, "benchmark", "drift")
+RUN = os.path.join(DRIFT, "run_drift.py")
+SCEN = os.path.join(DRIFT, "scenarios", "long_session_basic.json")
+TR = os.path.join(DRIFT, "transcripts")
+FIX = os.path.join(DRIFT, "fixtures", "mini_course_long")
+
+sys.path.insert(0, DRIFT)
+import run_drift as D   # noqa: E402
+
+
+def _tr(name):
+    return os.path.join(TR, name)
+
+
+def _eval(transcript):
+    sc = D.load_scenario(SCEN)
+    return D.evaluate(sc, _tr(transcript))
+
+
+def _eval_turns(turns, scenario=SCEN):
+    """Write a synthetic transcript and evaluate it against a scenario — for targeted regression probes."""
+    d = tempfile.mkdtemp()
+    p = os.path.join(d, "t.jsonl")
+    with open(p, "w", encoding="utf-8") as f:
+        f.write("\n".join(json.dumps(t, ensure_ascii=False) for t in turns))
+    return D.evaluate(D.load_scenario(scenario), p)["metrics"]
+
+
+def _cli(args, env=None):
+    e = dict(os.environ)
+    if env:
+        e.update(env)
+    return subprocess.run([sys.executable, RUN] + args, capture_output=True, text=True, encoding="utf-8", env=e)
+
+
+def _fail_thresholds(result):
+    return {f["threshold"] for f in result["failures"]}
+
+
+@unittest.skipUnless(os.path.isdir(DRIFT), "drift harness not present")
+class DriftHarness(unittest.TestCase):
+    # 1) good transcript passes ALL thresholds
+    def test_good_transcript_passes(self):
+        r = _eval("good_session.jsonl")
+        self.assertTrue(r["passed"], r["failures"])
+        m = r["metrics"]
+        self.assertEqual(m["goal_retention"], 1.0)
+        self.assertEqual(m["plan_mutations"], 0)
+        self.assertEqual(m["invention_rate"], 0.0)
+        self.assertEqual(m["wrong_phase_quiz"], 0)
+        self.assertEqual(m["reset_detected"], 0)
+        self.assertEqual(m["provenance_fidelity"], 1.0)
+        self.assertEqual(m["progress_rows_lost"], 0)
+        self.assertGreaterEqual(m["turns"], 12)      # a genuinely long-horizon session
+
+    # 2) bad plan-drift fails plan adherence (and only that)
+    def test_bad_plan_drift_fails_plan(self):
+        r = _eval("bad_plan_drift.jsonl")
+        self.assertFalse(r["passed"])
+        self.assertIn("plan_mutations_max", _fail_thresholds(r))
+        self.assertGreater(r["metrics"]["plan_mutations"], 0)
+        self.assertLess(r["metrics"]["plan_adherence"], 1.0)
+        self.assertEqual(_fail_thresholds(r), {"plan_mutations_max"})   # fails ONLY for the intended reason
+
+    # 3) bad quiz-invention fails invention rate
+    def test_bad_quiz_invention_fails_invention(self):
+        r = _eval("bad_quiz_invention.jsonl")
+        self.assertFalse(r["passed"])
+        self.assertIn("quiz_invention_rate_max", _fail_thresholds(r))
+        self.assertGreater(r["metrics"]["invented"], 0)
+        self.assertGreater(r["metrics"]["invention_rate"], 0.0)
+        self.assertEqual(_fail_thresholds(r), {"quiz_invention_rate_max"})
+
+    # 4) bad checkpoint-reset fails the checkpoint metric
+    def test_bad_checkpoint_reset_fails_checkpoint(self):
+        r = _eval("bad_checkpoint_reset.jsonl")
+        self.assertFalse(r["passed"])
+        self.assertIn("checkpoint_reset_max", _fail_thresholds(r))
+        m = r["metrics"]
+        self.assertEqual(m["reset_detected"], 1)
+        self.assertEqual(m["expected_phase"], 2)     # progress was at phase 2
+        self.assertEqual(m["resumed_phase"], 1)      # …but it restarted at phase 1
+        self.assertEqual(_fail_thresholds(r), {"checkpoint_reset_max"})
+
+    # 5) bad provenance-drift fails provenance fidelity
+    def test_bad_provenance_drift_fails_provenance(self):
+        r = _eval("bad_provenance_drift.jsonl")
+        self.assertFalse(r["passed"])
+        self.assertIn("provenance_fidelity_min", _fail_thresholds(r))
+        self.assertLess(r["metrics"]["provenance_fidelity"], 0.8)
+        self.assertGreater(r["metrics"]["explanation_turns"], 0)
+        self.assertEqual(_fail_thresholds(r), {"provenance_fidelity_min"})
+
+    # 6) missing / malformed transcript exits 2
+    def test_missing_transcript_exits_2(self):
+        r = _cli(["--scenario", SCEN, "--transcript", os.path.join(TR, "does_not_exist.jsonl")])
+        self.assertEqual(r.returncode, 2)
+
+    def test_malformed_transcript_exits_2(self):
+        d = tempfile.mkdtemp()
+        bad = os.path.join(d, "bad.jsonl")
+        with open(bad, "w", encoding="utf-8") as f:
+            f.write("{ not valid json }\n")
+        r = _cli(["--scenario", SCEN, "--transcript", bad])
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("JSON", r.stderr)
+
+    def test_unknown_threshold_key_exits_2(self):
+        d = tempfile.mkdtemp()
+        sc = json.load(open(SCEN, encoding="utf-8"))
+        sc["thresholds"] = {"nonsense_max": 0}
+        scf = os.path.join(d, "s.json")
+        json.dump(sc, open(scf, "w", encoding="utf-8"))
+        r = _cli(["--scenario", scf, "--transcript", _tr("good_session.jsonl")])
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("未知阈值", r.stderr)
+
+    # 7) token / cost fields → totals computed
+    def test_token_cost_accounting(self):
+        m = _eval("good_session.jsonl")["metrics"]["cost"]
+        self.assertTrue(m["has_token_accounting"])
+        self.assertEqual(m["total_tokens_in"], 15550)
+        self.assertGreater(m["total_tokens_out"], 0)
+        self.assertAlmostEqual(m["total_cost_usd"], 0.018, places=4)
+        self.assertIsNotNone(m["context_growth_ratio"])
+
+    # 8) transcript WITHOUT token/cost fields still works
+    def test_without_token_fields_still_works(self):
+        m = _eval("bad_plan_drift.jsonl")["metrics"]["cost"]      # this transcript carries no token fields
+        self.assertFalse(m["has_token_accounting"])
+        self.assertEqual(m["total_tokens_in"], 0)
+        self.assertEqual(m["total_cost_usd"], 0.0)
+        self.assertIsNone(m["context_growth_ratio"])
+
+    # 9) wiki overread event detected
+    def test_wiki_overread_detected(self):
+        r = _eval("bad_wiki_overread.jsonl")
+        self.assertEqual(r["metrics"]["overread_flag"], 1)
+        self.assertIn("overread_max", _fail_thresholds(r))
+        # good session (phase-scoped reads) does NOT flag overread
+        self.assertEqual(_eval("good_session.jsonl")["metrics"]["overread_flag"], 0)
+
+    # 10) mistake/confusion rows lost detected; and additions counted in the good session
+    def test_progress_rows_lost_detected(self):
+        r = _eval("bad_progress_loss.jsonl")
+        self.assertGreater(r["metrics"]["progress_rows_lost"], 0)
+        self.assertIn("progress_rows_lost_max", _fail_thresholds(r))
+        good = _eval("good_session.jsonl")["metrics"]
+        self.assertEqual(good["mistake_rows_added"], 2)          # two wrong answers archived
+        self.assertEqual(good["confusion_rows_added"], 1)        # one confusion tracked
+        self.assertEqual(good["progress_rows_lost"], 0)          # …and nothing ever silently dropped
+
+    # 11) CLI --all runs committed scenarios and exits 0 for the good set
+    def test_cli_all_exits_0(self):
+        r = _cli(["--all"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("PASS", r.stdout)
+        self.assertIn("long_session_basic", r.stdout)
+
+    def test_cli_bad_transcript_exits_1(self):
+        r = _cli(["--scenario", SCEN, "--transcript", _tr("bad_quiz_invention.jsonl")])
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("FAIL", r.stdout)
+
+    def test_json_out_written_to_explicit_path_only(self):
+        d = tempfile.mkdtemp()
+        out = os.path.join(d, "summary.json")
+        r = _cli(["--all", "--json-out", out])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(out, encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertTrue(data["all_passed"])
+        self.assertEqual(len(data["results"]), 1)
+
+    # extra coverage: wrong-phase and untagged detection via small synthetic transcripts
+    def test_wrong_phase_quiz_detected(self):
+        d = tempfile.mkdtemp()
+        t = os.path.join(d, "wp.jsonl")
+        with open(t, "w", encoding="utf-8") as f:
+            # a phase-1 quiz turn that draws a phase-2 bank id → wrong_phase
+            f.write(json.dumps({"turn": 1, "user": "从阶段1考我", "kind": "quiz", "phase_context": 1,
+                                "assistant": "题目 [#tree_height_1] 树高？"}, ensure_ascii=False) + "\n")
+        m = D.evaluate(D.load_scenario(SCEN), t)["metrics"]
+        self.assertEqual(m["wrong_phase_quiz"], 1)
+        self.assertEqual(m["invented"], 0)                       # it IS a bank id, just wrong phase
+
+    def test_untagged_question_detected(self):
+        d = tempfile.mkdtemp()
+        t = os.path.join(d, "ut.jsonl")
+        with open(t, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"turn": 1, "user": "考我", "kind": "quiz",
+                                "assistant": "1. 栈的访问顺序是什么？"}, ensure_ascii=False) + "\n")
+        m = D.evaluate(D.load_scenario(SCEN), t)["metrics"]
+        self.assertGreaterEqual(m["untagged_questions"], 1)
+
+    # ---- regression guards for evasions caught by the pre-open adversarial review ----
+
+    def test_bad_goal_drift_fails_goal_retention(self):
+        r = _eval("bad_goal_drift.jsonl")
+        self.assertFalse(r["passed"])
+        self.assertIn("goal_retention_min", _fail_thresholds(r))
+        self.assertLess(r["metrics"]["goal_retention"], 0.9)
+
+    def test_plan_authorization_is_scoped_not_a_session_latch(self):
+        # one early '改计划' must NOT authorize an unrelated, non-adjacent later plan mutation
+        PLAN1 = "# 计划\n## 阶段1：栈\n"
+        m = _eval_turns([
+            {"turn": 1, "user": "帮我改计划里的错别字，别动顺序", "assistant": "错别字修好了。"},
+            {"turn": 2, "user": "从阶段1考我", "assistant": "题目 [#stack_lifo_1] 栈?", "kind": "quiz", "phase_context": 1},
+            {"turn": 3, "user": "继续", "assistant": "顺手删了阶段2。", "files_after": {"study_plan.md": PLAN1}},
+        ])
+        self.assertGreater(m["plan_mutations"], 0)
+
+    def test_checkpoint_reset_checked_on_every_resume_not_just_first(self):
+        # first resume correct, a LATER resume restarts an earlier phase → still detected
+        p2 = "当前阶段：2\n## 错题本\n（暂无）\n## 疑难点\n（暂无）\n"
+        m = _eval_turns([
+            {"turn": 1, "assistant": "进入阶段2。", "phase_context": 2, "files_after": {"study_progress.md": p2}},
+            {"turn": 2, "user": "我回来了", "assistant": "继续阶段2。", "kind": "resume"},
+            {"turn": 3, "user": "我又回来了", "assistant": "我们从阶段1重新开始吧。", "kind": "resume"},
+        ])
+        self.assertGreaterEqual(m["reset_detected"], 1)
+
+    def test_explanation_detection_not_escapable_by_kind(self):
+        # a turn whose user asked to explain is an explanation turn even if it mislabels kind
+        m = _eval_turns([{"turn": 1, "user": "解释一下红黑树", "assistant": "红黑树就是这样，我瞎编的没依据。", "kind": "note"}])
+        self.assertEqual(m["explanation_turns"], 1)
+        self.assertEqual(m["provenance_fidelity"], 0.0)
+
+    def test_quiz_with_no_tag_is_flagged_untagged(self):
+        # asked to quiz but produced NO bank-tagged item (prose invention) → untagged, not silently clean
+        m = _eval_turns([{"turn": 1, "user": "从阶段1考我", "kind": "quiz", "phase_context": 1,
+                          "assistant": "我给你出道题：跳表的期望复杂度是多少呢"}])
+        self.assertGreaterEqual(m["untagged_questions"], 1)
+
+    def test_overread_and_wrongphase_use_running_phase_without_phase_context(self):
+        # NO phase_context on the turn → the running phase (init=1) is used, so the checks still fire
+        over = _eval_turns([{"turn": 1, "user": "考我一道", "assistant": "题目 [#stack_lifo_1] 栈?",
+                             "events": [{"type": "read_file", "path": "references/wiki/ch2_trees.md"}]}])
+        self.assertEqual(over["overread_flag"], 1)
+        wp = _eval_turns([{"turn": 1, "user": "考我", "kind": "quiz", "assistant": "题目 [#tree_height_1] 树高?"}])
+        self.assertEqual(wp["wrong_phase_quiz"], 1)   # phase-2 id while running phase is 1
+
+    def test_row_reword_keeping_id_is_not_a_false_loss(self):
+        # editing a mistake row's prose while keeping its [#id] must NOT count as a lost row
+        p1 = "当前阶段：1\n## 错题本\n- [#stack_lifo_1] 栈应为 LIFO\n## 疑难点\n（暂无）\n"
+        p2 = "当前阶段：1\n## 错题本\n- [#stack_lifo_1] 栈应为 LIFO（后进先出）补充\n## 疑难点\n（暂无）\n"
+        m = _eval_turns([{"turn": 1, "files_after": {"study_progress.md": p1}},
+                         {"turn": 2, "files_after": {"study_progress.md": p2}}])
+        self.assertEqual(m["progress_rows_lost"], 0)
+
+    def test_goal_marker_min_positive_signal(self):
+        # optional threshold: a session whose ASSISTANT never references the exam goal fails goal_marker_min
+        d = tempfile.mkdtemp()
+        sc = json.load(open(SCEN, encoding="utf-8"))
+        sc["thresholds"] = {"goal_marker_min": 1}
+        scf = os.path.join(d, "s.json")
+        json.dump(sc, open(scf, "w", encoding="utf-8"))
+        m = _eval_turns([{"turn": 1, "user": "考我", "assistant": "题目 [#stack_lifo_1] 栈?"}], scenario=scf)
+        self.assertEqual(m["goal_marker_seen"], 0)
+        r = D.evaluate(D.load_scenario(scf), _tr("bad_quiz_invention.jsonl"))
+        self.assertIn("goal_marker_min", _fail_thresholds(r))   # assistant never says 期末/复习 → fails
+
+    # 12) no network / LLM / API key / deps; --llm skeleton never returns success
+    def test_no_network_llm_or_dep_in_source(self):
+        with open(RUN, encoding="utf-8") as f:
+            src = f.read()
+        for banned in ("import requests", "import anthropic", "import openai", "import numpy",
+                       "urllib.request", "http.client", "import socket", "import subprocess", "claude -p"):
+            self.assertNotIn(banned, src)
+
+    def test_llm_skeleton_never_succeeds(self):
+        r = _cli(["--llm"])                                      # not opted in
+        self.assertEqual(r.returncode, 2)
+        r2 = _cli(["--llm"], env={"RUN_SKILL_DRIFT_LLM": "1"})   # opted in, but unimplemented
+        self.assertEqual(r2.returncode, 3)                      # never 0 — a skeleton must not report success
+
+    # 13) fixture is self-authored plain text; no copyrighted / binary materials committed
+    def test_fixture_is_self_authored_text(self):
+        exts = set()
+        total = 0
+        for base, dirs, files in os.walk(DRIFT):
+            dirs[:] = [d for d in dirs if d != "__pycache__"]    # skip transient, gitignored bytecode
+            for fn in files:
+                exts.add(os.path.splitext(fn)[1].lower())
+                total += os.path.getsize(os.path.join(base, fn))
+        self.assertTrue(exts <= {".py", ".md", ".json", ".jsonl"}, "unexpected file types: %s" % exts)
+        self.assertLess(total, 200 * 1024, "drift/ unexpectedly large — no big/copyrighted blobs allowed")
+        # the wiki is our own short CS common-knowledge, not course material
+        self.assertTrue(os.path.isfile(os.path.join(FIX, "references", "wiki", "ch1_stack_queue.md")))
+        bank = json.load(open(os.path.join(FIX, "references", "quiz_bank.json"), encoding="utf-8"))
+        self.assertEqual({q["id"] for q in bank},
+                         {"stack_lifo_1", "queue_fifo_1", "tree_height_1", "bst_property_1"})
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
