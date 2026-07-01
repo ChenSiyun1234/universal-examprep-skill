@@ -24,12 +24,13 @@ def _read(path):
         return f.read()
 
 
-def _cli(args):
+def _cli(args, env=None):
     return subprocess.run(
         [sys.executable, CONVERT] + args,
         capture_output=True,
         text=True,
         encoding="utf-8",
+        env=env,
     )
 
 
@@ -213,6 +214,24 @@ Explain stack.
             self.assertEqual(r.returncode, 2, value)
             self.assertIn("cost_usd must be finite", r.stderr)
 
+    def test_negative_cost_values_exit_2(self):
+        bad = """# Live Agent Session Log
+
+## Turn 1
+kind: explanation
+phase_context: 1
+cost_usd: -0.50
+
+### User
+Explain stack.
+
+### Assistant
+🟢 来自资料：栈是后进先出。
+"""
+        r = _check_markdown(bad)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("cost_usd cannot be negative", r.stderr)
+
     def test_files_after_snapshot_can_contain_inner_code_fence(self):
         good = """# Live Agent Session Log
 
@@ -244,6 +263,54 @@ print("stack")
         snap = rows[0]["files_after"]["study_progress.md"]
         self.assertIn("```python", snap)
         self.assertIn('print("stack")', snap)
+
+    def test_turn_like_heading_inside_snapshot_is_not_a_turn_boundary(self):
+        good = """# Live Agent Session Log
+
+## Turn 1
+kind: explanation
+phase_context: 1
+
+### User
+Record my note.
+
+### Assistant
+🟢 来自资料：已记录。
+
+### Events
+- write_file: study_progress.md
+
+### Files After: study_progress.md
+```text
+# 复习进度
+
+## Turn 2
+this is a note heading, not a transcript turn
+```
+"""
+        rows = C.parse_session_log(good)
+        self.assertEqual(len(rows), 1)
+        self.assertIn("## Turn 2", rows[0]["files_after"]["study_progress.md"])
+
+    def test_turn_like_heading_inside_assistant_message_is_not_a_turn_boundary(self):
+        good = """# Live Agent Session Log
+
+## Turn 1
+kind: explanation
+phase_context: 1
+
+### User
+Show me the transcript format.
+
+### Assistant
+🟢 来自资料：示例里可能出现标题。
+
+## Turn 2
+This is just a Markdown heading inside the answer.
+"""
+        rows = C.parse_session_log(good)
+        self.assertEqual(len(rows), 1)
+        self.assertIn("## Turn 2", rows[0]["assistant"])
 
     def test_tracked_write_with_matching_snapshot_passes_check_mode(self):
         good = """# Live Agent Session Log
@@ -287,6 +354,17 @@ Phase 1: stack and queue.
         r = _cli(["--in", FIXTURE_MD, "--check"])
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("OK: 3 turns", r.stdout)
+
+    def test_check_mode_status_uses_utf8_safe_writer(self):
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "ascii"
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "会话.md")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(_read(FIXTURE_MD))
+            r = _cli(["--in", path, "--check"], env=env)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("会话.md", r.stdout)
 
     def test_template_command_prints_utf8_template(self):
         r = _cli(["--template", os.path.join(DRIFT, "templates", "live_session_template.md")])

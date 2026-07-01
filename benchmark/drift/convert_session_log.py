@@ -106,6 +106,8 @@ def parse_scalar(key, value, turn):
             raise SessionLogError("turn %d field %s must be numeric" % (turn, key))
         if not math.isfinite(parsed):
             raise SessionLogError("turn %d field %s must be finite" % (turn, key))
+        if parsed < 0:
+            raise SessionLogError("turn %d field %s cannot be negative" % (turn, key))
         return parsed
     if key == "kind":
         value = value.strip()
@@ -260,7 +262,7 @@ def parse_session_log(text):
     starts = []
     for i, line in enumerate(lines):
         m = TURN_RE.match(line)
-        if m:
+        if m and is_turn_start(lines, i):
             starts.append((i, int(m.group(1))))
     if not starts:
         raise SessionLogError("session log has no '## Turn N' sections")
@@ -274,6 +276,20 @@ def parse_session_log(text):
         end = starts[idx + 1][0] if idx + 1 < len(starts) else len(lines)
         rows.append(parse_turn_body(turn, lines[start + 1:end]))
     return rows
+
+
+def is_turn_start(lines, index):
+    """A turn header is top-level only; ignore same-looking text captured inside snapshots/messages."""
+    i = index + 1
+    while i < len(lines) and not lines[i].strip():
+        i += 1
+    if i >= len(lines):
+        return False
+    section = adapter_section(lines[i])
+    if section in MESSAGE_SECTIONS or section in EVENT_SECTIONS:
+        return True
+    m = FIELD_RE.match(lines[i])
+    return bool(m and m.group(1) in TURN_FIELDS)
 
 
 def rows_to_jsonl(rows):
@@ -320,7 +336,7 @@ def main(argv=None):
             raise SessionLogError("--check does not write output; remove --out")
         rows = convert_file(args.in_path, args.out_path, args.check)
         if args.check:
-            print("OK: %d turns parsed from %s" % (len(rows), args.in_path))
+            write_stdout_utf8("OK: %d turns parsed from %s\n" % (len(rows), args.in_path))
         return 0
     except SessionLogError as e:
         print("convert_session_log: %s" % e, file=sys.stderr)

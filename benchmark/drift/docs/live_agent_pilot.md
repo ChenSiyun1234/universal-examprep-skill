@@ -84,7 +84,7 @@ Supported turn fields:
 
 - `kind` optional; common values are `resume`, `quiz`, `explanation`, `confusion`
 - `phase_context` optional integer
-- `tokens_in`, `tokens_out`, `cost_usd` optional accounting fields
+- `tokens_in`, `tokens_out`, `cost_usd` optional non-negative accounting fields; `cost_usd` must be finite
 
 Supported sections:
 
