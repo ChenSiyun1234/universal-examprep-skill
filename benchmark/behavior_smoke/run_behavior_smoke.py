@@ -172,6 +172,29 @@ def has_zero_basic_sections(text):
             and _zb(text, "3分钟速记", "三分钟速记"))
 
 
+def visual_first_asset_display_ok(text):
+    """Smoke-check a visual-required output contract.
+
+    This is structural, not a UI renderer: it requires a labelled question-side Markdown image
+    before any prompt/explanation/hint/answer text, rejects answer-side assets first, and rejects
+    path-only or malformed Windows pseudo-path output.
+    """
+    t = text or ""
+    bad_win = "/" + "D:/"
+    if bad_win in t:
+        return False
+    qimg = re.search(r"!\[[^\]]*题面图 / question-side asset[^\]]*\]\((?!/)[^)]+\)", t)
+    if not qimg:
+        return False
+    qpos = qimg.start()
+    apos = t.find("答案图 / answer-side asset")
+    if apos != -1 and apos < qpos:
+        return False
+    markers = ("题目", "请作答", "提示", "解析", "答案", "Question:", "Hint:", "Explanation:", "Answer:")
+    first_action = min((t.find(m) for m in markers if t.find(m) != -1), default=len(t))
+    return qpos < first_action
+
+
 def has_hint_skip_offer(text):
     t = (text or "")
     tl = t.lower()
@@ -359,6 +382,12 @@ def check_scenario_mock(name, sc, fixture_path=FIXTURE):
     if name == "zero_basic_key_question":
         ok = has_zero_basic_sections(_read(_p(sc["mock_output"])))
         return ok, f"required_sections_present={ok}"
+    if name == "visual_first_assets":
+        good = visual_first_asset_display_ok(_read(_p(sc["mock_output"])))
+        answer_first = visual_first_asset_display_ok(_read(_p(sc["mock_negative"])))
+        path_only = visual_first_asset_display_ok(_read(_p(sc["mock_negative_path"])))
+        return (good and not answer_first and not path_only), (
+            f"good={good} answer_side_first_caught={not answer_first} path_only_caught={not path_only}")
     return False, "unknown scenario"
 
 

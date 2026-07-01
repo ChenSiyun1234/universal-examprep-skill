@@ -54,7 +54,7 @@ class BehaviorSmokeTest(unittest.TestCase):
         spec = H.load_scenarios()
         self.assertIn("scenarios", spec)
         self.assertTrue(os.path.isdir(_bs(spec["fixture"])), "scenarios.json 的 fixture 路径不存在")
-        file_keys = ("mock_output", "mock_negative", "progress_after", "transcript")
+        file_keys = ("mock_output", "mock_negative", "mock_negative_path", "progress_after", "transcript")
         for sc in spec["scenarios"]:
             for k in file_keys:
                 if k in sc:
@@ -189,6 +189,17 @@ class BehaviorSmokeTest(unittest.TestCase):
         # four headings with NO body text under any of them must not pass
         self.assertFalse(H.has_zero_basic_sections("## 考点拆解\n## 标准答题步骤\n## 易错点\n## 3分钟速记"),
                          "只有空小节标题、无正文不应判通过")
+
+    def test_visual_first_asset_detector(self):
+        self.assertTrue(H.visual_first_asset_display_ok(_read("mock/sample_outputs/visual_first_good.txt")))
+        self.assertFalse(H.visual_first_asset_display_ok(
+            _read("mock/sample_outputs/visual_first_answer_side_first.txt")),
+            "答案侧 asset 抢在题面图前面时应不合格")
+        self.assertFalse(H.visual_first_asset_display_ok(_read("mock/sample_outputs/visual_first_path_only.txt")),
+                         "只打印路径、没有 Markdown 图片渲染时应不合格")
+        self.assertFalse(H.visual_first_asset_display_ok(
+            "![题面图 / question-side asset](%s)\n题目：看图作答" % ("/" + "D:/bad/path.png")),
+            "slash-prefixed Windows drive-letter Markdown path must be rejected")
 
     # 8
     def test_hint_skip_detector_recognizes_recovery_offer(self):
