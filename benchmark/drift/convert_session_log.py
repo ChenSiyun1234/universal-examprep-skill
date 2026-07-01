@@ -221,8 +221,11 @@ def parse_turn_body(turn, body):
                 raise SessionLogError("turn %d repeats section %s" % (turn, heading))
             seen.add(lower)
             start = i
-            while i < len(body) and not adapter_section(body[i]):
-                i += 1
+            if lower in MESSAGE_SECTIONS:
+                i = next_adapter_section(body, i)
+            else:
+                while i < len(body) and not adapter_section(body[i]):
+                    i += 1
             block = body[start:i]
             if lower in EVENT_SECTIONS:
                 events = parse_events(block, turn)
@@ -260,7 +263,17 @@ def parse_turn_body(turn, body):
 def parse_session_log(text):
     lines = text.splitlines()
     starts = []
+    fence_len = None
     for i, line in enumerate(lines):
+        stripped = line.strip()
+        if fence_len is not None:
+            if re.match(r"^`{%d,}\s*$" % fence_len, stripped):
+                fence_len = None
+            continue
+        fm = FENCE_RE.match(stripped)
+        if fm:
+            fence_len = len(fm.group("fence"))
+            continue
         m = TURN_RE.match(line)
         if m and is_turn_start(lines, i):
             starts.append((i, int(m.group(1))))
@@ -288,8 +301,28 @@ def is_turn_start(lines, index):
     section = adapter_section(lines[i])
     if section in MESSAGE_SECTIONS or section in EVENT_SECTIONS:
         return True
-    m = FIELD_RE.match(lines[i])
-    return bool(m and m.group(1) in TURN_FIELDS)
+    return bool(FIELD_RE.match(lines[i]))
+
+
+def next_adapter_section(lines, start):
+    fence_len = None
+    i = start
+    while i < len(lines):
+        stripped = lines[i].strip()
+        if fence_len is not None:
+            if re.match(r"^`{%d,}\s*$" % fence_len, stripped):
+                fence_len = None
+            i += 1
+            continue
+        fm = FENCE_RE.match(stripped)
+        if fm:
+            fence_len = len(fm.group("fence"))
+            i += 1
+            continue
+        if adapter_section(lines[i]):
+            break
+        i += 1
+    return i
 
 
 def rows_to_jsonl(rows):

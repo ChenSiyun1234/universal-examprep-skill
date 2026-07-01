@@ -285,7 +285,10 @@ Record my note.
 # 复习进度
 
 ## Turn 2
-this is a note heading, not a transcript turn
+kind: quiz
+
+### User
+this is a note snippet, not a transcript turn
 ```
 """
         rows = C.parse_session_log(good)
@@ -311,6 +314,62 @@ This is just a Markdown heading inside the answer.
         rows = C.parse_session_log(good)
         self.assertEqual(len(rows), 1)
         self.assertIn("## Turn 2", rows[0]["assistant"])
+
+    def test_fenced_session_log_example_inside_assistant_message_is_preserved(self):
+        good = """# Live Agent Session Log
+
+## Turn 1
+kind: explanation
+phase_context: 1
+
+### User
+Show me the transcript format.
+
+### Assistant
+🟢 来自资料：示例需要放在代码块里。
+
+```md
+## Turn 2
+kind: quiz
+
+### User
+Give me a quiz.
+
+### Events
+- read_file: references/wiki/ch1_stack_queue.md
+```
+"""
+        rows = C.parse_session_log(good)
+        self.assertEqual(len(rows), 1)
+        self.assertIn("### Events", rows[0]["assistant"])
+        self.assertIn("kind: quiz", rows[0]["assistant"])
+
+    def test_typoed_scalar_field_after_turn_header_exits_2(self):
+        bad = """# Live Agent Session Log
+
+## Turn 1
+phase_contex: 1
+
+### User
+Resume.
+
+### Assistant
+Ready.
+
+## Turn 2
+kind: quiz
+phase_context: 1
+
+### User
+Quiz me.
+
+### Assistant
+[#stack_lifo_1] 栈遵循什么访问顺序？
+"""
+        r = _check_markdown(bad)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("unknown field", r.stderr)
+        self.assertIn("phase_contex", r.stderr)
 
     def test_tracked_write_with_matching_snapshot_passes_check_mode(self):
         good = """# Live Agent Session Log

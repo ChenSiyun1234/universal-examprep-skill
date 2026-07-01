@@ -93,6 +93,8 @@ Supported sections:
 - `### Events` optional, with lines like `- read_file: references/wiki/ch1_stack_queue.md`
 - `### Files After: path` optional, with a fenced code block containing the full file snapshot
 
+If user or assistant text needs to show this adapter syntax literally, put the example inside a fenced code
+block so reserved headings such as `### Events` stay message content.
 If a `Files After` snapshot itself contains a fenced code block, use a longer outer fence such as four
 backticks so the inner triple-backtick block stays part of the snapshot.
 
