@@ -70,6 +70,39 @@ python benchmark/drift/run_drift.py --all --json-out /tmp/drift_summary.json
 `transcripts/` 里除 `good_session.jsonl`（长会话、全达标）外，其余 `bad_*.jsonl` 各是一段**只触发一种漂移**的
 最小回放（供测试断言对应指标失败）：plan 擅改 / 编题 / 断点重置 / 来源标注丢失 / 进度行丢失 / wiki 越章读。
 
+## Live-agent session log adapter
+
+T5b adds a tiny stdlib-only adapter so live-agent pilots can be captured in a UTF-8 Markdown log first, then
+converted to the JSONL shape above. This avoids hand-authoring JSONL and reduces Windows/PowerShell Unicode
+pitfalls around Chinese text and emoji provenance labels.
+
+```bash
+# Inspect the starter format
+python benchmark/drift/convert_session_log.py --template \
+  benchmark/drift/templates/live_session_template.md
+
+# Validate only
+python benchmark/drift/convert_session_log.py \
+  --in /tmp/live_session.md \
+  --check
+
+# Convert to explicit temp output, then score with T4
+python benchmark/drift/convert_session_log.py \
+  --in /tmp/live_session.md \
+  --out /tmp/live_session.jsonl
+
+python benchmark/drift/run_drift.py \
+  --scenario benchmark/drift/scenarios/long_session_basic.json \
+  --transcript /tmp/live_session.jsonl \
+  --json-out /tmp/live_metrics.json
+```
+
+The adapter reads and writes UTF-8 explicitly, exits `2` on malformed input, and does not write tracked outputs
+unless you explicitly point `--out` into the repository. It also validates supported event names (`read_file` /
+`write_file`) and requires matching `files_after` snapshots when a turn records writes to `study_plan.md` or
+`study_progress.md`. See [`docs/live_agent_pilot.md`](docs/live_agent_pilot.md) for the live pilot runbook and
+commit boundaries.
+
 ## 边界与限制（诚实）
 
 - **确定性 replay ≠ 真 agent 行为**：探测器只对脚本化 transcript 成立；真实模型是否这样表现**未被验证**。
