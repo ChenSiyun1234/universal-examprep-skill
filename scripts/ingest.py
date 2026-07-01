@@ -201,10 +201,17 @@ def main():
         "错误": False, "错": False, "否": False, "假": False,
         "false": False, "no": False, "×": False,
     }
-    for i, q in enumerate(quiz_bank):
+    # 收集已有 id，避免补全时撞号
+    existing_ids = {q["id"] for q in quiz_bank if q.get("id")}
+    next_id = 1
+    for q in quiz_bank:
         # 补全 id（validate 不强制 id，但出口文件需要）
         if not q.get("id"):
-            q["id"] = f"q{i + 1}"
+            while f"q{next_id}" in existing_ids:
+                next_id += 1
+            new_id = f"q{next_id}"
+            q["id"] = new_id
+            existing_ids.add(new_id)
         # 规范化 true_false 答案
         if q.get("type") == "true_false" and isinstance(q.get("answer"), str):
             normalized = TRUE_FALSE_NORMALIZE.get(q["answer"].strip().lower(), q["answer"])
