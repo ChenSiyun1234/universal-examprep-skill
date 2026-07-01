@@ -180,8 +180,7 @@ def visual_first_asset_display_ok(text, fixture_path=FIXTURE):
     the prompt block, and rejects path-only or unsafe image targets.
     """
     t = text or ""
-    bad_win = "/" + "D:/"
-    if bad_win in t:
+    if re.search(r"[/\\][A-Za-z]:", t):
         return False
 
     def safe_asset_target(target):
@@ -198,13 +197,27 @@ def visual_first_asset_display_ok(text, fixture_path=FIXTURE):
         abs_target = os.path.abspath(os.path.join(abs_fixture, *re.split(r"[\\/]+", p)))
         if not (abs_target == abs_fixture or abs_target.startswith(abs_fixture + os.sep)):
             return False
-        return os.path.isfile(abs_target)
+        return os.path.isfile(abs_target) and os.access(abs_target, os.R_OK)
 
     image_re = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+    question_side_label = "\u9898\u9762\u56fe / question-side asset"
+    answer_side_label = "\u7b54\u6848\u56fe / answer-side asset"
+
+    def prompt_alt_ok(alt):
+        alt = alt or ""
+        lower_alt = alt.lower()
+        return (
+            question_side_label in alt
+            and answer_side_label not in alt
+            and "answer-side asset" not in lower_alt
+            and "worked solution" not in lower_alt
+            and "\u7b54\u6848\u56fe" not in alt
+        )
+
     images = list(image_re.finditer(t))
     qimages = [
         img for img in images
-        if "题面图 / question-side asset" in img.group(1) and safe_asset_target(img.group(2))
+        if prompt_alt_ok(img.group(1)) and safe_asset_target(img.group(2))
     ]
     if not qimages:
         return False
@@ -233,7 +246,7 @@ def visual_first_asset_display_ok(text, fixture_path=FIXTURE):
     for img in images:
         if img.start() >= first_action:
             return False
-        if "题面图 / question-side asset" not in img.group(1):
+        if not prompt_alt_ok(img.group(1)):
             return False
         if not safe_asset_target(img.group(2)):
             return False

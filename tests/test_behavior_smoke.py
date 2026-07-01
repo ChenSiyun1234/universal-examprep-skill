@@ -11,6 +11,7 @@ import json
 import re
 import contextlib
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BSDIR = os.path.join(ROOT, "benchmark", "behavior_smoke")
@@ -241,6 +242,19 @@ class BehaviorSmokeTest(unittest.TestCase):
         self.assertFalse(H.visual_first_asset_display_ok(
             "![题面图 / question-side asset](%s)\n题目：看图作答" % ("/" + "D:/bad/path.png")),
             "slash-prefixed Windows drive-letter Markdown path must be rejected")
+        for bad_drive_path in ("/C:/bad/path.png", "/d:/bad/path.png", "\\E:\\bad\\path.png"):
+            self.assertFalse(H.visual_first_asset_display_ok(
+                "![题面图 / question-side asset](references/assets/venn_prompt.svg)\n"
+                "题目：看图作答\n%s" % bad_drive_path),
+                "all slash-prefixed Windows drive-letter paths must be rejected")
+        self.assertFalse(H.visual_first_asset_display_ok(
+            "![答案图 / answer-side asset; 题面图 / question-side asset](references/assets/venn_prompt.svg)\n"
+            "题目：看图作答"),
+            "mixed answer-side and question-side image labels must be rejected before the prompt")
+        with mock.patch.object(H.os, "access", return_value=False):
+            self.assertFalse(H.visual_first_asset_display_ok(
+                _read("mock/sample_outputs/visual_first_good.txt")),
+                "existing but unreadable fixture assets must fail closed")
 
     def test_visual_first_good_sample_matches_fixture_item(self):
         sample = _read("mock/sample_outputs/visual_first_good.txt")
