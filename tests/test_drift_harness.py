@@ -453,6 +453,60 @@ class DriftHarness(unittest.TestCase):
         m = D.parse_plan_map("| **阶段 1** | 图 | `references/wiki/ch03.graphs.md` | x |\n")
         self.assertEqual(m, {1: {"ch03.graphs"}})
 
+    # ---- regression guards for the 7 findings from Codex round-4 ----
+
+    def test_in_place_phase_rename_is_a_mutation(self):
+        # same phase NUMBERS but a renamed topic (阶段2：树 → 阶段2：职业规划) is an unauthorized plan change
+        m = _eval_turns([{"turn": 1, "user": "继续", "assistant": "改了阶段2主题。",
+                          "files_after": {"study_plan.md": "# p\n## 阶段1：栈与队列（Stack & Queue）\n## 阶段2：职业规划\n"}}])
+        self.assertGreater(m["plan_mutations"], 0)
+
+    def test_di_n_jieduan_reset_recognized(self):
+        p2 = "当前阶段：2\n## 错题本\n（暂无）\n## 疑难点\n（暂无）\n"
+        m = _eval_turns([{"turn": 1, "assistant": "到2", "phase_context": 2, "files_after": {"study_progress.md": p2}},
+                         {"turn": 2, "user": "回来了", "kind": "resume", "assistant": "我们从第1阶段开始复习。"}])
+        self.assertGreaterEqual(m["reset_detected"], 1)   # '第1阶段' order recognized
+
+    def test_absolute_wiki_read_path_counted(self):
+        m = _eval_turns([{"turn": 1, "user": "考我", "assistant": "题目 [#stack_lifo_1] 栈遵循什么访问顺序？",
+                          "events": [{"type": "read_file", "path": "/workspace/x/references/wiki/ch2_trees.md"}]}])
+        self.assertEqual(m["wiki_reads"], 1)
+        self.assertEqual(m["overread_flag"], 1)
+
+    def test_same_line_appended_untagged_question_counted(self):
+        m = _eval_turns([{"turn": 1, "user": "考我", "kind": "quiz", "phase_context": 1,
+                          "assistant": "题目 [#stack_lifo_1] 栈遵循什么访问顺序？另外，跳表的期望复杂度是多少？"}])
+        self.assertGreaterEqual(m["untagged_questions"], 1)
+
+    def test_goal_marker_matched_case_insensitively(self):
+        d = tempfile.mkdtemp()
+        sc = json.load(open(SCEN, encoding="utf-8"))
+        sc["thresholds"] = {"goal_marker_min": 1}
+        scf = os.path.join(d, "s.json")
+        json.dump(sc, open(scf, "w", encoding="utf-8"))
+        m = _eval_turns([{"turn": 1, "user": "x", "assistant": "Exam review starts now."}], scenario=scf)
+        self.assertEqual(m["goal_marker_seen"], 1)
+
+    def test_numeric_chapter_matched_by_number_not_substring(self):
+        d = tempfile.mkdtemp()
+        fx = os.path.join(d, "fx")
+        os.makedirs(os.path.join(fx, "references"))
+        open(os.path.join(fx, "study_plan.md"), "w", encoding="utf-8").write(
+            "| 阶段 | 任务 | Wiki | 状态 |\n| :- | :- | :- | :- |\n"
+            "| **阶段 1** | dp | `references/wiki/ch10_dp.md` | x |\n"
+            "| **阶段 2** | basics | `references/wiki/ch01_basics.md` | x |\n")
+        pm = D.parse_plan_map(open(os.path.join(fx, "study_plan.md"), encoding="utf-8").read())
+        self.assertEqual(D.phase_of_chapter(pm, 1), 2)     # chapter 1 → ch01 (phase 2), NOT ch10 (phase 1)
+
+    def test_non_dict_files_after_exits_2(self):
+        d = tempfile.mkdtemp()
+        t = os.path.join(d, "b.jsonl")
+        with open(t, "w", encoding="utf-8") as f:
+            f.write('{"turn":1,"assistant":"x","files_after":"oops"}\n')
+        r = _cli(["--scenario", SCEN, "--transcript", t])
+        self.assertEqual(r.returncode, 2)
+        self.assertNotIn("Traceback", r.stderr)
+
     # 12) no network / LLM / API key / deps; --llm skeleton never returns success
     def test_no_network_llm_or_dep_in_source(self):
         with open(RUN, encoding="utf-8") as f:

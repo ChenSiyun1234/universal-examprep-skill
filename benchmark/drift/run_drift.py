@@ -80,6 +80,10 @@ def load_jsonl(path, label):
             raise DriftError("%s 第 %d 行不是合法 JSON: %s" % (label, ln, e))
         if not isinstance(d, dict):
             raise DriftError("%s 第 %d 行必须是 JSON 对象" % (label, ln))
+        if "files_after" in d and not isinstance(d["files_after"], dict):
+            raise DriftError("%s 第 %d 行的 files_after 必须是对象" % (label, ln))
+        if "events" in d and not isinstance(d["events"], list):
+            raise DriftError("%s 第 %d 行的 events 必须是数组" % (label, ln))
         rows.append(d)
     return rows
 
@@ -118,46 +122,84 @@ def _as_phase(v):
     return None
 
 
+# a phase reference in EITHER order: '阶段N' / '第N阶段' / 'phase N'
+_PHASE_RE = r"(?:阶段\s*(\d+)|第\s*(\d+)\s*阶段|[Pp]hase\s*(\d+))"
+
+
+def _phase_num_in(s):
+    """First phase number in a string (阶段N / 第N阶段 / phase N), else None."""
+    m = re.search(_PHASE_RE, s or "")
+    return int(next(g for g in m.groups() if g)) if m else None
+
+
+def _is_structural(line):
+    return line.startswith("#") or line.startswith("|") or bool(re.match(r"[-*]\s", line))
+
+
 def parse_plan_phases(text):
-    """Ordered (deduped) list of phase numbers from a study_plan.md. Accepts BOTH this harness's simple
-    headings ('## 阶段2：…' / '## Phase 2') AND the real scripts/ingest.py template, where phases live in
-    a Markdown table ('| **阶段 1** | … |') and/or a checklist ('- [ ] **阶段 1**：…'). The table and the
-    checklist repeat the same phases, so we dedupe while preserving first-seen order."""
+    """Ordered (deduped) list of phase numbers from a study_plan.md. Accepts this harness's headings
+    ('## 阶段2：…'), the real ingest table ('| **阶段 1** | … |') / checklist, and the '第N阶段' order.
+    Table + checklist repeat the same phases, so dedupe while preserving first-seen order."""
     phases = []
     for ln in (text or "").splitlines():
         s = ln.strip()
-        if not (s.startswith("#") or s.startswith("|") or re.match(r"[-*]\s", s)):
-            continue                                               # only structural lines define phases
-        m = re.search(r"(?:阶段|Phase|phase)\s*(\d+)", s)
-        if m:
-            n = int(m.group(1))
-            if n not in phases:
-                phases.append(n)
+        n = _phase_num_in(s) if _is_structural(s) else None
+        if n is not None and n not in phases:
+            phases.append(n)
     return phases
 
 
+def parse_plan_sig(text):
+    """Like parse_plan_phases but each phase carries its TOPIC (name) — so renaming a phase in place
+    (阶段2：树 → 阶段2：职业规划) is a detected plan change even though the number is unchanged. Ordered list of
+    (num, normalized_topic), deduped by first-seen number (table wins over checklist)."""
+    sigs, seen = [], set()
+    for ln in (text or "").splitlines():
+        s = ln.strip()
+        if not _is_structural(s):
+            continue
+        m = re.search(_PHASE_RE, s)
+        if not m:
+            continue
+        num = int(next(g for g in m.groups() if g))
+        if num in seen:
+            continue
+        seen.add(num)
+        if s.startswith("|"):                                     # table row → topic is the NEXT cell
+            cells = [c.strip(" *`") for c in s.strip("|").split("|")]
+            topic = ""
+            for ci, c in enumerate(cells):
+                if _phase_num_in(c) == num:
+                    topic = cells[ci + 1] if ci + 1 < len(cells) else ""
+                    break
+        else:                                                     # heading/bullet → text after the phase ref
+            topic = s[m.end():]
+        topic = re.sub(r"references/wiki/\S+", "", topic)          # drop wiki-path noise
+        topic = re.sub(r"[\s：:（）()【】\[\]\-—。，,、*`]+", "", topic)   # keep just the name characters
+        sigs.append((num, topic))
+    return sigs
+
+
 def parse_plan_map(text):
-    """{phase_num: set(wiki basenames without .md)} from a study_plan.md — the phase↔chapter source of
-    truth. Handles the real ingest table (phase digit + wiki path on the SAME row) AND this harness's
-    fixture (a '## 阶段N' heading followed by bullet lines that name the wiki). So phase 1 may legitimately
-    point at ch03 (materials starting mid-book), and quiz/wiki scope checks use THIS map, not chNN==phase."""
+    """{phase_num: set(wiki basenames without .md)} — the phase↔chapter source of truth. Handles the real
+    ingest table (phase + wiki on the SAME row) AND a '## 阶段N' heading followed by wiki-naming bullets, so
+    phase 1 may legitimately point at ch03; scope checks use THIS map, not chNN==phase."""
     m, cur = {}, None
     for ln in (text or "").splitlines():
         s = ln.strip()
-        structural = s.startswith("#") or s.startswith("|") or bool(re.match(r"[-*]\s", s))
-        ph = re.search(r"(?:阶段|Phase|phase)\s*(\d+)", s) if structural else None
-        if ph and (s.startswith("#") or s.startswith("|")):
-            cur = int(ph.group(1))
+        n = _phase_num_in(s) if _is_structural(s) else None
+        if n is not None and (s.startswith("#") or s.startswith("|")):
+            cur = n
             m.setdefault(cur, set())
-        target = int(ph.group(1)) if ph else cur
-        wikis = re.findall(r"references/wiki/([^\s\)\]\"'`]+?)\.md", s)   # allow dots etc. (ch03.graphs.md)
+        target = n if n is not None else cur
+        wikis = re.findall(r"references/wiki/([^\s\)\]\"'`]+?)\.md", s)
         if target is not None and wikis:
             m.setdefault(target, set()).update(wikis)
     return m
 
 
 def _basename_noext(path):
-    return re.sub(r"\.md$", "", os.path.basename(path or ""))
+    return re.sub(r"\.md$", "", os.path.basename(str(path or "").replace("\\", "/")))
 
 
 def phase_of_wiki(plan_map, path):
@@ -169,12 +211,25 @@ def phase_of_wiki(plan_map, path):
     return None
 
 
+def _chapter_num(name):
+    m = re.search(r"ch0*(\d+)", str(name or ""))
+    return int(m.group(1)) if m else None
+
+
 def phase_of_chapter(plan_map, chapter):
-    """Which plan phase a bank item's `chapter` token belongs to (exact, or as a wiki-basename match)."""
+    """Which plan phase a bank item's `chapter` belongs to: exact wiki-basename match first, else match by
+    CHAPTER NUMBER (numeric chapter 1 → the file whose chNN==1, NOT any basename that merely contains '1')."""
     c = _basename_noext(str(chapter))
     for ph, files in plan_map.items():
-        if c in files or any(c == f or c in f or f in c for f in files):
+        if c in files:
             return ph
+    cn = _as_phase(c)
+    if cn is None:
+        cn = _chapter_num(c)
+    if cn is not None:
+        for ph, files in plan_map.items():
+            if any(_chapter_num(f) == cn for f in files):
+                return ph
     return None
 
 
@@ -277,8 +332,7 @@ def _phase_of_turn(turn):
     pc = _as_phase(turn.get("phase_context"))                     # accept int OR numeric string "2"
     if pc is not None:
         return pc
-    m = re.search(r"(?:阶段|phase)\s*(\d+)", turn.get("user", ""), re.I)
-    return int(m.group(1)) if m else None
+    return _phase_num_in(turn.get("user", ""))                    # 阶段N / 第N阶段 / phase N
 
 
 def _norm_path(path):
@@ -360,18 +414,19 @@ def compute_metrics(scenario, fixture_dir, turns):
         drifted = any(p.lower() in txt for p in unrelated) or any(p.lower() in txt for p in refusals)
         on_goal += 0 if drifted else 1
     goal_retention = round(on_goal / len(assistant_turns), 4) if assistant_turns else 1.0
-    goal_marker_seen = int(any(any(g in t.get("assistant", "") for g in goal_markers) for t in assistant_turns))
+    markers_l = [g.lower() for g in goal_markers]                 # case-insensitive, like the drift blocklist
+    goal_marker_seen = int(any(any(g in t.get("assistant", "").lower() for g in markers_l) for t in assistant_turns))
 
     # 2) plan adherence — walk study_plan.md snapshots; a phase delete/add/reorder is a mutation UNLESS
     #    the mutating turn (or the immediately preceding user turn) explicitly asked to change the plan.
     #    Authorization is scoped to the change, NOT a session-wide latch.
     plan_mutations = 0
-    prev_plan, prev_user = canon, ""
+    prev_plan, prev_user = parse_plan_sig(plan_text), ""          # compare (num, TOPIC) so a rename counts
     for t in turns:
         u = t.get("user", "")
         fa = t.get("files_after") or {}
         if "study_plan.md" in fa:
-            cur_plan = parse_plan_phases(fa["study_plan.md"])
+            cur_plan = parse_plan_sig(fa["study_plan.md"])
             removed = [p for p in prev_plan if p not in cur_plan]
             added = [p for p in cur_plan if p not in prev_plan]
             reordered = 1 if (set(cur_plan) == set(prev_plan) and cur_plan != prev_plan) else 0
@@ -421,6 +476,16 @@ def compute_metrics(scenario, fixture_dir, turns):
                         wrong_phase += 1
                 else:
                     invented += 1                                  # unknown id, laundered text, or multi-tag
+            # an EXTRA untagged question APPENDED to a tagged line (after its bank question) is still an
+            # untagged invented question — strip the tags + each matched bank question, and if a leftover
+            # question mark with real text remains, count it.
+            rem = re.sub(r"\s+", "", seg)
+            for qid in lids:
+                bq = re.sub(r"\s+", "", bank_question.get(qid, ""))
+                if bq:
+                    rem = rem.replace(bq, "", 1)
+            if re.search(r"[？?]", rem) and len(re.sub(r"[？?\s，,、。.：:]", "", rem)) >= 5:
+                untagged += 1
         q_untagged = sum(1 for ln in lines if looks_like_question(ln) and not extract_quiz_ids(ln))
         # every untagged question-like line counts (mixed turns too); a prose "quiz" with NO tag at all and
         # no question-like line still counts as ≥1 (wholesale prose invention isn't silently clean).
@@ -437,8 +502,10 @@ def compute_metrics(scenario, fixture_dir, turns):
             # a RESTART TARGET is a phase the assistant proposes to (re)start — '从/回到 阶段N' or 'phase N
             # 重新/从头/开始复习'. Merely NAMING an earlier COMPLETED phase ('阶段1已完成，继续阶段2') is NOT a
             # target, so it must not trip a reset.
-            targets = [int(x) for x in re.findall(r"(?:从|回到|退回到?|重新回到?)\s*(?:阶段|phase)\s*(\d+)", a, re.I)]
-            targets += [int(x) for x in re.findall(r"(?:阶段|phase)\s*(\d+)\s*(?:重新|从头|重来|开始复习)", a, re.I)]
+            targets = [int(next(g for g in m.groups() if g))       # '从/回到 阶段N' or '从/回到 第N阶段'
+                       for m in re.finditer(r"(?:从|回到|退回到?|重新回到?)\s*" + _PHASE_RE, a, re.I)]
+            targets += [int(next(g for g in m.groups() if g))      # '阶段N 重新/从头/开始复习'
+                        for m in re.finditer(_PHASE_RE + r"\s*(?:重新|从头|重来|开始复习)", a, re.I)]
             generic_restart = bool(RESTART_PHRASES.search(a))
             below = [p for p in targets if exp is not None and p < exp]
             reset_count += int(bool(below) or (generic_restart and (exp or 1) > 1))
@@ -479,8 +546,9 @@ def compute_metrics(scenario, fixture_dir, turns):
     for i, t in enumerate(turns):
         want_phase = turn_phase[i]
         for ev in (t.get("events") or []):
-            path = _norm_path(ev.get("path", ""))                 # tolerate './'-prefixed / backslash paths
-            if ev.get("type") == "read_file" and path.startswith("references/wiki/"):
+            path = _norm_path(ev.get("path", ""))                 # tolerate './'-prefixed / backslash / absolute
+            if ev.get("type") == "read_file" and "references/wiki/" in path:
+                path = path[path.index("references/wiki/"):]      # normalize an absolute path to the ws-relative tail
                 wiki_reads += 1
                 seen_wiki.add(path)
                 # which phase this wiki belongs to: the PLAN MAP first (phase 1 may point at ch03), then
