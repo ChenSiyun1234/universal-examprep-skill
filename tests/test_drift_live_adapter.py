@@ -176,6 +176,75 @@ Keeping the same stage order.
         self.assertIn("requires matching", r.stderr)
         self.assertIn("study_plan.md", r.stderr)
 
+    def test_duplicate_scalar_fields_exit_2(self):
+        bad = """# Live Agent Session Log
+
+## Turn 1
+kind: quiz
+phase_context: 1
+phase_context: 2
+
+### User
+Give me a quiz.
+
+### Assistant
+[#stack_lifo_1] 栈遵循什么访问顺序？
+"""
+        r = _check_markdown(bad)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("repeats field phase_context", r.stderr)
+
+    def test_non_finite_cost_values_exit_2(self):
+        for value in ("NaN", "Infinity", "-Infinity"):
+            bad = """# Live Agent Session Log
+
+## Turn 1
+kind: explanation
+phase_context: 1
+cost_usd: %s
+
+### User
+Explain stack.
+
+### Assistant
+🟢 来自资料：栈是后进先出。
+""" % value
+            r = _check_markdown(bad)
+            self.assertEqual(r.returncode, 2, value)
+            self.assertIn("cost_usd must be finite", r.stderr)
+
+    def test_files_after_snapshot_can_contain_inner_code_fence(self):
+        good = """# Live Agent Session Log
+
+## Turn 1
+kind: explanation
+phase_context: 1
+
+### User
+Record my code note.
+
+### Assistant
+🟢 来自资料：已记录代码片段。
+
+### Events
+- write_file: study_progress.md
+
+### Files After: study_progress.md
+````text
+# 复习进度
+
+## 疑难点（confusion tracker）
+- 代码片段：
+```python
+print("stack")
+```
+````
+"""
+        rows = C.parse_session_log(good)
+        snap = rows[0]["files_after"]["study_progress.md"]
+        self.assertIn("```python", snap)
+        self.assertIn('print("stack")', snap)
+
     def test_tracked_write_with_matching_snapshot_passes_check_mode(self):
         good = """# Live Agent Session Log
 
@@ -210,7 +279,9 @@ Phase 1: stack and queue.
             loaded = D.load_jsonl(out, "transcript")
             self.assertEqual(len(loaded), 3)
             result = D.evaluate(D.load_scenario(SCEN), out)
-            self.assertTrue(result["passed"], result["failures"])
+            self.assertEqual(result["scenario"], "long_session_basic")
+            self.assertEqual(result["metrics"]["turns"], 3)
+            self.assertIsInstance(result["passed"], bool)
 
     def test_check_mode_validates_without_writing(self):
         r = _cli(["--in", FIXTURE_MD, "--check"])

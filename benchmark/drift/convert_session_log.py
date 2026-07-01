@@ -10,6 +10,7 @@ Exit codes:
 """
 import argparse
 import json
+import math
 import os
 import re
 import sys
@@ -20,7 +21,7 @@ DEFAULT_TEMPLATE = os.path.join(HERE, "templates", "live_session_template.md")
 TURN_RE = re.compile(r"^##\s+Turn\s+(\d+)\s*$", re.I)
 SECTION_RE = re.compile(r"^###\s+(.+?)\s*$")
 FIELD_RE = re.compile(r"^([A-Za-z_][\w-]*)\s*:\s*(.*?)\s*$")
-FENCE_RE = re.compile(r"^```[A-Za-z0-9_-]*\s*$")
+FENCE_RE = re.compile(r"^(?P<fence>`{3,})[A-Za-z0-9_-]*\s*$")
 
 TURN_FIELDS = {"kind", "phase_context", "tokens_in", "tokens_out", "cost_usd"}
 INT_FIELDS = {"phase_context", "tokens_in", "tokens_out"}
@@ -100,9 +101,12 @@ def parse_scalar(key, value, turn):
         return int(value.strip())
     if key in FLOAT_FIELDS:
         try:
-            return float(value.strip())
+            parsed = float(value.strip())
         except ValueError:
             raise SessionLogError("turn %d field %s must be numeric" % (turn, key))
+        if not math.isfinite(parsed):
+            raise SessionLogError("turn %d field %s must be finite" % (turn, key))
+        return parsed
     if key == "kind":
         value = value.strip()
         if not value:
@@ -137,11 +141,14 @@ def parse_files_after(lines, start, turn, path):
     i = start
     while i < len(lines) and not lines[i].strip():
         i += 1
-    if i >= len(lines) or not FENCE_RE.match(lines[i].strip()):
+    m = FENCE_RE.match(lines[i].strip()) if i < len(lines) else None
+    if not m:
         raise SessionLogError("turn %d Files After %s must use a fenced code block" % (turn, path))
+    fence_len = len(m.group("fence"))
+    close_re = re.compile(r"^`{%d,}\s*$" % fence_len)
     i += 1
     block_start = i
-    while i < len(lines) and not lines[i].strip().startswith("```"):
+    while i < len(lines) and not close_re.match(lines[i].strip()):
         i += 1
     if i >= len(lines):
         raise SessionLogError("turn %d Files After %s fence is not closed" % (turn, path))
@@ -171,6 +178,7 @@ def parse_turn_body(turn, body):
     row = {"turn": turn}
     files_after = {}
     events = None
+    seen_fields = set()
     seen = set()
     i = 0
 
@@ -187,6 +195,9 @@ def parse_turn_body(turn, body):
         key, value = m.group(1), m.group(2)
         if key not in TURN_FIELDS:
             raise SessionLogError("turn %d has unknown field %r" % (turn, key))
+        if key in seen_fields:
+            raise SessionLogError("turn %d repeats field %s" % (turn, key))
+        seen_fields.add(key)
         row[key] = parse_scalar(key, value, turn)
         i += 1
 

@@ -93,6 +93,9 @@ Supported sections:
 - `### Events` optional, with lines like `- read_file: references/wiki/ch1_stack_queue.md`
 - `### Files After: path` optional, with a fenced code block containing the full file snapshot
 
+If a `Files After` snapshot itself contains a fenced code block, use a longer outer fence such as four
+backticks so the inner triple-backtick block stays part of the snapshot.
+
 Supported event types are deliberately narrow: `read_file` and `write_file`. Typos such as `readfile` are
 malformed and the converter exits with code `2`.
 
