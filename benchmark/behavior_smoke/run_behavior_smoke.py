@@ -172,7 +172,7 @@ def has_zero_basic_sections(text):
             and _zb(text, "3分钟速记", "三分钟速记"))
 
 
-def visual_first_asset_display_ok(text):
+def visual_first_asset_display_ok(text, fixture_path=FIXTURE):
     """Smoke-check a visual-required output contract.
 
     This is structural, not a UI renderer: it requires a labelled question-side Markdown image
@@ -192,7 +192,13 @@ def visual_first_asset_display_ok(text):
             return False
         if any(part == ".." for part in re.split(r"[\\/]+", p)):
             return False
-        return p.startswith("references/assets/")
+        if not p.startswith("references/assets/"):
+            return False
+        abs_fixture = os.path.abspath(fixture_path)
+        abs_target = os.path.abspath(os.path.join(abs_fixture, *re.split(r"[\\/]+", p)))
+        if not (abs_target == abs_fixture or abs_target.startswith(abs_fixture + os.sep)):
+            return False
+        return os.path.isfile(abs_target)
 
     image_re = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
     images = list(image_re.finditer(t))
@@ -208,7 +214,11 @@ def visual_first_asset_display_ok(text):
 
     marker_patterns = (
         r"(^|\n)\s*题目",
+        r"(^|\n)\s*问题[:：]",
         r"(^|\n)\s*请作答",
+        r"(^|\n)\s*请回答",
+        r"(^|\n)\s*请先回答",
+        r"(^|\n)\s*作答",
         r"(^|\n)\s*提示",
         r"(^|\n)\s*解析",
         r"(^|\n)\s*答案[:：]",
@@ -227,6 +237,10 @@ def visual_first_asset_display_ok(text):
             return False
         if not safe_asset_target(img.group(2)):
             return False
+
+    pre_action_without_images = image_re.sub("", t[:first_action]).strip()
+    if pre_action_without_images:
+        return False
 
     return qpos < first_action
 
@@ -419,22 +433,29 @@ def check_scenario_mock(name, sc, fixture_path=FIXTURE):
         ok = has_zero_basic_sections(_read(_p(sc["mock_output"])))
         return ok, f"required_sections_present={ok}"
     if name == "visual_first_assets":
-        good = visual_first_asset_display_ok(_read(_p(sc["mock_output"])))
-        answer_first = visual_first_asset_display_ok(_read(_p(sc["mock_negative"])))
-        answer_before_prompt = visual_first_asset_display_ok(_read(_p(sc["mock_negative_leak"])))
-        unlabeled_answer = visual_first_asset_display_ok(_read(_p(sc["mock_negative_unlabeled"])))
-        prose_before = visual_first_asset_display_ok(_read(_p(sc["mock_negative_prose"])))
-        answer_after_prompt = visual_first_asset_display_ok(_read(_p(sc["mock_negative_after_prompt"])))
-        unsafe_path = visual_first_asset_display_ok(_read(_p(sc["mock_negative_unsafe_path"])))
-        path_only = visual_first_asset_display_ok(_read(_p(sc["mock_negative_path"])))
+        good = visual_first_asset_display_ok(_read(_p(sc["mock_output"])), fixture_path)
+        answer_first = visual_first_asset_display_ok(_read(_p(sc["mock_negative"])), fixture_path)
+        answer_before_prompt = visual_first_asset_display_ok(_read(_p(sc["mock_negative_leak"])), fixture_path)
+        unlabeled_answer = visual_first_asset_display_ok(_read(_p(sc["mock_negative_unlabeled"])), fixture_path)
+        prose_before = visual_first_asset_display_ok(_read(_p(sc["mock_negative_prose"])), fixture_path)
+        answer_after_prompt = visual_first_asset_display_ok(_read(_p(sc["mock_negative_after_prompt"])), fixture_path)
+        unsafe_path = visual_first_asset_display_ok(_read(_p(sc["mock_negative_unsafe_path"])), fixture_path)
+        question_label_late = visual_first_asset_display_ok(
+            _read(_p(sc["mock_negative_question_label_late"])), fixture_path)
+        missing_asset = visual_first_asset_display_ok(_read(_p(sc["mock_negative_missing_asset"])), fixture_path)
+        answer_text = visual_first_asset_display_ok(_read(_p(sc["mock_negative_answer_text"])), fixture_path)
+        path_only = visual_first_asset_display_ok(_read(_p(sc["mock_negative_path"])), fixture_path)
         return (
             good and not answer_first and not answer_before_prompt and not unlabeled_answer
-            and not prose_before and not answer_after_prompt and not unsafe_path and not path_only
+            and not prose_before and not answer_after_prompt and not unsafe_path
+            and not question_label_late and not missing_asset and not answer_text and not path_only
         ), (
             f"good={good} answer_side_first_caught={not answer_first} "
             f"answer_before_prompt_caught={not answer_before_prompt} "
             f"unlabeled_answer_caught={not unlabeled_answer} prose_before_caught={not prose_before} "
             f"answer_after_prompt_caught={not answer_after_prompt} unsafe_path_caught={not unsafe_path} "
+            f"question_label_late_caught={not question_label_late} missing_asset_caught={not missing_asset} "
+            f"answer_text_caught={not answer_text} "
             f"path_only_caught={not path_only}")
     return False, "unknown scenario"
 

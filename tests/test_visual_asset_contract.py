@@ -120,6 +120,13 @@ class VisualAssetContractTest(unittest.TestCase):
                 rel,
             )
 
+    def test_web_prompt_gates_stub_and_page_reference_items(self):
+        txt = read("prompts/web_prompt.md")
+        self.assertIn('question_text_status="stub"', txt)
+        self.assertIn('"page_reference"', txt)
+        self.assertIn("原页上下文", txt)
+        self.assertIn("题面自足的 `full` 题", txt)
+
 
 if __name__ == "__main__":
     unittest.main()

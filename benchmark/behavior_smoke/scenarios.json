@@ -78,6 +78,9 @@
       "mock_negative_prose": "mock/sample_outputs/visual_first_prose_before_image.txt",
       "mock_negative_after_prompt": "mock/sample_outputs/visual_first_answer_after_prompt.txt",
       "mock_negative_unsafe_path": "mock/sample_outputs/visual_first_unsafe_url.txt",
+      "mock_negative_question_label_late": "mock/sample_outputs/visual_first_question_label_late_asset.txt",
+      "mock_negative_missing_asset": "mock/sample_outputs/visual_first_missing_asset.txt",
+      "mock_negative_answer_text": "mock/sample_outputs/visual_first_answer_text_before_prompt.txt",
       "mock_negative_path": "mock/sample_outputs/visual_first_path_only.txt",
       "best_effort": false
     },

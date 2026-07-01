@@ -58,6 +58,7 @@ class BehaviorSmokeTest(unittest.TestCase):
         file_keys = (
             "mock_output", "mock_negative", "mock_negative_leak", "mock_negative_unlabeled",
             "mock_negative_prose", "mock_negative_after_prompt", "mock_negative_unsafe_path",
+            "mock_negative_question_label_late", "mock_negative_missing_asset", "mock_negative_answer_text",
             "mock_negative_path", "progress_after", "transcript",
         )
         for sc in spec["scenarios"]:
@@ -217,12 +218,21 @@ class BehaviorSmokeTest(unittest.TestCase):
             _read("mock/sample_outputs/visual_first_answer_after_prompt.txt")),
             "题目行后泄露答案侧 asset 时应不合格")
         self.assertFalse(H.visual_first_asset_display_ok(
+            _read("mock/sample_outputs/visual_first_question_label_late_asset.txt")),
+            "问题行后才出现第二张题面图时应不合格")
+        self.assertFalse(H.visual_first_asset_display_ok(
+            _read("mock/sample_outputs/visual_first_answer_text_before_prompt.txt")),
+            "题面图后、题目前泄露答案正文时应不合格")
+        self.assertFalse(H.visual_first_asset_display_ok(
             "![题面图 / question-side asset](references/assets/venn_prompt.svg)\n\n"
             "题目：看图作答\n![题面图 / question-side asset](references/assets/late_prompt.svg)"),
             "题目行后才出现第二张题面图时应不合格")
         self.assertFalse(H.visual_first_asset_display_ok(
             _read("mock/sample_outputs/visual_first_unsafe_url.txt")),
             "URL 图片不能满足本地题库 asset 展示契约")
+        self.assertFalse(H.visual_first_asset_display_ok(
+            _read("mock/sample_outputs/visual_first_missing_asset.txt")),
+            "缺失的本地 asset 文件不能满足题面图展示契约")
         self.assertFalse(H.visual_first_asset_display_ok(
             "![题面图 / question-side asset](../outside.png)\n题目：看图作答"),
             "路径穿越不能满足本地题库 asset 展示契约")
