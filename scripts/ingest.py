@@ -28,6 +28,10 @@ SAFE_FILENAME = re.compile(r"^[\w.\-]+\.md$")      # 仅允许不含路径的 *.
 VALID_QUIZ_TYPES = {"choice", "subjective", "diagram", "fill_blank", "true_false", "code"}
 
 
+def is_blank(value):
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
 def get_template_path(template_name):
     # 脚本位于 <skill>/scripts/，模板位于 <skill>/templates/
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -98,7 +102,8 @@ def validate(data):
 
     missing_answer_ids = []
     for i, q in enumerate(quiz_bank):
-        tag = (q.get("id") if isinstance(q, dict) else None) or f"#{i + 1}"
+        raw_id = q.get("id") if isinstance(q, dict) else None
+        tag = str(raw_id) if not is_blank(raw_id) else f"#{i + 1}"
         if not isinstance(q, dict):
             errors.append(f"题目 {tag} 不是对象。")
             continue
@@ -109,7 +114,7 @@ def validate(data):
             errors.append(f"题目 {tag} 缺少题干 question。")
         if qtype == "choice" and not q.get("options"):
             errors.append(f"选择题 {tag} 缺少 options 选项。")
-        if not q.get("answer"):
+        if is_blank(q.get("answer")):
             missing_answer_ids.append(tag)
 
     if errors:
@@ -202,11 +207,11 @@ def main():
         "false": False, "no": False, "×": False,
     }
     # 收集已有 id，避免补全时撞号
-    existing_ids = {q["id"] for q in quiz_bank if q.get("id")}
+    existing_ids = {q["id"] for q in quiz_bank if not is_blank(q.get("id"))}
     next_id = 1
     for q in quiz_bank:
         # 补全 id（validate 不强制 id，但出口文件需要）
-        if not q.get("id"):
+        if is_blank(q.get("id")):
             while f"q{next_id}" in existing_ids:
                 next_id += 1
             new_id = f"q{next_id}"
