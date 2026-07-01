@@ -55,8 +55,8 @@ class BehaviorSmokeTest(unittest.TestCase):
         self.assertIn("scenarios", spec)
         self.assertTrue(os.path.isdir(_bs(spec["fixture"])), "scenarios.json 的 fixture 路径不存在")
         file_keys = (
-            "mock_output", "mock_negative", "mock_negative_leak", "mock_negative_path",
-            "progress_after", "transcript",
+            "mock_output", "mock_negative", "mock_negative_leak", "mock_negative_unlabeled",
+            "mock_negative_path", "progress_after", "transcript",
         )
         for sc in spec["scenarios"]:
             for k in file_keys:
@@ -201,6 +201,13 @@ class BehaviorSmokeTest(unittest.TestCase):
         self.assertFalse(H.visual_first_asset_display_ok(
             _read("mock/sample_outputs/visual_first_answer_before_prompt.txt")),
             "题面图后、题目/作答前泄露答案侧 asset 时应不合格")
+        self.assertFalse(H.visual_first_asset_display_ok(
+            _read("mock/sample_outputs/visual_first_unlabeled_solution_before_prompt.txt")),
+            "题目前出现未标注的答案侧 Markdown 图片时应不合格")
+        self.assertFalse(H.visual_first_asset_display_ok(
+            "![题面图 / question-side asset](references/assets/venn_prompt.png)\n"
+            "![worked solution](references/assets/venn_solution.png)\n\n题目：看图作答"),
+            "题面图后、题目前出现未标注答案图时应不合格")
         self.assertFalse(H.visual_first_asset_display_ok(_read("mock/sample_outputs/visual_first_path_only.txt")),
                          "只打印路径、没有 Markdown 图片渲染时应不合格")
         self.assertFalse(H.visual_first_asset_display_ok(

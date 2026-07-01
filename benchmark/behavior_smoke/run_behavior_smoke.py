@@ -200,6 +200,9 @@ def visual_first_asset_display_ok(text):
     )
     positions = [m.start() for pat in marker_patterns for m in [re.search(pat, t, flags=re.MULTILINE)] if m]
     first_action = min(positions, default=len(t))
+    for img in re.finditer(r"!\[([^\]]*)\]\([^)]+\)", t):
+        if img.start() < first_action and "题面图 / question-side asset" not in img.group(1):
+            return False
     apos = t.find("答案图 / answer-side asset")
     if apos != -1 and apos < first_action:
         return False
@@ -397,10 +400,12 @@ def check_scenario_mock(name, sc, fixture_path=FIXTURE):
         good = visual_first_asset_display_ok(_read(_p(sc["mock_output"])))
         answer_first = visual_first_asset_display_ok(_read(_p(sc["mock_negative"])))
         answer_before_prompt = visual_first_asset_display_ok(_read(_p(sc["mock_negative_leak"])))
+        unlabeled_answer = visual_first_asset_display_ok(_read(_p(sc["mock_negative_unlabeled"])))
         path_only = visual_first_asset_display_ok(_read(_p(sc["mock_negative_path"])))
-        return (good and not answer_first and not answer_before_prompt and not path_only), (
+        return (good and not answer_first and not answer_before_prompt and not unlabeled_answer and not path_only), (
             f"good={good} answer_side_first_caught={not answer_first} "
-            f"answer_before_prompt_caught={not answer_before_prompt} path_only_caught={not path_only}")
+            f"answer_before_prompt_caught={not answer_before_prompt} "
+            f"unlabeled_answer_caught={not unlabeled_answer} path_only_caught={not path_only}")
     return False, "unknown scenario"
 
 
