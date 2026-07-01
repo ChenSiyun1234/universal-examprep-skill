@@ -36,7 +36,7 @@
     "phase": 2,
     "chapter": "ch2_trees",
     "type": "choice",
-    "question": "一棵只有根节点的树，其高度是多少（常用定义）？",
+    "question": "一棵只有根节点的树，高度是多少？",
     "options": [
       "0",
       "1",

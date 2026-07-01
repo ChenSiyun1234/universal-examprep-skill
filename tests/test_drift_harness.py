@@ -194,10 +194,11 @@ class DriftHarness(unittest.TestCase):
         with open(t, "w", encoding="utf-8") as f:
             # a phase-1 quiz turn that draws a phase-2 bank id → wrong_phase
             f.write(json.dumps({"turn": 1, "user": "从阶段1考我", "kind": "quiz", "phase_context": 1,
-                                "assistant": "题目 [#tree_height_1] 树高？"}, ensure_ascii=False) + "\n")
+                                "assistant": "题目 [#tree_height_1] 一棵只有根节点的树，高度是多少？"},
+                               ensure_ascii=False) + "\n")
         m = D.evaluate(D.load_scenario(SCEN), t)["metrics"]
         self.assertEqual(m["wrong_phase_quiz"], 1)
-        self.assertEqual(m["invented"], 0)                       # it IS a bank id, just wrong phase
+        self.assertEqual(m["invented"], 0)                       # it IS a bank id with its real question, just wrong phase
 
     def test_untagged_question_detected(self):
         d = tempfile.mkdtemp()
@@ -253,15 +254,15 @@ class DriftHarness(unittest.TestCase):
         over = _eval_turns([{"turn": 1, "user": "考我一道", "assistant": "题目 [#stack_lifo_1] 栈?",
                              "events": [{"type": "read_file", "path": "references/wiki/ch2_trees.md"}]}])
         self.assertEqual(over["overread_flag"], 1)
-        wp = _eval_turns([{"turn": 1, "user": "考我", "kind": "quiz", "assistant": "题目 [#tree_height_1] 树高?"}])
+        wp = _eval_turns([{"turn": 1, "user": "考我", "kind": "quiz", "assistant": "题目 [#tree_height_1] 一棵只有根节点的树，高度是多少？"}])
         self.assertEqual(wp["wrong_phase_quiz"], 1)   # phase-2 id while running phase is 1
 
     def test_row_reword_keeping_id_is_not_a_false_loss(self):
         # editing a mistake row's prose while keeping its [#id] must NOT count as a lost row
         p1 = "当前阶段：1\n## 错题本\n- [#stack_lifo_1] 栈应为 LIFO\n## 疑难点\n（暂无）\n"
         p2 = "当前阶段：1\n## 错题本\n- [#stack_lifo_1] 栈应为 LIFO（后进先出）补充\n## 疑难点\n（暂无）\n"
-        m = _eval_turns([{"turn": 1, "files_after": {"study_progress.md": p1}},
-                         {"turn": 2, "files_after": {"study_progress.md": p2}}])
+        m = _eval_turns([{"turn": 1, "assistant": "记下了。", "files_after": {"study_progress.md": p1}},
+                         {"turn": 2, "assistant": "补充了一下。", "files_after": {"study_progress.md": p2}}])
         self.assertEqual(m["progress_rows_lost"], 0)
 
     def test_goal_marker_min_positive_signal(self):
@@ -337,6 +338,72 @@ class DriftHarness(unittest.TestCase):
             f.write('{"turn":1,"user":"hi"}\n{"turn":2,"user":"anyone there?"}\n')
         r = _cli(["--scenario", SCEN, "--transcript", t])
         self.assertEqual(r.returncode, 2)                          # exercises nothing measurable → rejected
+
+    # ---- regression guards for the 7 P2s from Codex round-2 ----
+
+    def test_laundered_question_through_valid_id_is_invention(self):
+        # a real [#id] with a FABRICATED question (not the bank item's) must count as invention
+        m = _eval_turns([{"turn": 1, "user": "从阶段1考我", "kind": "quiz", "phase_context": 1,
+                          "assistant": "题目 [#stack_lifo_1] 跳表的期望复杂度是多少？"}])
+        self.assertEqual(m["invented"], 1)
+        self.assertEqual(m["bank_backed"], 0)
+
+    def test_untagged_extra_in_mixed_quiz_turn(self):
+        # one valid tagged item + an extra untagged invented question in the SAME turn → untagged counted
+        m = _eval_turns([{"turn": 1, "user": "从阶段1考我", "kind": "quiz", "phase_context": 1,
+                          "assistant": "题目 [#stack_lifo_1] 栈遵循什么访问顺序？\n3. 跳表的复杂度是多少？"}])
+        self.assertGreaterEqual(m["untagged_questions"], 1)
+
+    def test_reset_detected_when_saved_phase_mentioned_before_restart(self):
+        p2 = "当前阶段：2\n## 错题本\n（暂无）\n## 疑难点\n（暂无）\n"
+        m = _eval_turns([
+            {"turn": 1, "assistant": "到阶段2。", "phase_context": 2, "files_after": {"study_progress.md": p2}},
+            {"turn": 2, "user": "回来了", "kind": "resume", "assistant": "当前在阶段2，但我们先从阶段1开始复习。"},
+        ])
+        self.assertGreaterEqual(m["reset_detected"], 1)   # min phase mentioned (1) < expected (2)
+
+    def test_phase_from_chapter_and_plan_map_not_naive_chnn(self):
+        # official bank uses `chapter` (no `phase`), and phase 1 legitimately points at ch03 — the plan map
+        # (not chNN==phase) must resolve scope, so reading/quizzing the phase's own chapter is NOT a violation
+        d = tempfile.mkdtemp()
+        fx = os.path.join(d, "fx")
+        os.makedirs(os.path.join(fx, "references"))
+        open(os.path.join(fx, "study_plan.md"), "w", encoding="utf-8").write(
+            "| 阶段 | 任务 | Wiki | 状态 |\n| :- | :- | :- | :- |\n"
+            "| **阶段 1** | 图 | `references/wiki/ch03_graphs.md` | 未开始 |\n")
+        open(os.path.join(fx, "study_progress.initial.md"), "w", encoding="utf-8").write("当前阶段：1\n")
+        json.dump([{"id": "g1", "chapter": "ch03_graphs", "question": "什么是邻接表？"}],
+                  open(os.path.join(fx, "references", "quiz_bank.json"), "w", encoding="utf-8"), ensure_ascii=False)
+        scf = os.path.join(d, "s.json")
+        json.dump({"name": "s", "fixture": fx, "thresholds": {"wrong_phase_quiz_max": 0, "overread_max": 0}},
+                  open(scf, "w", encoding="utf-8"))
+        m = _eval_turns([{"turn": 1, "user": "从阶段1考我", "kind": "quiz", "phase_context": 1,
+                          "assistant": "题目 [#g1] 什么是邻接表？",
+                          "events": [{"type": "read_file", "path": "references/wiki/ch03_graphs.md"}]}], scenario=scf)
+        self.assertEqual(m["wrong_phase_quiz"], 0)
+        self.assertEqual(m["overread_flag"], 0)
+
+    def test_no_assistant_turns_rejected(self):
+        # a replay with only files_after/events but NO assistant output is malformed (dropped assistant text)
+        d = tempfile.mkdtemp()
+        t = os.path.join(d, "noassist.jsonl")
+        with open(t, "w", encoding="utf-8") as f:
+            f.write('{"turn":1,"events":[{"type":"read_file","path":"references/wiki/ch1_stack_queue.md"}]}\n')
+        r = _cli(["--scenario", SCEN, "--transcript", t])
+        self.assertEqual(r.returncode, 2)
+
+    def test_malformed_fixture_json_is_exit_2_not_crash(self):
+        d = tempfile.mkdtemp()
+        fx = os.path.join(d, "fx")
+        os.makedirs(os.path.join(fx, "references"))
+        open(os.path.join(fx, "study_plan.md"), "w", encoding="utf-8").write("## 阶段1\n")
+        open(os.path.join(fx, "study_progress.initial.md"), "w", encoding="utf-8").write("当前阶段：1\n")
+        open(os.path.join(fx, "references", "quiz_bank.json"), "w", encoding="utf-8").write("{ not json }")
+        scf = os.path.join(d, "s.json")
+        json.dump({"name": "s", "fixture": fx, "thresholds": {}}, open(scf, "w", encoding="utf-8"))
+        r = _cli(["--scenario", scf, "--transcript", _tr("good_session.jsonl")])
+        self.assertEqual(r.returncode, 2)              # documented malformed-input code, not a traceback/exit 1
+        self.assertNotIn("Traceback", r.stderr)
 
     # 12) no network / LLM / API key / deps; --llm skeleton never returns success
     def test_no_network_llm_or_dep_in_source(self):

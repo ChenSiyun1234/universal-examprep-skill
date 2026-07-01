@@ -136,6 +136,59 @@ def parse_plan_phases(text):
     return phases
 
 
+def parse_plan_map(text):
+    """{phase_num: set(wiki basenames without .md)} from a study_plan.md — the phase↔chapter source of
+    truth. Handles the real ingest table (phase digit + wiki path on the SAME row) AND this harness's
+    fixture (a '## 阶段N' heading followed by bullet lines that name the wiki). So phase 1 may legitimately
+    point at ch03 (materials starting mid-book), and quiz/wiki scope checks use THIS map, not chNN==phase."""
+    m, cur = {}, None
+    for ln in (text or "").splitlines():
+        s = ln.strip()
+        structural = s.startswith("#") or s.startswith("|") or bool(re.match(r"[-*]\s", s))
+        ph = re.search(r"(?:阶段|Phase|phase)\s*(\d+)", s) if structural else None
+        if ph and (s.startswith("#") or s.startswith("|")):
+            cur = int(ph.group(1))
+            m.setdefault(cur, set())
+        target = int(ph.group(1)) if ph else cur
+        wikis = re.findall(r"references/wiki/([A-Za-z0-9_\-]+)\.md", s)
+        if target is not None and wikis:
+            m.setdefault(target, set()).update(wikis)
+    return m
+
+
+def _basename_noext(path):
+    return re.sub(r"\.md$", "", os.path.basename(path or ""))
+
+
+def phase_of_wiki(plan_map, path):
+    """Which plan phase a wiki file belongs to (via the plan map); None if the plan doesn't place it."""
+    base = _basename_noext(path)
+    for ph, files in plan_map.items():
+        if base in files:
+            return ph
+    return None
+
+
+def phase_of_chapter(plan_map, chapter):
+    """Which plan phase a bank item's `chapter` token belongs to (exact, or as a wiki-basename match)."""
+    c = _basename_noext(str(chapter))
+    for ph, files in plan_map.items():
+        if c in files or any(c == f or c in f or f in c for f in files):
+            return ph
+    return None
+
+
+def _bank_question_shown(segment, question):
+    """T2-style content check: the bank item's question must actually appear where its [#id] is shown —
+    both an 8-char prefix AND suffix (so a fabricated question laundered through a real id is caught)."""
+    s = re.sub(r"\s+", "", segment or "")
+    q = re.sub(r"\s+", "", question or "")
+    if not q:
+        return True                                                # no bank question to check against
+    k = min(8, len(q))
+    return q[:k] in s and q[-k:] in s
+
+
 _TABLE_SEP = re.compile(r"^\s*\|[\s:\-|]+\|?\s*$")                  # a Markdown table separator row
 _TABLE_HDR_WORDS = ("错题id", "关联章节", "题目内容", "错误原因", "序号", "疑难点", "解答要点", "状态")
 _ROW_PLACEHOLDER = re.compile(r"（暂无）|（清空重来）|（无）|^\s*[-*]\s*$")
@@ -248,15 +301,31 @@ def compute_metrics(scenario, fixture_dir, turns):
     unrelated = scenario.get("unrelated_goal_phrases", DEFAULT_UNRELATED_PHRASES)
     refusals = scenario.get("refusal_phrases", DEFAULT_REFUSAL_PHRASES)
 
-    plan_text = _read(os.path.join(fixture_dir, "study_plan.md"))
-    bank_path = os.path.join(fixture_dir, "references", "quiz_bank.json")
-    bank = json.loads(_read(bank_path))
-    bank_phase = {str(q["id"]): _as_phase(q.get("phase")) for q in bank if isinstance(q, dict) and "id" in q}
+    try:                                                          # a bad FIXTURE is malformed input (exit 2),
+        plan_text = _read(os.path.join(fixture_dir, "study_plan.md"))   # not a harness crash
+        init_progress = _read(os.path.join(fixture_dir, "study_progress.initial.md"))
+        bank = json.loads(_read(os.path.join(fixture_dir, "references", "quiz_bank.json")))
+    except (IOError, OSError) as e:
+        raise DriftError("fixture 文件读取失败: %s" % e)
+    except ValueError as e:
+        raise DriftError("fixture 的 quiz_bank.json 不是合法 JSON: %s" % e)
+    if not isinstance(bank, list):
+        raise DriftError("fixture 的 quiz_bank.json 必须是数组")
+
+    canon = parse_plan_phases(plan_text)
+    plan_map = parse_plan_map(plan_text)                          # phase ↔ wiki/chapter source of truth
+    bank_phase, bank_question = {}, {}
+    for q in bank:
+        if isinstance(q, dict) and "id" in q:
+            qid = str(q["id"])
+            ph = _as_phase(q.get("phase"))
+            if ph is None and q.get("chapter") is not None:       # official bank uses `chapter`, not `phase`
+                ph = phase_of_chapter(plan_map, q.get("chapter"))
+            bank_phase[qid] = ph
+            bank_question[qid] = q.get("question", "")
     bank_ids = set(bank_phase)
-    init_progress = _read(os.path.join(fixture_dir, "study_progress.initial.md"))
 
     assistant_turns = [t for t in turns if t.get("assistant")]
-    canon = parse_plan_phases(plan_text)
 
     # RUNNING PHASE CONTEXT — carried forward so the wrong-phase / over-read checks can't be silently
     # disabled by omitting `phase_context`: a turn without an explicit phase inherits the session's
@@ -307,29 +376,47 @@ def compute_metrics(scenario, fixture_dir, turns):
             prev_user = u
     plan_adherence = 1.0 if plan_mutations == 0 else max(0.0, round(1 - plan_mutations / max(1, len(canon)), 4))
 
-    # 3) quiz-bank fidelity / invention — checked against the RUNNING phase (not an opt-in field)
+    # 3) quiz-bank fidelity / invention — only QUIZ turns are scored (a progress summary that mentions an
+    #    archived [#id] isn't a quiz). Each tagged item is bank-backed only if it's a real id AND the shown
+    #    question actually matches that bank item (no laundering a fake question through a real id); the
+    #    phase is the RUNNING phase and the bank phase comes from `phase` or, failing that, the plan's
+    #    chapter map. Untagged question-like lines are counted even in MIXED turns (valid tag + extra).
     quiz_items = bank_backed = invented = untagged = wrong_phase = 0
     for i, t in enumerate(turns):
         if not t.get("assistant"):
             continue
         is_quiz = t.get("kind") == "quiz" or bool(QUIZ_TRIGGERS.search(t.get("user", "")))
         if not is_quiz:
-            continue                                               # only QUIZ turns are scored — a progress
-        ids = extract_quiz_ids(t.get("assistant", ""))             # summary that mentions [#id] isn't a quiz
+            continue
+        a = t.get("assistant", "")
+        lines = a.splitlines()
+        ids = extract_quiz_ids(a)
         want_phase = turn_phase[i]
-        for qid in ids:
-            quiz_items += 1
-            if qid in bank_ids:
-                bank_backed += 1
-                if want_phase is not None and bank_phase.get(qid) is not None and bank_phase[qid] != want_phase:
-                    wrong_phase += 1
-            else:
-                invented += 1
-        if is_quiz and not ids:
-            # asked to quiz but produced NO bank-tagged item → count the question-like lines, or the whole
-            # turn if it's prose, so a wholesale prose "quiz" with no [#id] tag isn't silently clean.
-            q_lines = sum(1 for ln in t.get("assistant", "").splitlines() if looks_like_question(ln))
-            untagged += max(1, q_lines)
+        for idx, ln in enumerate(lines):
+            lids = extract_quiz_ids(ln)
+            if not lids:
+                continue
+            seg = re.sub(r"\[#[^\]]+\]", "", ln)                   # this tag's segment: its line + following
+            for nxt in lines[idx + 1:]:                            # lines up to the next tagged line
+                if extract_quiz_ids(nxt):
+                    break
+                seg += "\n" + nxt
+            for j, qid in enumerate(lids):
+                quiz_items += 1
+                # only the FIRST id on a line owns the shown question text; extra same-line ids can't be
+                # content-verified → treated as not-backed (a malformed multi-tag line is suspicious anyway).
+                shown_ok = j == 0 and _bank_question_shown(seg, bank_question.get(qid, ""))
+                if qid in bank_ids and shown_ok:
+                    bank_backed += 1
+                    bp = bank_phase.get(qid)
+                    if want_phase is not None and bp is not None and bp != want_phase:
+                        wrong_phase += 1
+                else:
+                    invented += 1                                  # unknown id, laundered text, or multi-tag
+        q_untagged = sum(1 for ln in lines if looks_like_question(ln) and not extract_quiz_ids(ln))
+        # every untagged question-like line counts (mixed turns too); a prose "quiz" with NO tag at all and
+        # no question-like line still counts as ≥1 (wholesale prose invention isn't silently clean).
+        untagged += q_untagged if ids else max(1, q_untagged)
     invention_rate = round(invented / quiz_items, 4) if quiz_items else 0.0
 
     # 4) checkpoint recovery — EVERY resume turn must continue from the current phase, not restart earlier.
@@ -339,9 +426,9 @@ def compute_metrics(scenario, fixture_dir, turns):
         is_resume = t.get("kind") == "resume" or RESUME_TRIGGERS.search(t.get("user", ""))
         if is_resume:
             exp, a = run_ck, t.get("assistant", "")
-            m = re.search(r"(?:阶段|phase)\s*(\d+)", a, re.I)
-            rp = int(m.group(1)) if m else None
-            restart = bool(RESTART_PHRASES.search(a))
+            phs = [int(x) for x in re.findall(r"(?:阶段|phase)\s*(\d+)", a, re.I)]
+            rp = min(phs) if phs else None                        # the LOWEST phase it proposes to work on —
+            restart = bool(RESTART_PHRASES.search(a))             # '当前在阶段2，但先从阶段1开始' → restarts 1
             reset_count += int((rp is not None and exp is not None and rp < exp) or (restart and (exp or 1) > 1))
             if expected_phase is None:                            # report the FIRST resume's phases
                 expected_phase, resumed_phase = exp, rp
@@ -382,7 +469,11 @@ def compute_metrics(scenario, fixture_dir, turns):
             if ev.get("type") == "read_file" and str(ev.get("path", "")).startswith("references/wiki/"):
                 wiki_reads += 1
                 seen_wiki.add(ev["path"])
-                ch_phase = _wiki_chapter_phase(ev["path"])
+                # which phase this wiki belongs to: the PLAN MAP first (phase 1 may point at ch03), then
+                # the chNN filename heuristic as a fallback when the plan doesn't place the file.
+                ch_phase = phase_of_wiki(plan_map, ev["path"])
+                if ch_phase is None:
+                    ch_phase = _wiki_chapter_phase(ev["path"])
                 if want_phase is not None and ch_phase is not None and ch_phase != want_phase:
                     overread = 1                                  # a phase-scoped turn read another phase's chapter
     wiki_files = len(seen_wiki)
@@ -452,10 +543,11 @@ def evaluate(scenario, transcript_path):
     turns = load_jsonl(transcript_path, "transcript")
     if not turns:
         raise DriftError("transcript 为空: %s" % transcript_path)
-    if not any(t.get("assistant") or t.get("files_after") or t.get("events") for t in turns):
-        # a user-only transcript exercises NOTHING measurable — every metric would default to a perfect
-        # value and vacuously PASS, which would make the harness a useless regression gate. Reject it.
-        raise DriftError("transcript 没有任何可评估内容（assistant/files_after/events 全空），无法度量漂移")
+    if not any(t.get("assistant") for t in turns):
+        # a replay with NO assistant output measures nothing — the assistant-facing metrics all default to
+        # perfect and vacuously PASS. A real long-session replay has assistant turns; reject the rest (a
+        # dropped-assistant recording is malformed input, not a successful run).
+        raise DriftError("transcript 没有任何 assistant 轮，无法度量长会话漂移（可能是录制丢了 assistant 文本）")
     metrics = compute_metrics(scenario, fixture_dir, turns)
     passed, failures = check_thresholds(metrics, scenario["thresholds"])
     return {"scenario": scenario["name"], "transcript": os.path.basename(transcript_path),

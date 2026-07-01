@@ -93,6 +93,9 @@ python benchmark/drift/run_drift.py --all --json-out /tmp/drift_summary.json
   「只改错别字、别动顺序」这类**限定范围**的话（会把紧邻的改动当作已授权）。已修掉的是**会话级**闩锁（一次授权全程放行）。
 
 **这些不是 bug 而是确定性 replay 的边界**；harness 在**已标注的脚本化 transcript** 上做的是结构断言，对抗性规避交给
-未来的 LLM 裁判。相对地，下列**结构性规避已在本版堵住**（见 `tests/test_drift_harness.py` 回归）：越 phase 出题/越章读
-**不再**因缺 `phase_context` 而失效（改用**会话内滚动的当前阶段**）；断点重置在**每个** resume 轮都检查；解释轮判定
-**不被** `kind` 值绕过；进度行按 `[#id]` 追踪（改写不算丢失）；计划授权不再是会话级闩锁。
+未来的 LLM 裁判。相对地，下列**结构性规避已堵住**（见 `tests/test_drift_harness.py` 回归）：越 phase 出题/越章读
+**不再**因缺 `phase_context` 而失效（改用**会话内滚动的当前阶段**，且 phase↔章节以 **study_plan 映射**为准、非 `chNN==阶段`）；
+断点重置在**每个** resume 轮都检查、取提到的**最低**阶段（「当前在阶段2，但先从阶段1开始」也算重置）；解释轮判定**不被** `kind`
+值绕过；进度行按 `[#id]` 追踪（改写不算丢失）；计划授权非会话级闩锁；带真 `[#id]` 但**题面被换成编造题**会按 T2 同款内容比对
+判为编题；混合轮里的额外无标号题也计入 `untagged`；只有 user 轮/无 assistant 的空跑 transcript 与坏 fixture JSON 均 exit 2。
+**解析同时兼容自撰 fixture 与真实 `scripts/ingest.py` 模板**（表格/打卡/断点行/错题·疑难表格行）。
