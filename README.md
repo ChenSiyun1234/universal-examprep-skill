@@ -32,7 +32,7 @@
 * **📄 AGENTS.md 通用代理兜底**：新增一屏浓缩的防幻觉核心契约，供 Codex、Cursor 规则、Antigravity 等不读完整 SKILL.md 的通用代理使用。
 * **🌐 双语控制层**：英文控制指令（精确、可测）+ 简体中文学生可见输出，统一来源标注 canonical 用词（🟢/🟡/⚠️），避免多入口措辞不一致。语言策略详见 [`docs/language-policy.md`](docs/language-policy.md)。
 * **🔍 工作区校验器**：新增 [`scripts/validate_workspace.py`](scripts/validate_workspace.py)（纯标准库），可零成本校验已建工作区的结构、题库 schema、来源标注和路径安全。
-* **🔬 测试覆盖大幅扩展**：从 12 个测试扩展到 **109 个**，覆盖 ingest、工作区校验、技能结构完整性、语言策略一致性、控制层双语等维度。CI 矩阵覆盖 Ubuntu/Python 3.8 + 3.12 + Windows。
+* **🔬 测试覆盖大幅扩展**：覆盖 ingest、工作区校验、技能结构完整性、语言策略一致性、控制层双语等维度的 stdlib 单元测试套件（数量随测试增减，运行 `python -m unittest discover -s tests -v` 查看当前值）。CI 矩阵覆盖 Ubuntu/Python 3.8 + 3.12 + Windows。
 * **📚 架构文档补全**：新增 [`docs/skill-architecture.md`](docs/skill-architecture.md)（技能集合结构）、[`docs/agent-portability.md`](docs/agent-portability.md)（不同代理加载方式）、[`docs/file-format.md`](docs/file-format.md)（工作区文件格式规范）。
 
 ---
@@ -43,10 +43,11 @@
 * **🛠️ 一键无缝冷启动**：告别了手动建立题库与 Markdown 文件的繁琐操作。**学生完全不需要理会复杂的 JSON 格式**，只需提供大纲或真题，Agent 将在后台自动解析大纲、拼装 JSON 并通过脚本完成 Wiki 物理切片的切割与进度初始化。
 * **🔌 无 Python 环境自动降级**：内置降级执行能力。即使学生电脑里没有安装 Python，Agent 也会无缝切换为“手动写入模式”，利用自身的文件写入功能直接在本地铺设 Wiki 目录，**100% 免配置、零摩擦运行**。
 * **🎯 标准真题库 quiz_bank.json 抽题**：测试题由“AI 即兴编造”升级为“标准真题库抽测”，规避了 AI 出无解错题、弱智题的毛病。
+* **🖼️ 依赖图的题 fail-closed**：讲义里的 Quiz/Example 常依赖一张图（文氏图、页内插图、表格）。题库项可附原页引用与图片资源（`source_pages` / `assets` / `requires_assets`），校验器会在“需要图却没附图”时报错，出题时也**绝不在不显示该图的情况下出这道题**——避免给学生一道根本没法答的题。老题库不带这些字段仍然有效。详见 [`docs/file-format.md`](docs/file-format.md) §4。
 * **🏃 测试逃生通道 (Hint & Skip)**：针对测试关卡设计了“查看提示”与“2次答错跳过并归档”机制，防止学生因主观题表述差异或卡壳而被死锁在当前阶段。
 * **🧠 概念疑难点自动追踪**：内置 `skills/confusion-tracker` 子技能，自动捕获并记录复习过程中的概念疑问（如“为什么/怎么推导”），形成考前盲区扫雷清单。
 * **🛡️ 运行安全与进度保护**：引入文件名安全过滤、路径防穿透防篡改、进度覆盖前自动备份，并强制 UTF-8 打印完美解决 Windows 终端中文乱码。
-* **🔬 单元测试与 CI 集成**：内置覆盖导入、工作区校验、技能结构、语言策略、控制层双语等 109 个单元测试，由 GitHub Actions 在云端多平台（Windows & Linux、Python 3.8/3.12）自动运行质量检测。
+* **🔬 单元测试与 CI 集成**：内置覆盖导入、工作区校验、技能结构、语言策略、控制层双语等维度的 stdlib 单元测试套件，由 GitHub Actions 在云端多平台（Windows & Linux、Python 3.8/3.12）自动运行质量检测。
 
 ---
 
@@ -157,7 +158,7 @@ python scripts/validate_workspace.py path/to/workspace
 ```
 
 - 工作区文件格式规范见 [`docs/file-format.md`](docs/file-format.md)；校验器为 [`scripts/validate_workspace.py`](scripts/validate_workspace.py)。
-- **完整 benchmark 很贵**（一次单轮矩阵几十美元/几小时，长程漂移测试以天计额度），**不应为每个小改动跑全量**——分层策略见 [`benchmark/docs/test_tiers.md`](benchmark/docs/test_tiers.md)。日常开发与 CI 只跑 Tier 0–1。
+- **完整 benchmark 很贵**（一次单轮矩阵几十美元/几小时，长程漂移测试以天计额度），**不应为每个小改动跑全量**——分层策略见 [`benchmark/docs/test_tiers.md`](benchmark/docs/test_tiers.md)。**CI 实际只跑 Tier 0（单元测试）**；Tier 1 校验器是本地/手动步骤——它的校验逻辑已由 Tier 0 单测在 `tests/fixtures/` 上覆盖，但 CI 未单独在真实 ingest 产物上运行该 CLI。
 
 ---
 
@@ -178,6 +179,7 @@ python scripts/validate_workspace.py path/to/workspace
   * 📂 `exam-help/`：速查卡（一屏看懂工作流 / 模式 / 文件约定）
   * 📂 `confusion-tracker/`：概念疑难点追踪——被 `exam-tutor` / `exam-review` 调用，自动把概念疑惑记录到进度表（已并入 `skills/`，模块化安装时不会再丢）。
 * 📂 **`scripts/`**：自动化脚本。
+  * 🐍 `build_raw_input_from_workspace.py`：**【官方课程材料入口】** —— 把一文件夹的讲义/作业 **PDF** 扫成 `ingest.py` 用的 `raw_input.json`：保留**原页出处**、把依赖图的页**整页渲染成 PNG asset**、抽取讲义 **Example/Quiz 题—解对**进题库、并产出解析报告。让 AI 不必再手写临时解析脚本而丢图丢题。PDF 文本/渲染为**可选依赖**（文本 `pip install pypdf`；渲染 `pip install pymupdf` 或 `pypdfium2 Pillow`，缺失会清晰报错）；纯 `.txt/.md` 无需依赖。官方流程：`build_raw_input_from_workspace.py → ingest.py → validate_workspace.py`（详见 [`docs/file-format.md`](docs/file-format.md) §4）。
   * 🐍 `ingest.py`：**【一键环境初始化脚本】** —— 由 AI 助手在后台自动调用，负责一键切分 Wiki 章节、题库并部署进度表。
   * 🐍 `validate_workspace.py`：**【工作区校验器】** —— 静态校验已建工作区的结构、题库 schema、来源标注与路径安全（纯标准库，零成本）。
 * 📂 **`docs/`**：架构与策略文档。
@@ -192,7 +194,7 @@ python scripts/validate_workspace.py path/to/workspace
   * 📄 `study_plan_template.md`：复习计划表模板。
   * 📄 `study_progress_template.md`：进度追踪与错题打卡表模板。
   * 📄 `quiz_bank_template.json`：真题抽测 JSON 模板。
-* 📂 **`tests/`**：【单元测试包】 —— 109 个自动化测试，覆盖 ingest、工作区校验、技能结构、语言策略、控制层双语、技能集合自洽、运行时去版本化等。
+* 📂 **`tests/`**：【单元测试包】 —— stdlib 自动化测试套件，覆盖 ingest、工作区校验、技能结构、语言策略、控制层双语、技能集合自洽、运行时去版本化等（当前数量见 `python -m unittest discover -s tests -v`）。
 
 ---
 

@@ -11,6 +11,9 @@ results/matrix/*
 __pycache__/
 *.py[cod]
 
+# Tier 2 行为冒烟的运行产物（opt-in --llm 真跑写在这里；默认 mock/check 不写盘）
+behavior_smoke/results/
+
 # 个人配置
 config.json
 
