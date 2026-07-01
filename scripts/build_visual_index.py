@@ -137,9 +137,13 @@ class RealBackend(object):
 
     def pages_text(self, pdf_path):
         if self._pypdf is not None:
-            reader = self._pypdf.PdfReader(pdf_path)
-            return [(p.extract_text() or "") for p in reader.pages]
-        doc = self._fitz.open(pdf_path)
+            try:
+                reader = self._pypdf.PdfReader(pdf_path)
+                return [(p.extract_text() or "") for p in reader.pages]
+            except Exception:
+                if self._fitz is None:                 # no second text backend → let the caller skip this file
+                    raise
+        doc = self._fitz.open(pdf_path)                # fall back: some PDFs parse under fitz but not pypdf
         try:
             return [doc[i].get_text() or "" for i in range(doc.page_count)]
         finally:
@@ -233,7 +237,12 @@ def scan_materials(materials, backend, warnings):
         except Exception as e:
             warnings.append("pdf_text_failed: %s (%s)" % (rel, e))
             continue
-        media = backend.pages_media(pdf) if backend.can_media() else None
+        media = None
+        if backend.can_media():
+            try:
+                media = backend.pages_media(pdf)
+            except Exception as e:                     # one PDF's media failure degrades THAT file only
+                warnings.append("media_failed: %s (%s)——该文件仅文字信号，召回打折" % (rel, e))
         visual = {}
         for i, text in enumerate(texts):
             imgs, draws = (media[i] if media and i < len(media) else (0, 0))
@@ -317,11 +326,14 @@ def apply_suspects(ws, materials, bank, suspects, backend, asset_root, warnings)
     maybe_requires_assets=true. Backs up quiz_bank.json first. Returns number applied."""
     if not backend.can_render():
         _die("--apply 需要渲染后端（pip install pymupdf，或 pypdfium2+Pillow）才能把原页截图挂上题面", 3)
-    ws_abs, root_abs = os.path.abspath(ws), os.path.abspath(asset_root)
+    # realpath containment — a symlinked asset-root living under ws but POINTING outside must be rejected
+    # (the validator's realpath check would fail the written paths anyway; refuse up front)
+    ws_abs, root_abs = os.path.realpath(ws), os.path.realpath(asset_root)
     if os.path.commonprefix([os.path.normcase(root_abs) + os.sep, os.path.normcase(ws_abs) + os.sep]) \
             != os.path.normcase(ws_abs) + os.sep:
-        _die("--asset-root 必须位于工作区内（否则 quiz_bank 里的相对路径无法渲染）: %s" % asset_root)
+        _die("--asset-root 必须真实位于工作区内（符号链接指向工作区外也不行）: %s" % asset_root)
     os.makedirs(root_abs, exist_ok=True)
+    mat_real = os.path.realpath(materials) if materials else ""
     by_id = {str(q.get("id")): q for q in bank if isinstance(q, dict) and q.get("id") is not None}
     applied = 0
     for s in suspects:
@@ -329,14 +341,22 @@ def apply_suspects(ws, materials, bank, suspects, backend, asset_root, warnings)
         if q is None:
             continue
         sf = str(q.get("source_file") or "").replace("\\", "/")
+        # never resolve an absolute / drive-letter / '..'-escaping provenance name — the screenshot must
+        # come from an INDEXED course file, not something outside --materials
+        if os.path.isabs(sf) or re.match(r"^[A-Za-z]:", sf) or ".." in sf.split("/"):
+            warnings.append("apply_skip_unsafe_source: %s（source_file 不安全: %s）" % (s["id"], sf))
+            continue
         pdf = None
         exact = os.path.join(materials, sf.replace("/", os.sep))
         if os.path.isfile(exact):
             pdf = exact
-        else:                                          # basename fallback — but ONLY when unambiguous
-            cands = []
+        else:                                          # basename fallback — but ONLY when unambiguous,
+            cands = []                                 # pruning leftover workspaces exactly like the scan
             for base, dirs, files in os.walk(materials):
-                dirs[:] = [d for d in dirs if d not in ALWAYS_PRUNE]
+                for d in list(dirs):
+                    full = os.path.join(base, d)
+                    if d in ALWAYS_PRUNE or _is_leftover_workspace(full, d) or _is_workspace_root(full):
+                        dirs.remove(d)
                 if os.path.basename(sf) in files:
                     cands.append(os.path.join(base, os.path.basename(sf)))
             if len(cands) == 1:
@@ -348,25 +368,38 @@ def apply_suspects(ws, materials, bank, suspects, backend, asset_root, warnings)
         if pdf is None:
             warnings.append("apply_skip_no_pdf: %s（找不到 %s）" % (s["id"], sf))
             continue
-        # render EVERY visual source page — a question spanning several visual pages must not surface
-        # with only its first page attached (the student would silently miss the continuation).
-        attached = 0
+        real = os.path.realpath(pdf)
+        if os.path.commonprefix([os.path.normcase(real) + os.sep, os.path.normcase(mat_real) + os.sep]) \
+                != os.path.normcase(mat_real) + os.sep:
+            warnings.append("apply_skip_outside_materials: %s（%s 解析到材料目录外）" % (s["id"], sf))
+            continue
+        # ALL-or-nothing rendering: a question spanning several visual pages must not surface with a
+        # partial prompt (one page attached, the continuation missing) — render the whole set first,
+        # write/attach only when complete.
+        renders = []
+        complete = True
         for page in s["visual_pages"]:
             png = backend.render_page_png(pdf, page - 1)
             if not png:
-                warnings.append("apply_skip_render_failed: %s p.%d" % (s["id"], page))
-                continue
+                warnings.append("apply_skip_render_failed: %s p.%d（跨页题面须整套渲染，本题未回写）"
+                                % (s["id"], page))
+                complete = False
+                break
+            renders.append((page, png))
+        if not complete:
+            continue
+        if not isinstance(q.get("assets"), list):      # normalize "assets": null / non-list before append
+            q["assets"] = []
+        for page, png in renders:
             name = "%s_p%d.png" % (_SAFE_NAME_RE.sub("_", s["id"])[:80], page)
             with open(os.path.join(root_abs, name), "wb") as f:
                 f.write(png)
-            rel = _rel_posix(ws_abs, os.path.join(root_abs, name))
-            q.setdefault("assets", []).append({
-                "path": rel, "role": "question_context", "type": "page_image",
+            q["assets"].append({
+                "path": _rel_posix(ws_abs, os.path.join(root_abs, name)),
+                "role": "question_context", "type": "page_image",
                 "caption": "原页截图 %s p.%d（疑似图依赖，保守展示）" % (sf, page)})
-            attached += 1
-        if attached:
-            q["maybe_requires_assets"] = True
-            applied += 1
+        q["maybe_requires_assets"] = True
+        applied += 1
     return applied
 
 

@@ -26,10 +26,12 @@ PNG = (b"\x89PNG\r\n\x1a\n" + b"0" * 60)  # tiny fake png bytes (content irrelev
 class FakeBackend(object):
     """Injectable stand-in for the optional PDF backends — tests never import real PDF libs."""
 
-    def __init__(self, texts_by_name=None, media_by_name=None, text=True, media=True, render=True):
+    def __init__(self, texts_by_name=None, media_by_name=None, text=True, media=True, render=True,
+                 render_fail_pages=()):
         self.texts = texts_by_name or {}
         self.media = media_by_name or {}
         self._text, self._media, self._render = text, media, render
+        self.render_fail_pages = set(render_fail_pages)   # 0-based page indexes whose render returns None
         self.name = "fake"
 
     def can_text(self):
@@ -45,10 +47,15 @@ class FakeBackend(object):
         return self.texts[os.path.basename(pdf_path)]
 
     def pages_media(self, pdf_path):
-        return self.media.get(os.path.basename(pdf_path))
+        v = self.media.get(os.path.basename(pdf_path))
+        if isinstance(v, Exception):
+            raise v
+        return v
 
     def render_page_png(self, pdf_path, page_index):
-        return PNG if self._render else None
+        if not self._render or page_index in self.render_fail_pages:
+            return None
+        return PNG
 
 
 def _mk_materials(d, names):
@@ -396,6 +403,147 @@ class OfficialTools(unittest.TestCase):
         ws2, _m2, _rc2 = _build(tmp2)
         rc, out3 = self._capture(LIQ.run, ["--workspace", ws2, "--json"])
         self.assertTrue(json.loads(out3)["recall_net"])
+
+    # ---- regression guards for Codex round-2 (7 findings) ----
+
+    def _ws_with(self, tmp, extra):
+        ws = _mk_workspace(tmp)
+        bank_path = os.path.join(ws, "references", "quiz_bank.json")
+        bank = json.load(open(bank_path, encoding="utf-8"))
+        bank += extra
+        json.dump(bank, open(bank_path, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+        return ws, bank_path
+
+    def test_apply_partial_render_failure_attaches_nothing(self):
+        # ALL-or-nothing: one page of a multi-page suspect fails to render → NO assets attached, NO flag
+        tmp = tempfile.mkdtemp()
+        ws, bank_path = self._ws_with(tmp, [
+            {"id": "multi_fail", "chapter": 1, "type": "subjective", "question": "跨页图题。",
+             "source": "material", "ai_generated": False,
+             "source_file": "lectures/ch01.pdf", "source_pages": [2, 3]}])
+        mat = os.path.join(tmp, "mat")
+        _mk_materials(mat, ["ch01.pdf", "ch02.pdf"])
+        be = _default_backend()
+        be.render_fail_pages = {2}                    # page 3 (0-based idx 2) fails
+        rc = BVI.run(["--workspace", ws, "--materials", mat, "--apply"], backend=be)
+        self.assertEqual(rc, 0)
+        q = next(x for x in json.load(open(bank_path, encoding="utf-8")) if x["id"] == "multi_fail")
+        self.assertNotIn("maybe_requires_assets", q)  # not flagged with a partial prompt
+        self.assertFalse(q.get("assets"))             # nothing attached
+        qidx = _load(ws, "image_question_index.json")
+        self.assertIn("multi_fail", [s["id"] for s in qidx["suspects"]])   # stays a visible suspect
+
+    def test_apply_normalizes_null_assets(self):
+        tmp = tempfile.mkdtemp()
+        ws, bank_path = self._ws_with(tmp, [
+            {"id": "null_assets", "chapter": 1, "type": "subjective", "question": "图题。",
+             "source": "material", "ai_generated": False, "assets": None,
+             "source_file": "lectures/ch01.pdf", "source_pages": [2]}])
+        mat = os.path.join(tmp, "mat")
+        _mk_materials(mat, ["ch01.pdf", "ch02.pdf"])
+        rc = BVI.run(["--workspace", ws, "--materials", mat, "--apply"], backend=_default_backend())
+        self.assertEqual(rc, 0)                       # no AttributeError on "assets": null
+        q = next(x for x in json.load(open(bank_path, encoding="utf-8")) if x["id"] == "null_assets")
+        self.assertIs(q["maybe_requires_assets"], True)
+        self.assertEqual(len(q["assets"]), 1)
+
+    def test_apply_fallback_prunes_leftover_workspace(self):
+        # a prior generated workspace inside --materials holds a same-basename PDF: the scan prunes it,
+        # so the apply fallback must prune it too — no false apply_skip_ambiguous
+        tmp = tempfile.mkdtemp()
+        ws, bank_path = self._ws_with(tmp, [
+            {"id": "bare_name", "chapter": 1, "type": "subjective", "question": "图题。",
+             "source": "material", "ai_generated": False,
+             "source_file": "ch01.pdf", "source_pages": [2]}])   # bare basename
+        mat = os.path.join(tmp, "mat")
+        _mk_materials(mat, ["ch01.pdf", "ch02.pdf"])
+        old = os.path.join(mat, "old_ws")                        # leftover workspace signature
+        os.makedirs(os.path.join(old, "references", "wiki"))
+        open(os.path.join(old, "references", "wiki", "ch1.md"), "w").write("x")
+        with open(os.path.join(old, "ch01.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+        rc = BVI.run(["--workspace", ws, "--materials", mat, "--apply"], backend=_default_backend())
+        self.assertEqual(rc, 0)
+        qidx = _load(ws, "image_question_index.json")
+        self.assertFalse(any(w.startswith("apply_skip_ambiguous") for w in qidx["warnings"]))
+        q = next(x for x in json.load(open(bank_path, encoding="utf-8")) if x["id"] == "bare_name")
+        self.assertIs(q.get("maybe_requires_assets"), True)      # resolved against the real lecture PDF
+
+    def test_media_failure_degrades_single_file_only(self):
+        tmp = tempfile.mkdtemp()
+        be = _default_backend()
+        be.media["ch02.pdf"] = RuntimeError("fitz cannot open")
+        ws, _m, rc = _build(tmp, backend=be)
+        self.assertEqual(rc, 0)                                  # build survives
+        fig = _load(ws, "figure_page_index.json")
+        self.assertTrue(any(w.startswith("media_failed") for w in fig["warnings"]))
+        ch01 = [p["page"] for p in fig["files"]["lectures/ch01.pdf"]["visual_pages"]]
+        self.assertIn(2, ch01)                                   # other file's structural signal intact
+        ch02 = [p["page"] for p in fig["files"]["lectures/ch02.pdf"]["visual_pages"]]
+        self.assertIn(3, ch02)                                   # keyword signal still works text-only
+
+    def test_apply_rejects_symlinked_asset_root_escaping_ws(self):
+        tmp = tempfile.mkdtemp()
+        ws, _bank = self._ws_with(tmp, [
+            {"id": "s1", "chapter": 1, "type": "subjective", "question": "图题。",
+             "source": "material", "ai_generated": False,
+             "source_file": "lectures/ch01.pdf", "source_pages": [2]}])
+        outside = os.path.join(tmp, "outside_assets")
+        os.makedirs(outside)
+        link = os.path.join(ws, "references", "assets_link")
+        try:
+            os.symlink(outside, link, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("no symlink privilege on this system")
+        mat = os.path.join(tmp, "mat")
+        _mk_materials(mat, ["ch01.pdf", "ch02.pdf"])
+        with self.assertRaises(SystemExit) as cm:
+            BVI.run(["--workspace", ws, "--materials", mat, "--apply", "--asset-root", link],
+                    backend=_default_backend())
+        self.assertEqual(cm.exception.code, 2)                   # realpath containment refuses the escape
+
+    def test_apply_rejects_unsafe_source_file(self):
+        tmp = tempfile.mkdtemp()
+        ws, bank_path = self._ws_with(tmp, [
+            {"id": "esc_1", "chapter": 1, "type": "subjective", "question": "图题。",
+             "source": "material", "ai_generated": False,
+             "source_file": "sub/../../outside/ch01.pdf", "source_pages": [2]}])
+        mat = os.path.join(tmp, "mat")
+        _mk_materials(mat, ["ch01.pdf", "ch02.pdf"])
+        rc = BVI.run(["--workspace", ws, "--materials", mat, "--apply"], backend=_default_backend())
+        self.assertEqual(rc, 0)
+        qidx = _load(ws, "image_question_index.json")
+        self.assertTrue(any(w.startswith("apply_skip_unsafe_source") for w in qidx["warnings"]))
+        q = next(x for x in json.load(open(bank_path, encoding="utf-8")) if x["id"] == "esc_1")
+        self.assertNotIn("maybe_requires_assets", q)             # never attach from outside the materials
+
+    def test_realbackend_falls_back_to_fitz_when_pypdf_fails(self):
+        rb = BVI.RealBackend.__new__(BVI.RealBackend)            # build without importing real libs
+
+        class _BadPypdf(object):
+            class PdfReader(object):
+                def __init__(self, path):
+                    raise ValueError("pypdf cannot parse this PDF")
+
+        class _FitzDoc(object):
+            page_count = 2
+
+            def __getitem__(self, i):
+                class _P(object):
+                    def get_text(self):
+                        return "fitz text %d" % i
+                return _P()
+
+            def close(self):
+                pass
+
+        class _Fitz(object):
+            @staticmethod
+            def open(path):
+                return _FitzDoc()
+
+        rb._pypdf, rb._fitz, rb._pdfium = _BadPypdf(), _Fitz(), None
+        self.assertEqual(rb.pages_text("x.pdf"), ["fitz text 0", "fitz text 1"])   # fallback, not a skip
 
     def test_no_network_llm_or_dep_in_new_scripts(self):
         for name in ("build_visual_index.py", "list_image_questions.py",
