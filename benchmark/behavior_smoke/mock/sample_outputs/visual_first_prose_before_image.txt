@@ -1,4 +1,4 @@
-![worked solution](references/assets/venn_solution.png)
+先讲结论：答案是 A，阴影区域表示交集。
 
 ![题面图 / question-side asset: Venn prompt](references/assets/venn_prompt.svg)
 

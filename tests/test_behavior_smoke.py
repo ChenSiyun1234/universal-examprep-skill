@@ -8,6 +8,7 @@ import io
 import os
 import sys
 import json
+import re
 import contextlib
 import unittest
 
@@ -56,6 +57,7 @@ class BehaviorSmokeTest(unittest.TestCase):
         self.assertTrue(os.path.isdir(_bs(spec["fixture"])), "scenarios.json 的 fixture 路径不存在")
         file_keys = (
             "mock_output", "mock_negative", "mock_negative_leak", "mock_negative_unlabeled",
+            "mock_negative_prose", "mock_negative_after_prompt", "mock_negative_unsafe_path",
             "mock_negative_path", "progress_after", "transcript",
         )
         for sc in spec["scenarios"]:
@@ -208,11 +210,45 @@ class BehaviorSmokeTest(unittest.TestCase):
             "![题面图 / question-side asset](references/assets/venn_prompt.png)\n"
             "![worked solution](references/assets/venn_solution.png)\n\n题目：看图作答"),
             "题面图后、题目前出现未标注答案图时应不合格")
+        self.assertFalse(H.visual_first_asset_display_ok(
+            _read("mock/sample_outputs/visual_first_prose_before_image.txt")),
+            "题面图前已有答案/讲解正文时应不合格")
+        self.assertFalse(H.visual_first_asset_display_ok(
+            _read("mock/sample_outputs/visual_first_answer_after_prompt.txt")),
+            "题目行后泄露答案侧 asset 时应不合格")
+        self.assertFalse(H.visual_first_asset_display_ok(
+            "![题面图 / question-side asset](references/assets/venn_prompt.svg)\n\n"
+            "题目：看图作答\n![题面图 / question-side asset](references/assets/late_prompt.svg)"),
+            "题目行后才出现第二张题面图时应不合格")
+        self.assertFalse(H.visual_first_asset_display_ok(
+            _read("mock/sample_outputs/visual_first_unsafe_url.txt")),
+            "URL 图片不能满足本地题库 asset 展示契约")
+        self.assertFalse(H.visual_first_asset_display_ok(
+            "![题面图 / question-side asset](../outside.png)\n题目：看图作答"),
+            "路径穿越不能满足本地题库 asset 展示契约")
         self.assertFalse(H.visual_first_asset_display_ok(_read("mock/sample_outputs/visual_first_path_only.txt")),
                          "只打印路径、没有 Markdown 图片渲染时应不合格")
         self.assertFalse(H.visual_first_asset_display_ok(
             "![题面图 / question-side asset](%s)\n题目：看图作答" % ("/" + "D:/bad/path.png")),
             "slash-prefixed Windows drive-letter Markdown path must be rejected")
+
+    def test_visual_first_good_sample_matches_fixture_item(self):
+        sample = _read("mock/sample_outputs/visual_first_good.txt")
+        item_id = re.search(r"\[#([^\]]+)\]", sample).group(1)
+        image_paths = re.findall(r"!\[[^\]]*题面图 / question-side asset[^\]]*\]\(([^)]+)\)", sample)
+        self.assertTrue(image_paths)
+
+        bank = json.loads(_read("fixtures/mini_course/references/quiz_bank.json"))
+        item = next((q for q in bank if q["id"] == item_id), None)
+        self.assertIsNotNone(item, "visual-first good sample must use a real fixture bank id")
+        self.assertTrue(item.get("requires_assets") or item.get("maybe_requires_assets"))
+        question_asset_paths = {
+            a["path"] for a in item.get("assets", [])
+            if a.get("role") in {"question_context", "figure", "diagram", "table"}
+        }
+        self.assertTrue(set(image_paths).issubset(question_asset_paths))
+        for path in image_paths:
+            self.assertTrue(os.path.isfile(_bs(os.path.join("fixtures/mini_course", path))))
 
     # 8
     def test_hint_skip_detector_recognizes_recovery_offer(self):

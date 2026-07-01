@@ -176,17 +176,36 @@ def visual_first_asset_display_ok(text):
     """Smoke-check a visual-required output contract.
 
     This is structural, not a UI renderer: it requires a labelled question-side Markdown image
-    before any prompt/explanation/hint/answer text, rejects answer-side assets first, and rejects
-    path-only or malformed Windows pseudo-path output.
+    before any prose/prompt/explanation/hint/answer text, rejects non-question images anywhere in
+    the prompt block, and rejects path-only or unsafe image targets.
     """
     t = text or ""
     bad_win = "/" + "D:/"
     if bad_win in t:
         return False
-    qimg = re.search(r"!\[[^\]]*题面图 / question-side asset[^\]]*\]\((?!/)[^)]+\)", t)
-    if not qimg:
+
+    def safe_asset_target(target):
+        p = (target or "").strip()
+        if not p or p.startswith(("/", "\\")):
+            return False
+        if "://" in p or re.match(r"(?i)^[a-z][a-z0-9+.-]*:", p):
+            return False
+        if any(part == ".." for part in re.split(r"[\\/]+", p)):
+            return False
+        return p.startswith("references/assets/")
+
+    image_re = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+    images = list(image_re.finditer(t))
+    qimages = [
+        img for img in images
+        if "题面图 / question-side asset" in img.group(1) and safe_asset_target(img.group(2))
+    ]
+    if not qimages:
         return False
-    qpos = qimg.start()
+    qpos = qimages[0].start()
+    if t[:qpos].strip():
+        return False
+
     marker_patterns = (
         r"(^|\n)\s*题目",
         r"(^|\n)\s*请作答",
@@ -200,12 +219,15 @@ def visual_first_asset_display_ok(text):
     )
     positions = [m.start() for pat in marker_patterns for m in [re.search(pat, t, flags=re.MULTILINE)] if m]
     first_action = min(positions, default=len(t))
-    for img in re.finditer(r"!\[([^\]]*)\]\([^)]+\)", t):
-        if img.start() < first_action and "题面图 / question-side asset" not in img.group(1):
+
+    for img in images:
+        if img.start() >= first_action:
             return False
-    apos = t.find("答案图 / answer-side asset")
-    if apos != -1 and apos < first_action:
-        return False
+        if "题面图 / question-side asset" not in img.group(1):
+            return False
+        if not safe_asset_target(img.group(2)):
+            return False
+
     return qpos < first_action
 
 
@@ -401,11 +423,19 @@ def check_scenario_mock(name, sc, fixture_path=FIXTURE):
         answer_first = visual_first_asset_display_ok(_read(_p(sc["mock_negative"])))
         answer_before_prompt = visual_first_asset_display_ok(_read(_p(sc["mock_negative_leak"])))
         unlabeled_answer = visual_first_asset_display_ok(_read(_p(sc["mock_negative_unlabeled"])))
+        prose_before = visual_first_asset_display_ok(_read(_p(sc["mock_negative_prose"])))
+        answer_after_prompt = visual_first_asset_display_ok(_read(_p(sc["mock_negative_after_prompt"])))
+        unsafe_path = visual_first_asset_display_ok(_read(_p(sc["mock_negative_unsafe_path"])))
         path_only = visual_first_asset_display_ok(_read(_p(sc["mock_negative_path"])))
-        return (good and not answer_first and not answer_before_prompt and not unlabeled_answer and not path_only), (
+        return (
+            good and not answer_first and not answer_before_prompt and not unlabeled_answer
+            and not prose_before and not answer_after_prompt and not unsafe_path and not path_only
+        ), (
             f"good={good} answer_side_first_caught={not answer_first} "
             f"answer_before_prompt_caught={not answer_before_prompt} "
-            f"unlabeled_answer_caught={not unlabeled_answer} path_only_caught={not path_only}")
+            f"unlabeled_answer_caught={not unlabeled_answer} prose_before_caught={not prose_before} "
+            f"answer_after_prompt_caught={not answer_after_prompt} unsafe_path_caught={not unsafe_path} "
+            f"path_only_caught={not path_only}")
     return False, "unknown scenario"
 
 
