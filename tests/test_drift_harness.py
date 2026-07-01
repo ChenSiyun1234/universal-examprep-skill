@@ -405,6 +405,54 @@ class DriftHarness(unittest.TestCase):
         self.assertEqual(r.returncode, 2)              # documented malformed-input code, not a traceback/exit 1
         self.assertNotIn("Traceback", r.stderr)
 
+    # ---- regression guards for the 7 P2s from Codex round-3 ----
+    _P2 = "当前阶段：2\n## 错题本\n（暂无）\n## 疑难点\n（暂无）\n"
+
+    def test_completed_phase_mention_is_not_a_reset(self):
+        # '阶段1已完成，继续阶段2' names an earlier phase but continues phase 2 → NOT a reset…
+        ok = _eval_turns([{"turn": 1, "assistant": "到2", "phase_context": 2, "files_after": {"study_progress.md": self._P2}},
+                          {"turn": 2, "user": "回来了", "kind": "resume", "assistant": "阶段1已经完成，我们继续阶段2。"}])
+        self.assertEqual(ok["reset_detected"], 0)
+        # …but a genuine '从阶段1重新开始' still is
+        bad = _eval_turns([{"turn": 1, "assistant": "到2", "phase_context": 2, "files_after": {"study_progress.md": self._P2}},
+                           {"turn": 2, "user": "回来了", "kind": "resume", "assistant": "我们从阶段1重新开始吧。"}])
+        self.assertGreaterEqual(bad["reset_detected"], 1)
+
+    def test_numeric_string_phase_context_normalized(self):
+        m = _eval_turns([{"turn": 1, "user": "考我", "kind": "quiz", "phase_context": "1",
+                          "assistant": "题目 [#tree_height_1] 一棵只有根节点的树，高度是多少？"}])
+        self.assertEqual(m["wrong_phase_quiz"], 1)     # "1" → phase 1; tree_height is phase 2 → wrong
+
+    def test_dot_prefixed_wiki_read_path_counted(self):
+        m = _eval_turns([{"turn": 1, "user": "考我", "assistant": "题目 [#stack_lifo_1] 栈遵循什么访问顺序？",
+                          "events": [{"type": "read_file", "path": "./references/wiki/ch2_trees.md"}]}])
+        self.assertEqual(m["wiki_reads"], 1)
+        self.assertEqual(m["overread_flag"], 1)        # ./-prefixed cross-phase read still caught
+
+    def test_short_resume_trigger_and_case(self):
+        m = _eval_turns([{"turn": 1, "assistant": "到2", "phase_context": 2, "files_after": {"study_progress.md": self._P2}},
+                         {"turn": 2, "user": "回来了", "assistant": "我们从阶段1重新开始。"}])   # no kind=resume
+        self.assertGreaterEqual(m["reset_detected"], 1)
+
+    def test_english_plan_change_authorization_case_insensitive(self):
+        m = _eval_turns([{"turn": 1, "user": "Change the plan: drop phase 2", "assistant": "done, dropped 阶段2。",
+                          "files_after": {"study_plan.md": "# plan\n## 阶段1：栈\n"}}])
+        self.assertEqual(m["plan_mutations"], 0)       # authorized → not a mutation
+
+    def test_non_numeric_threshold_value_exits_2(self):
+        d = tempfile.mkdtemp()
+        sc = json.load(open(SCEN, encoding="utf-8"))
+        sc["thresholds"] = {"checkpoint_reset_max": "0"}
+        scf = os.path.join(d, "s.json")
+        json.dump(sc, open(scf, "w", encoding="utf-8"))
+        r = _cli(["--scenario", scf, "--transcript", _tr("good_session.jsonl")])
+        self.assertEqual(r.returncode, 2)
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_dotted_wiki_filename_in_plan_map(self):
+        m = D.parse_plan_map("| **阶段 1** | 图 | `references/wiki/ch03.graphs.md` | x |\n")
+        self.assertEqual(m, {1: {"ch03.graphs"}})
+
     # 12) no network / LLM / API key / deps; --llm skeleton never returns success
     def test_no_network_llm_or_dep_in_source(self):
         with open(RUN, encoding="utf-8") as f:

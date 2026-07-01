@@ -50,9 +50,9 @@ DEFAULT_REFUSAL_PHRASES = ["我不能继续这个复习", "无法继续原计划
 EXPLAIN_TRIGGERS = re.compile(r"解释|讲讲|讲一下|说明|为什么|讲解|explain|why")
 QUIZ_TRIGGERS = re.compile(r"考我|再考|出题|测测|刷题|(?:再来一|来一|下一|再出一)(?:道题?|题)"
                            r"|quiz me|quiz from|test me|next question", re.I)
-RESUME_TRIGGERS = re.compile(r"我回来了|继续复习|接着上次|回来继续|resume|continue where|接着复习")
-RESTART_PHRASES = re.compile(r"从头开始|重新开始|从头再来|重头|restart|start over|从第?1章重新|从阶段1重新")
-PLAN_CHANGE_REQUEST = re.compile(r"改计划|调整计划|重新规划|换个计划|change.*plan|revise.*plan")
+RESUME_TRIGGERS = re.compile(r"回来了|继续复习|接着上次|回来继续|resume|continue where", re.I)
+RESTART_PHRASES = re.compile(r"从头开始|重新开始|从头再来|重头|restart|start over|从第?1章重新|从阶段1重新", re.I)
+PLAN_CHANGE_REQUEST = re.compile(r"改计划|调整计划|重新规划|换个计划|change.*plan|revise.*plan", re.I)
 
 
 class DriftError(Exception):
@@ -150,7 +150,7 @@ def parse_plan_map(text):
             cur = int(ph.group(1))
             m.setdefault(cur, set())
         target = int(ph.group(1)) if ph else cur
-        wikis = re.findall(r"references/wiki/([A-Za-z0-9_\-]+)\.md", s)
+        wikis = re.findall(r"references/wiki/([^\s\)\]\"'`]+?)\.md", s)   # allow dots etc. (ch03.graphs.md)
         if target is not None and wikis:
             m.setdefault(target, set()).update(wikis)
     return m
@@ -274,10 +274,18 @@ def looks_like_question(line):
 # ---------------- metrics ----------------
 
 def _phase_of_turn(turn):
-    if isinstance(turn.get("phase_context"), int):
-        return turn["phase_context"]
+    pc = _as_phase(turn.get("phase_context"))                     # accept int OR numeric string "2"
+    if pc is not None:
+        return pc
     m = re.search(r"(?:阶段|phase)\s*(\d+)", turn.get("user", ""), re.I)
     return int(m.group(1)) if m else None
+
+
+def _norm_path(path):
+    """Normalize a recorded read path — backslashes → '/', strip leading './' — so a valid
+    './references/wiki/ch2.md' is recognized like 'references/wiki/ch2.md'."""
+    p = str(path or "").replace("\\", "/")
+    return re.sub(r"^(?:\./)+", "", p)
 
 
 def _wiki_chapter_phase(path):
@@ -426,12 +434,17 @@ def compute_metrics(scenario, fixture_dir, turns):
         is_resume = t.get("kind") == "resume" or RESUME_TRIGGERS.search(t.get("user", ""))
         if is_resume:
             exp, a = run_ck, t.get("assistant", "")
-            phs = [int(x) for x in re.findall(r"(?:阶段|phase)\s*(\d+)", a, re.I)]
-            rp = min(phs) if phs else None                        # the LOWEST phase it proposes to work on —
-            restart = bool(RESTART_PHRASES.search(a))             # '当前在阶段2，但先从阶段1开始' → restarts 1
-            reset_count += int((rp is not None and exp is not None and rp < exp) or (restart and (exp or 1) > 1))
+            # a RESTART TARGET is a phase the assistant proposes to (re)start — '从/回到 阶段N' or 'phase N
+            # 重新/从头/开始复习'. Merely NAMING an earlier COMPLETED phase ('阶段1已完成，继续阶段2') is NOT a
+            # target, so it must not trip a reset.
+            targets = [int(x) for x in re.findall(r"(?:从|回到|退回到?|重新回到?)\s*(?:阶段|phase)\s*(\d+)", a, re.I)]
+            targets += [int(x) for x in re.findall(r"(?:阶段|phase)\s*(\d+)\s*(?:重新|从头|重来|开始复习)", a, re.I)]
+            generic_restart = bool(RESTART_PHRASES.search(a))
+            below = [p for p in targets if exp is not None and p < exp]
+            reset_count += int(bool(below) or (generic_restart and (exp or 1) > 1))
             if expected_phase is None:                            # report the FIRST resume's phases
-                expected_phase, resumed_phase = exp, rp
+                expected_phase = exp
+                resumed_phase = min(targets) if targets else (1 if generic_restart else None)
         pr = (t.get("files_after") or {}).get("study_progress.md")
         if pr is not None and parse_progress(pr)["phase"] is not None:
             run_ck = parse_progress(pr)["phase"]
@@ -466,12 +479,13 @@ def compute_metrics(scenario, fixture_dir, turns):
     for i, t in enumerate(turns):
         want_phase = turn_phase[i]
         for ev in (t.get("events") or []):
-            if ev.get("type") == "read_file" and str(ev.get("path", "")).startswith("references/wiki/"):
+            path = _norm_path(ev.get("path", ""))                 # tolerate './'-prefixed / backslash paths
+            if ev.get("type") == "read_file" and path.startswith("references/wiki/"):
                 wiki_reads += 1
-                seen_wiki.add(ev["path"])
+                seen_wiki.add(path)
                 # which phase this wiki belongs to: the PLAN MAP first (phase 1 may point at ch03), then
                 # the chNN filename heuristic as a fallback when the plan doesn't place the file.
-                ch_phase = phase_of_wiki(plan_map, ev["path"])
+                ch_phase = phase_of_wiki(plan_map, path)
                 if ch_phase is None:
                     ch_phase = _wiki_chapter_phase(ev["path"])
                 if want_phase is not None and ch_phase is not None and ch_phase != want_phase:
@@ -528,6 +542,8 @@ def check_thresholds(metrics, thresholds):
     for key, want in thresholds.items():
         if key not in THRESHOLD_RULES:
             raise DriftError("scenario.thresholds 出现未知阈值 %r" % key)
+        if isinstance(want, bool) or not isinstance(want, (int, float)):
+            raise DriftError("scenario.thresholds 的 %s 必须是数值，当前 %r" % (key, want))
         mkey, cmp = THRESHOLD_RULES[key]
         got = metrics[mkey]
         ok = (got >= want) if cmp == "min" else (got <= want)
