@@ -141,8 +141,19 @@ def scope_override_declared(text):
     m = re.search(r"⚠️\s*临时覆盖你的\s*\S+\s*范围偏好", t)
     if not m:
         return False
-    first_item = re.search(r"\[#[^\]]+\]", t)
-    return first_item is None or m.start() < first_item.start()
+    # the FIRST question item may be an UNTAGGED question line, not only a [#id] tag — a quiz asked
+    # before the declaration must fail either way
+    pos = len(t)
+    tag = re.search(r"\[#[^\]]+\]", t)
+    if tag:
+        pos = tag.start()
+    off = 0
+    for ln in t.splitlines(True):
+        if _is_question_item(ln.rstrip(chr(10))):
+            pos = min(pos, off)
+            break
+        off += len(ln)
+    return m.start() < pos
 
 
 def _heading_present(text, name):

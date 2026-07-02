@@ -137,6 +137,28 @@ class Selector(unittest.TestCase):
         self.assertEqual(kp, 2)
 
 
+    # ---- regression guards for Codex round-1 (3 findings) ----
+
+    def test_json_with_sqlite_export_stays_parseable(self):
+        ws = _mk_ws(tempfile.mkdtemp())
+        db = os.path.join(tempfile.mkdtemp(), "c.db")
+        r = subprocess.run([sys.executable, os.path.join(SCRIPTS, "select_questions.py"),
+                            "--workspace", ws, "--export-sqlite", db, "--json"],
+                           capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(r.returncode, 0)
+        json.loads(r.stdout)                                      # stdout 纯 JSON，状态行在 stderr
+        self.assertIn("sqlite", r.stderr)
+
+    def test_untagged_count_respects_other_filters(self):
+        ws = _mk_ws(tempfile.mkdtemp(), [{"id": "untagged_ch2", "phase": 2, "type": "subjective",
+                                          "question": "第二章未标签？", "answer": "D",
+                                          "source": "material", "ai_generated": False}])
+        rc, out = self._run(ws, ["--source-type", "homework", "--chapter", "2", "--json"])
+        data = json.loads(out)
+        self.assertEqual(data["untagged_excluded"], 1)            # 只数 ch2 的未标签题（untagged1 在 ch1）
+        rc, out = self._run(ws, ["--source-type", "homework", "--chapter", "1", "--json"])
+        self.assertEqual(json.loads(out)["untagged_excluded"], 1) # ch1 的 untagged1
+
 class KnowledgeIndex(unittest.TestCase):
     def test_index_maps_kp_to_chapter_wiki_questions(self):
         ws = _mk_ws(tempfile.mkdtemp())
@@ -167,6 +189,8 @@ class ScopeContract(unittest.TestCase):
         good = "⚠️ 临时覆盖你的 homework-only 范围偏好：本轮改从 lecture 选题。\n\n题目 [#mc_q1] xx？"
         self.assertTrue(B.scope_override_declared(good))
         self.assertFalse(B.scope_override_declared("好的，来做图片题。\n\n题目 [#mc_q1] xx？"))
+        untagged_first = "1. 这是未标号的题？\n\n⚠️ 临时覆盖你的 homework-only 范围偏好\n\n题目 [#mc_q1] xx？"
+        self.assertFalse(B.scope_override_declared(untagged_first))   # 未标号题先出现也算违规
         late = "题目 [#mc_q1] xx？\n\n⚠️ 临时覆盖你的 homework-only 范围偏好"
         self.assertFalse(B.scope_override_declared(late))         # 声明必须在第一道题之前
 

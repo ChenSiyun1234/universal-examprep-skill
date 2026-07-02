@@ -141,12 +141,15 @@ def run(argv=None):
     bank = load_bank(args.workspace)
     if args.export_sqlite:
         export_sqlite(bank, args.export_sqlite)
-        print("[+] sqlite 缓存: %s（生成物，勿提交）" % args.export_sqlite)
+        sys.stderr.write("[+] sqlite 缓存: %s（生成物，勿提交）\n" % args.export_sqlite)   # stdout 留给 --json
 
     hits = [q for q in bank if match(q, args)]
     untagged = 0
     if args.source_type:
-        untagged = sum(1 for q in bank if q.get("source_type") is None)
+        # 只统计「除范围外其余过滤都命中」的未标签题——它们才是被 scope 排除的真实候选
+        import argparse as _ap
+        rest = _ap.Namespace(**{**vars(args), "source_type": None})
+        untagged = sum(1 for q in bank if q.get("source_type") is None and match(q, rest))
     total = len(hits)
     if args.limit and args.limit > 0:
         hits = hits[: args.limit]
