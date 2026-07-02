@@ -19,6 +19,8 @@ import argparse
 SIX_TYPES = {"choice", "subjective", "diagram", "fill_blank", "true_false", "code"}
 MATERIAL_SOURCES = {"teacher", "material"}
 ALL_SOURCES = {"teacher", "material", "ai_generated", "mixed", "unknown"}
+# A2: 题目来源分类（正交于 source 的「答案来源」维度）——作业/讲义 quiz/例题/样卷/真题/其他
+SOURCE_TYPES = {"homework", "lecture_quiz", "example", "practice_exam", "exam", "other"}
 SAFE_WIKI = re.compile(r"^[\w.\-]+\.md$")
 # capture the path token around references/wiki/. The LEADING class is path-only ([./\\]) so a real escape
 # ("../", "/abs", "C:/…") is still captured and caught, while adjacent prose/CJK/punctuation
@@ -364,6 +366,24 @@ def validate(ws):
                     warn(f"{tag} 无 answer（建议补 answer，或标 answer_status=unknown / source=ai_generated）")
             elif src is None:
                 warn(f"{tag} 有答案但未标 source（建议标 teacher/material/ai_generated）")
+
+            # ---- A2: source taxonomy + tag schema（可选字段，老题库不带照常有效）----
+            st = q.get("source_type")
+            if st is not None and (not isinstance(st, str) or st not in SOURCE_TYPES):
+                err(f"{tag} source_type 非法: {st!r}（应为 {sorted(SOURCE_TYPES)} 中的字符串）")
+            kps = q.get("knowledge_points")
+            if kps is not None and not (isinstance(kps, list) and kps
+                                        and all(isinstance(k, str) and k.strip() for k in kps)):
+                err(f"{tag} knowledge_points 必须是非空字符串数组，当前 {kps!r}")
+            diff = q.get("difficulty")
+            if diff is not None and (isinstance(diff, bool) or not isinstance(diff, int)
+                                     or not 1 <= diff <= 5):
+                err(f"{tag} difficulty 必须是 1–5 的整数，当前 {diff!r}")
+            dr = q.get("difficulty_reason")
+            if dr is not None and (not isinstance(dr, str) or not dr.strip()):
+                err(f"{tag} difficulty_reason 必须是非空字符串，当前 {dr!r}")
+            elif dr is not None and diff is None:
+                warn(f"{tag} 有 difficulty_reason 但无 difficulty（建议补 1–5 评分）")
         stats["quiz_types"] = type_counts
 
     # ---- study_progress consistency (best-effort, lenient → warnings only) ----

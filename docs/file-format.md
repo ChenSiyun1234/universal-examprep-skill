@@ -157,3 +157,19 @@ For any item with `requires_assets=true` or `maybe_requires_assets=true`:
 - **`figure_page_index.json`** —— 材料里**每个视觉页**（文件 + 页码 + 视觉类型 `figure/table/diagram/chart/graph/plot/screenshot/circuit/tree/map/geometry/flowchart`）。判定是**分层确定性启发式、不绑任何学科**：① 结构信号（页内嵌图/大量矢量对象，需 `pip install pymupdf`，**没有关键词的图页也能抓到**）→ ② 图号/表号与坐标轴排版 → ③ 多学科中英词面（最弱）。缺 PyMuPDF 时结构信号缺失，索引会如实标 `media_signals=false` 并告警。
 
 默认**只报告不改**；`--apply` 会把每个疑漏题的原页渲染成 PNG（挂 `question_context`/`page_image` 题面 asset）并标 `maybe_requires_assets=true`（先备份 `quiz_bank.json.bak`），因此回写后仍满足上表的 fail-closed 门控。配套官方工具：`list_image_questions.py`（按章 总数×requires×maybe×疑漏）、`list_figure_pages.py`（视觉页清单，可按类型过滤）、`show_question_assets.py`（输出某题应先展示的题面图 Markdown，POSIX 相对路径，违约即 exit 1）。
+
+## 5. 题目标签体系（A2，可选字段，向后兼容）
+
+每道题可携带（老题库不带这些字段仍完全有效）：
+
+| 字段 | 取值 | 含义 |
+| :-- | :-- | :-- |
+| `source_type` | `homework` / `lecture_quiz` / `example` / `practice_exam` / `exam` / `other` | 题目来源分类（正交于 `source` 的**答案**来源标注） |
+| `knowledge_points` | 非空字符串数组 | 该题考察的知识点标签 |
+| `difficulty` | 1–5 整数 | 难度（A7 的评分器回写；手工标注亦可） |
+| `difficulty_reason` | 非空字符串 | 难度理由（如「多步条件分布」） |
+
+**范围过滤契约**：默认混合题池；学生限定范围（如 homework-only）后即为记录在进度状态里的 scope 过滤器——
+越范围出题前必须先输出「⚠️ 临时覆盖你的 <范围> 范围偏好」；未标 `source_type` 的题在限定范围内一律排除并报告数量。
+官方工具：`scripts/select_questions.py`（组合筛选 + 可选 `--export-sqlite` 生成查询缓存，缓存是生成物不进仓库）、
+`scripts/build_knowledge_index.py`（知识点 ↔ 章节/wiki/题目 索引，页码级引用留待 A5）。
