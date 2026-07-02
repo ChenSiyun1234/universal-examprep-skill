@@ -51,7 +51,7 @@ _HW_FILE_RE = re.compile(r"(?:^|[\\/_\-. ])(?:hw|homework|assignments?|problem[ 
 # solution/answer 需要词元边界：前面不能是字母（unanswered ≠ answers；hw1solution 的数字前缀合法），
 # 后面须是分隔符/括号/串尾——纯子串匹配会把 unanswered_hw1 误判成解答文件
 _SOL_TOKEN_RE = re.compile(r"(?<![A-Za-z])(?:solutions?|answers?)(?=[_\-. ()\\/]|$)"
-                           r"|(?:^|[_\-. ])(?:sol|ans)(?=[_\-. ]|$)|答案|解答", re.I)
+                           r"|(?<![A-Za-z])(?:sol|ans)(?=[_\-. ()\\/]|$)|答案|解答", re.I)
 # 题号支持 教材式小数（1.1.2）与 字母小题（1(a) / 1a）——折叠会把真小题当重复丢掉
 _HW_NUM_PAT = r"(\d+(?:\.\d+)*(?:\s*\([A-Za-z]\)|[A-Za-z])?)"
 # problem headings inside homework/solution files（行首锚定，与 lecture 标记同族）
@@ -67,6 +67,10 @@ _HW_SOL_HEAD_RE = re.compile(r"^\s*[\)\.:\-]?\s*\(?\s*(?:solutions?|answers?|解
                              re.I)
 # answer-key 常见的「1. Answer: …」形式：编号在标记前面，被 _HEAD 吞掉——从匹配前缀里找回
 _SOL_PREFIX_NUM_RE = re.compile(r"^[ \t>*•·\-#]*(\d+(?:\.\d+)*(?:\([A-Za-z]\))?)\s*[.)）、]")
+# 「1a. Answer:」「1(a). Answer:」——字母/括号不在 _HEAD 字符类里，_HW_SOL_RE 根本到不了 Answer；
+# 用专门的带号前缀形式补上（编号含字母小问）
+_HW_SOL_PRE_RE = re.compile(r"^[ \t>*•·\-#]*(\d+(?:\.\d+)*(?:\s*\([A-Za-z]\)|[A-Za-z])?)\s*[.)）、]?\s*"
+                            r"(?:Solution|Answer|解答|答案)\s*(?:[.:：]|$)", re.I | re.M)
 
 # Two classes of asset cue. ASSET_EXCLUDE masks known false-positive phrases first.
 ASSET_EXCLUDE = ("table of contents", "figure it out", "figure out", "graph theory", "figure caption")
@@ -389,18 +393,23 @@ def classify_homework_files(files):
         def _pref(a, b):
             return a.startswith(b) and (len(a) == len(b) or not a[len(b)].isdigit())
 
+        _AMBIG = object()   # 本层有多个候选——必须终止，放宽范围只会配到别人的作业
+
         def _lookup(dirs):
             exact = [f for (d, n), fs in hw_by_key.items() if d in dirs and n == stripped for f in fs]
             if len(exact) == 1:
                 return exact[0]
             if exact:
-                return None
+                return _AMBIG
             cands = [f for (d, n), fs in hw_by_key.items() if d in dirs and n
                      and (_pref(stripped, n) or _pref(n, stripped)) for f in fs]
-            return cands[0] if len(cands) == 1 else None
+            if len(cands) == 1:
+                return cands[0]
+            return _AMBIG if cands else None
         # 逐级放宽：同目录 → 同父家族（week1/solutions ↔ week1/homework、week1 根）→ 镜像子树
         # （solutions/week1 ↔ homework/week1：去掉第一段后的相对子路径相同）→ 全局唯一。
-        # 家族/镜像层让每周各配各的，不会因 week2 也有 hw1 而全局歧义配不上
+        # 家族/镜像层让每周各配各的；某层出现歧义（如 week1 同时有 hw1a/hw1b）就地放弃，
+        # 绝不落到更大范围去配错 week2 的同名文件
         parent = os.path.dirname(sdir)
         family = {d for (d, _n) in hw_by_key if d == parent or os.path.dirname(d) == parent}
 
@@ -408,8 +417,14 @@ def classify_homework_files(files):
             return d.split("/", 1)[1] if "/" in d else None
         mirror = {d for (d, _n) in hw_by_key
                   if d != sdir and _tail_path(d) is not None and _tail_path(d) == _tail_path(sdir)}
-        match = (_lookup({sdir}) or _lookup(family) or _lookup(mirror)
-                 or _lookup({d for (d, _n) in hw_by_key}))
+        match = None
+        for tier in ({sdir}, family, mirror, {d for (d, _n) in hw_by_key}):
+            got = _lookup(tier)
+            if got is _AMBIG:
+                break
+            if got is not None:
+                match = got
+                break
         pairing[sf] = match
     return hw, pairing
 
@@ -471,6 +486,10 @@ def _hw_markers(stream):
             role = "solution" if (_HW_SOL_HEAD_RE.match(tail) or _HW_SOL_HEAD_RE.match(tail_role)) \
                 else "problem"
             marks.append({"start": m.start(), "num": _hw_num(num), "role": role, "continued": continued})
+    for m in _HW_SOL_PRE_RE.finditer(stream):  # 「1a. Answer:」——先收带号前缀形式（同起点时它带号获胜）
+        if _TOC_RE.search(_hw_line(stream, m)[:300]):
+            continue
+        marks.append({"start": m.start(), "num": _hw_num(m.group(1)), "role": "solution", "continued": False})
     for m in _HW_SOL_RE.finditer(stream):
         if _TOC_RE.search(_hw_line(stream, m)[:300]):
             continue                           # 「1. Answer ........ 5」目录行不是答案
@@ -554,11 +573,17 @@ def extract_homework_items(pages):
         dup_counts = {}
 
         def _nonblank_slice(s_start, s_end):
-            """Answer slice unless it's a worksheet blank（Answer: ______）——去掉标记行后只剩
-            下划线/点/空白即忽略。"""
+            """Answer slice unless it's a worksheet blank（Answer: ______）。判定看标记【同一行】：
+            标记后同行是可见填空线（只有下划线/点/破折号）→ 整段拒绝——哪怕后面还有
+            「Show your work」这类指示语，也不能把填空线+指示语当官方答案；
+            标记后同行为空 → 答案须来自后续行（原有语义）。"""
             a_body = stream[s_start:s_end].strip()
-            a_tail = a_body.split("\n", 1)[1] if "\n" in a_body else re.sub(_HW_SOL_RE, "", a_body, count=1)
-            if re.sub(r"[_\s.．。:：…\-—]+", "", a_tail):
+            first, _, rest = a_body.partition("\n")
+            line_rest = re.sub(_HW_SOL_RE, "", first, count=1)
+            if line_rest.strip() and not re.sub(r"[_\s.．。:：…\-—＿]+", "", line_rest):
+                return None                        # 同行是填空线——worksheet 空栏，不是答案
+            a_tail = rest if rest else line_rest
+            if re.sub(r"[_\s.．。:：…\-—＿]+", "", a_tail):
                 return (hf, a_body, _pages_for_span(bounds, s_start, s_end))
             return None
 

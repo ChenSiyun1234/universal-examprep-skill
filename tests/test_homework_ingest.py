@@ -504,7 +504,44 @@ class HomeworkIngest(unittest.TestCase):
         self.assertIn("week1 的镜像答案", hw["homework/week1/hw1.pdf"]["answer"])   # 镜像子树各配各的
         self.assertIn("week2 的镜像答案", hw["homework/week2/hw1.pdf"]["answer"])
 
+    # ---- regression guards for Codex round-6 (4 findings) ----
+
+    def test_blank_plus_instructions_not_an_answer(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw20.pdf": ["Problem 1\n计算 2+2。\nAnswer: ________\nShow your work carefully.\n\n"
+                                         "Problem 2\n下一题题面。"]})
+        code, payload, report = _run(mat, be)
+        hw = {q["homework_number"]: q for q in payload["quiz_bank"] if q.get("source_type") == "homework"}
+        self.assertNotIn("answer", hw[1])                         # 填空线+指示语不是官方答案
+        self.assertEqual(hw[1]["answer_status"], "unknown")
+
+    def test_lettered_prefix_answer_keys_pair(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw21.pdf": ["Problem 1(a)\n第一小问题面。\n\nProblem 1(b)\n第二小问题面。\n\n"
+                                         "1(a). Answer: 甲小问答案。\n1b. Answer: 乙小问答案。"]})
+        code, payload, report = _run(mat, be)
+        hw = {str(q["homework_number"]): q for q in payload["quiz_bank"] if q.get("source_type") == "homework"}
+        self.assertIn("甲小问答案", hw["1a"]["answer"])            # 1(a). Answer: 形式配上
+        self.assertIn("乙小问答案", hw["1b"]["answer"])            # 1b. Answer: 形式配上
+
+    def test_compact_sol_suffix_classified(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw1.pdf": ["Problem 1\n紧凑后缀的题面内容。"],
+                            "hw1sol.pdf": ["Problem 1\nAnswer 1: 紧凑后缀的官方答案。"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw), 1)                              # hw1sol 是解答文件，不是第二份作业
+        self.assertIn("紧凑后缀的官方答案", hw[0]["answer"])
+        hw2, pairing2 = B.classify_homework_files(["hw2.pdf", "hw2ans.pdf"])
+        self.assertEqual(pairing2["hw2ans.pdf"], "hw2.pdf")
+
+    def test_ambiguous_local_match_is_terminal(self):
+        hw, pairing = B.classify_homework_files(["week1/hw1a.pdf", "week1/hw1b.pdf",
+                                                 "week1/hw1_sol.pdf", "week2/hw1.pdf"])
+        self.assertIsNone(pairing["week1/hw1_sol.pdf"])           # 本层歧义就地放弃，绝不配到 week2
+
     def test_no_network_or_llm(self):
+
 
 
 
