@@ -1292,6 +1292,79 @@ class HomeworkIngest(unittest.TestCase):
         self.assertIn("前缀配对答案", hw[0].get("answer", ""))   # 描述性前缀不挡住后缀锚定配对
         self.assertFalse(any(w.startswith("hw_unpaired_solution_file") for w in report["warnings"]))
 
+    # ---- regression guards for Codex round-21 (6 findings) ----
+
+    def test_glued_answerkeys_dir_recognized(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(os.path.join(mat, "homework"), exist_ok=True)
+        os.makedirs(os.path.join(mat, "answerkeys"), exist_ok=True)
+        for rel in ("homework/hw51.pdf", "answerkeys/hw51.pdf"):
+            with open(os.path.join(mat, *rel.split("/")), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class KeyBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                if "answerkeys" in pdf_path.replace(chr(92), "/"):
+                    return ["Problem 1 Solution\n胶连目录的官方答案。"]
+                return ["Problem 1\n胶连目录题面。"]
+        code, payload, report = _run(mat, KeyBackend({}))
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw), 1)                              # 答案册没被当成第二份作业
+        self.assertIn("胶连目录的官方答案", hw[0].get("answer", ""))
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertNotIn("胶连目录的官方答案", wiki_all)
+
+    def test_paired_single_keyed_entry_assigned_by_number(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw52.pdf": ["Problem 1\n配对单键题面一。\n\nProblem 2\n配对单键题面二。"],
+                            "hw52_sol.pdf": ["Answers\n1. 配对单键答案一。"]})
+        code, payload, report = _run(mat, be)
+        by_num = {q["homework_number"]: q for q in payload["quiz_bank"]
+                  if q.get("source_type") == "homework"}
+        self.assertIn("配对单键答案一", by_num[1].get("answer", ""))   # 单键按号给 1
+        self.assertNotIn("配对单键答案一", by_num[2].get("answer", "") or "")
+
+    def test_bare_keyed_blank_not_stored_as_answer(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw53.pdf": ["Problem 1\n键控空栏题面。"],
+                            "hw53_sol.pdf": ["Answers\n1. ________"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw), 1)
+        self.assertFalse((hw[0].get("answer") or "").strip())     # 键控空栏不是官方答案
+
+    def test_spaced_paren_lettered_keys_split(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw54.pdf": ["Problem 1 (a)\n空格括号题面甲。\n\nProblem 1 (b)\n空格括号题面乙。"],
+                            "hw54_sol.pdf": ["Answers\n1 (a). 空格括号答案甲。\n1 (b). 空格括号答案乙。"]})
+        code, payload, report = _run(mat, be)
+        by_num = {q["homework_number"]: q for q in payload["quiz_bank"]
+                  if q.get("source_type") == "homework"}
+        self.assertIn("空格括号答案甲", by_num["1a"].get("answer", ""))
+        self.assertIn("空格括号答案乙", by_num["1b"].get("answer", ""))
+
+    def test_versioned_solution_filename_pairs(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw55.pdf": ["Problem 1\n版本后缀题面。"],
+                            "hw55_solutions_v2.pdf": ["Problem 1 Solution\n版本后缀答案。"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw), 1)                              # 版本后缀册不再被当成第二份作业
+        self.assertIn("版本后缀答案", hw[0].get("answer", ""))
+
+    def test_chinese_decimal_problem_numbers_not_folded(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw56.pdf": ["习题1.1\n中文小数题面一。\n\n习题1.2\n中文小数题面二。"],
+                            "hw56_sol.pdf": ["解答1.1\n中文小数答案一。\n\n解答1.2\n中文小数答案二。"]})
+        code, payload, report = _run(mat, be)
+        by_num = {q["homework_number"]: q for q in payload["quiz_bank"]
+                  if q.get("source_type") == "homework"}
+        self.assertIn("1.1", by_num)                              # 习题1.1 / 1.2 不折叠成同号
+        self.assertIn("1.2", by_num)
+        self.assertIn("中文小数答案一", by_num["1.1"].get("answer", ""))
+        self.assertIn("中文小数答案二", by_num["1.2"].get("answer", ""))
+
     def test_no_network_or_llm(self):
 
 
