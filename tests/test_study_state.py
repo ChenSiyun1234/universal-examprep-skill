@@ -136,6 +136,31 @@ class Mutations(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(len(_state(ws)["confusion_log"]), 1)
 
+    # ---- regression guards for Codex round-4 (9 findings) ----
+
+    def test_add_confusion_uses_review_status(self):
+        ws = self._ready()
+        _up(ws, ["add-confusion", "--note", "取模没搞懂"])
+        _up(ws, ["add-mistake", "--note", "Venn 判断错"])
+        st = _state(ws)
+        self.assertEqual(st["confusion_log"][-1]["status"], "待回顾")   # 疑难走 待回顾→已回顾 契约
+        self.assertEqual(st["mistake_archive"][-1]["status"], "待复盘")
+
+    def test_migrated_confusion_bullet_gets_review_status(self):
+        ws = _mk_ws(tempfile.mkdtemp())
+        _up(ws, ["init"])
+        self.assertEqual(_state(ws)["confusion_log"][0]["status"], "待回顾")
+
+    def test_render_rejects_non_string_note(self):
+        ws = self._ready()
+        st = _state(ws)
+        st["mistake_archive"] = [{"id": "q1", "note": 5, "status": "待复盘"}]
+        json.dump(st, open(os.path.join(ws, "study_state.json"), "w", encoding="utf-8"))
+        r = _up(ws, ["render"])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertNotIn("Traceback", r.stderr)                   # fail-loud，不是渲染中途崩栈
+        self.assertIn("损坏", r.stderr)
+
     def test_set_updates_state_and_md(self):
         ws = self._ready()
         r = _up(ws, ["set", "--phase", "5", "--scope", "homework-only", "--mode", "查缺补漏",
@@ -277,6 +302,30 @@ class ValidatorSchema(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("符号链接", r.stdout)
 
+    def test_phase_checklist_schema_validated(self):
+        r = self._validate(self._full_ws({"phase_checklist": 1}))
+        self.assertEqual(r.returncode, 1)                         # 标量不是打卡数组
+        r = self._validate(self._full_ws({"phase_checklist": [{"text": "", "done": True}]}))
+        self.assertEqual(r.returncode, 1)                         # 空 text 拒绝
+        r = self._validate(self._full_ws({"phase_checklist": [{"text": "阶段 1：栈", "done": "yes"}]}))
+        self.assertEqual(r.returncode, 1)                         # done 必须布尔
+        r = self._validate(self._full_ws({"phase_checklist": [{"text": "阶段 1：栈", "done": False}]}))
+        self.assertEqual(r.returncode, 0, r.stdout)               # 合法形态通过
+
+    def test_state_phase_check_matches_both_plan_wordings(self):
+        ws = self._full_ws({"current_phase": 99})
+        with open(os.path.join(ws, "study_plan.md"), "w", encoding="utf-8") as f:
+            f.write("# 计划\n## 第1阶段：栈（references/wiki/ch1.md）\n")
+        r = self._validate(ws)
+        self.assertEqual(r.returncode, 1)                         # 「第N阶段」写法也参与校验，99 照样拦
+        self.assertIn("不在 study_plan.md", r.stdout)
+        ws2 = self._full_ws({"current_phase": 2})
+        with open(os.path.join(ws2, "study_plan.md"), "w", encoding="utf-8") as f:
+            f.write("# 计划\n## 第1阶段：栈（references/wiki/ch1.md）\n## 第2阶段：树（references/wiki/ch1.md）\n")
+        with open(os.path.join(ws2, "study_progress.md"), "w", encoding="utf-8") as f:
+            f.write("当前阶段：2\n## 错题本\n（暂无）\n## 疑难点\n（暂无）\n")
+        self.assertEqual(self._validate(ws2).returncode, 0)       # 合法「第N阶段」计划不误伤
+
     def test_md_phase_mismatch_warns(self):
         ws = self._full_ws({"current_phase": 2})                  # md 说 1，state 说 2
         with open(os.path.join(ws, "study_plan.md"), "w", encoding="utf-8") as f:
@@ -352,6 +401,59 @@ class DriftJsonSnapshots(unittest.TestCase):
         self.assertEqual(m["mistake_rows_added"], 1)              # 手改 md 的加行不算数（state 才是事实源）
         self.assertEqual(m["reset_detected"], 0)                  # 断点仍按 state 的阶段 2，不被 md 的 9 带跑
 
+    def test_t4_seeds_from_fixture_state_json(self):
+        # fixture 自带 study_state.json（阶段2 + 一条已有错题行）而生成视图 md 过期（阶段1、无行）——
+        # 指标种子必须来自 JSON 事实源：已有行不算新增、断点按阶段2
+        import shutil
+        sys.path.insert(0, os.path.join(ROOT, "benchmark", "drift"))
+        import run_drift as D
+        sc = D.load_scenario(os.path.join(ROOT, "benchmark", "drift", "scenarios", "long_session_basic.json"))
+        fx = os.path.join(tempfile.mkdtemp(), "fx")
+        shutil.copytree(os.path.join(ROOT, sc["fixture"]), fx)
+        json.dump({"version": 1, "current_phase": 2,
+                   "mistake_archive": [{"id": "stack_lifo_1", "note": "误答 FIFO"}],
+                   "confusion_log": []},
+                  open(os.path.join(fx, "study_state.json"), "w", encoding="utf-8"), ensure_ascii=False)
+        sc2 = dict(sc, fixture=fx)
+        d = tempfile.mkdtemp()
+        t = os.path.join(d, "t.jsonl")
+        st_same = json.dumps({"version": 1, "current_phase": 2,
+                              "mistake_archive": [{"id": "stack_lifo_1", "note": "误答 FIFO"}],
+                              "confusion_log": []}, ensure_ascii=False)
+        turns = [
+            {"turn": 1, "user": "我回来了，继续复习", "kind": "resume",
+             "assistant": "欢迎回来！我们接着阶段2继续复习。",
+             "files_after": {"study_state.json": st_same}},
+        ]
+        with open(t, "w", encoding="utf-8") as f:
+            f.write("\n".join(json.dumps(x, ensure_ascii=False) for x in turns))
+        m = D.evaluate(sc2, t)["metrics"]
+        self.assertEqual(m["mistake_rows_added"], 0)              # 行在 fixture state 里就有，不算会话新增
+        self.assertEqual(m["reset_detected"], 0)                  # 断点种子=阶段2，不被过期 md 的阶段1 带偏
+
+    def test_t4_placeholder_table_row_not_a_data_row(self):
+        sys.path.insert(0, os.path.join(ROOT, "benchmark", "drift"))
+        import run_drift as D
+        md = ("当前阶段：1\n## ❌ 错题档案记录\n"
+              "| 错题ID | 关联章节 | 错误原因分析 | 状态 |\n| :--- | :--- | :--- | :--- |\n"
+              "| （暂无） | - | - | - |\n")
+        p = D.parse_progress(md)
+        self.assertEqual(p["mistake_rows"], [])                   # 生成视图的占位行不是幻影数据行
+
+    def test_t4_rejects_invalid_state_phase(self):
+        sys.path.insert(0, os.path.join(ROOT, "benchmark", "drift"))
+        import run_drift as D
+        sc = D.load_scenario(os.path.join(ROOT, "benchmark", "drift", "scenarios", "long_session_basic.json"))
+        for bad_cp in ('"2"', "0"):                               # 字符串/0 都是坏输入，不能静默放行
+            d = tempfile.mkdtemp()
+            t = os.path.join(d, "t.jsonl")
+            bad = '{"version": 1, "current_phase": %s, "mistake_archive": [], "confusion_log": []}' % bad_cp
+            with open(t, "w", encoding="utf-8") as f:
+                f.write(json.dumps({"turn": 1, "assistant": "x",
+                                    "files_after": {"study_state.json": bad}}) + "\n")
+            with self.assertRaises(D.DriftError):
+                D.evaluate(sc, t)
+
     def test_t4_scalar_state_field_exits_2_not_traceback(self):
         sys.path.insert(0, os.path.join(ROOT, "benchmark", "drift"))
         import run_drift as D
@@ -383,7 +485,8 @@ class DriftJsonSnapshots(unittest.TestCase):
 
 class Contract(unittest.TestCase):
     ENTRY_POINTS = ["SKILL.md", "AGENTS.md", "prompts/web_prompt.md", "skills/exam-cram/SKILL.md",
-                    "skills/exam-quiz/SKILL.md", "skills/exam-tutor/SKILL.md", "skills/exam-review/SKILL.md"]
+                    "skills/exam-quiz/SKILL.md", "skills/exam-tutor/SKILL.md", "skills/exam-review/SKILL.md",
+                    "skills/confusion-tracker/SKILL.md"]
 
     def test_all_entry_points_carry_state_contract(self):
         for p in self.ENTRY_POINTS:
@@ -396,6 +499,15 @@ class Contract(unittest.TestCase):
         txt = open(os.path.join(ROOT, "skills", "exam-review", "SKILL.md"), encoding="utf-8").read()
         self.assertIn("set-mistake-status", txt)
         self.assertIn("set-confusion-status", txt)
+
+    def test_no_python_fallback_fixture_is_stateless(self):
+        # no_python_fallback 冒烟声称验证「无 state 的手写 md 工作区」——fixture 里绝不能有 study_state.json
+        spec = json.load(open(os.path.join(ROOT, "benchmark", "behavior_smoke", "scenarios.json"),
+                              encoding="utf-8"))
+        sc = next(x for x in spec["scenarios"] if x["name"] == "no_python_fallback")
+        fx = os.path.join(ROOT, "benchmark", "behavior_smoke", sc["fallback_workspace"])
+        self.assertTrue(os.path.isdir(fx), fx)
+        self.assertFalse(os.path.isfile(os.path.join(fx, "study_state.json")))
 
     def test_no_network_or_llm(self):
         src = open(os.path.join(SCRIPTS, "update_progress.py"), encoding="utf-8").read()

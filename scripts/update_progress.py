@@ -86,10 +86,11 @@ def parse_md(text):
             continue
         if cur is None or _PLACEHOLDER.search(h):
             continue
+        default_status = "待回顾" if cur is confusions else "待复盘"   # 疑难走 待回顾→已回顾 契约
         if re.match(r"^\s*[-*]\s+\S", ln):
             ids = re.findall(r"\[#([^\]\s]+)\]", h)
             cur.append({"id": ids[0] if ids else None, "chapter": None,
-                        "note": re.sub(r"^\s*[-*]\s+", "", h), "status": "待复盘"})
+                        "note": re.sub(r"^\s*[-*]\s+", "", h), "status": default_status})
         elif h.startswith("|") and not _TABLE_SEP.match(ln):
             low = h.lower()
             if sum(1 for w in _HDR_WORDS if w in low) >= 2:
@@ -101,7 +102,7 @@ def parse_md(text):
             tail = cells[2:]
             # 模板表最后一列是状态——迁移 note 时必须剔除，否则状态在 note 和状态列各出现一次；
             # 只有 3 列（无状态列）时整个尾部都是 note，状态回默认
-            status = tail[-1] if len(tail) >= 2 and tail[-1] else "待复盘"
+            status = tail[-1] if len(tail) >= 2 and tail[-1] else default_status
             note_cells = tail[:-1] if len(tail) >= 2 else tail
             cur.append({"id": ids[0] if ids else (cells[0] or None), "chapter": cells[1] if len(cells) > 1 else None,
                         "note": " / ".join(c for c in note_cells if c) or (cells[0] if cells else ""),
@@ -112,7 +113,7 @@ def parse_md(text):
 # ---------------- state → md (generated view; keeps validator/T4-parseable shape) ----------------
 
 def render_md(state):
-    def _tbl(rows, headers):
+    def _tbl(rows, headers, default_status):
         out = ["| " + " | ".join(headers) + " |",
                "| " + " | ".join(":---" for _ in headers) + " |"]
         if not rows:
@@ -120,8 +121,8 @@ def render_md(state):
         for r in rows:
             rid = ("[#%s]" % r["id"]) if r.get("id") else "-"
             out.append("| %s | %s | %s | %s |" % (rid, r.get("chapter") or "-",
-                                                  (r.get("note") or "").replace("|", "/"),
-                                                  r.get("status") or "待复盘"))
+                                                  str(r.get("note") or "").replace("|", "/"),
+                                                  r.get("status") or default_status))
         return "\n".join(out)
 
     lines = [
@@ -142,10 +143,10 @@ def render_md(state):
                             for r in state["phase_checklist"]), ""]
     lines += [
         "## ❌ 错题档案记录",
-        _tbl(state["mistake_archive"], ("错题ID", "关联章节", "错误原因分析", "状态")),
+        _tbl(state["mistake_archive"], ("错题ID", "关联章节", "错误原因分析", "状态"), "待复盘"),
         "",
         "## 💡 概念疑难点记录",
-        _tbl(state["confusion_log"], ("疑难ID", "关联章节", "疑难点", "状态")),
+        _tbl(state["confusion_log"], ("疑难ID", "关联章节", "疑难点", "状态"), "待回顾"),
         "",
     ]
     if state.get("preferences"):
@@ -242,6 +243,19 @@ def _require_state(ws):
         elif not isinstance(v, list) or any(not isinstance(x, dict) for x in v):
             _die("study_state.json 损坏：%s 必须是对象数组，当前 %s——请修复 state "
                  "或 init --force 从 md 重建" % (field, type(v).__name__), 1)
+    # 行内字段形态也要在变更/渲染前把关——render 对 note/text 调字符串方法，坏类型不能等到中途崩栈
+    for field in ("mistake_archive", "confusion_log"):
+        for x in st[field]:
+            if not isinstance(x.get("note"), str) or not x["note"].strip():
+                _die("study_state.json 损坏：%s 的行缺非空字符串 note: %r" % (field, x), 1)
+            for k in ("id", "status"):
+                if x.get(k) is not None and not isinstance(x[k], str):
+                    _die("study_state.json 损坏：%s 行的 %s 必须是字符串或省略: %r" % (field, k, x), 1)
+    for x in st["phase_checklist"]:
+        if not isinstance(x.get("text"), str) or not x["text"].strip():
+            _die("study_state.json 损坏：phase_checklist 行缺非空字符串 text: %r" % x, 1)
+        if x.get("done") is not None and not isinstance(x["done"], bool):
+            _die("study_state.json 损坏：phase_checklist 行的 done 必须是布尔: %r" % x, 1)
     if st.get("preferences") is None:
         st["preferences"] = {}
     elif not isinstance(st["preferences"], dict):
@@ -279,7 +293,9 @@ def cmd_add(ws, args, field, label):
     st = _require_state(ws)
     if not (args.note or "").strip():
         _die("--note 不能为空")
-    row = {"id": args.id, "chapter": args.chapter, "note": args.note.strip(), "status": "待复盘"}
+    # 错题走 待复盘→已订正，疑难走 待回顾→已回顾——初始状态必须按目标契约给，复盘流按状态词捞行
+    row = {"id": args.id, "chapter": args.chapter, "note": args.note.strip(),
+           "status": "待回顾" if field == "confusion_log" else "待复盘"}
     st[field].append(row)
     save(ws, st, "%s +1（共 %d 条）" % (label, len(st[field])))
     return 0

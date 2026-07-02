@@ -299,7 +299,8 @@ def parse_progress(text):
             continue
         if re.match(r"^\s*[-*]\s+\S", ln) and not _ROW_PLACEHOLDER.search(h):
             cur.append(re.sub(r"\s+", " ", h))
-        elif h.startswith("|") and not _TABLE_SEP.match(ln) and not _is_table_header(ln):
+        elif h.startswith("|") and not _TABLE_SEP.match(ln) and not _is_table_header(ln) \
+                and not _ROW_PLACEHOLDER.search(h):                # 生成视图的（暂无）占位行不是数据行
             cells = [c.strip() for c in h.strip("|").split("|")]
             if any(c and c != "-" for c in cells):                 # a table DATA row with real content
                 cur.append(re.sub(r"\s+", " ", h))
@@ -364,7 +365,11 @@ def parse_state_json(text):
     if not isinstance(st, dict):
         raise DriftError("files_after 里的 study_state.json 顶层必须是对象")
     cp = st.get("current_phase")
-    phase = cp if isinstance(cp, int) and not isinstance(cp, bool) else None
+    # 与 validator/update 工具同一 schema——坏 phase（"2"/0/缺失）是坏输入要 fail-loud，
+    # 静默当 None/照单全收会让断点与阶段限定指标从错误阶段继续算，掩盖坏写入
+    if not (isinstance(cp, int) and not isinstance(cp, bool) and cp >= 1):
+        raise DriftError("study_state.json 快照的 current_phase 必须是 ≥1 的整数，当前 %r" % cp)
+    phase = cp
 
     def _rows(field):
         v = st.get(field)
@@ -471,12 +476,20 @@ def compute_metrics(scenario, fixture_dir, turns):
 
     # A4 source-of-truth aware per-turn snapshots — computed ONCE and shared by the checkpoint /
     # row-persistence sections so the md-only-after-state rejection can't diverge between them
-    snaps = _session_snapshots(turns, os.path.isfile(os.path.join(fixture_dir, "study_state.json")))
+    state_init = os.path.join(fixture_dir, "study_state.json")
+    snaps = _session_snapshots(turns, os.path.isfile(state_init))
+    # 指标种子同理：fixture 自带 state 时，初始阶段/行都从 JSON 事实源来——
+    # 生成视图 md 过期/不一致时不能拿它当会话起点
+    try:
+        init_snap = parse_state_json(_read(state_init)) if os.path.isfile(state_init) \
+            else parse_progress(init_progress)
+    except (IOError, OSError) as e:
+        raise DriftError("fixture 的 study_state.json 读取失败: %s" % e)
 
     # RUNNING PHASE CONTEXT — carried forward so the wrong-phase / over-read checks can't be silently
     # disabled by omitting `phase_context`: a turn without an explicit phase inherits the session's
     # current phase (initial checkpoint → prior explicit phases / progress snapshots).
-    running = parse_progress(init_progress)["phase"] or (canon[0] if canon else None)
+    running = init_snap["phase"] or (canon[0] if canon else None)
     turn_phase = []
     for i, t in enumerate(turns):
         explicit = _phase_of_turn(t)
@@ -587,7 +600,7 @@ def compute_metrics(scenario, fixture_dir, turns):
 
     # 4) checkpoint recovery — EVERY resume turn must continue from the current phase, not restart earlier.
     reset_count, resumed_phase, expected_phase = 0, None, None
-    run_ck = parse_progress(init_progress)["phase"] or (canon[0] if canon else None)
+    run_ck = init_snap["phase"] or (canon[0] if canon else None)
     for i, t in enumerate(turns):
         is_resume = t.get("kind") == "resume" or RESUME_TRIGGERS.search(t.get("user", ""))
         if is_resume:
@@ -626,7 +639,7 @@ def compute_metrics(scenario, fixture_dir, turns):
 
     # 6) mistake / confusion persistence — track rows by their [#id] when present (so rewording an existing
     #    row isn't a false 'loss'); rows without an id fall back to normalized text.
-    parsed = [parse_progress(init_progress)]
+    parsed = [init_snap]
     for snap in snaps:
         if snap is not None:
             parsed.append(snap)

@@ -58,6 +58,13 @@ def _read(path):
         return f.read()
 
 
+def _plan_phase_nums(text):
+    """Phase numbers in a study_plan.md, as strings — matches BOTH supported word orders
+    （「阶段N」和「第N阶段」），否则合法计划会被当成没有阶段列表而跳过校验。"""
+    return {m.group(1) or m.group(2)
+            for m in re.finditer(r"阶段\s*(\d+)|第\s*(\d+)\s*阶段", text or "")}
+
+
 def _reject_const(c):
     # json.loads accepts NaN/Infinity/-Infinity by default; reject them so quiz_bank.json is strict JSON.
     raise ValueError(f"非标准 JSON 常量 {c}（NaN/Infinity 不允许）")
@@ -398,7 +405,7 @@ def validate(ws):
             plan_path = os.path.join(ws, "study_plan.md")
             m_cur = re.search(r"当前[^#]*?阶段\s*(\d+)", prog, re.S)
             if m_cur and os.path.isfile(plan_path):
-                plan_phases = set(re.findall(r"阶段\s*(\d+)", _read(plan_path)))
+                plan_phases = _plan_phase_nums(_read(plan_path))
                 if plan_phases and m_cur.group(1) not in plan_phases:
                     warn(f"study_progress.md 当前阶段 {m_cur.group(1)} 不在 study_plan.md 的阶段列表 "
                          f"{sorted(int(x) for x in plan_phases)} 中（断点可能无法正确恢复）")
@@ -430,7 +437,7 @@ def validate(ws):
                 plan_path_a4 = os.path.join(ws, "study_plan.md")
                 if os.path.isfile(plan_path_a4):
                     try:
-                        plan_phases_a4 = set(re.findall(r"阶段\s*(\d+)", _read(plan_path_a4)))
+                        plan_phases_a4 = _plan_phase_nums(_read(plan_path_a4))
                         if plan_phases_a4 and str(cp) not in plan_phases_a4:
                             err(f"study_state.json 的 current_phase={cp} 不在 study_plan.md 的阶段列表 "
                                 f"{sorted(int(x) for x in plan_phases_a4)} 中（事实源指向不存在的阶段，"
@@ -446,6 +453,15 @@ def validate(ws):
                 for x in (v or []):
                     if isinstance(x, dict) and not (isinstance(x.get("note"), str) and x["note"].strip()):
                         err(f"study_state.json 的 {field} 行缺非空 note 字段: {x!r}")
+            pc = st.get("phase_checklist")
+            if pc is not None and not (isinstance(pc, list) and all(isinstance(x, dict) for x in pc)):
+                err(f"study_state.json 的 phase_checklist 必须是对象数组，当前 {type(pc).__name__}")
+            else:
+                for x in (pc or []):
+                    if not (isinstance(x.get("text"), str) and x["text"].strip()):
+                        err(f"study_state.json 的 phase_checklist 行缺非空 text 字段: {x!r}")
+                    if x.get("done") is not None and not isinstance(x["done"], bool):
+                        err(f"study_state.json 的 phase_checklist 行 done 必须是布尔: {x!r}")
             prefs = st.get("preferences")
             if prefs is not None and not isinstance(prefs, dict):
                 err(f"study_state.json 的 preferences 必须是对象，当前 {type(prefs).__name__}")

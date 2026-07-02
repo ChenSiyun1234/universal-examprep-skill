@@ -55,7 +55,7 @@
       "claim": "无 Python 时手动写盘，产出的工作区仍是完整、可校验的（用预建的手写工作区模拟，不真禁用 Python）",
       "prompt": "（模拟：本机没有安装 Python，无法运行 ingest.py）",
       "detector": "validate_fixture_workspace",
-      "fallback_workspace": "fixtures/mini_course",
+      "fallback_workspace": "fixtures/mini_course_nostate",
       "best_effort": false
     },
     {

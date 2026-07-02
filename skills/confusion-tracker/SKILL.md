@@ -23,7 +23,7 @@ Capture the learner's concept-level confusions (why / what / how-derived questio
 ## Workflow
 1. **Detect** — decide whether the follow-up is a concept question (not a quiz item or its answer).
 2. **Answer** — give a concise, clear explanation grounded in the current wiki chapter. Label the source: 🟢 来自资料 for material-sourced content, 🟡 AI补充，可能与你老师讲的不完全一致 for AI-supplied background. Never present AI-added content as the teacher's.
-3. **Record** — append the confusion to the 「## 💡 概念疑难点记录」 table in `study_progress.md`: 关联章节 / 疑难点 (one line) / 解答要点 (≤2 sentences) / 状态 (default 待回顾). Auto-increment 序号 from the existing rows.
+3. **Record** — persist the confusion: 关联章节 / 疑难点 (one line) / 解答要点 (≤2 sentences) / 状态 (default 待回顾). When `study_state.json` exists (A4), the ONLY valid write path is `python scripts/update_progress.py --workspace <ws> add-confusion --chapter <ch> --note <疑难点/解答要点>` — the md table is a generated view and a hand-appended row is lost on the next render. Without state (no-Python fallback), append to the 「## 💡 概念疑难点记录」 table in `study_progress.md` directly, auto-incrementing 序号.
 4. **Confirm** — tell the learner it was logged (e.g. 「已记录到疑难点」) in one short line, without breaking the teaching flow.
 
 ## Output Contract
@@ -45,6 +45,7 @@ Capture the learner's concept-level confusions (why / what / how-derived questio
 记录完后给一句简短回执（如「已记录到疑难点」），不打断教学节奏。
 
 ## Boundaries
+- **Structured progress state (A4)**: when `study_state.json` exists it is the SINGLE SOURCE OF TRUTH — record via `python scripts/update_progress.py --workspace <ws> add-confusion`, update review status via `set-confusion-status --id <qid>|--index <N> --status 已回顾/待回顾`; never hand-patch the generated `study_progress.md`. If the state write fails, TELL the user; never continue as if it saved.
 - Only record concept questions; never quiz or grade (that is `exam-quiz`).
 - Concept answers carry the canonical provenance labels (🟢 来自资料 / 🟡 AI补充，可能与你老师讲的不完全一致 / ⚠️ AI生成答案，非老师/教材提供); never disguise AI-added content as teacher-provided.
 - Share `study_progress.md` with `exam-review`: append new entries and update status in place; do not overwrite other skills' writes.
