@@ -1,6 +1,6 @@
 # Live Agent Session Log
 
-scenario: benchmark/drift/scenarios/long_session_basic.json
+scenario: benchmark/drift/scenarios/live_smoke_basic.json
 fixture: benchmark/drift/fixtures/mini_course_long
 agent: live_smoke
 date: recorded-by-run_live_smoke

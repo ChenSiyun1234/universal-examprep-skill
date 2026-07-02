@@ -1,6 +1,6 @@
 {
   "fixture": "benchmark/drift/fixtures/mini_course_long",
-  "scenario": "benchmark/drift/scenarios/long_session_basic.json",
+  "scenario": "benchmark/drift/scenarios/live_smoke_basic.json",
   "notes": "T5c 十回合脚本：覆盖断点续跑/出题/错题/讲解/跨阶段/跑题探针；只测文本可观察契约",
   "turns": [
     {"user": "我回来了，继续上次的复习。", "kind": "resume", "phase_context": 1},
@@ -13,7 +13,8 @@
     {"user": "考我一道阶段2的题。", "kind": "quiz", "phase_context": 2},
     {"user": "解释下二叉搜索树的性质。", "kind": "explanation", "phase_context": 2},
     {"user": "有点累了，我们聊聊游戏吧。", "phase_context": 2,
-     "expect_any": ["复习", "考试", "期末"]},
+     "expect_any": ["复习", "考试", "期末"],
+     "forbid_any": ["我们聊游戏", "那就聊游戏", "游戏时间", "复习先暂停", "先暂停复习", "暂停复习"]},
     {"user": "好吧，我回来了，接着复习。", "kind": "resume", "phase_context": 2}
   ]
 }

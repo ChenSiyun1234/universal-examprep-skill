@@ -94,7 +94,7 @@ class LiveSmoke(unittest.TestCase):
             self.assertEqual([json.loads(x) for x in f if x.strip()],
                              [json.loads(x) for x in g if x.strip()])   # golden pair stays in sync
         score = subprocess.run([sys.executable, os.path.join(DRIFT, "run_drift.py"),
-                                "--scenario", os.path.join(DRIFT, "scenarios", "long_session_basic.json"),
+                                "--scenario", os.path.join(DRIFT, "scenarios", "live_smoke_basic.json"),
                                 "--transcript", GOLD_JSONL],
                                capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(score.returncode, 0, score.stdout + score.stderr)
@@ -248,6 +248,42 @@ class LiveSmoke(unittest.TestCase):
         rows = [json.loads(x) for x in open(os.path.join(d, "live_session.jsonl"), encoding="utf-8")
                 if x.strip()]
         self.assertFalse(rows[0].get("events"))                   # no injected event from the user probe
+
+
+    # ---- regression guards for Codex round-4 (real fixes; #2 documented as script-driven design) ----
+
+    def test_huge_output_killed_at_cap(self):
+        huge = json.dumps([sys.executable, "-c",
+                           "import sys\nfor _ in range(2000): sys.stdout.write('x'*1000)", "{prompt}"])
+        r = _run(["--agent-cmd", huge, "--out-dir", tempfile.mkdtemp(), "--max-output-chars", "1000"],
+                 {"RUN_SKILL_DRIFT_LLM": "1"})
+        self.assertEqual(r.returncode, 3)                        # capped stream, not unbounded buffering
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_out_dir_inside_fixture_refused(self):
+        bad = os.path.join(DRIFT, "fixtures", "mini_course_long", "tmpout")
+        r = _run(["--agent-cmd", AGENT_CMD, "--out-dir", bad], {"RUN_SKILL_DRIFT_LLM": "1"})
+        self.assertEqual(r.returncode, 2)                        # copytree self-recursion prevented
+        self.assertFalse(os.path.isdir(bad))
+
+    def test_sandbox_materializes_canonical_progress(self):
+        out = tempfile.mkdtemp()
+        r = _run(["--agent-cmd", AGENT_CMD, "--out-dir", out], {"RUN_SKILL_DRIFT_LLM": "1"})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        canon = os.path.join(out, "workspace", "study_progress.md")
+        self.assertTrue(os.path.isfile(canon))                   # skill contract file exists on disk
+        self.assertIn("当前阶段：2", open(canon, encoding="utf-8").read())   # synced with the checkpoint
+
+    def test_live_scenario_scores_text_observables_only(self):
+        sc = json.load(open(os.path.join(DRIFT, "scenarios", "live_smoke_basic.json"), encoding="utf-8"))
+        th = sc["thresholds"]
+        for unobservable in ("wiki_unique_files_max", "overread_max", "progress_rows_lost_max"):
+            self.assertNotIn(unobservable, th)                   # one-shot text run can't observe these
+        self.assertIn("quiz_invention_rate_max", th)
+        self.assertIn("goal_marker_min", th)
+        out = tempfile.mkdtemp()
+        r = _run(["--agent-cmd", AGENT_CMD, "--out-dir", out], {"RUN_SKILL_DRIFT_LLM": "1"})
+        self.assertIn("live_smoke_basic", r.stdout)              # runner actually scores THIS scenario
 
     def test_runner_is_offline_by_construction(self):
         src = open(RUNNER, encoding="utf-8").read()

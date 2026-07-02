@@ -157,16 +157,41 @@ def call_agent(cmd_template, prompt, timeout, max_out, cwd=None):
             argv.append(tok)
     if not used:
         _die("--agent-cmd 必须含 {prompt} 占位符（作为单个参数传入）")
-    try:
-        p = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8",
-                           errors="replace", timeout=timeout, cwd=cwd)
-    except subprocess.TimeoutExpired:
-        _die("agent 调用超时（%ds）——按失败中止，不评残缺会话" % timeout, 3)
-    except OSError as e:
-        _die("agent 命令无法执行: %s" % e, 3)
-    if p.returncode != 0:
-        _die("agent 命令退出码 %d：%s" % (p.returncode, (p.stderr or "")[:400]), 3)
-    out = (p.stdout or "").strip()
+    # CAPPED streaming read — capture_output would buffer an unbounded reply into memory BEFORE the
+    # length check; instead read at most ~4×max_out bytes and kill the agent if it keeps going.
+    import tempfile
+    import threading
+    cap_bytes = max_out * 4 + 4096
+    got = {}
+    with tempfile.TemporaryFile() as errf:
+        try:
+            proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=errf, cwd=cwd)
+        except OSError as e:
+            _die("agent 命令无法执行: %s" % e, 3)
+
+        def _reader():
+            got["data"] = proc.stdout.read(cap_bytes + 1)
+
+        t = threading.Thread(target=_reader, daemon=True)
+        t.start()
+        t.join(timeout)
+        if t.is_alive():
+            proc.kill()
+            _die("agent 调用超时（%ds）——按失败中止，不评残缺会话" % timeout, 3)
+        data = got.get("data") or b""
+        if len(data) > cap_bytes:
+            proc.kill()
+            _die("agent 输出超出读取上限（%d 字节）——按预算中止，不评被截断的会话" % cap_bytes, 3)
+        try:
+            rc = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            _die("agent 输出后未退出（%ds）——按失败中止" % timeout, 3)
+        errf.seek(0)
+        err_text = errf.read().decode("utf-8", "replace")
+    if rc != 0:
+        _die("agent 命令退出码 %d：%s" % (rc, err_text[:400]), 3)
+    out = data.decode("utf-8", "replace").strip()
     if "�" in out:
         _die("agent 输出含非 UTF-8 字节（替换符出现）——按失败中止，不评乱码会话", 3)
     if not out:
@@ -246,6 +271,10 @@ def main(argv=None):
         _die("--max-turns=%d 小于回合脚本长度 %d——截断会静默跳过探针；请改回合脚本而不是截断"
              % (args.max_turns, len(spec["turns"])), 2)
     turns = spec["turns"]
+    fx_real = os.path.realpath(fixture_dir)
+    out_real = os.path.realpath(args.out_dir)
+    if os.path.commonprefix([os.path.normcase(out_real) + os.sep, os.path.normcase(fx_real) + os.sep])             == os.path.normcase(fx_real) + os.sep:
+        _die("--out-dir 不能位于 fixture 目录内（复制工作区会自我递归）: %s" % args.out_dir)
     os.makedirs(args.out_dir, exist_ok=True)
     # tool-enabled agents read/write relative to their CWD — give them a disposable COPY of the fixture
     # (never the committed one) and run every call from inside it
@@ -258,6 +287,9 @@ def main(argv=None):
     digest = bank_digest(sandbox)
     progress_path = os.path.join(sandbox, "study_progress.initial.md")
     progress = _read(progress_path) if os.path.isfile(progress_path) else "当前阶段：1\n"
+    canonical = os.path.join(sandbox, "study_progress.md")   # skill contract reads THIS file on disk
+    with open(canonical, "w", encoding="utf-8", newline="\n") as f:
+        f.write(progress)
     import re as _re
     m = _re.search(r"当前阶段：(\d+)", progress)
     cur_phase = int(m.group(1)) if m else 1
@@ -275,6 +307,8 @@ def main(argv=None):
         if isinstance(tp, int) and not isinstance(tp, bool) and tp != cur_phase:    # the script advanced the phase — the harness (as
             cur_phase = tp                             # the 'environment') persists the checkpoint the
             progress = _progress_with_phase(progress, cur_phase)   # agent reads on later turns
+            with open(canonical, "w", encoding="utf-8", newline="\n") as f:
+                f.write(progress)                       # disk copy stays in sync with the prompt state
             snapshot = progress
         exchanges.append((turn, reply, snapshot))
         print("[+] turn %d/%d 完成（回复 %d 字）" % (i, len(turns), len(reply)))
