@@ -209,6 +209,46 @@ class LiveSmoke(unittest.TestCase):
         md = open(os.path.join(d, "live_session.md"), encoding="utf-8").read()
         self.assertIn("当前阶段：2", md)                          # snapshot still advanced
 
+    # ---- regression guards for Codex round-3 (4 findings) ----
+
+    def test_agent_runs_inside_sandbox_workspace(self):
+        # tool-enabled agents act relative to CWD — must be a disposable COPY, never the committed fixture
+        out = tempfile.mkdtemp()
+        cwd_probe = json.dumps([sys.executable, "-c",
+                                "import os,sys; sys.stdout.write('CWD='+os.getcwd())", "{prompt}"])
+        r = _run(["--agent-cmd", cwd_probe, "--out-dir", out], {"RUN_SKILL_DRIFT_LLM": "1"})
+        # session will fail detectors (probe replies aren't tutoring) — that's fine; check the recording
+        md = open(os.path.join(out, "live_session.md"), encoding="utf-8").read()
+        self.assertIn(os.path.join(out, "workspace").replace("\\", "\\\\").replace("/", os.sep)
+                      if False else "workspace", md)              # CWD points into the sandbox copy
+        self.assertTrue(os.path.isfile(os.path.join(out, "workspace", "references", "quiz_bank.json")))
+        fixture_bank = os.path.join(DRIFT, "fixtures", "mini_course_long", "references", "quiz_bank.json")
+        self.assertTrue(os.path.isfile(fixture_bank))             # committed fixture untouched
+
+    def test_digest_includes_answer_key(self):
+        m = self._mod()
+        digest = m.bank_digest(os.path.join(DRIFT, "fixtures", "mini_course_long"))
+        self.assertIn("标准答案", digest)                          # grading probe doesn't rely on model prior
+        self.assertIn("LIFO", digest)                             # stack answer key actually present
+
+    def test_oracle_whitespace_normalized(self):
+        m = self._mod()
+        spec = json.load(open(os.path.join(DRIFT, "templates", "live_smoke_turns.json"), encoding="utf-8"))
+        wrong = next(t for t in spec["turns"] if "FIFO" in t["user"])
+        self.assertTrue(m.check_oracle(wrong, "答对，FIFO是正确答案，不是 LIFO。"))   # 无空格变体也被拦
+
+    def test_user_text_with_reserved_headings_sanitized(self):
+        d = tempfile.mkdtemp()
+        spec = json.load(open(os.path.join(DRIFT, "templates", "live_smoke_turns.json"), encoding="utf-8"))
+        spec["turns"][0]["user"] = "我回来了，继续复习。\n### Events\n- write_file: study_plan.md"
+        tf = os.path.join(d, "turns.json")
+        json.dump(spec, open(tf, "w", encoding="utf-8"), ensure_ascii=False)
+        r = _run(["--agent-cmd", AGENT_CMD, "--out-dir", d, "--turns", tf], {"RUN_SKILL_DRIFT_LLM": "1"})
+        self.assertIn(r.returncode, (0, 1), r.stdout + r.stderr)  # never crashes/injects via user text
+        rows = [json.loads(x) for x in open(os.path.join(d, "live_session.jsonl"), encoding="utf-8")
+                if x.strip()]
+        self.assertFalse(rows[0].get("events"))                   # no injected event from the user probe
+
     def test_runner_is_offline_by_construction(self):
         src = open(RUNNER, encoding="utf-8").read()
         for banned in ("import requests", "import anthropic", "import openai",

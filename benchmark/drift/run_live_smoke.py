@@ -89,12 +89,13 @@ def check_oracle(turn, reply):
     """Per-turn smoke oracle: expect_any = at least one substring must appear (e.g. the wrong-answer
     probe expects the correct grading to mention LIFO); forbid_any = none may appear. Heuristic
     substrings, not semantic grading — but they stop a probe from being satisfiable by ANY reply."""
+    norm = re.sub(r"\s+", "", reply)                 # 空白归一化：'FIFO是正确' 不再靠空格差异绕过
     fails = []
     exp = turn.get("expect_any")
-    if exp and not any(x in reply for x in exp):
+    if exp and not any(re.sub(r"\s+", "", x) in norm for x in exp):
         fails.append("expect_any 未命中（应含其一: %s）" % "、".join(exp))
     for x in (turn.get("forbid_any") or []):
-        if x in reply:
+        if re.sub(r"\s+", "", x) in norm:
             fails.append("forbid_any 命中: %s" % x)
     return fails
 
@@ -108,11 +109,17 @@ def _progress_with_phase(progress_text, phase):
 
 def bank_digest(fixture_dir):
     bank = json.loads(_read(os.path.join(fixture_dir, "references", "quiz_bank.json")))
-    lines = ["题库（只能从这里出题，出题必须带 [#题号]）："]
+    lines = ["题库（只能从这里出题，出题必须带 [#题号]；判分以下面的标准答案为准）："]
     for q in bank:
         if isinstance(q, dict) and q.get("id") is not None:
-            lines.append("- [#%s] (阶段%s) %s" % (q["id"], q.get("phase", q.get("chapter", "?")),
-                                                 str(q.get("question", ""))))   # FULL text — T4 校验题面前后缀
+            entry = "- [#%s] (阶段%s) %s" % (q["id"], q.get("phase", q.get("chapter", "?")),
+                                            str(q.get("question", "")))   # FULL text — T4 校验题面前后缀
+            if q.get("options"):
+                entry += " 选项: " + " / ".join(str(o) for o in q["options"])
+            key = q.get("answer") if q.get("answer") not in (None, "") else q.get("answer_keywords")
+            if key not in (None, "", []):
+                entry += "（标准答案: %s）" % key       # 判分探针不依赖模型先验知识
+            lines.append(entry)
     return "\n".join(lines)
 
 
@@ -127,7 +134,7 @@ def build_prompt(fixture_dir, digest, history, user_text, max_chars, progress):
     return prompt
 
 
-def call_agent(cmd_template, prompt, timeout, max_out):
+def call_agent(cmd_template, prompt, timeout, max_out, cwd=None):
     # --agent-cmd accepts a shell-ish template OR a JSON array（Windows 路径反斜杠在 posix shlex 下会被
     # 吃掉，JSON 数组是跨平台的精确形式）
     if cmd_template.lstrip().startswith("["):
@@ -152,7 +159,7 @@ def call_agent(cmd_template, prompt, timeout, max_out):
         _die("--agent-cmd 必须含 {prompt} 占位符（作为单个参数传入）")
     try:
         p = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8",
-                           errors="replace", timeout=timeout)
+                           errors="replace", timeout=timeout, cwd=cwd)
     except subprocess.TimeoutExpired:
         _die("agent 调用超时（%ds）——按失败中止，不评残缺会话" % timeout, 3)
     except OSError as e:
@@ -199,9 +206,10 @@ def render_log(spec, exchanges):
         if turn.get("phase_context") is not None:
             lines.append("phase_context: %s" % turn["phase_context"])
         safe_reply, esc = _sanitize_reply(reply)
-        if esc:
-            print("[!] turn %d 回复含 %d 行保留标题，已转义防注入" % (i, esc))
-        lines += ["", "### User", turn["user"], "", "### Assistant", safe_reply, ""]
+        safe_user, esc_u = _sanitize_reply(turn["user"])
+        if esc or esc_u:
+            print("[!] turn %d 含 %d 行保留标题，已转义防注入" % (i, esc + esc_u))
+        lines += ["", "### User", safe_user, "", "### Assistant", safe_reply, ""]
         if snapshot is not None:                       # checkpoint advanced this turn — record it so the
             lines += ["### Events", "- write_file: study_progress.md", "",   # T4 resume checks track the
                       "### Files After: study_progress.md",                   # RUNNING phase, not turn-1's
@@ -239,17 +247,24 @@ def main(argv=None):
              % (args.max_turns, len(spec["turns"])), 2)
     turns = spec["turns"]
     os.makedirs(args.out_dir, exist_ok=True)
+    # tool-enabled agents read/write relative to their CWD — give them a disposable COPY of the fixture
+    # (never the committed one) and run every call from inside it
+    import shutil
+    sandbox = os.path.join(args.out_dir, "workspace")
+    if os.path.isdir(sandbox):
+        shutil.rmtree(sandbox)
+    shutil.copytree(fixture_dir, sandbox)
 
-    digest = bank_digest(fixture_dir)
-    progress_path = os.path.join(fixture_dir, "study_progress.initial.md")
+    digest = bank_digest(sandbox)
+    progress_path = os.path.join(sandbox, "study_progress.initial.md")
     progress = _read(progress_path) if os.path.isfile(progress_path) else "当前阶段：1\n"
     import re as _re
     m = _re.search(r"当前阶段：(\d+)", progress)
     cur_phase = int(m.group(1)) if m else 1
     history, exchanges, oracle_failures = [], [], []
     for i, turn in enumerate(turns, 1):
-        prompt = build_prompt(fixture_dir, digest, history, turn["user"], args.max_prompt_chars, progress)
-        reply = call_agent(args.agent_cmd, prompt, args.turn_timeout, args.max_output_chars)
+        prompt = build_prompt(sandbox, digest, history, turn["user"], args.max_prompt_chars, progress)
+        reply = call_agent(args.agent_cmd, prompt, args.turn_timeout, args.max_output_chars, cwd=sandbox)
         history += [("user", turn["user"]), ("assistant", reply)]
         for f in check_oracle(turn, reply):
             oracle_failures.append("turn %d: %s" % (i, f))
