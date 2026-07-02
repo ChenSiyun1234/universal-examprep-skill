@@ -86,6 +86,16 @@ class LedgerCore(unittest.TestCase):
         self.assertIn("坏行", r.stdout)
         self.assertNotIn("Traceback", r.stderr)
 
+    def test_run_ids_unique_same_second(self):
+        path = os.path.join(tempfile.mkdtemp(), "l.jsonl")
+        ids = {L.record({"kind": "other", "created_at": "2026-07-01T00:00:00"}, path)["run_id"]
+               for _ in range(5)}
+        self.assertEqual(len(ids), 5)                             # 同秒同内容也不撞 run_id
+
+    def test_offline_smoke_suite_opts_out_of_ledger(self):
+        src = open(os.path.join(ROOT, "tests", "test_live_smoke.py"), encoding="utf-8").read()
+        self.assertIn("--no-ledger", src)                         # 离线套件绝不污染默认审计账本
+
     def test_committed_sample_is_valid(self):
         r = subprocess.run([sys.executable, os.path.join(RUNS, "ledger.py"),
                             "--ledger", os.path.join(RUNS, "ledger.sample.jsonl"), "verify"],

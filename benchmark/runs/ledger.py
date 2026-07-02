@@ -29,9 +29,13 @@ Exit codes: 0 ok · 1 verify found bad rows · 2 bad input/usage.
 import argparse
 import datetime
 import hashlib
+import itertools
 import json
 import os
 import sys
+import time
+
+_RUN_SEQ = itertools.count()   # 进程内计数器——同秒同内容的 record 也必须拿到不同 run_id
 
 for _s in ("stdout", "stderr"):
     try:
@@ -113,8 +117,12 @@ def record(entry, ledger_path=None):
         # run_id 派生要对 created_at 做 .replace——非字符串必须在这里先拒绝，
         # 否则 AttributeError 会逃出 try_record 的 SystemExit/OSError 兜底
         _die("record 被拒：created_at 必须是字符串")
-    e.setdefault("run_id", "%s-%s" % (e["created_at"].replace(":", "").replace("-", ""),
-                                      hash_text(json.dumps(e, sort_keys=True, ensure_ascii=False))[7:15]))
+    if not e.get("run_id"):
+        # created_at 只有秒级——哈希掺入 纳秒时钟+pid+进程内计数，快速连续 record 相同内容也不撞 id
+        salt = "%d|%d|%d" % (time.time_ns(), os.getpid(), next(_RUN_SEQ))
+        e["run_id"] = "%s-%s" % (e["created_at"].replace(":", "").replace("-", ""),
+                                 hash_text(json.dumps(e, sort_keys=True, ensure_ascii=False)
+                                           + "|" + salt)[7:15])
     probs = validate_entry(e)
     if probs:
         _die("record 被拒：" + "；".join(probs))
