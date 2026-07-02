@@ -323,9 +323,21 @@ def main():
     with open(os.path.join(MATRIX, "summary_corrected.json"), "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=2)
 
+    old = {}
+    if os.path.exists(os.path.join(MATRIX, "summary.json")):
+        old = json.load(open(os.path.join(MATRIX, "summary.json"), encoding="utf-8")).get("matrix", {})
+    print(f"\n=== 重新判分（{mode}）===  llm_calls={llm_calls}  缺金标={missing}  用时={int(time.time()-t0)}s")
+    print(f"{'cell':22}{'原correct':>11}{'新correct':>11}{'faith':>8}{'hallu':>8}{'oos弃答':>9}")
+    for label in sorted(algo_matrix) + sorted(algo_conv) + sorted(psyc):
+        s = {**algo_matrix, **algo_conv, **psyc}[label]
+        o = old.get(label, {}).get("correct")
+        def p(x): return "—" if x is None else f"{x*100:.0f}%"
+        print(f"{label:22}{p(o):>11}{p(s['correct']):>11}{p(s['faithfulness']):>8}{p(s['hallucination']):>8}{p(s['abstention_oos']):>9}")
+    print(f"\n[+] -> {MATRIX}/summary_corrected.json（未覆盖 summary.json）")
+
     if scores_out or answers_out:
-        # B7: 账本行等 summary_corrected.json 落盘后再记——导出后聚合/写汇总若失败，进程非零退出，
-        # 不能留下一行说成功的 exit_code=0（失败仅提示，不影响运行结果）
+        # B7: 账本行是【最后一步】——旧 summary.json 读取/对比打印等任何后续工作失败都会非零退出，
+        # 成功行必须等全部工作真正完成才落盘（失败仅提示，不影响运行结果）
         try:
             sys.path.insert(0, os.path.join(HERE, "runs"))
             import ledger as _ledger
@@ -338,18 +350,6 @@ def main():
             print(("[!] " + _warn2) if _warn2 else ("[+] 账本 run_id=%s" % _e2["run_id"]))
         except Exception as e:
             print("[!] ledger 不可用：%s" % e)
-
-    old = {}
-    if os.path.exists(os.path.join(MATRIX, "summary.json")):
-        old = json.load(open(os.path.join(MATRIX, "summary.json"), encoding="utf-8")).get("matrix", {})
-    print(f"\n=== 重新判分（{mode}）===  llm_calls={llm_calls}  缺金标={missing}  用时={int(time.time()-t0)}s")
-    print(f"{'cell':22}{'原correct':>11}{'新correct':>11}{'faith':>8}{'hallu':>8}{'oos弃答':>9}")
-    for label in sorted(algo_matrix) + sorted(algo_conv) + sorted(psyc):
-        s = {**algo_matrix, **algo_conv, **psyc}[label]
-        o = old.get(label, {}).get("correct")
-        def p(x): return "—" if x is None else f"{x*100:.0f}%"
-        print(f"{label:22}{p(o):>11}{p(s['correct']):>11}{p(s['faithfulness']):>8}{p(s['hallucination']):>8}{p(s['abstention_oos']):>9}")
-    print(f"\n[+] -> {MATRIX}/summary_corrected.json（未覆盖 summary.json）")
 
 
 if __name__ == "__main__":

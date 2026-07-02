@@ -52,7 +52,7 @@ KINDS = {"live_smoke", "drift_replay", "behavior_smoke_llm", "matrix_gen", "reju
 REQUIRED = ("run_id", "kind", "created_at")
 STR_FIELDS = ("run_id", "kind", "model", "prompt_hash", "workspace_hash", "transcript_path",
               "summary_path", "notes", "created_at")
-NUM_FIELDS = ("cost_usd", "tokens_in", "tokens_out")
+INT_FIELDS = ("tokens_in", "tokens_out")   # token 数只能是非负整数；cost_usd 单独按非负有限浮点校验
 
 
 def _die(msg, code=2):
@@ -95,18 +95,23 @@ def validate_entry(e):
     for k in REQUIRED:
         if not e.get(k):
             probs.append("缺必需字段 %s" % k)
-    if e.get("kind") is not None and e.get("kind") not in KINDS:
-        probs.append("kind 非法: %r（应为 %s）" % (e.get("kind"), sorted(KINDS)))
+    kd = e.get("kind")
+    # 数组/对象 kind 对 set 做 in 会 TypeError——verify/show 是诊断坏行的工具，必须先验类型再验成员
+    if kd is not None and (not isinstance(kd, str) or kd not in KINDS):
+        probs.append("kind 非法: %r（应为 %s）" % (kd, sorted(KINDS)))
     for k in STR_FIELDS:
         if e.get(k) is not None and not isinstance(e[k], str):
             probs.append("%s 必须是字符串" % k)
-    for k in NUM_FIELDS:
+    v = e.get("cost_usd")
+    # NaN 的 v<0 为 False、inf 也是 float——不拦会把 NaN/Infinity 写进 JSONL（非可移植 JSON），
+    # 且 verify 用同一校验器会把坏行报成有效
+    if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float))
+                          or not math.isfinite(v) or v < 0):
+        probs.append("cost_usd 必须是非负有限数值")
+    for k in INT_FIELDS:
         v = e.get(k)
-        # NaN 的 v<0 为 False、inf 也是 float——不拦会把 NaN/Infinity 写进 JSONL（非可移植 JSON），
-        # 且 verify 用同一校验器会把坏行报成有效
-        if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float))
-                              or not math.isfinite(v) or v < 0):
-            probs.append("%s 必须是非负有限数值" % k)
+        if v is not None and (isinstance(v, bool) or not isinstance(v, int) or v < 0):
+            probs.append("%s 必须是非负整数" % k)   # 1.5 个 token 不存在——与 CLI 口径一致
     ec = e.get("exit_code")
     if ec is not None and (isinstance(ec, bool) or not isinstance(ec, int)):
         probs.append("exit_code 必须是整数")

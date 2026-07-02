@@ -459,6 +459,16 @@ def main(argv=None):
     except SystemExit as e:
         # 付费回合已经烧掉——中途 _die（agent 非零退出/超时/预算超限/转换判分失败）也必须留审计行
         code = e.code if isinstance(e.code, int) else 3
+        if exchanges and log_path is None:
+            # 已完成的回合不能无痕蒸发：把部分会话写成 T5b 日志，账本行才有可核查的 artifact
+            try:
+                log_path = os.path.join(args.out_dir, "live_session.partial.md")
+                with open(log_path, "w", encoding="utf-8", newline="\n") as f:
+                    f.write(render_log(spec, exchanges))
+                print("[+] 已保存部分会话记录（%d 回合）: %s" % (len(exchanges), log_path))
+            except Exception as pe:                  # 保存失败绝不掩盖原始中止原因
+                print("[!] 部分会话记录保存失败：%s" % pe)
+                log_path = None
         _ledger_row(code, jsonl_path, log_path,
                     "aborted mid-run: turns_done=%d/%d oracle_failures=%d"
                     % (len(exchanges), len(turns), len(oracle_failures)))

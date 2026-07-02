@@ -106,6 +106,25 @@ class LedgerCore(unittest.TestCase):
         self.assertIsNone(e)
         self.assertIn("不受影响", warn)
 
+    def test_non_string_kind_reported_not_crash(self):
+        probs = L.validate_entry({"kind": ["live_smoke"], "run_id": "r", "created_at": "t"})
+        self.assertTrue(any("kind" in p for p in probs))          # 数组 kind 报坏行，不 TypeError
+        path = os.path.join(tempfile.mkdtemp(), "l.jsonl")
+        L.record({"kind": "other"}, path)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"kind": {"x": 1}, "run_id": "r", "created_at": "t"}) + "\n")
+        r = subprocess.run([sys.executable, os.path.join(RUNS, "ledger.py"), "--ledger", path, "verify"],
+                           capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_fractional_tokens_rejected(self):
+        path = os.path.join(tempfile.mkdtemp(), "l.jsonl")
+        with self.assertRaises(SystemExit):
+            L.record({"kind": "other", "tokens_in": 1.5}, path)   # 1.5 个 token 不存在
+        e = L.record({"kind": "other", "tokens_in": 2, "tokens_out": 0, "cost_usd": 0.5}, path)
+        self.assertEqual(e["tokens_in"], 2)                       # 整数 token + 小数成本合法
+
     def test_committed_sample_is_valid(self):
         r = subprocess.run([sys.executable, os.path.join(RUNS, "ledger.py"),
                             "--ledger", os.path.join(RUNS, "ledger.sample.jsonl"), "verify"],
@@ -211,6 +230,31 @@ class LiveSmokeIntegration(unittest.TestCase):
             self.assertEqual(len(rows), 1)
             hashes.append(rows[0]["prompt_hash"])
         self.assertNotEqual(hashes[0], hashes[1])
+
+    def test_partial_transcript_preserved_on_mid_run_abort(self):
+        # 第 1 回合成功、第 2 回合 agent 失败——已付费的部分会话必须落盘，账本行给出可核查 artifact
+        out = tempfile.mkdtemp()
+        led = os.path.join(out, "ledger.jsonl")
+        agent_code = ("import os,sys\n"
+                      "p='cnt.txt'\n"
+                      "n=int(open(p).read()) if os.path.exists(p) else 0\n"
+                      "open(p,'w').write(str(n+1))\n"
+                      "sys.stdout.reconfigure(encoding='utf-8')\n"
+                      "print('好的，我们接着复习。') if n < 1 else sys.exit(9)\n")
+        cmd = json.dumps([sys.executable, "-c", agent_code, "{prompt}"])
+        env = dict(os.environ, RUN_SKILL_DRIFT_LLM="1")
+        r = subprocess.run([sys.executable, os.path.join(ROOT, "benchmark", "drift", "run_live_smoke.py"),
+                            "--agent-cmd", cmd, "--out-dir", out, "--ledger", led],
+                           capture_output=True, text=True, encoding="utf-8", env=env)
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        rows = [json.loads(x) for x in open(led, encoding="utf-8") if x.strip()]
+        self.assertEqual(rows[0]["exit_code"], 3)
+        self.assertIn("turns_done=1", rows[0]["notes"])
+        partial = rows[0]["summary_path"]
+        self.assertTrue(partial and os.path.isfile(partial))      # 部分 T5b 日志真实存在
+        body = open(partial, encoding="utf-8").read()
+        self.assertIn("## Turn 1", body)
+        self.assertIn("接着复习", body)
 
     def test_ledger_records_aborted_run(self):
         # 付费回合烧掉后 agent 失败中止（_die exit 3）——账本必须留一行审计记录，而不是无痕
