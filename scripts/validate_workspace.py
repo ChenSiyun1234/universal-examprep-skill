@@ -414,10 +414,11 @@ def validate(ws):
 
     # ---- A4: structured state (study_state.json = source of truth when present) ----
     state_path = os.path.join(ws, "study_state.json")
-    if os.path.isfile(state_path) and (_is_symlink(state_path)
-                                       or not os.path.realpath(state_path).startswith(
-                                           os.path.realpath(ws) + os.sep)):
-        err("study_state.json 经符号链接逃出工作区（技能会读/写这个事实源）")
+    # 悬空符号链接 isfile 为 False——不先查 islink 会整段跳过校验、放行一个更新器拒跑的工作区
+    if _is_symlink(state_path) or (os.path.isfile(state_path)
+                                   and not os.path.realpath(state_path).startswith(
+                                       os.path.realpath(ws) + os.sep)):
+        err("study_state.json 是符号链接/经符号链接逃出工作区（技能会读/写这个事实源）")
     elif os.path.isfile(state_path):
         try:
             st = json.loads(_read(state_path))

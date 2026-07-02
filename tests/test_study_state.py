@@ -260,6 +260,29 @@ class Mutations(unittest.TestCase):
         self.assertIn("符号链接", r.stderr)                        # 读取前 fail-loud，不采纳外部事实源
 
 
+    # ---- regression guards for Codex round-8 (8 findings) ----
+
+    def test_init_rejects_phase_outside_plan(self):
+        ws = _mk_ws(tempfile.mkdtemp(), md="当前阶段：99\n## 错题本\n（暂无）\n")
+        with open(os.path.join(ws, "study_plan.md"), "w", encoding="utf-8") as f:
+            f.write("# 计划\n## 阶段1：栈\n")
+        r = _up(ws, ["init"])
+        self.assertEqual(r.returncode, 1)                         # 迁移不产出恢复不进去的断点
+        self.assertIn("不在 study_plan.md", r.stderr)
+        self.assertFalse(os.path.isfile(os.path.join(ws, "study_state.json")))
+
+    def test_skills_route_reads_and_archives_through_state(self):
+        # 读侧/归档侧指令也要对齐事实源——不能只有 Boundaries 一句
+        review = open(os.path.join(ROOT, "skills", "exam-review", "SKILL.md"), encoding="utf-8").read()
+        self.assertIn("`study_state.json`'s `mistake_archive`", review)
+        quiz = open(os.path.join(ROOT, "skills", "exam-quiz", "SKILL.md"), encoding="utf-8").read()
+        self.assertIn("add-mistake --id", quiz)
+        tutor = open(os.path.join(ROOT, "skills", "exam-tutor", "SKILL.md"), encoding="utf-8").read()
+        self.assertIn("set --phase <N>", tutor)
+        tracker = open(os.path.join(ROOT, "skills", "confusion-tracker", "SKILL.md"), encoding="utf-8").read()
+        self.assertIn("output contract IS the `update_progress.py add-confusion`", tracker)
+
+
     def test_set_updates_state_and_md(self):
         ws = self._ready()
         r = _up(ws, ["set", "--phase", "5", "--scope", "homework-only", "--mode", "查缺补漏",
@@ -433,6 +456,16 @@ class ValidatorSchema(unittest.TestCase):
             {"id": "c1", "note": "x", "status": {"s": 1}}]}))
         self.assertEqual(r.returncode, 1)                         # status 非字符串 → err
 
+    def test_dangling_state_symlink_flagged(self):
+        ws = self._full_ws(None)
+        try:
+            os.symlink(os.path.join(ws, "no_such_target.json"), os.path.join(ws, "study_state.json"))
+        except (OSError, NotImplementedError):
+            self.skipTest("no symlink privilege")
+        r = self._validate(ws)
+        self.assertEqual(r.returncode, 1)                         # 悬空链接不能整段跳过校验
+        self.assertIn("符号链接", r.stdout)
+
     def test_md_phase_mismatch_warns(self):
         ws = self._full_ws({"current_phase": 2})                  # md 说 1，state 说 2
         with open(os.path.join(ws, "study_plan.md"), "w", encoding="utf-8") as f:
@@ -598,6 +631,26 @@ class DriftJsonSnapshots(unittest.TestCase):
                                 "files_after": {"study_state.json": bad}}) + chr(10))
         with self.assertRaises(D.DriftError):                     # 伪键 id 不做 str() 硬转
             D.evaluate(sc, t)
+
+    def test_t4_keeps_real_rows_containing_placeholder_text(self):
+        sys.path.insert(0, os.path.join(ROOT, "benchmark", "drift"))
+        import run_drift as D
+        md = ("当前阶段：1" + chr(10) + "## ❌ 错题档案记录" + chr(10)
+              + "| 错题ID | 关联章节 | 原因 | 状态 |" + chr(10) + "| :- | :- | :- | :- |" + chr(10)
+              + "| [#q1] | 1 | 空集（暂无）元素处理错 | 待复盘 |" + chr(10)
+              + "| （暂无） | - | - | - |" + chr(10))
+        p = D.parse_progress(md)
+        self.assertEqual(len(p["mistake_rows"]), 1)               # 真行保留、纯占位行剔除
+        self.assertIn("空集（暂无）", p["mistake_rows"][0])
+
+    def test_t4_idless_state_rows_distinct_by_chapter(self):
+        sys.path.insert(0, os.path.join(ROOT, "benchmark", "drift"))
+        import run_drift as D
+        snap = D.parse_state_json(json.dumps({
+            "version": 1, "current_phase": 1, "mistake_archive": [],
+            "confusion_log": [{"chapter": "1", "note": "取模没搞懂"},
+                                 {"chapter": "2", "note": "取模没搞懂"}]}, ensure_ascii=False))
+        self.assertEqual(len(set(snap["confusion_rows"])), 2)     # 同 note 不同章不折叠
 
     def test_t4_scalar_state_field_exits_2_not_traceback(self):
         sys.path.insert(0, os.path.join(ROOT, "benchmark", "drift"))

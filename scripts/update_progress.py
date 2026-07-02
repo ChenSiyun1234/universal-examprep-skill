@@ -257,6 +257,11 @@ def cmd_init(ws, args):
         if phase < 1:
             # 写入 0/负数会让下一次官方更新在 _require_state 处拒跑——迁移绝不产出损坏 state
             _die("study_progress.md 的当前阶段 %d 非法（须 ≥1）——请先修正 md 再 init" % phase, 1)
+        plan = _plan_phases(ws)
+        if plan and phase not in plan:
+            # 与 cmd_set 同一守卫：迁移也不能产出 validator 拒收、下次会话恢复不进去的断点
+            _die("study_progress.md 的当前阶段 %d 不在 study_plan.md 的阶段列表 %s 中——"
+                 "请先修正 md/计划再 init" % (phase, sorted(plan)), 1)
     else:
         checklist, prefs = [], {}
     st = default_state()

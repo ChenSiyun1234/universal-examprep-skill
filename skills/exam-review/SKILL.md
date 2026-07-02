@@ -16,17 +16,17 @@ Clear the backlog of recorded mistakes and confusions before the exam. Replay on
 Run when the student enters the final review stage, or asks to 复盘错题 / 查漏补缺 / 考前过一遍 (replay mistakes / find gaps / final pass).
 
 ## Inputs
-- `study_progress.md`: the ❌ 错题档案 (mistake records) and 💡 概念疑难点记录 (confusion-tracker entries).
+- Review backlog source: `study_state.json` (`mistake_archive` / `confusion_log`) when it exists — the A4 source of truth; otherwise `study_progress.md`'s ❌ 错题档案 and 💡 概念疑难点记录 (the md is a generated view that may be stale).
 - `references/quiz_bank.json`: source items, keyed by id, re-fetched for each recorded mistake.
 
 ## Workflow
-1. Reload mistake records from `study_progress.md`. For each recorded mistake, read its item id, fetch that exact item from `references/quiz_bank.json` by id, and have the student redo it. Replay only items already recorded; never invent or add new questions.
+1. Reload mistake records — from `study_state.json`'s `mistake_archive` when it exists (read it or `update_progress.py show`; the generated md may be stale/hand-edited), else from `study_progress.md`. For each recorded mistake, read its item id, fetch that exact item from `references/quiz_bank.json` by id, and have the student redo it. Replay only items already recorded; never invent or add new questions.
    - **Visual-first asset gate (fail-closed)** — if the re-fetched item has `requires_assets=true` or `maybe_requires_assets=true`, apply the same contract as [`exam-quiz`](../exam-quiz/SKILL.md) and [`docs/file-format.md`](../../docs/file-format.md) §4: before asking, explaining, hinting, or solving, render/show every question-side asset (`question_context` / `figure` / `diagram` / `table`) inline and label it `题面图 / question-side asset`. Do not show answer-side assets (`answer_context` / `worked_solution`) before those prompt assets; show them only during solution/review and label them `答案图 / answer-side asset`. If a question-side asset is missing/unreadable, the UI cannot render it, or you only have a non-rendering path (including malformed slash-prefixed Windows drive-letter Markdown), **skip the replay** and say it is blocked for lack of visible prompt context. Treat `stub`/`page_reference` text as non-standalone: surface the prompt asset or original page first, else skip it rather than replaying an item the student cannot see.
 2. If the student answers a replayed item correctly, mark it 已订正 in the record. If still wrong, re-explain using the item's `explanation` field and keep it in the record.
-3. Reload the confusion-tracker entries from `study_progress.md`. Read each entry aloud and have the student restate it in their own words (what it is, why it works that way).
+3. Reload the confusion-tracker entries — from `study_state.json`'s `confusion_log` when it exists, else from `study_progress.md`. Read each entry aloud and have the student restate it in their own words (what it is, why it works that way).
 4. If the student restates an entry correctly, set its status to 已回顾. If still vague, re-explain once and keep its status 待回顾.
 5. Compile the open list: items still marked wrong plus entries still 待回顾. Hand this list to the final sprint and to `exam-cheatsheet` as priority input.
-6. Write results back to `study_progress.md`: update each existing item/entry status **in place** (已订正 / 已回顾 / 待回顾); append only genuinely new records. Never leave a mastered item as a stale wrong/待回顾 row. Do not overwrite other skills' writes.
+6. Write results back: with `study_state.json`, update statuses via `update_progress.py set-mistake-status`/`set-confusion-status` and add rows via `add-mistake`/`add-confusion` (md regenerates); without state, update each `study_progress.md` row **in place** (已订正 / 已回顾 / 待回顾) and append only genuinely new records. Never leave a mastered item as a stale wrong/待回顾 row. Do not overwrite other skills' writes.
 
 ## Output Contract
 - Produce one "还没拿下的清单" (not-yet-mastered list): recorded mistakes plus confusion entries, each with its current status (已订正 / 已回顾 / 待回顾). End with a refreshed progress panel.

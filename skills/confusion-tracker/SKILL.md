@@ -27,7 +27,7 @@ Capture the learner's concept-level confusions (why / what / how-derived questio
 4. **Confirm** — tell the learner it was logged (e.g. 「已记录到疑难点」) in one short line, without breaking the teaching flow.
 
 ## Output Contract
-- Append one row to the 「## 💡 概念疑难点记录」 table in `study_progress.md` (序号 / 关联章节 / 疑难点 / 解答要点 / 状态).
+- Persist one confusion record (关联章节 / 疑难点 / 解答要点 / 状态): with `study_state.json`, the output contract IS the `update_progress.py add-confusion` call (the md table regenerates from state); without state, append one row to the 「## 💡 概念疑难点记录」 table in `study_progress.md` (序号 auto-increment).
 - During the final sweep, read the confusion records and have the learner restate each: update 状态 **in place** — 待回顾 → 已回顾 when explained correctly; keep 待回顾 and re-explain otherwise. Never overwrite other skills' writes.
 - Student-facing output defaults to Simplified Chinese unless the user asks otherwise.
 
@@ -48,4 +48,4 @@ Capture the learner's concept-level confusions (why / what / how-derived questio
 - **Structured progress state (A4)**: when `study_state.json` exists it is the SINGLE SOURCE OF TRUTH — record via `python scripts/update_progress.py --workspace <ws> add-confusion`, update review status via `set-confusion-status --id <qid>|--index <N> --status 已回顾/待回顾`; never hand-patch the generated `study_progress.md`. If the state write fails, TELL the user; never continue as if it saved.
 - Only record concept questions; never quiz or grade (that is `exam-quiz`).
 - Concept answers carry the canonical provenance labels (🟢 来自资料 / 🟡 AI补充，可能与你老师讲的不完全一致 / ⚠️ AI生成答案，非老师/教材提供); never disguise AI-added content as teacher-provided.
-- Share `study_progress.md` with `exam-review`: append new entries and update status in place; do not overwrite other skills' writes.
+- Share the progress state with `exam-review`: in state-backed workspaces both skills go through `update_progress.py` (append via add-confusion, status via set-confusion-status); in md-only workspaces append/update `study_progress.md` in place. Never overwrite other skills' writes.

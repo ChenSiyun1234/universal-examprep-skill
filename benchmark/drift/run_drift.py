@@ -297,13 +297,20 @@ def parse_progress(text):
             continue
         if cur is None:
             continue
-        if re.match(r"^\s*[-*]\s+\S", ln) and not _ROW_PLACEHOLDER.search(h):
-            cur.append(re.sub(r"\s+", " ", h))
-        elif h.startswith("|") and not _TABLE_SEP.match(ln) and not _is_table_header(ln) \
-                and not _ROW_PLACEHOLDER.search(h):                # 生成视图的（暂无）占位行不是数据行
-            cells = [c.strip() for c in h.strip("|").split("|")]
-            if any(c and c != "-" for c in cells):                 # a table DATA row with real content
+        if re.match(r"^\s*[-*]\s+\S", ln):
+            body = re.sub(r"^\s*[-*]\s+", "", h).strip()
+            # 占位判定按【整条】——真实笔记里含「（暂无）」字样（如问空集的行）不能被当占位丢掉
+            if not _ROW_PLACEHOLDER.fullmatch(body):
                 cur.append(re.sub(r"\s+", " ", h))
+        elif h.startswith("|") and not _TABLE_SEP.match(ln) and not _is_table_header(ln):
+            cells = [c.strip() for c in h.strip("|").split("|")]
+            if not any(c and c != "-" for c in cells):
+                continue
+            # 生成视图的占位行 = 首格是占位词且其余全 '-'（cell 级判定，与迁移解析同口径）
+            if cells and _ROW_PLACEHOLDER.fullmatch(cells[0] or "") \
+                    and all(c in ("", "-") for c in cells[1:]):
+                continue
+            cur.append(re.sub(r"\s+", " ", h))                     # a table DATA row with real content
     return {"phase": phase, "mistake_rows": mistake, "confusion_rows": confusion}
 
 
@@ -389,8 +396,13 @@ def parse_state_json(text):
                     # 非字符串 id 被 str() 硬转会让行持久化在伪键下计算——坏写入必须 fail-loud
                     raise DriftError("study_state.json 快照的 %s 行 %s 必须是字符串或省略: %r"
                                      % (field, k, r))
-            rid = ("[#%s] " % r["id"]) if r.get("id") else ""
-            out.append((rid + r["note"]).strip())
+            if r.get("id"):
+                prefix = "[#%s] " % r["id"]
+            elif r.get("chapter") not in (None, ""):
+                prefix = "[ch:%s] " % r["chapter"]     # 无 id 的行拿章节当判别符——同 note 不同章不折叠
+            else:
+                prefix = ""
+            out.append((prefix + r["note"]).strip())
         return out
     return {"phase": phase, "mistake_rows": _rows("mistake_archive"),
             "confusion_rows": _rows("confusion_log")}
