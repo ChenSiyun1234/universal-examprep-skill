@@ -37,6 +37,39 @@ def _state(ws):
 
 
 class Migration(unittest.TestCase):
+    # ---- regression guards for Codex round-18 ----
+
+    def test_init_skips_legacy_empty_labels(self):
+        md = LEGACY_MD.replace("| [#q1] | 第1章 | 栈顺序 | 混淆LIFO | 未复习 |",
+                               "| 暂无错题 | - | - | - |").replace("- 循环队列取模没搞懂", "- 暂无")
+        ws = _mk_ws(tempfile.mkdtemp(), md=md)
+        r = _up(ws, ["init"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        st = _state(ws)
+        self.assertEqual(st["mistake_archive"], [])               # 「暂无错题」是空档占位不是条目
+        self.assertEqual(st["confusion_log"], [])                 # 裸「暂无」bullet 同理
+
+    def test_init_keeps_real_note_containing_zanwu(self):
+        md = LEGACY_MD.replace("- 循环队列取模没搞懂", "- 暂无法确定循环不变式怎么选")
+        ws = _mk_ws(tempfile.mkdtemp(), md=md)
+        _up(ws, ["init"])
+        st = _state(ws)
+        self.assertEqual(len(st["confusion_log"]), 1)             # 只是包含占位字样的真实笔记不能丢
+        self.assertIn("循环不变式", st["confusion_log"][0]["note"])
+
+    def test_english_phase_plan_guards_set_phase(self):
+        ws = _mk_ws(tempfile.mkdtemp(), md=None)
+        with open(os.path.join(ws, "study_plan.md"), "w", encoding="utf-8", newline=chr(10)) as f:
+            f.write("# Plan" + chr(10) + "## Phase 1: Stack" + chr(10) + "## Phase 2: Queue" + chr(10))
+        r = _up(ws, ["init"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r99 = _up(ws, ["set", "--phase", "99"])
+        self.assertNotEqual(r99.returncode, 0)                    # 英文 Phase N 计划的阶段守卫同样生效
+        self.assertEqual(_state(ws)["current_phase"], 1)
+        r2 = _up(ws, ["set", "--phase", "2"])
+        self.assertEqual(r2.returncode, 0, r2.stderr)
+        self.assertEqual(_state(ws)["current_phase"], 2)
+
     def test_init_adopts_legacy_md(self):
         ws = _mk_ws(tempfile.mkdtemp())
         r = _up(ws, ["init"])
@@ -483,6 +516,15 @@ class ValidatorSchema(unittest.TestCase):
         return subprocess.run([sys.executable, os.path.join(SCRIPTS, "validate_workspace.py"), ws],
                               capture_output=True, text=True, encoding="utf-8")
 
+    def test_state_phase_outside_english_plan_errors(self):
+        ws = self._full_ws({"current_phase": 99})
+        with open(os.path.join(ws, "study_plan.md"), "w", encoding="utf-8", newline=chr(10)) as f:
+            f.write("# Plan" + chr(10) + "## Phase 1: Stack（references/wiki/ch1.md）" + chr(10)
+                    + "## Phase 2: Queue" + chr(10))
+        r = self._validate(ws)
+        self.assertEqual(r.returncode, 1)                         # 英文计划也要挡住 99 号断点
+        self.assertIn("不在 study_plan.md", r.stdout)
+
     def test_good_state_passes(self):
         ws = self._full_ws({"mistake_archive": [{"id": "q1", "chapter": "1", "note": "x", "status": "待复盘"}]})
         r = self._validate(ws)
@@ -621,6 +663,30 @@ class DriftJsonSnapshots(unittest.TestCase):
         with self.assertRaises(D.DriftError):
             D.evaluate(sc, t)
 
+
+    def test_t4_object_state_snapshot_raises_drifterror(self):
+        sys.path.insert(0, os.path.join(ROOT, "benchmark", "drift"))
+        import run_drift as D
+        sc = D.load_scenario(os.path.join(ROOT, "benchmark", "drift", "scenarios", "long_session_basic.json"))
+        d = tempfile.mkdtemp()
+        t = os.path.join(d, "t.jsonl")
+        with open(t, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"turn": 1, "assistant": "x",
+                                "files_after": {"study_state.json": {"current_phase": 2}}}) + chr(10))
+        with self.assertRaises(D.DriftError):                     # 对象快照按畸形输入报 DriftError，
+            D.evaluate(sc, t)                                     # 不是 TypeError 未处理堆栈
+
+    def test_t4_object_plan_snapshot_raises_drifterror(self):
+        sys.path.insert(0, os.path.join(ROOT, "benchmark", "drift"))
+        import run_drift as D
+        sc = D.load_scenario(os.path.join(ROOT, "benchmark", "drift", "scenarios", "long_session_basic.json"))
+        d = tempfile.mkdtemp()
+        t = os.path.join(d, "t.jsonl")
+        with open(t, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"turn": 1, "assistant": "x",
+                                "files_after": {"study_plan.md": ["## 阶段1"]}}) + chr(10))
+        with self.assertRaises(D.DriftError):
+            D.evaluate(sc, t)
 
     def test_t4_rejects_md_only_snapshot_after_state(self):
         sys.path.insert(0, os.path.join(ROOT, "benchmark", "drift"))

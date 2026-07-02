@@ -367,6 +367,11 @@ def parse_state_json(text, plan_phases=None):
     rendered to "[#id] note" strings so persistence tracking (_row_key) works identically.
     传入 plan_phases 时阶段还必须落在计划内——validator/update 工具拒收的 99 号断点，
     T4 也不能让它把 expected_phase 带进沟里。"""
+    if text is not None and not isinstance(text, str):
+        # 手写 JSONL 把快照写成 JSON 对象而不是文件内容字符串——按畸形输入 fail-loud，
+        # 不能让 json.loads 的 TypeError 炸成未处理堆栈
+        raise DriftError("files_after 里的 study_state.json 必须是文件内容字符串，实际是 %s"
+                         % type(text).__name__)
     try:
         st = json.loads(text or "")
     except ValueError as e:
@@ -413,6 +418,16 @@ def parse_state_json(text, plan_phases=None):
             "confusion_rows": _rows("confusion_log")}
 
 
+def _snap_text(fa, name):
+    """files_after 快照值必须是文件内容字符串——对象/数组直接喂给 json.loads/正则会 TypeError
+    崩栈，按畸形输入统一 DriftError（文档承诺的 exit-2 路径）。"""
+    v = fa[name]
+    if not isinstance(v, str):
+        raise DriftError("files_after 里的 %s 必须是文件内容字符串，实际是 %s"
+                         % (name, type(v).__name__))
+    return v
+
+
 def _session_snapshots(turns, state_established=False, plan_phases=None):
     """Per-turn parsed progress snapshot (None = no usable snapshot that turn), honoring the A4
     source-of-truth contract: within a turn study_state.json wins; and once state has appeared
@@ -425,7 +440,7 @@ def _session_snapshots(turns, state_established=False, plan_phases=None):
         if "study_plan.md" in fa:
             # 会话内获授权改计划后，state 的新阶段要对照【最新】计划快照——拿初始计划卡会把
             # 合法改计划的转写误判成坏输入
-            newp = set(parse_plan_phases(fa["study_plan.md"]))
+            newp = set(parse_plan_phases(_snap_text(fa, "study_plan.md")))
             if newp:
                 plan_phases = newp
         # 违规判定连事件一起看：直接手写 JSONL 可以只给 write_file 事件、不带快照——
@@ -436,12 +451,12 @@ def _session_snapshots(turns, state_established=False, plan_phases=None):
         state_touch = "study_state.json" in fa or "study_state.json" in evs
         if "study_state.json" in fa:
             state_established = True
-            out.append(parse_state_json(fa["study_state.json"], plan_phases))
+            out.append(parse_state_json(_snap_text(fa, "study_state.json"), plan_phases))
         elif "study_state.json" in evs:
             state_established = True   # 只有 write_file 事件、没带快照——事实源同样已确立，
             out.append(None)           # 后续 md-only 不能再当 legacy 来源
         elif "study_progress.md" in fa and not state_established:
-            out.append(parse_progress(fa["study_progress.md"]))
+            out.append(parse_progress(_snap_text(fa, "study_progress.md")))
         else:
             out.append(None)
         if state_established and md_touch and not state_touch:

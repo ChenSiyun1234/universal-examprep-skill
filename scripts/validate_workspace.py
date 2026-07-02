@@ -59,10 +59,11 @@ def _read(path):
 
 
 def _plan_phase_nums(text):
-    """Phase numbers in a study_plan.md, as strings — matches BOTH supported word orders
-    （「阶段N」和「第N阶段」），否则合法计划会被当成没有阶段列表而跳过校验。"""
-    return {m.group(1) or m.group(2)
-            for m in re.finditer(r"阶段\s*(\d+)|第\s*(\d+)\s*阶段", text or "")}
+    """Phase numbers in a study_plan.md, as strings — matches ALL supported word orders
+    （「阶段N」「第N阶段」「Phase N」，与更新器/T4 解析器同款），否则合法计划会被当成
+    没有阶段列表而跳过校验。"""
+    return {next(g for g in m.groups() if g)
+            for m in re.finditer(r"阶段\s*(\d+)|第\s*(\d+)\s*阶段|[Pp]hase\s*(\d+)", text or "")}
 
 
 def _reject_const(c):

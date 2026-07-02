@@ -55,7 +55,11 @@ def default_state():
 
 _TABLE_SEP = re.compile(r"^\s*\|[\s:\-|]+\|?\s*$")
 _HDR_WORDS = ("错题id", "关联章节", "题目内容", "错误原因", "序号", "疑难点", "解答要点", "状态")
-_PLACEHOLDER = re.compile(r"（暂无）|（无）|（清空重来）")
+# 旧模板的空档占位既有全角括号形（（暂无））也有裸标签形（暂无错题 / 暂无疑难 / N/A）——
+# 都不是真实条目；真实笔记只是【包含】这些字样（「暂无法求解」）不受影响（fullmatch 才跳过）
+_PLACEHOLDER = re.compile(
+    r"[（(]?\s*(?:暂无(?:错题|疑难|疑问|困惑|记录|内容|数据|条目)?|无|清空重来|none|n/?a|empty)\s*[）)]?",
+    re.I)
 
 
 def parse_md(text):
@@ -353,7 +357,8 @@ def _require_state(ws, repairing_phase=False):
 
 
 def _plan_phases(ws):
-    """Phase numbers listed in study_plan.md（阶段N / 第N阶段 双写法），plan 缺失/无阶段时返回空集。"""
+    """Phase numbers listed in study_plan.md（阶段N / 第N阶段 / Phase N，与 T4 解析器同款），
+    plan 缺失/无阶段时返回空集。"""
     plan_path = os.path.join(ws, "study_plan.md")
     if not os.path.isfile(plan_path):
         return set()
@@ -363,8 +368,8 @@ def _plan_phases(ws):
     except (OSError, UnicodeDecodeError) as e:
         # 静默当「无计划」会禁用阶段守卫，写出计划修好后才发现的坏断点——必须报错
         _die("study_plan.md 存在但无法读取/非 UTF-8（%s）——阶段校验无法进行，请先修复计划文件" % e, 1)
-    return {int(m.group(1) or m.group(2))
-            for m in re.finditer(r"阶段\s*(\d+)|第\s*(\d+)\s*阶段", text)}
+    return {int(next(g for g in m.groups() if g))
+            for m in re.finditer(r"阶段\s*(\d+)|第\s*(\d+)\s*阶段|[Pp]hase\s*(\d+)", text)}
 
 
 def cmd_set(ws, args):
