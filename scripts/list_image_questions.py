@@ -58,6 +58,8 @@ def run(argv=None):
             # a PDF that failed to scan AT ALL leaves that file's suspects invisible — also untrustworthy
             if any(w.startswith("no_materials") for w in idx_warnings):
                 recall_net, recall_note = False, "索引构建时未给 --materials，疑漏交叉核对未运行"
+            elif any(w.startswith("no_pdfs_found") for w in idx_warnings):
+                recall_net, recall_note = False, "材料目录里没扫到任何 PDF（路径错误/目录为空）——疑漏交叉核对未运行"
             elif any(w.startswith(("pdf_text_failed", "source_pdf_not_indexed")) for w in idx_warnings):
                 bad = [w.split(":", 1)[1].strip() for w in idx_warnings
                        if w.startswith(("pdf_text_failed", "source_pdf_not_indexed"))]

@@ -503,6 +503,9 @@ class OfficialTools(unittest.TestCase):
         self.assertEqual(cm.exception.code, 2)                   # realpath containment refuses the escape
 
     def test_apply_rejects_unsafe_source_file(self):
+        # after round-5, a QUALIFIED escaping path never even becomes a suspect (no basename stand-in) —
+        # it surfaces as source_pdf_not_indexed instead. The apply-side guard stays as defense-in-depth:
+        # exercise it directly with a hand-made suspect.
         tmp = tempfile.mkdtemp()
         ws, bank_path = self._ws_with(tmp, [
             {"id": "esc_1", "chapter": 1, "type": "subjective", "question": "图题。",
@@ -513,9 +516,16 @@ class OfficialTools(unittest.TestCase):
         rc = BVI.run(["--workspace", ws, "--materials", mat, "--apply"], backend=_default_backend())
         self.assertEqual(rc, 0)
         qidx = _load(ws, "image_question_index.json")
-        self.assertTrue(any(w.startswith("apply_skip_unsafe_source") for w in qidx["warnings"]))
+        self.assertTrue(any(w.startswith("source_pdf_not_indexed") for w in qidx["warnings"]))
         q = next(x for x in json.load(open(bank_path, encoding="utf-8")) if x["id"] == "esc_1")
         self.assertNotIn("maybe_requires_assets", q)             # never attach from outside the materials
+        # defense-in-depth: the apply guard itself still refuses an unsafe source
+        bank = json.load(open(bank_path, encoding="utf-8"))
+        warnings = []
+        applied = BVI.apply_suspects(ws, mat, bank, [{"id": "esc_1", "visual_pages": [2]}],
+                                     _default_backend(), os.path.join(ws, "references", "assets"), warnings)
+        self.assertEqual(applied, 0)
+        self.assertTrue(any(w.startswith("apply_skip_unsafe_source") for w in warnings))
 
     def test_realbackend_falls_back_to_fitz_when_pypdf_fails(self):
         rb = BVI.RealBackend.__new__(BVI.RealBackend)            # build without importing real libs
@@ -607,6 +617,8 @@ class OfficialTools(unittest.TestCase):
         self.assertIn("stale_asset", [s["id"] for s in qidx["suspects"]])
 
     def test_url_source_file_rejected_in_apply(self):
+        # a URL provenance is qualified → no basename stand-in, surfaces as source_pdf_not_indexed and
+        # is never flagged; the apply guard additionally refuses :// outright (defense-in-depth)
         tmp = tempfile.mkdtemp()
         ws, bank_path = self._ws_with(tmp, [
             {"id": "url_src", "chapter": 1, "type": "subjective", "question": "图题。",
@@ -617,10 +629,16 @@ class OfficialTools(unittest.TestCase):
         rc = BVI.run(["--workspace", ws, "--materials", mat, "--apply"], backend=_default_backend())
         self.assertEqual(rc, 0)
         qidx = _load(ws, "image_question_index.json")
-        self.assertTrue(any(w.startswith("apply_skip_unsafe_source") and "url_src" in w
+        self.assertTrue(any(w.startswith("source_pdf_not_indexed") and "example.com" in w
                             for w in qidx["warnings"]))
         q = next(x for x in json.load(open(bank_path, encoding="utf-8")) if x["id"] == "url_src")
         self.assertNotIn("maybe_requires_assets", q)              # never lends a local screenshot to a URL
+        bank = json.load(open(bank_path, encoding="utf-8"))
+        warnings = []
+        applied = BVI.apply_suspects(ws, mat, bank, [{"id": "url_src", "visual_pages": [2]}],
+                                     _default_backend(), os.path.join(ws, "references", "assets"), warnings)
+        self.assertEqual(applied, 0)
+        self.assertTrue(any(w.startswith("apply_skip_unsafe_source") for w in warnings))
 
     def test_recall_net_degraded_by_failed_pdf_scan(self):
         tmp = tempfile.mkdtemp()
@@ -712,6 +730,50 @@ class OfficialTools(unittest.TestCase):
 
         rb._pypdf, rb._fitz, rb._pdfium = None, _FitzBroken(), _Pdfium()
         self.assertEqual(rb.render_page_png("x.pdf", 0), b"PNGBYTES")   # pdfium rescues the page
+
+    # ---- regression guards for Codex round-5 (4 P2 + 1 P3) ----
+
+    def test_empty_materials_scan_marked_untrusted(self):
+        tmp = tempfile.mkdtemp()
+        ws = _mk_workspace(tmp)
+        empty = os.path.join(tmp, "empty_mat")
+        os.makedirs(empty)
+        rc = BVI.run(["--workspace", ws, "--materials", empty], backend=_default_backend())
+        self.assertEqual(rc, 0)
+        qidx = _load(ws, "image_question_index.json")
+        self.assertTrue(any(w.startswith("no_pdfs_found") for w in qidx["warnings"]))
+        rcode, out = self._capture(LIQ.run, ["--workspace", ws, "--json"])
+        self.assertFalse(json.loads(out)["recall_net"])           # empty scan ≠ all clear
+
+    def test_qualified_source_path_gets_no_basename_fallback(self):
+        # bank says lectures/ch01.pdf; materials only has homework/ch01.pdf → NOT a stand-in
+        fig = {"homework/ch01.pdf": {"pages": 5, "visual": {2: {}}}}
+        self.assertEqual(BVI._visual_hits(fig, "lectures/ch01.pdf", [2]), [])
+        self.assertFalse(BVI._file_indexed(fig, "lectures/ch01.pdf"))   # → source_pdf_not_indexed warning
+        self.assertTrue(BVI._file_indexed(fig, "ch01.pdf"))             # bare name may still match
+
+    def test_official_answer_requires_material_or_teacher_source(self):
+        tmp = tempfile.mkdtemp()
+        ws, _bank = self._ws_with(tmp, [
+            {"id": "mix_ans", "chapter": 1, "type": "subjective", "question": "混合来源。",
+             "answer": "答案", "source": "mixed", "ai_generated": False},
+            {"id": "unk_ans", "chapter": 1, "type": "subjective", "question": "无来源。", "answer": "答案"}])
+        BVI.run(["--workspace", ws], backend=_default_backend())
+        rec = {r["id"]: r for r in _load(ws, "image_question_index.json")["questions"]}
+        self.assertFalse(rec["mix_ans"]["has_official_answer"])   # mixed ≠ 官方
+        self.assertFalse(rec["unk_ans"]["has_official_answer"])   # missing source ≠ 官方
+        self.assertTrue(rec["ansfig_1"]["has_official_answer"])   # material 仍算
+
+    def test_ingest_skill_orders_recall_check_after_ingest(self):
+        src = open(os.path.join(ROOT, "skills", "exam-ingest", "SKILL.md"), encoding="utf-8").read()
+        self.assertIn("AFTER ingest has created the workspace", src)
+        # the cross-check instruction must appear AFTER the ingest.py step, not under the builder step
+        self.assertLess(src.index("scripts/ingest.py"), src.index("Recall cross-check (P0-V2)"))
+
+    def test_figref_regex_has_token_boundary(self):
+        self.assertFalse(BVI.classify_page("It is comfortable 1 and profitable 2024.")["has_visual"])
+        self.assertTrue(BVI.classify_page("see Table 1 for details")["has_visual"])
+        self.assertTrue(BVI.classify_page("如 表 2 所示")["has_visual"])
 
     def test_no_network_llm_or_dep_in_new_scripts(self):
         for name in ("build_visual_index.py", "list_image_questions.py",

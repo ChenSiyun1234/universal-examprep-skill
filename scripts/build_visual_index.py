@@ -76,7 +76,7 @@ VISUAL_KIND_WORDS = {
     "geometry": ("geometry", "几何图", "三角形", "venn", "文氏图", "韦恩图"),
     "flowchart": ("flowchart", "flow chart", "流程图"),
 }
-_FIGREF_RE = re.compile(r"(?:figure|fig\.?|table|图|表)\s*\d", re.I)
+_FIGREF_RE = re.compile(r"(?<![A-Za-z0-9])(?:figure|fig\.?|table|图|表)\s*\d", re.I)   # not 'comfortable 1'
 _AXIS_WORDS = ("x-axis", "y-axis", "x轴", "y轴", "横轴", "纵轴", "坐标轴", "图例", "legend", "axis")
 # structural thresholds — recall-first: any embedded image counts; >=6 vector drawings (below that is
 # usually just rules/underlines in text layout)
@@ -247,6 +247,9 @@ def scan_materials(materials, backend, warnings):
         for fn in sorted(files):
             if fn.lower().endswith(".pdf"):
                 pdfs.append(os.path.join(base, fn))
+    if not pdfs:
+        # a wrong/empty --materials must not read as "all clear": nothing was cross-checked at all
+        warnings.append("no_pdfs_found: 材料目录里没有扫到任何 PDF（路径给错或目录为空？）——疑漏交叉核对未运行")
     if pdfs and not backend.can_text():
         _die("材料里有 PDF 但缺文本后端——pip install pypdf（或 pymupdf）后重跑", 3)
     if pdfs and not backend.can_media():
@@ -293,26 +296,35 @@ def _usable_prompt_asset(ws, a):
 
 
 def _file_indexed(fig_files, source_file):
-    """Was this source_file actually scanned into the figure index (exact or basename match)?"""
+    """Was this source_file actually scanned into the figure index? A QUALIFIED path (has a directory
+    part) must match exactly — a same-named PDF elsewhere is NOT the declared source; only a bare
+    basename may match by name."""
     if not source_file:
         return False
     sf = str(source_file).replace("\\", "/")
-    return sf in fig_files or any(os.path.basename(r) == os.path.basename(sf) for r in fig_files)
+    if sf in fig_files:
+        return True
+    if "/" in sf:
+        return False
+    return any(os.path.basename(r) == sf for r in fig_files)
 
 
 def _visual_hits(fig_files, source_file, pages):
-    """Which of `pages` are visual pages of `source_file`. EXACT relative-path match wins; only when no
-    exact match exists do we fall back to basename matches — and then take the UNION across duplicates
-    (homework/ch01.pdf vs lectures/ch01.pdf): recall-first, a hit in any candidate must not be hidden."""
+    """Which of `pages` are visual pages of `source_file`. EXACT relative-path match wins; a QUALIFIED
+    path that doesn't match exactly gets NO fallback (an unrelated same-named PDF must not stand in for
+    the declared source). Only a bare basename falls back — then take the UNION across duplicates
+    (recall-first, a hit in any candidate must not be hidden)."""
     if not source_file or not pages:
         return []
     sf = str(source_file).replace("\\", "/")
     if sf in fig_files:
         vis = fig_files[sf]["visual"]
         return sorted(p for p in pages if isinstance(p, int) and p in vis)
+    if "/" in sf:
+        return []
     hits = set()
     for rel, info in fig_files.items():
-        if os.path.basename(rel) == os.path.basename(sf):
+        if os.path.basename(rel) == sf:
             hits.update(p for p in pages if isinstance(p, int) and p in info["visual"])
     return sorted(hits)
 
@@ -334,9 +346,15 @@ def build_question_index(ws, bank, fig_files, warnings=None):
         answer_assets = [a.get("path") for a in (q.get("assets") or [])
                          if isinstance(a, dict) and a.get("role") in ("answer_context", "worked_solution")
                          and a.get("path")]
-        # an AI-generated answer is NOT an official (teacher/material) answer — provenance contract
-        ai_gen = q.get("ai_generated") is True or q.get("source") == "ai_generated"
-        has_answer = (not ai_gen) and any(q.get(k) not in (None, "", []) for k in ("answer", "answer_keywords"))
+        # official answer = teacher/material provenance ONLY — mixed/unknown/missing/ai_generated all
+        # mean the answer is not (fully) from the teacher/material and must not read as official
+        try:
+            import validate_workspace as V
+            official_sources = V.MATERIAL_SOURCES
+        except Exception:                              # pragma: no cover — validator should be importable
+            official_sources = {"teacher", "material"}
+        official_src = q.get("source") in official_sources and q.get("ai_generated") is not True
+        has_answer = official_src and any(q.get(k) not in (None, "", []) for k in ("answer", "answer_keywords"))
         q_hits = _visual_hits(fig_files, q.get("source_file"), q.get("source_pages"))
         a_hits = _visual_hits(fig_files, q.get("answer_source_file") or q.get("source_file"),
                               q.get("answer_source_pages"))
@@ -408,10 +426,10 @@ def apply_suspects(ws, materials, bank, suspects, backend, asset_root, warnings)
         exact = os.path.join(materials, sf.replace("/", os.sep))
         if os.path.isfile(exact):
             pdf = exact
-        else:                                          # basename fallback — but ONLY when unambiguous,
-            cands = []                                 # pruning leftover workspaces exactly like the scan
-            for base, dirs, files in os.walk(materials):
-                for d in list(dirs):
+        elif "/" not in sf:                            # basename fallback ONLY for a bare name — a
+            cands = []                                 # qualified path must match exactly (an unrelated
+            for base, dirs, files in os.walk(materials):   # same-named PDF is not the declared source);
+                for d in list(dirs):                       # prune leftover workspaces like the scan
                     full = os.path.join(base, d)
                     if d in ALWAYS_PRUNE or _is_leftover_workspace(full, d) or _is_workspace_root(full):
                         dirs.remove(d)
