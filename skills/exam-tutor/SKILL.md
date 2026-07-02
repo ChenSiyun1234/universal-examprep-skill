@@ -19,7 +19,7 @@ Teach exactly one current wiki chapter. Explain concepts with real-life metaphor
 
 ## Inputs
 - `references/wiki/chN_*.md` — the single wiki chapter file for the current phase. Read this and nothing else.
-- `study_progress.md` — read to confirm the current phase and the student's mastery state.
+- Progress state — `study_state.json` when it exists (A4 source of truth), else `study_progress.md`; read to confirm the current phase and the student's mastery state.
 
 ## Workflow
 1. **Lazy-load one slice.** Call `view_file` on exactly ONE current chapter file `references/wiki/chN_*.md`. Never read the whole book and never load the entire library into context. If the chapter file is missing, abstain and tell the student which file is absent; do not fabricate content.
@@ -28,12 +28,12 @@ Teach exactly one current wiki chapter. Explain concepts with real-life metaphor
 4. **Visual-first key questions.** Before explaining, hinting, or solving any stored/key question with `requires_assets=true` or `maybe_requires_assets=true`, apply [`docs/file-format.md`](../../docs/file-format.md) §4: render/show every question-side asset (`question_context` / `figure` / `diagram` / `table`) first, label it `题面图 / question-side asset`, and use only those prompt assets before the explanation. Do not show `answer_context` / `worked_solution` assets until solution/review, after the prompt image has already been shown, and label them `答案图 / answer-side asset`. If the file is missing/unreadable, the UI cannot render it, or the output would only print a non-rendering path (including malformed slash-prefixed Windows drive-letter Markdown), do not teach that item as if the prompt were complete; say the prompt asset is unavailable and move on. Prefer the official tool over hand-writing the Markdown: `python <package-root>/scripts/show_question_assets.py --workspace <ws> --id <qid>` emits the prompt-side image lines (POSIX relative paths) and exits 1 when the contract can't be met — treat exit 1 as "skip this item".
 5. **Diagram — run the algorithm first.** For binary tree / AVL / red-black tree / B-tree / graph traversal / state machine diagrams, do not freehand from memory. First write and actually run the standard algorithm in Python (`matplotlib`/`graphviz`) to obtain the structure, then render it to an image. Tell the student "按通用教科书画法，老师有特殊要求以老师为准" (drawn per standard textbook convention; defer to the teacher for special requirements). If Python is unavailable, describe each step in ASCII/Mermaid and label it "未经程序验证" (not program-verified).
 6. **Provenance labels.** Label every segment using the canonical markers (see [`docs/language-policy.md`](../../docs/language-policy.md)): 🟢 来自资料 for material-sourced content / 🟡 AI补充，可能与你老师讲的不完全一致 for AI additions. When the teacher did not provide the answer and the AI supplies it, label it ⚠️ AI生成答案，非老师/教材提供.
-7. **Confusion tracking.** When the student asks follow-up concept questions (why / what / how derived), invoke `confusion-tracker` to record the confusion point into `study_progress.md`.
-8. **Update progress.** After teaching the chapter, set its checkpoint status in `study_progress.md`, then hand control back to `exam-cram`.
+7. **Confusion tracking.** When the student asks follow-up concept questions (why / what / how derived), invoke `confusion-tracker` to record the confusion point — with `study_state.json`, that means `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> add-confusion` (the md regenerates; direct md writes are lost on the next render); without state, into `study_progress.md`.
+8. **Update progress.** After teaching the chapter, set its checkpoint status — with `study_state.json`, via `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> set --phase <N>` / `set-check --match <打卡项>`; without state, in `study_progress.md` — then hand control back to `exam-cram`.
 
 ## Output Contract
 - Output a concise explanation plus the needed metaphor / formula dissection / memory hook, ending with a refreshed progress panel.
-- After each learning or checkpoint event, update the chapter checkpoint status in `study_progress.md`.
+- After each learning or checkpoint event, update the chapter checkpoint status (state-backed: `update_progress.py set`/`set-check`; fallback: `study_progress.md`).
 - Do not quiz or score; for practice questions, delegate to `exam-quiz` (which draws only from `references/quiz_bank.json`).
 - Limit wiki reads to the single current `references/wiki/chN_*.md` chapter (not other chapters, not the whole book); validate that path. Reading and updating `study_progress.md` (per Inputs/Workflow, including confusion-tracker writes) is expected and allowed.
 - Student-facing output defaults to Simplified Chinese unless the user asks otherwise. Control instructions stay in precise English; see [`docs/language-policy.md`](../../docs/language-policy.md).
@@ -65,6 +65,8 @@ Teach exactly one current wiki chapter. Explain concepts with real-life metaphor
 零基础重点题精讲沿用同样的小标题（这题考什么 / 标准答题步骤 / 易错点 / 3分钟速记 / 现在轮到你）。
 
 ## Boundaries
+- **Structured progress state (A4)**: when `study_state.json` exists it is the SINGLE SOURCE OF TRUTH — update it via `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> set/add-mistake/add-confusion/render`; `study_progress.md` is a GENERATED view (hand edits are lost on the next render — never hand-patch it). If a state write fails, TELL the user; never continue as if it saved. Without `study_state.json` (no-Python fallback), a hand-maintained md stays valid.
+
 - **Scope filter & override (A2)**: default question pool is mixed; a student-restricted range (e.g. homework-only) is a recorded scope filter — serving items outside it requires the verbatim announcement 「⚠️ 临时覆盖你的 <scope> 范围偏好」 first, and untagged (`source_type` missing) items are excluded from restricted scopes with their count reported. Official selector: `scripts/select_questions.py`.
 
 - Do not stray beyond the current chapter. Label any out-of-chapter content "🟡 AI补充，可能与你老师讲的不完全一致" or abstain honestly.

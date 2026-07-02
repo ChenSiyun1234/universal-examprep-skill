@@ -12,7 +12,7 @@ license: MIT
 Quiz the student from the question bank and grade against stored answers. Never invent questions or answers on the fly.
 
 ## Purpose
-Pull chapter/phase-scoped items from `references/quiz_bank.json`, present one item at a time across the six quiz types, grade each answer, run the escape hatch on repeated failures, and archive skipped/wrong items to `study_progress.md`. Hand control back to `exam-cram` after the checkpoint.
+Pull chapter/phase-scoped items from `references/quiz_bank.json`, present one item at a time across the six quiz types, grade each answer, run the escape hatch on repeated failures, and archive skipped/wrong items (via `update_progress.py add-mistake` when `study_state.json` exists, else `study_progress.md`). Hand control back to `exam-cram` after the checkpoint.
 
 ## Activation
 - Trigger after a phase is studied and needs a checkpoint quiz, or when the user asks 「测一下 / 来几道题 / 模考」.
@@ -41,12 +41,12 @@ Pull chapter/phase-scoped items from `references/quiz_bank.json`, present one it
    - `code` — check the key edits/output against `answer`.
    - `diagram` — do not judge the figure from memory: follow `render_hint` to run the standard algorithm first, derive the structure, then compare against the student's drawing; state that the instructor's drawing method takes precedence.
 3. **Escape hatch**: on a wrong answer, give the logic gap + the item's `explanation` + a hint. On the 2nd consecutive wrong answer, offer three choices — view hint / skip and archive the wrong item / continue — and proceed per the choice.
-4. **Archive**: write skipped or wrong items into the `study_progress.md` wrong-item archive.
+4. **Archive**: record skipped or wrong items — with `study_state.json`, run `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> add-mistake --id <qid> --chapter <ch> --note <错误原因>`（脚本按技能包根解析——学生工作区里没有 scripts/，不要按当前目录找） (hand-editing the generated md loses the row on the next render); without state, write into the `study_progress.md` wrong-item archive.
 5. **Source honesty**: when an item's or answer's `source` is `ai_generated`, flag it at grading time with 「⚠️ AI生成答案，非老师/教材提供」 (reference only, verify against the instructor/textbook).
 
 ## Output Contract
 - Present one item at a time; grade as pass/not-pass plus key-point feedback; refresh the progress panel at the end.
-- Update the `study_progress.md` check-in log and wrong-item archive, then hand control back to `exam-cram`.
+- Update the check-in log and wrong-item archive — via `update_progress.py`（add-mistake / set-check）when `study_state.json` exists, else in `study_progress.md` — then hand control back to `exam-cram`.
 - Student-facing output defaults to Simplified Chinese unless the user asks otherwise. (See [`docs/language-policy.md`](../../docs/language-policy.md).)
 - Provenance labels in feedback are verbatim student-facing markers: 🟢 来自资料 / 🟡 AI补充，可能与你老师讲的不完全一致 / ⚠️ AI生成答案，非老师/教材提供.
 
@@ -60,6 +60,8 @@ Pull chapter/phase-scoped items from `references/quiz_bank.json`, present one it
 - **题/答为 AI 生成**：⚠️ AI生成答案，非老师/教材提供，仅供参考，请和老师/教材核对。
 
 ## Boundaries
+- **Structured progress state (A4)**: when `study_state.json` exists it is the SINGLE SOURCE OF TRUTH — update it via `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> set/add-mistake/add-confusion/render`（按技能包根解析脚本路径）; `study_progress.md` is a GENERATED view (hand edits are lost on the next render — never hand-patch it). If a state write fails, TELL the user; never continue as if it saved. Without `study_state.json` (no-Python fallback), a hand-maintained md stays valid.
+
 - When the bank holds relevant items, do not write your own. With no stored answer, do not force a verdict — mark ⚠️ or state the limitation plainly.
 - Do not judge diagram items from memory — the algorithm-derived standard structure is the reference.
 - **Fail-closed on assets**: never ask an item whose `requires_assets=true` or `maybe_requires_assets=true` when a required question-side asset is missing, unreadable, or cannot be displayed (e.g. web-only). A blocked item is skipped, not improvised — choose a full-text item instead. The validator (`scripts/validate_workspace.py`) rejects a workspace whose visual-required item lacks valid question-side asset files, so a clean workspace won't reach you in that state.

@@ -35,7 +35,7 @@ Activate when the user is approaching an exam and asks for a cram plan, drill qu
 
 On every turn, run these preconditions FIRST (they are not a branch):
 
-1. If `study_progress.md` exists, read it first and restore the saved phase/progress. This is a precondition: after reading, continue routing. Do NOT stop at "progress restored."
+1. Restore the saved phase/progress FIRST — from `study_state.json` when it exists (A4 source of truth; `study_progress.md` is a generated view that may be stale or hand-edited), otherwise from `study_progress.md`. This is a precondition: after reading, continue routing. Do NOT stop at "progress restored."
 2. If the workspace is missing (no wiki, quiz bank, or progress), route to `exam-ingest` to build the workspace, then return here.
 
 Lazy-load rule: read only the single current wiki slice. Never preload `references/wiki/` or the whole `references/quiz_bank.json` on restore; pull only the relevant chapter or items when the current step needs them.
@@ -48,9 +48,9 @@ After restoring state, pick the ONE step that matches the user's intent and curr
 2. **Quiz**: filter `references/quiz_bank.json` for this chapter's items and drill/grade from them; never invent questions when relevant items exist. Delegate to `exam-quiz`. Six quiz types: choice / subjective / diagram / fill_blank / true_false / code. For diagram items (binary-tree rotation, graph traversal, state machines, etc.), run the algorithm to compute the structure first, then render; never hand-draw from memory.
 3. **Concept Q&A**: when the user asks why/what/how-to-derive, answer only from the current wiki chapter. If the point is a confusion, record it via `confusion-tracker` into the progress file.
 4. **Escape hatch**: when the user answers wrong twice in a row, offer three choices (view hint / skip and archive the mistake / continue) and proceed by the user's choice.
-5. **Final review / cheatsheet**: trigger when the workspace reaches the final-review stage (all study phases cleared, per `study_progress.md`/`study_plan.md`), OR when the user explicitly asks for a cheatsheet/review — NOT on the `sprint` or `panic` mode name alone. A fresh `panic`-mode student goes to step 1 teaching first (key-question coaching via `exam-tutor`); the cheatsheet is built from that taught content, not by jumping to an empty review. Load the mistake archive and confusion records first, then run sweep-and-cheatsheet. Delegate to `exam-review` and `exam-cheatsheet`.
+5. **Final review / cheatsheet**: trigger when the workspace reaches the final-review stage (all study phases cleared — judged from `study_state.json`'s `current_phase`/`phase_checklist` when it exists, else `study_progress.md`, against `study_plan.md`), OR when the user explicitly asks for a cheatsheet/review — NOT on the `sprint` or `panic` mode name alone. A fresh `panic`-mode student goes to step 1 teaching first (key-question coaching via `exam-tutor`); the cheatsheet is built from that taught content, not by jumping to an empty review. Load the mistake archive and confusion records first, then run sweep-and-cheatsheet. Delegate to `exam-review` and `exam-cheatsheet`.
 
-After each learning or checkpoint event, update `study_progress.md` (phase, check-ins, mistake archive, confusion records) and refresh the progress panel at the end of the reply. When file I/O is unavailable (pure web client), switch to "text breakpoints": output a copyable progress Summary at the end of each turn and ask the user to paste it back next turn.
+After each learning or checkpoint event, update the progress state (phase, check-ins, mistake archive, confusion records) — via `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> set/add-mistake/add-confusion/set-mistake-status/set-confusion-status/set-check`（脚本按技能包根目录解析，如 ingest 一样——不要按学生工作区的当前目录找 scripts/） when `study_state.json` exists (it regenerates `study_progress.md`), else by editing `study_progress.md` directly — and refresh the progress panel at the end of the reply. When file I/O is unavailable (pure web client), switch to "text breakpoints": output a copyable progress Summary at the end of each turn and ask the user to paste it back next turn.
 
 ### Modes
 
@@ -84,6 +84,8 @@ Use the canonical Chinese vocabulary on the student side (当前阶段 / 这题�
 Student-facing output defaults to Simplified Chinese unless the user asks otherwise.
 
 ## Boundaries
+- **Structured progress state (A4)**: when `study_state.json` exists it is the SINGLE SOURCE OF TRUTH — update it via `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> set/add-mistake/add-confusion/render`（按技能包根解析脚本路径）; `study_progress.md` is a GENERATED view (hand edits are lost on the next render — never hand-patch it). If a state write fails, TELL the user; never continue as if it saved. Without `study_state.json` (no-Python fallback), a hand-maintained md stays valid.
+
 - **Scope filter & override (A2)**: default question pool is mixed; a student-restricted range (e.g. homework-only) is a recorded scope filter routed to sub-skills — any serving outside it requires the verbatim announcement 「⚠️ 临时覆盖你的 <scope> 范围偏好」 first; untagged (`source_type` missing) items are excluded from restricted scopes with their count reported (official selector: `scripts/select_questions.py`).
 
 
