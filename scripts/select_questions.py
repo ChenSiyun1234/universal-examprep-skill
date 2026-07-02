@@ -91,7 +91,7 @@ def export_sqlite(bank, path):
         os.remove(path)
     con = sqlite3.connect(path)
     try:
-        con.execute("CREATE TABLE questions (id TEXT PRIMARY KEY, type TEXT, chapter TEXT, "
+        con.execute("CREATE TABLE questions (id TEXT PRIMARY KEY, type TEXT, chapter TEXT, phase TEXT, "
                     "source_type TEXT, difficulty INTEGER, difficulty_reason TEXT, "
                     "requires_assets INTEGER, maybe_requires_assets INTEGER, "
                     "has_official_answer INTEGER, question TEXT)")
@@ -107,15 +107,20 @@ def export_sqlite(bank, path):
                     return any(isinstance(x, str) and x.strip() for x in v)
                 return v is not None
             has_ans = official_src and (_nonblank(q.get("answer")) or _nonblank(q.get("answer_keywords")))
-            con.execute("INSERT OR REPLACE INTO questions VALUES (?,?,?,?,?,?,?,?,?,?)",
-                        (str(q["id"]), q.get("type"), _chapter_of(q), q.get("source_type"),
+            con.execute("INSERT OR REPLACE INTO questions VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        (str(q["id"]), q.get("type"),
+                         str(q.get("chapter")) if q.get("chapter") is not None else None,
+                         str(q.get("phase")) if q.get("phase") is not None else None,
+                         q.get("source_type"),
                          q.get("difficulty") if isinstance(q.get("difficulty"), int)
                          and not isinstance(q.get("difficulty"), bool) else None,
                          q.get("difficulty_reason"),
                          int(q.get("requires_assets") is True), int(q.get("maybe_requires_assets") is True),
                          int(has_ans), str(q.get("question", ""))[:500]))
+            seen_kp = set()
             for k in (q.get("knowledge_points") or []):
-                if isinstance(k, str):
+                if isinstance(k, str) and k not in seen_kp:       # 重复标签只插一行
+                    seen_kp.add(k)
                     con.execute("INSERT INTO knowledge_points VALUES (?,?)", (str(q["id"]), k))
         con.commit()
     finally:
@@ -138,7 +143,7 @@ def run(argv=None):
                     help="可选：把题库导出为 sqlite 查询缓存（生成物，不进仓库、不被本工具回读）")
     args = ap.parse_args(argv)
 
-    if args.source_type:
+    if args.source_type is not None:                   # ""（空字符串）也必须走校验，不能静默回混合池
         vals = [v.strip() for v in args.source_type.split(",") if v.strip()]
         if not vals:
             _die("--source-type 为空（如 ','）——空过滤器不等于不过滤，请给出至少一个来源")

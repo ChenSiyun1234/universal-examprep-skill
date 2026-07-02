@@ -176,6 +176,27 @@ class Selector(unittest.TestCase):
         rc, out = self._run(ws, ["--chapter", "1", "--json"])
         self.assertIn("dual1", [i["id"] for i in json.loads(out)["items"]])   # 复习阶段也可命中
 
+    def test_sqlite_keeps_phase_and_dedupes_kp(self):
+        ws = _mk_ws(tempfile.mkdtemp(), [{"id": "dual3", "chapter": 3, "phase": 1, "type": "subjective",
+                                          "question": "双标？", "answer": "E", "source": "material",
+                                          "ai_generated": False, "knowledge_points": ["重", "重", "另"]}])
+        db = os.path.join(tempfile.mkdtemp(), "c.db")
+        self._run(ws, ["--export-sqlite", db, "--json"])
+        import sqlite3
+        con = sqlite3.connect(db)
+        ch, ph = con.execute("SELECT chapter, phase FROM questions WHERE id='dual3'").fetchone()
+        kp = con.execute("SELECT COUNT(*) FROM knowledge_points WHERE question_id='dual3'").fetchone()[0]
+        con.close()
+        self.assertEqual((ch, ph), ("3", "1"))                    # phase 不再被折叠丢失
+        self.assertEqual(kp, 2)                                   # 重复标签只插一行
+
+    def test_empty_string_source_type_rejected(self):
+        ws = _mk_ws(tempfile.mkdtemp())
+        r = subprocess.run([sys.executable, os.path.join(SCRIPTS, "select_questions.py"),
+                            "--workspace", ws, "--source-type", ""],
+                           capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(r.returncode, 2)                         # "" 不静默回混合池
+
     def test_items_expose_both_chapter_and_phase(self):
         ws = _mk_ws(tempfile.mkdtemp(), [{"id": "dual2", "chapter": 3, "phase": 1, "type": "subjective",
                                           "question": "双标？", "answer": "E", "source": "material",
@@ -218,6 +239,18 @@ class KnowledgeIndex(unittest.TestCase):
         self.assertIn("ch1.md", kp["双标"]["wiki_files"])          # 经 phase:1 解析到 plan 的 wiki
         self.assertEqual(sorted(kp["双标"]["chapters"]), ["1", "3"])
         self.assertIn("ch2.md", kp["名章"]["wiki_files"])          # chapter 为 wiki 基名 → 反查命中
+
+    def test_index_checklist_phase_context(self):
+        # checklist 计划（- [ ] 阶段 1 后跟缩进 wiki 行）也能建立阶段→wiki 映射
+        tmp = tempfile.mkdtemp()
+        ws = _mk_ws(tmp)
+        open(os.path.join(ws, "study_plan.md"), "w", encoding="utf-8").write(
+            "# 计划\n- [ ] 阶段 1：栈\n  - references/wiki/ch1.md\n"
+            "- [ ] 阶段 2：树\n  - references/wiki/ch2.md\n")
+        subprocess.run([sys.executable, os.path.join(SCRIPTS, "build_knowledge_index.py"),
+                        "--workspace", ws], capture_output=True, text=True, encoding="utf-8")
+        idx = json.load(open(os.path.join(ws, "references", "knowledge_index.json"), encoding="utf-8"))
+        self.assertIn("ch1.md", idx["knowledge_points"]["栈"]["wiki_files"])
 
     def test_index_dedupes_repeated_tags(self):
         ws = _mk_ws(tempfile.mkdtemp(), [{"id": "dup1", "chapter": 1, "type": "subjective",

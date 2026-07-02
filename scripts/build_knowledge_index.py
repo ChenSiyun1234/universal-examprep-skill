@@ -42,8 +42,8 @@ def plan_wiki_map(text):
         structural = s.startswith("#") or s.startswith("|") or bool(re.match(r"[-*]\s", s))
         pm = re.search(_PHASE_RE, s) if structural else None
         n = int(next(g for g in pm.groups() if g)) if pm else None
-        if n is not None and (s.startswith("#") or s.startswith("|")):
-            cur = n
+        if n is not None and (s.startswith("#") or s.startswith("|") or re.match(r"[-*]\s", s)):
+            cur = n                                    # checklist 行（- [ ] 阶段 1）也建立阶段上下文
             m.setdefault(str(cur), [])
         target = n if n is not None else cur
         for w in re.findall(r"references/wiki/([^\s\)\]\"'`]+?\.md)", s):
