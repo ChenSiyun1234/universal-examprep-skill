@@ -58,7 +58,7 @@ _HW_NUM_PAT = r"(\d+(?:\.\d+)*(?:\s*\([A-Za-z]\)|[A-Za-z])?)"
 _HW_PROB_RES = (re.compile(_HEAD + r"(?:Problem|Exercise|Question)\s*#?\s*" + _HW_NUM_PAT, re.I | re.M),
                 re.compile(_HEAD + r"(?:第\s*(\d+)\s*题|习题\s*(\d+)[.:：]?|题目\s*(\d+)[.:：]?)", re.M))
 # inline solution heading (same file, follows its problem)
-_HW_SOL_RE = re.compile(_HEAD + r"(?:Solution|Answer|解答|答案)\s*(?:(?:to|for|of)\s+(?:Problem|Exercise|Question)\s*)?(?:#?\s*" + _HW_NUM_PAT + r")?\s*(?:[.:：]|$)",
+_HW_SOL_RE = re.compile(_HEAD + r"(?:Solutions?|Answers?|解答|答案)\s*(?:(?:to|for|of)\s+(?:Problem|Exercise|Question)\s*)?(?:#?\s*" + _HW_NUM_PAT + r")?\s*(?:[.:：]|$)",
                         re.I | re.M)
 # 「Problem 1 Solution」这类解答段标题：号后【同一行】剩余部分必须整体就是 解答/答案 标记
 #（可带编号/收尾标点）——「Problem 1: Answer the following…」是题面动词，绝不能翻成解答段
@@ -77,7 +77,7 @@ _SOL_PREFIX_NUM_RE = re.compile(r"^[ \t>*•·\-#]*(\d+(?:\.\d+)*(?:\([A-Za-z]\)
 # 「1a. Answer:」「1(a). Answer:」——字母/括号不在 _HEAD 字符类里，_HW_SOL_RE 根本到不了 Answer；
 # 用专门的带号前缀形式补上（编号含字母小问）
 _HW_SOL_PRE_RE = re.compile(r"^[ \t>*•·\-#]*(\d+(?:\.\d+)*(?:\s*\([A-Za-z]\)|[A-Za-z])?)\s*[.)）、]?\s*"
-                            r"(?:Solution|Answer|解答|答案)\s*(?:[.:：]|$)", re.I | re.M)
+                            r"(?:Solutions?|Answers?|解答|答案)\s*(?:[.:：]|$)", re.I | re.M)
 # 题号之后紧跟的解答词（「Problem 1 Solution: …」的 Solution: 部分）——空白判定剥复合标题用
 _HW_PROB_SOL_HEAD_RE = re.compile(r"^\s*[\).\-]?\s*\(?\s*(?:solutions?|answers?|解答|答案)\s*[.:：]?", re.I)
 
@@ -373,6 +373,8 @@ def _sol_dir_segment(seg):
     动词短语目录装的是题面，整目录判解答会把作业全丢掉。"""
     if not _SOL_TOKEN_RE.search(seg):
         return False
+    if re.search(r"(?i)(?:solutions?|answers?|sols?|ans)[_. ()-]*$", seg):
+        return True                        # 记号在段尾（week1_solutions/）——后缀式解答目录
     rest = _SOL_TOKEN_RE.sub("", _strip_sol_desc(seg))
     toks = re.findall(r"[A-Za-z一-鿿]+", rest)
     return all(t.lower() in ("for", "to", "of", "the") or _HW_FILE_RE.search(t) for t in toks)
@@ -420,8 +422,10 @@ def classify_homework_files(files):
         sol_before_adjacent = bool(sol_m and hw_m and sol_m.start() < hw_m.start()
                                    and not re.search(r"[0-9]", _between)
                                    and all(t.lower() in ("for", "to", "of", "the") for t in _btokens))
+        sol_after_hw = bool(hw_m and any(m.start() > hw_m.start()
+                                         for m in _SOL_TOKEN_RE.finditer(stem_nokey)))
         is_sol = bool(any(_sol_dir_segment(seg) for seg in os.path.dirname(rel).split("/"))
-                      or (sol_m and (not hw_m or sol_m.start() > hw_m.start()))
+                      or (sol_m and not hw_m) or sol_after_hw
                       or sol_before_adjacent)
         if not (_HW_FILE_RE.search(rel) or is_sol):
             continue                                   # solutions/hw1.pdf：目录名也是 solution 记号
@@ -702,10 +706,17 @@ def extract_homework_items(pages):
             hw_marks = _hw_markers(_file_stream(pages, hf)[0])
             hw_nums = {m["num"] for m in hw_marks if m["role"] == "problem" and m["num"] is not None}
             first_sol = next((m for m in marks_all if m["role"] == "solution"), None)
-            if len(hw_nums) == 1 and first_sol is not None:
-                got = _hw_nonblank_slice(stream, bounds, sf, first_sol["start"], len(stream))
-                if got:
-                    sol_answers[(hf, next(iter(hw_nums)))] = got + ("solution",)
+            if len(hw_nums) == 1:
+                if first_sol is not None:
+                    a_from = first_sol["start"]
+                elif not marks_all:
+                    a_from = 0             # 连标记都没有的裸答案册（内容就是「4」）——配对关系已无歧义
+                else:
+                    a_from = None
+                if a_from is not None:
+                    got = _hw_nonblank_slice(stream, bounds, sf, a_from, len(stream))
+                    if got:
+                        sol_answers[(hf, next(iter(hw_nums)))] = got + ("solution",)
 
     # id 词干必须对文件【单射】：消毒把 a/b/hw1 与 a_b/hw1 折叠成同串时，按原始相对路径哈希消歧
     #（不撞名的文件保持原有可读 id 不变）
@@ -861,6 +872,11 @@ def extract_homework_items(pages):
                 item["_question_pages"] = [(hf, p) for p in (q_pages or [])]
                 if ans and requires_assets_heuristic(ans[1], renderable=is_pdf.get(ans[0], False)):
                     item["_answer_pages"] = [(ans[0], p) for p in (ans[2] or [])]
+            elif ans and requires_assets_heuristic(ans[1], renderable=is_pdf.get(ans[0], False)):
+                # 题面纯文本、官方解答依赖图（see the graph below）——渲染答案侧原页作 answer_context，
+                # 复盘讲解不至于指着看不见的图；不设 requires_assets（题面本身完整可问）
+                item["_render"] = True
+                item["_answer_pages"] = [(ans[0], p) for p in (ans[2] or [])]
             items.append(item)
             report["homework_problems"] += 1
         if dup_counts:

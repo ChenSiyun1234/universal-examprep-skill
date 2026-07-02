@@ -905,7 +905,70 @@ class HomeworkIngest(unittest.TestCase):
         self.assertEqual(len(hw), 1)                              # pset1 识别为作业并配对
         self.assertIn("pset 命名的答案", hw[0]["answer"])
 
+    # ---- regression guards for Codex round-13 (5 findings) ----
+
+    def test_late_sol_token_after_verb_prefix(self):
+        hw, pairing = B.classify_homework_files(["hw1.pdf", "answer_questions_hw1_sol.pdf"])
+        self.assertIn("answer_questions_hw1_sol.pdf", pairing)    # 后置 _sol 让它是解答文件
+        self.assertNotIn("answer_questions_hw1_sol.pdf", hw)      # 绝不再当第二份作业导入
+
+    def test_plural_solution_headings_pair(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw16.pdf": ["Problem 1\n题面一。\n\nProblem 2\n题面二。"],
+                            "hw16_sol.pdf": ["Solutions to Problem 1\n第一题复数解答。\n\n"
+                                             "2. Answers: 第二题复数解答。"]})
+        code, payload, report = _run(mat, be)
+        hw = {q["homework_number"]: q for q in payload["quiz_bank"] if q.get("source_type") == "homework"}
+        self.assertIn("第一题复数解答", hw[1]["answer"])            # Solutions/Answers 复数标记配上
+        self.assertIn("第二题复数解答", hw[2]["answer"])
+
+    def test_visual_answer_for_text_question_rendered(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw17.pdf": ["Problem 1\n纯文本题面，直接作答。"],
+                            "hw17_sol.pdf": ["Problem 1\nAnswer 1: see the graph below for the shape."]})
+        asset_root = os.path.join(tmp, "ws", "references", "assets")
+        code, payload, report = _run(mat, be, ["--asset-root", asset_root])
+        q = next(x for x in payload["quiz_bank"] if x.get("source_type") == "homework")
+        self.assertNotIn("requires_assets", q)                    # 题面完整可问，不 fail-close
+        roles = [a["role"] for a in q.get("assets", [])]
+        self.assertIn("answer_context", roles)                    # 但答案侧原页已渲染供复盘
+
+    def test_week_scoped_solution_directories_pair(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(os.path.join(mat, "week1_homework"), exist_ok=True)
+        os.makedirs(os.path.join(mat, "week1_solutions"), exist_ok=True)
+        with open(os.path.join(mat, "week1_homework", "hw1.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+        with open(os.path.join(mat, "week1_solutions", "hw1.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+
+        class WkBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                if "solutions" in pdf_path.replace("\\", "/"):
+                    return ["Problem 1\nAnswer 1: 周目录后缀的答案。"]
+                return ["Problem 1\n周目录后缀的题面。"]
+        code, payload, report = _run(mat, WkBackend({}))
+        q = next(x for x in payload["quiz_bank"] if x.get("source_type") == "homework")
+        self.assertIn("周目录后缀的答案", q["answer"])              # week1_solutions/ 识别为解答目录
+
+    def test_markerless_single_answer_companion(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw18.pdf": ["Problem 1\n单题裸答案册的题面。"],
+                            "hw18_sol.pdf": ["4"]})
+        code, payload, report = _run(mat, be)
+        q = next(x for x in payload["quiz_bank"] if x.get("source_type") == "homework")
+        self.assertEqual(q["answer"].strip(), "4")                 # 无标记裸答案按唯一题配上
+        tmp2 = tempfile.mkdtemp()
+        mat2, be2 = _mk(tmp2, {"hw19.pdf": ["Problem 1\n多题一。\n\nProblem 2\n多题二。"],
+                               "hw19_sol.pdf": ["42"]})
+        code2, payload2, report2 = _run(mat2, be2)
+        hw2 = {q["homework_number"]: q for q in payload2["quiz_bank"] if q.get("source_type") == "homework"}
+        self.assertEqual(hw2[1]["answer_status"], "unknown")       # 多题不猜归属
+        self.assertEqual(hw2[2]["answer_status"], "unknown")
+
     def test_no_network_or_llm(self):
+
 
 
 
