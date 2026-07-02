@@ -320,7 +320,60 @@ class HomeworkIngest(unittest.TestCase):
         self.assertNotIn("answer", hw[1])                         # 填空线不是官方答案
         self.assertEqual(hw[1]["answer_status"], "unknown")
 
+    # ---- regression guards for Codex round-3 (4 findings) ----
+
+    def test_numbered_answer_key_headings_pair(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw11.pdf": ["Problem 1\n第一题题面内容。\n\nProblem 2\n第二题题面内容。"],
+                            "hw11_sol.pdf": ["1. Answer: 第一题的官方答案。\n\n2) Solution: 第二题的官方答案。"]})
+        code, payload, report = _run(mat, be)
+        hw = {q["homework_number"]: q for q in payload["quiz_bank"] if q.get("source_type") == "homework"}
+        self.assertIn("第一题的官方答案", hw[1]["answer"])          # 「1. Answer:」编号在标记前也能配上
+        self.assertIn("第二题的官方答案", hw[2]["answer"])          # 「2) Solution:」同理
+
+    def test_zero_padded_stem_pairs(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"HW01.pdf": ["Problem 1\n零填充作业的题面内容。"],
+                            "HW1_sol.pdf": ["Problem 1\nAnswer 1: 零填充也要配上的答案。"]})
+        code, payload, report = _run(mat, be)
+        q = next(x for x in payload["quiz_bank"] if x.get("source_type") == "homework")
+        self.assertIn("零填充也要配上", q["answer"])                # HW01 ↔ HW1_sol
+        hw, pairing = B.classify_homework_files(["homework/hw1.pdf", "homework/hw10.pdf",
+                                                 "homework/hw1_sol.pdf"])
+        self.assertTrue(pairing["homework/hw1_sol.pdf"].endswith("hw1.pdf"))   # hw1/hw10 边界不受影响
+
+    def test_same_line_prompt_stays_full(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw12.pdf": ["Problem 1 Compute 2+2.\n\nProblem 2: 求 x^2 的导数。"]})
+        code, payload, report = _run(mat, be)
+        hw = {q["homework_number"]: q for q in payload["quiz_bank"] if q.get("source_type") == "homework"}
+        self.assertEqual(hw[1]["question_text_status"], "full")   # 标题同行的完整题面 ≠ 图片题
+        self.assertNotIn("requires_assets", hw[1])
+        self.assertEqual(hw[2]["question_text_status"], "full")
+
+    def test_decimal_problem_numbers_kept_distinct(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw13.pdf": ["Problem 1.1\n第一小题题面内容。\nAnswer 1.1: 第一小题答案。\n\n"
+                                         "Problem 1.2\n第二小题题面内容。"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        nums = sorted(str(q["homework_number"]) for q in hw)
+        self.assertEqual(nums, ["1.1", "1.2"])                    # 小数题号不再折叠成同一个 1
+        self.assertEqual(len({q["id"] for q in hw}), 2)
+        by_num = {str(q["homework_number"]): q for q in hw}
+        self.assertIn("第一小题答案", by_num["1.1"]["answer"])     # 小数号 inline 答案配对
+        self.assertEqual(by_num["1.2"]["answer_status"], "unknown")
+
+    def test_download_copy_suffix_and_synonym_pair(self):
+        hw, pairing = B.classify_homework_files(["hw2 (4)(1).pdf", "homework2solutions.pdf"])
+        self.assertEqual(pairing["homework2solutions.pdf"], "hw2 (4)(1).pdf")   # 下载副本后缀 + homework≡hw
+
+    def test_true_duplicate_copies_stay_failloud(self):
+        hw, pairing = B.classify_homework_files(["hw2 (1).pdf", "hw2 (2).pdf", "hw2solutions.pdf"])
+        self.assertIsNone(pairing["hw2solutions.pdf"])            # 真重名副本歧义时拒绝配对，不串答案
+
     def test_no_network_or_llm(self):
+
 
 
         src = open(os.path.join(ROOT, "scripts", "build_raw_input_from_workspace.py"), encoding="utf-8").read()

@@ -50,11 +50,13 @@ _HW_FILE_RE = re.compile(r"(?:^|[\\/_\-. ])(?:hw|homework|assignments?|problem[ 
 # tokens that mark a SOLUTION companion file (hw1_sol.pdf / HW2_Answers.pdf / 作业3答案.pdf)
 _SOL_TOKEN_RE = re.compile(r"solutions?|answers?|(?:^|[_\-. ])(?:sol|ans)(?=[_\-. ]|$)|答案|解答", re.I)
 # problem headings inside homework/solution files（行首锚定，与 lecture 标记同族）
-_HW_PROB_RES = (re.compile(_HEAD + r"(?:Problem|Exercise|Question)\s*#?\s*(\d+)", re.I | re.M),
+_HW_PROB_RES = (re.compile(_HEAD + r"(?:Problem|Exercise|Question)\s*#?\s*(\d+(?:\.\d+)*)", re.I | re.M),
                 re.compile(_HEAD + r"(?:第\s*(\d+)\s*题|习题\s*(\d+)[.:：]?|题目\s*(\d+)[.:：]?)", re.M))
 # inline solution heading (same file, follows its problem)
-_HW_SOL_RE = re.compile(_HEAD + r"(?:Solution|Answer|解答|答案)\s*(?:#?\s*(\d+))?\s*(?:[.:：]|$)",
+_HW_SOL_RE = re.compile(_HEAD + r"(?:Solution|Answer|解答|答案)\s*(?:#?\s*(\d+(?:\.\d+)*))?\s*(?:[.:：]|$)",
                         re.I | re.M)
+# answer-key 常见的「1. Answer: …」形式：编号在标记前面，被 _HEAD 吞掉——从匹配前缀里找回
+_SOL_PREFIX_NUM_RE = re.compile(r"^[ \t>*•·\-#]*(\d+(?:\.\d+)*)\s*[.)）、]")
 
 # Two classes of asset cue. ASSET_EXCLUDE masks known false-positive phrases first.
 ASSET_EXCLUDE = ("table of contents", "figure it out", "figure out", "graph theory", "figure caption")
@@ -335,7 +337,14 @@ def extract_lecture_items(pages):
 
 def _hw_norm(stem):
     """Normalized pairing key: lowercase, keep alnum + CJK only（hw1_sol → hw1 after token strip）."""
-    return re.sub(r"[^a-z0-9一-鿿]+", "", stem.lower())
+    # 浏览器重复下载的副本后缀「hw2 (4)(1)」不参与配对——真重名副本会归到同一键，
+    # 触发歧义→fail-loud 不配对，不会串答案
+    s = re.sub(r"(?:\s*\(\d+\))+\s*$", "", stem)
+    s = re.sub(r"[^a-z0-9一-鿿]+", "", s.lower())
+    s = re.sub(r"^homework", "hw", s)              # homework2solutions ↔ hw2：常见同义词归一
+    # 零填充变体也要配对（HW01.pdf ↔ HW1_sol.pdf）——去掉数字组前导零；
+    # 只删「前面不是数字」的 0，hw10 不受影响，hw1/hw10 的边界检查照旧
+    return re.sub(r"(?<!\d)0+(\d)", r"\1", s)
 
 
 def classify_homework_files(files):
@@ -404,6 +413,13 @@ def _pages_for_span(bounds, a, b):
     return out
 
 
+def _hw_num(s):
+    """Problem number as int, or the original string for textbook-style decimals（1.1 ≠ 1）."""
+    if s is None:
+        return None
+    return int(s) if s.isdigit() else s
+
+
 def _hw_markers(stream):
     """All problem/inline-solution markers in stream order: {start, num|None, role}."""
     marks = []
@@ -413,10 +429,14 @@ def _hw_markers(stream):
             line = stream[m.start(): stream.find("\n", m.end()) if stream.find("\n", m.end()) >= 0 else len(stream)]
             if _TOC_RE.search(line[:300]):
                 continue
-            marks.append({"start": m.start(), "num": int(num), "role": "problem"})
+            marks.append({"start": m.start(), "num": _hw_num(num), "role": "problem"})
     for m in _HW_SOL_RE.finditer(stream):
         num = next((g for g in m.groups() if g), None)
-        marks.append({"start": m.start(), "num": int(num) if num else None, "role": "solution"})
+        if num is None:                        # 「1. Answer: …」——编号在标记前、被 _HEAD 吞掉，从前缀找回
+            pm = _SOL_PREFIX_NUM_RE.match(m.group(0))
+            if pm:
+                num = pm.group(1)
+        marks.append({"start": m.start(), "num": _hw_num(num), "role": "solution"})
     marks.sort(key=lambda d: d["start"])
     # de-dup identical (start) collisions (EN/CN patterns can't overlap, but be safe)
     dedup, seen = [], set()
@@ -504,12 +524,21 @@ def extract_homework_items(pages):
             # marker-only prompt: the heading is all the text extractor got — the real prompt is an
             # image on the page → page_reference（镜像 lecture 的 marker_only 语义），并渲染原页
             body_txt = q_text.split("\n", 1)[1] if "\n" in q_text else ""
+            # 标题与题面同一行（"Problem 1 Compute 2+2."）——标记之后的同行文本也是正文，
+            # 不能因为没有换行就把完整文字题当成图片题
+            first_line = q_text.split("\n", 1)[0]
+            m0 = next((mm for mm in (rx.match(first_line) for rx in _HW_PROB_RES) if mm), None)
+            if m0:
+                same_line = first_line[m0.end():].lstrip(" \t.:：、,，)）-—").strip()
+                if same_line:
+                    body_txt = (same_line + "\n" + body_txt).strip()
             # 只有正文【完全没有】内容字符才算 marker-only——"2+2=?"/"求导" 这类短而完整的题面仍是 full
             marker_only = len(re.findall(r"[0-9A-Za-z一-鿿]", body_txt)) == 0
             # chapter：只在题文/文件名明说时才标（第N章 / Chapter N / chNN）——作业号 ≠ 章节号，不硬编
             chm = (re.search(r"(?:第\s*(\d+)\s*章|Chapter\s+(\d+))", q_text, re.I)
                    or re.search(r"(?:^|[\/_\-. ])ch\s*0*(\d+)", hf, re.I))
-            item = {"id": "hw_%s_%d" % (stem, mk["num"]), "type": "subjective",
+            item = {"id": "hw_%s_%s" % (stem, str(mk["num"]).replace(".", "_")),   # 1.1 → _1_1，id 保持安全字符
+                    "type": "subjective",
                     "question": q_text, "source": "material", "ai_generated": False,   # 不静默截断（长题保完整）
                     "source_type": "homework", "homework_number": mk["num"],
                     "question_text_status": "page_reference" if marker_only else "full",
@@ -542,8 +571,9 @@ def extract_homework_items(pages):
             report["homework_problems"] += 1
         if dup_counts:
             report["warnings"].append("hw_duplicate_problem: %s（%s——每题保留第一处标记，重现多为页眉/"
-                                      "解答区重复）" % (hf, "、".join("Problem %d×%d" % (n, c)
-                                                                      for n, c in sorted(dup_counts.items()))))
+                                      "解答区重复）" % (hf, "、".join("Problem %s×%d" % (n, c)
+                                                                      for n, c in sorted(dup_counts.items(),
+                                                                                         key=lambda kv: str(kv[0])))))
     return items, report
 
 
