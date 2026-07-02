@@ -68,7 +68,7 @@ _HW_SOL_HEAD_RE = re.compile(r"^\s*[\)\.:\-]?\s*\(?\s*(?:solutions?|answers?|解
                              re.I)
 # 「Problem 1 Solution: A1」——解答词后带冒号+同行内容也是解答段；注意首字符不许是冒号，
 # 否则「Problem 1: Answer the following…」（冒号在解答词之前）会被误翻
-_HW_SOL_HEAD_CONTENT_RE = re.compile(r"^\s*[\)\.\-]?\s*\(?\s*(?:solutions?|answers?|解答|答案)"
+_HW_SOL_HEAD_CONTENT_RE = re.compile(r"^\s*[\)\.\-:：]?\s*\(?\s*(?:solutions?|answers?|解答|答案)"
                                      r"\s*(?:#?\s*\d+(?:\.\d+)*(?:\s*\([A-Za-z]\)|[A-Za-z])?)?\s*\)?"
                                      r"\s*[:：]\s*\S", re.I)
 # answer_key / solution_manual 的 key/manual 是解答后缀描述词——分类与配对键计算前一并剥掉
@@ -616,8 +616,12 @@ def _hw_markers(stream):
 
 def _hw_blank_line(line):
     """A worksheet BLANK line: nothing but filler（下划线/点/破折号）且至少 3 个连续填充符——
-    图表残渣里的单个 '-'/'.' 不是填空线，不能拿它否掉真实解答。"""
-    content = re.sub(r"[\s:：]+", "", line)
+    图表残渣里的单个 '-'/'.' 不是填空线，不能拿它否掉真实解答。
+    前导下划线填空后跟评分/指示标注（________ (5 pts) / show your work）同样是空栏。"""
+    if re.match(r"^[\s:：]*[_＿]{3,}", line):
+        return True
+    content = re.sub(r"[（(][^（）()]{0,24}[)）]", "", line)   # 尾随 (5 pts) 类短标注不算内容
+    content = re.sub(r"[\s:：]+", "", content)
     return bool(re.fullmatch(r"[_＿.．。…\-—]{3,}", content))
 
 
@@ -701,6 +705,27 @@ def extract_homework_items(pages, root_name=""):
         marks_all = _hw_markers(stream)
         # 独立解答册常见排版「Problem 1 复述 → 无号 Solution → 真解答」：无号解答段继承前一个
         # 带号题目的题号——否则被过滤后整段并进题面复述切片，真解答被埋没
+        # 无号「Answers」节 + 编号行（1. A1 / 2. A2）——与作业内联同规，按号拆给各题
+        for m in marks_all:
+            if m["role"] != "solution" or m["num"] is not None:
+                continue
+            end0 = next((m2["start"] for m2 in marks_all if m2["start"] > m["start"]), len(stream))
+            seg = stream[m["start"]:end0]
+            keyed_ms = list(re.finditer(
+                r"^[ \t]*(\d+(?:\.\d+)*(?:\([A-Za-z]\))?)[.)、][ \t]", seg, re.M))
+            if len({m2.group(1) for m2 in keyed_ms}) < 2:
+                continue
+            m["_section"] = True       # 已按号拆分的节头——继承不得再把它归给上一题
+            for x, m2 in enumerate(keyed_ms):
+                seg_end = keyed_ms[x + 1].start() if x + 1 < len(keyed_ms) else len(seg)
+                numk = _hw_num(m2.group(1))
+                key = (hf, numk)
+                if key in sol_answers:
+                    continue
+                got0 = _hw_nonblank_slice(stream, bounds, sf, m["start"] + m2.start(),
+                                          m["start"] + seg_end)
+                if got0:
+                    sol_answers[key] = got0 + ("solution",)
         # 节标题位置要在继承改写 num 之前先记下（无号 solution 标记就是 Solutions/Answers 标题行）
         header_starts = [m["start"] for m in marks_all
                          if m["role"] == "solution" and m["num"] is None]
@@ -724,31 +749,10 @@ def extract_homework_items(pages, root_name=""):
         for m in marks_all:
             if m["role"] == "problem" and m["num"] is not None:
                 last_num = m["num"]
-            elif m["role"] == "solution" and m["num"] is None and last_num is not None:
+            elif m["role"] == "solution" and m["num"] is None and last_num is not None \
+                    and not m.get("_section"):
                 m["num"] = last_num
         # (Continued) 标记是上一段的续页——切片要越过它，解答的后续页并入前一切片
-        # 无号「Answers」节 + 编号行（1. A1 / 2. A2）——与作业内联同规，按号拆给各题
-        for m in marks_all:
-            if m["role"] != "solution" or m["num"] is not None:
-                continue
-            end0 = next((m2["start"] for m2 in marks_all if m2["start"] > m["start"]), len(stream))
-            seg = stream[m["start"]:end0]
-            keyed_ms = list(re.finditer(
-                r"^[ " + chr(92) + r"t]*(" + chr(92) + r"d+(?:" + chr(92) + r"." + chr(92)
-                + r"d+)*(?:" + chr(92) + r"([A-Za-z]" + chr(92) + r"))?)[.)、][ " + chr(92) + r"t]",
-                seg, re.M))
-            if len({m2.group(1) for m2 in keyed_ms}) < 2:
-                continue
-            for x, m2 in enumerate(keyed_ms):
-                seg_end = keyed_ms[x + 1].start() if x + 1 < len(keyed_ms) else len(seg)
-                numk = _hw_num(m2.group(1))
-                key = (hf, numk)
-                if key in sol_answers:
-                    continue
-                got0 = _hw_nonblank_slice(stream, bounds, sf, m["start"] + m2.start(),
-                                          m["start"] + seg_end)
-                if got0:
-                    sol_answers[key] = got0 + ("solution",)
         marks = [m for m in marks_all if m["num"] is not None and not m.get("continued")]
         sol_nums = {m["num"] for m in marks if m["role"] == "solution"}
         for i, mk in enumerate(marks):
@@ -911,10 +915,15 @@ def extract_homework_items(pages, root_name=""):
                 first_line_full = stream[mk["start"]:(head_line_end if head_line_end >= 0 else len(stream))]
                 bm0 = next((mm for mm in (rx.match(first_line_full) for rx in _HW_PROB_RES) if mm), None)
                 same_rest = first_line_full[bm0.end():] if bm0 else ""
-                if not re.search(r"[0-9A-Za-z一-鿿]", body_before + same_rest):
+                if marks[k]["num"] is None                         and not re.search(r"[0-9A-Za-z一-鿿]", body_before + same_rest):
                     ans = None         # 题面在答案标记前毫无内容——这行 Answer 是答题栏标签
                                        #（如 Answer: Give a short proof…），属题面指示语，不是官方答案
                     s_start = None
+                    ext_end = next((m2["start"] for m2 in marks[k:] if m2["role"] == "problem"),
+                                   len(stream))
+                    if ext_end > nxt_q:
+                        nxt_q = ext_end            # 指示语并回题面——题目保持完整可问的全文题
+                        q_text = stream[mk["start"]:nxt_q].strip()
                 else:
                     s_start = marks[k]["start"]
                 if s_start is not None:

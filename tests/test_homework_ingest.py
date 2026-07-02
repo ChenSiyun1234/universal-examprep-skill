@@ -1151,7 +1151,53 @@ class HomeworkIngest(unittest.TestCase):
         q = next(x for x in payload["quiz_bank"] if x.get("source_type") == "homework")
         self.assertIn("4", q["answer"])                           # 纯数字/符号官方答案不被字母门槛拒掉
 
+    # ---- regression guards for Codex round-17 (4 findings) ----
+
+    def test_restated_then_bare_answers_list_in_paired_file(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw28.pdf": ["Problem 1\n题面一。\n\nProblem 2\n题面二。"],
+                            "hw28_sol.pdf": ["Problem 1\n复述一。\n\nProblem 2\n复述二。\n\n"
+                                             "Answers\n1. 手册答案一\n2. 手册答案二"]})
+        code, payload, report = _run(mat, be)
+        hw = {q["homework_number"]: q for q in payload["quiz_bank"] if q.get("source_type") == "homework"}
+        self.assertIn("手册答案一", hw[1]["answer"])                # 节头不被继承吞掉，按号拆分先行
+        self.assertIn("手册答案二", hw[2]["answer"])
+        self.assertNotIn("手册答案二", hw[1]["answer"])            # 第二题答案不整块灌给第一题
+
+    def test_colon_prefixed_solution_heading_pairs(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw29.pdf": ["Problem 1\n题面内容。\n\nProblem 1: Solution: 冒号形式的解答。\n\n"
+                                         "Problem 2\n下一题。"]})
+        code, payload, report = _run(mat, be)
+        hw = {q["homework_number"]: q for q in payload["quiz_bank"] if q.get("source_type") == "homework"}
+        self.assertIn("冒号形式的解答", hw[1]["answer"])            # Problem 1: Solution: 配上
+        tmp2 = tempfile.mkdtemp()
+        mat2, be2 = _mk(tmp2, {"hw30.pdf": ["Problem 1: Answer the following about heaps.\n更多题面。"]})
+        code2, payload2, report2 = _run(mat2, be2)
+        hw2 = [q for q in payload2["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw2), 1)                             # 题面动词短语仍不误翻
+
+    def test_answer_box_instruction_stays_in_prompt(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw31.pdf": ["Problem 1\nAnswer: Give a short proof in the box below.\n\n"
+                                         "Problem 2\n下一题题面。"]})
+        code, payload, report = _run(mat, be)
+        hw = {q["homework_number"]: q for q in payload["quiz_bank"] if q.get("source_type") == "homework"}
+        self.assertEqual(hw[1]["question_text_status"], "full")   # 指示语并回题面，保持可问全文题
+        self.assertIn("Give a short proof", hw[1]["question"])
+        self.assertEqual(hw[1]["answer_status"], "unknown")
+
+    def test_blank_with_trailing_label_stays_unknown(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw32.pdf": ["Problem 1\n计算 2+2。\nAnswer: ________ (5 pts)\n\n"
+                                         "Problem 2\n下一题题面。"]})
+        code, payload, report = _run(mat, be)
+        hw = {q["homework_number"]: q for q in payload["quiz_bank"] if q.get("source_type") == "homework"}
+        self.assertNotIn("answer", hw[1])                         # 填空线+尾随评分标注不是答案
+        self.assertEqual(hw[1]["answer_status"], "unknown")
+
     def test_no_network_or_llm(self):
+
 
 
 
