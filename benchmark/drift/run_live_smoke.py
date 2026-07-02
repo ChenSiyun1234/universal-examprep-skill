@@ -82,6 +82,15 @@ def load_turns(path):
             if v is not None and not (isinstance(v, list) and v
                                       and all(isinstance(x, str) and x.strip() for x in v)):
                 _die("turns[%d].%s 必须是非空字符串数组" % (i, k))
+        # validate metadata UP FRONT — a bad phase_context/kind must fail before any PAID agent call,
+        # not after the whole session when the adapter rejects the log
+        pc = t.get("phase_context")
+        if pc is not None and not (isinstance(pc, int) and not isinstance(pc, bool)) \
+                and not (isinstance(pc, str) and pc.strip().isdigit()):
+            _die("turns[%d].phase_context 必须是整数或数字字符串，当前 %r（先修脚本再花钱跑）" % (i, pc))
+        kd = t.get("kind")
+        if kd is not None and not isinstance(kd, str):
+            _die("turns[%d].kind 必须是字符串，当前 %r" % (i, kd))
     return spec
 
 
@@ -159,36 +168,47 @@ def call_agent(cmd_template, prompt, timeout, max_out, cwd=None):
         _die("--agent-cmd 必须含 {prompt} 占位符（作为单个参数传入）")
     # CAPPED streaming read — capture_output would buffer an unbounded reply into memory BEFORE the
     # length check; instead read at most ~4×max_out bytes and kill the agent if it keeps going.
-    import tempfile
     import threading
     cap_bytes = max_out * 4 + 4096
-    got = {}
-    with tempfile.TemporaryFile() as errf:
-        try:
-            proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=errf, cwd=cwd)
-        except OSError as e:
-            _die("agent 命令无法执行: %s" % e, 3)
+    err_cap = 65536
+    got, err_got = {}, {"data": b""}
+    try:
+        proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
+    except OSError as e:
+        _die("agent 命令无法执行: %s" % e, 3)
 
-        def _reader():
-            got["data"] = proc.stdout.read(cap_bytes + 1)
+    def _reader():
+        got["data"] = proc.stdout.read(cap_bytes + 1)
 
-        t = threading.Thread(target=_reader, daemon=True)
-        t.start()
-        t.join(timeout)
-        if t.is_alive():
-            proc.kill()
-            _die("agent 调用超时（%ds）——按失败中止，不评残缺会话" % timeout, 3)
-        data = got.get("data") or b""
-        if len(data) > cap_bytes:
-            proc.kill()
-            _die("agent 输出超出读取上限（%d 字节）——按预算中止，不评被截断的会话" % cap_bytes, 3)
-        try:
-            rc = proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            _die("agent 输出后未退出（%ds）——按失败中止" % timeout, 3)
-        errf.seek(0)
-        err_text = errf.read().decode("utf-8", "replace")
+    def _err_drain():
+        # keep only the first err_cap bytes, but keep DRAINING so a chatty stderr never fills the pipe
+        # (pipe backpressure would deadlock the agent) nor the disk (no unbounded spool)
+        while True:
+            chunk = proc.stderr.read(8192)
+            if not chunk:
+                return
+            if len(err_got["data"]) < err_cap:
+                err_got["data"] += chunk[: err_cap - len(err_got["data"])]
+
+    t = threading.Thread(target=_reader, daemon=True)
+    te = threading.Thread(target=_err_drain, daemon=True)
+    t.start()
+    te.start()
+    t.join(timeout)
+    if t.is_alive():
+        proc.kill()
+        _die("agent 调用超时（%ds）——按失败中止，不评残缺会话" % timeout, 3)
+    data = got.get("data") or b""
+    if len(data) > cap_bytes:
+        proc.kill()
+        _die("agent 输出超出读取上限（%d 字节）——按预算中止，不评被截断的会话" % cap_bytes, 3)
+    try:
+        rc = proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        _die("agent 输出后未退出（%ds）——按失败中止" % timeout, 3)
+    te.join(5)
+    err_text = err_got["data"].decode("utf-8", "replace")
     if rc != 0:
         _die("agent 命令退出码 %d：%s" % (rc, err_text[:400]), 3)
     out = data.decode("utf-8", "replace").strip()
@@ -280,9 +300,17 @@ def main(argv=None):
     # (never the committed one) and run every call from inside it
     import shutil
     sandbox = os.path.join(args.out_dir, "workspace")
+    marker = os.path.join(sandbox, ".live_smoke_sandbox")
     if os.path.isdir(sandbox):
+        if not os.path.isfile(marker):
+            # NEVER delete a directory we didn't create — a broad --out-dir (e.g. /tmp) could contain an
+            # unrelated 'workspace' dir belonging to the user
+            _die("--out-dir 下已存在非本工具创建的 workspace/ 目录，拒绝删除：%s（换个 --out-dir 或手动清理）"
+                 % sandbox)
         shutil.rmtree(sandbox)
     shutil.copytree(fixture_dir, sandbox)
+    with open(marker, "w", encoding="utf-8") as f:
+        f.write("created by run_live_smoke.py; safe to delete\n")
 
     digest = bank_digest(sandbox)
     progress_path = os.path.join(sandbox, "study_progress.initial.md")

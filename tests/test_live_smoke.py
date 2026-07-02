@@ -285,6 +285,49 @@ class LiveSmoke(unittest.TestCase):
         r = _run(["--agent-cmd", AGENT_CMD, "--out-dir", out], {"RUN_SKILL_DRIFT_LLM": "1"})
         self.assertIn("live_smoke_basic", r.stdout)              # runner actually scores THIS scenario
 
+    # ---- regression guards for Codex round-5 (P1 + hardening) ----
+
+    def test_refuses_to_delete_foreign_workspace_dir(self):
+        # P1: an existing workspace/ NOT created by us (no marker) must never be rmtree'd
+        out = tempfile.mkdtemp()
+        foreign = os.path.join(out, "workspace")
+        os.makedirs(foreign)
+        precious = os.path.join(foreign, "user_data.txt")
+        open(precious, "w").write("do not delete")
+        r = _run(["--agent-cmd", AGENT_CMD, "--out-dir", out], {"RUN_SKILL_DRIFT_LLM": "1"})
+        self.assertEqual(r.returncode, 2)
+        self.assertTrue(os.path.isfile(precious))                # untouched
+        # rerun into OUR sandbox (marker present) is allowed
+        out2 = tempfile.mkdtemp()
+        r1 = _run(["--agent-cmd", AGENT_CMD, "--out-dir", out2], {"RUN_SKILL_DRIFT_LLM": "1"})
+        self.assertEqual(r1.returncode, 0, r1.stderr)
+        r2 = _run(["--agent-cmd", AGENT_CMD, "--out-dir", out2], {"RUN_SKILL_DRIFT_LLM": "1"})
+        self.assertEqual(r2.returncode, 0, r2.stderr)            # marker → safe recreate
+
+    def test_stderr_flood_capped_and_survives(self):
+        flood = json.dumps([sys.executable, "-c",
+                            "import sys\nsys.stderr.write('e'*500000)\nsys.stdout.write('ok reply')",
+                            "{prompt}"])
+        r = _run(["--agent-cmd", flood, "--out-dir", tempfile.mkdtemp()], {"RUN_SKILL_DRIFT_LLM": "1"})
+        self.assertIn(r.returncode, (0, 1), r.stderr[:300])      # no deadlock, no unbounded spool crash
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_bad_phase_context_rejected_before_any_agent_call(self):
+        d = tempfile.mkdtemp()
+        spec = json.load(open(os.path.join(DRIFT, "templates", "live_smoke_turns.json"), encoding="utf-8"))
+        spec["turns"][0]["phase_context"] = "阶段1"               # misspelled metadata
+        tf = os.path.join(d, "turns.json")
+        json.dump(spec, open(tf, "w", encoding="utf-8"), ensure_ascii=False)
+        r = _run(["--agent-cmd", AGENT_CMD, "--out-dir", d, "--turns", tf], {"RUN_SKILL_DRIFT_LLM": "1"})
+        self.assertEqual(r.returncode, 2)                        # fails BEFORE spending paid turns
+        self.assertFalse(os.path.isfile(os.path.join(d, "live_session.md")))
+
+    def test_final_resume_probe_requires_phase2_evidence(self):
+        spec = json.load(open(os.path.join(DRIFT, "templates", "live_smoke_turns.json"), encoding="utf-8"))
+        last = spec["turns"][-1]
+        self.assertIn("阶段2", last["expect_any"])                # wrong-phase resume text can't pass silently
+        self.assertIn("阶段1", last["forbid_any"])
+
     def test_runner_is_offline_by_construction(self):
         src = open(RUNNER, encoding="utf-8").read()
         for banned in ("import requests", "import anthropic", "import openai",
