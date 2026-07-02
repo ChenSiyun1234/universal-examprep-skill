@@ -840,7 +840,73 @@ class HomeworkIngest(unittest.TestCase):
         self.assertIn("题面二内容", hw[2]["question"])
         self.assertIn("解答二", hw[2]["answer"])
 
+    # ---- regression guards for Codex round-12 (7 findings) ----
+
+    def test_lecture_pairing_never_pulls_homework_answers(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw11.pdf": ["Quiz 1.1 Solution\n作业文件里的解答内容。"]})
+        with open(os.path.join(mat, "lec_ch01.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+        be.texts["lec_ch01.pdf"] = ["Quiz 1.1 Problem\n讲义里的题面。"]
+        code, payload, report = _run(mat, be)
+        lec = [q for q in payload["quiz_bank"] if q["id"].startswith("lecture_")]
+        self.assertTrue(lec)
+        self.assertNotIn("answer", lec[0])                        # 讲义题绝不从作业文件吸答案
+        self.assertNotEqual(lec[0].get("answer_source_file"), "homework/hw11.pdf")
+
+    def test_problem_solution_blank_heading_unknown(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw12.pdf": ["Problem 1\n题面内容。\n\nProblem 1 Solution: ________\n\n"
+                                         "Problem 2\n下一题题面。"]})
+        code, payload, report = _run(mat, be)
+        hw = {q["homework_number"]: q for q in payload["quiz_bank"] if q.get("source_type") == "homework"}
+        self.assertNotIn("answer", hw[1])                         # 复合标题后的填空线不是答案
+        self.assertEqual(hw[1]["answer_status"], "unknown")
+
+    def test_restated_prompt_not_answer_when_blank_marker_exists(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw13.pdf": ["Problem 1\n计算 2+2。"],
+                            "hw13_sol.pdf": ["Problem 1\nCompute 2+2 restated.\nAnswer 1: ________"]})
+        code, payload, report = _run(mat, be)
+        q = next(x for x in payload["quiz_bank"] if x.get("source_type") == "homework")
+        self.assertNotIn("answer", q)                             # 题面复述不顶替空白答案
+        self.assertEqual(q["answer_status"], "unknown")
+
+    def test_compact_solution_manual_stems_pair(self):
+        hw, pairing = B.classify_homework_files(["hw1.pdf", "hw1_solutionmanual.pdf"])
+        self.assertEqual(pairing["hw1_solutionmanual.pdf"], "hw1.pdf")
+        hw2, pairing2 = B.classify_homework_files(["hw2.pdf", "hw2_solmanual.pdf"])
+        self.assertEqual(pairing2["hw2_solmanual.pdf"], "hw2.pdf")
+
+    def test_symbolic_prompt_selfcontained_extracted(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw14_solutions.pdf": ["Problem 1\n2+2=?\nSolution\n4 就是答案。"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw), 1)                              # 符号题面（2+2=?）是真实题面
+        self.assertIn("4 就是答案", hw[0]["answer"])
+
+    def test_solution_to_problem_headings_pair(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw15.pdf": ["Problem 1\n题面一。\n\nProblem 2\n题面二。"],
+                            "hw15_sol.pdf": ["Solution to Problem 1\n第一题官方解答。\n\n"
+                                             "Answer to Question 2\n第二题官方解答。"]})
+        code, payload, report = _run(mat, be)
+        hw = {q["homework_number"]: q for q in payload["quiz_bank"] if q.get("source_type") == "homework"}
+        self.assertIn("第一题官方解答", hw[1]["answer"])            # Solution to Problem N 形式配上
+        self.assertIn("第二题官方解答", hw[2]["answer"])
+
+    def test_pset_prefix_recognized(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"pset1.pdf": ["Problem 1\npset 命名的题面。"],
+                            "pset1_sol.pdf": ["Problem 1\nAnswer 1: pset 命名的答案。"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw), 1)                              # pset1 识别为作业并配对
+        self.assertIn("pset 命名的答案", hw[0]["answer"])
+
     def test_no_network_or_llm(self):
+
 
 
 

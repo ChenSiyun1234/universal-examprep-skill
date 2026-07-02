@@ -45,7 +45,7 @@ _QUIZ_RE = re.compile(_HEAD + r"Quiz\s+" + _NUM, re.I | re.M)
 
 # ---- A3: homework / solution files (separate PDFs paired by filename; inline solutions supported) ----
 # a homework FILE is recognized by its path (folder or stem), NOT by content guessing
-_HW_FILE_RE = re.compile(r"(?:^|[\\/_\-. ])(?:hw|homework|assignments?|problem[ _-]?sets?|ps[ _\-]?\d|作业|习题)",
+_HW_FILE_RE = re.compile(r"(?:^|[\\/_\-. ])(?:hw|homework|assignments?|problem[ _-]?sets?|psets?[ _-]?\d|ps[ _\-]?\d|作业|习题)",
                          re.I)
 # tokens that mark a SOLUTION companion file (hw1_sol.pdf / HW2_Answers.pdf / 作业3答案.pdf)。
 # solution/answer 需要词元边界：前面不能是字母（unanswered ≠ answers；hw1solution 的数字前缀合法），
@@ -58,7 +58,7 @@ _HW_NUM_PAT = r"(\d+(?:\.\d+)*(?:\s*\([A-Za-z]\)|[A-Za-z])?)"
 _HW_PROB_RES = (re.compile(_HEAD + r"(?:Problem|Exercise|Question)\s*#?\s*" + _HW_NUM_PAT, re.I | re.M),
                 re.compile(_HEAD + r"(?:第\s*(\d+)\s*题|习题\s*(\d+)[.:：]?|题目\s*(\d+)[.:：]?)", re.M))
 # inline solution heading (same file, follows its problem)
-_HW_SOL_RE = re.compile(_HEAD + r"(?:Solution|Answer|解答|答案)\s*(?:#?\s*" + _HW_NUM_PAT + r")?\s*(?:[.:：]|$)",
+_HW_SOL_RE = re.compile(_HEAD + r"(?:Solution|Answer|解答|答案)\s*(?:(?:to|for|of)\s+(?:Problem|Exercise|Question)\s*)?(?:#?\s*" + _HW_NUM_PAT + r")?\s*(?:[.:：]|$)",
                         re.I | re.M)
 # 「Problem 1 Solution」这类解答段标题：号后【同一行】剩余部分必须整体就是 解答/答案 标记
 #（可带编号/收尾标点）——「Problem 1: Answer the following…」是题面动词，绝不能翻成解答段
@@ -78,6 +78,8 @@ _SOL_PREFIX_NUM_RE = re.compile(r"^[ \t>*•·\-#]*(\d+(?:\.\d+)*(?:\([A-Za-z]\)
 # 用专门的带号前缀形式补上（编号含字母小问）
 _HW_SOL_PRE_RE = re.compile(r"^[ \t>*•·\-#]*(\d+(?:\.\d+)*(?:\s*\([A-Za-z]\)|[A-Za-z])?)\s*[.)）、]?\s*"
                             r"(?:Solution|Answer|解答|答案)\s*(?:[.:：]|$)", re.I | re.M)
+# 题号之后紧跟的解答词（「Problem 1 Solution: …」的 Solution: 部分）——空白判定剥复合标题用
+_HW_PROB_SOL_HEAD_RE = re.compile(r"^\s*[\).\-]?\s*\(?\s*(?:solutions?|answers?|解答|答案)\s*[.:：]?", re.I)
 
 # Two classes of asset cue. ASSET_EXCLUDE masks known false-positive phrases first.
 ASSET_EXCLUDE = ("table of contents", "figure it out", "figure out", "graph theory", "figure caption")
@@ -357,13 +359,21 @@ def extract_lecture_items(pages):
 # ---------------------------------------------------------------------------
 
 
+
+def _strip_sol_desc(stem):
+    """Strip solution DESCRIPTOR words（key/manual，含与解答词胶连的 solutionmanual/solmanual/answerkey）
+    ——它们是解答后缀的一部分，分类与配对键都不该被它们挡住。"""
+    stem = re.sub(r"(?i)(solutions?|answers?|sol|ans)(keys?|manuals?)", lambda m: m.group(1), stem)
+    return _KEY_TOKEN_RE.sub("", stem)
+
+
 def _sol_dir_segment(seg):
     """One path segment is a SOLUTION directory only if, after removing 解答记号/描述词/连接词,
     nothing but hw-ish tokens remains（solutions/ ✓、hw1_solutions/ ✓）——「answer_questions/」这类
     动词短语目录装的是题面，整目录判解答会把作业全丢掉。"""
     if not _SOL_TOKEN_RE.search(seg):
         return False
-    rest = _SOL_TOKEN_RE.sub("", _KEY_TOKEN_RE.sub("", seg))
+    rest = _SOL_TOKEN_RE.sub("", _strip_sol_desc(seg))
     toks = re.findall(r"[A-Za-z一-鿿]+", rest)
     return all(t.lower() in ("for", "to", "of", "the") or _HW_FILE_RE.search(t) for t in toks)
 
@@ -396,7 +406,7 @@ def classify_homework_files(files):
     for f in files:
         rel = f.replace("\\", "/")
         stem = os.path.splitext(os.path.basename(f))[0]
-        stem_nokey = _KEY_TOKEN_RE.sub("", stem)       # answer_key/solution_key 的 key 属于解答后缀
+        stem_nokey = _strip_sol_desc(stem)             # key/manual 描述词（含胶连形）属于解答后缀
         sol_m = _SOL_TOKEN_RE.search(stem_nokey)
         hw_m = _HW_FILE_RE.search(stem_nokey)
         # 「answer_questions_hw1」的 answer 是动词开头、不是解答记号——文件名里的 sol 记号须在
@@ -427,8 +437,8 @@ def classify_homework_files(files):
         rel = sf.replace("\\", "/")
         sdir = os.path.dirname(rel)
         stem = os.path.splitext(os.path.basename(sf))[0]
-        # 配对键要把 解答记号、key 后缀（answer_key）与连接词（solutions_for_hw1 的 for）一并剥掉
-        stem_pair = _SOL_TOKEN_RE.sub("", _KEY_TOKEN_RE.sub("", stem))
+        # 配对键要把 解答记号、key/manual 描述词（含胶连形）与连接词（solutions_for_hw1 的 for）一并剥掉
+        stem_pair = _SOL_TOKEN_RE.sub("", _strip_sol_desc(stem))
         stem_pair = re.sub(r"(?<![A-Za-z])(?:for|to|of|the)(?=[_. ()-]|$)", "", stem_pair, flags=re.I)
         stripped = _hw_norm(stem_pair)
 
@@ -586,6 +596,13 @@ def _hw_nonblank_slice(stream, bounds, fname, s_start, s_end):
     line_rest = re.sub(_HW_SOL_PRE_RE, "", first, count=1)   # 「1(a). Answer:」带号前缀也要剥掉
     if line_rest == first:
         line_rest = re.sub(_HW_SOL_RE, "", first, count=1)
+    if line_rest == first:
+        # 「Problem 1 Solution: ________」——题号+解答词的复合标题也要剥掉才能看清填空线
+        m0 = next((mm for mm in (rx.match(first) for rx in _HW_PROB_RES) if mm), None)
+        if m0:
+            m1 = _HW_PROB_SOL_HEAD_RE.match(first[m0.end():])
+            if m1:
+                line_rest = first[m0.end() + m1.end():]
     if line_rest.strip() and _hw_blank_line(line_rest):
         return None                        # 同行是填空线——worksheet 空栏，不是答案
     a_tail = rest if rest else line_rest
@@ -627,8 +644,10 @@ def extract_homework_items(pages):
                 _first, _, _rest = _body.partition("\n")
                 _m0 = next((mm for mm in (rx.match(_first) for rx in _HW_PROB_RES) if mm), None)
                 _same = _first[_m0.end():] if _m0 else ""
-                if re.search(r"[A-Za-z一-鿿]", _same) or re.search(r"[A-Za-z一-鿿]", _rest):
-                    return True
+                _txt = _same + " " + _rest
+                if re.search(r"[0-9A-Za-z一-鿿]", _txt) and re.search(
+                        r"[A-Za-z一-鿿+*/=^%<>?？()（）-]", _txt):
+                    return True                        # 2+2=? 这类符号题面与 marker_only 同口径
             return False
         if any(m["role"] == "problem" for m in _mks) and any(m["role"] == "solution" for m in _mks) \
                 and _has_prompt_text():
@@ -655,6 +674,7 @@ def extract_homework_items(pages):
                 m["num"] = last_num
         # (Continued) 标记是上一段的续页——切片要越过它，解答的后续页并入前一切片
         marks = [m for m in marks_all if m["num"] is not None and not m.get("continued")]
+        sol_nums = {m["num"] for m in marks if m["role"] == "solution"}
         for i, mk in enumerate(marks):
             end = marks[i + 1]["start"] if i + 1 < len(marks) else len(stream)
             # 独立解答册的切片同样过 worksheet 空白判定——空白答卷（Answer 1: ______）
@@ -663,6 +683,9 @@ def extract_homework_items(pages):
             if got is None:
                 continue
             if mk["role"] == "problem":
+                if mk["num"] in sol_nums:
+                    continue           # 同号有 Answer/Solution 标记：答案以它为准——
+                                       # 它若是空白填空，题目就该如实 unknown，不能拿题面复述顶包
                 bfirst, _, brest = got[1].partition(chr(10))
                 bm0 = next((mm for mm in (rx.match(bfirst) for rx in _HW_PROB_RES) if mm), None)
                 bsame = bfirst[bm0.end():] if bm0 else bfirst
@@ -1155,36 +1178,34 @@ def run(args, backend=None):
         return 4, {"error": "未从 --materials 提取到任何文本内容（页面为空或全是扫描件/图片）。请确认有可解析的 "
                             "PDF/.txt/.md（PDF 文本需 pypdf；图片/扫描件需 OCR，本工具不做）。"}, report
 
+    # 作业/解答文件在【抽取前】就按文件名剔出讲义管线——lecture 的题/答配对跨页进行，
+    # 事后过滤只能拦 source_file，拦不住讲义题从作业文件吸走 answer_source_file
+    hw_related = set()
+    if getattr(args, "extract_homework", "auto") != "never":
+        _hwf, _pairing = classify_homework_files(sorted({pg["file"] for pg in pages}))
+        hw_related = set(_hwf) | set(_pairing)
+    lecture_pages = [pg for pg in pages if pg["file"] not in hw_related]
     lecture_items = []
     if args.extract_lecture_questions != "never":
-        lecture_items = extract_lecture_items(pages)
+        lecture_items = extract_lecture_items(lecture_pages)
         report["examples_detected"] = sum(1 for it in lecture_items if it["id"].startswith("lecture_example"))
         report["quizzes_detected"] = sum(1 for it in lecture_items if it["id"].startswith("lecture_quiz"))
         report["pairs_detected"] = sum(1 for it in lecture_items if it.get("answer_source_pages"))
         # fail-loud: a solution detected with no matching problem (mis-detected pair) → surface it
-        for k in orphan_solution_keys(pages):
+        for k in orphan_solution_keys(lecture_pages):
             report["warnings"].append("solution_without_problem: %s %d.%d" % k)
+        if hw_related:
+            overlap = sum(len(detect_lecture_markers(pg.get("text", "")))
+                          for pg in pages if pg["file"] in hw_related)
+            if overlap:
+                report["warnings"].append("hw_lecture_overlap: 作业/解答文件里发现 %d 个讲义型标记，"
+                                          "未按讲义题导入（该内容属于作业管线）" % overlap)
 
     homework_items = []
     if getattr(args, "extract_homework", "auto") != "never":
         homework_items, hw_rep = extract_homework_items(pages)
         report["warnings"].extend(hw_rep.pop("warnings"))
         report.update(hw_rep)
-        # 作业/解答文件不参与 lecture 抽取：作业里的 Quiz/Example 标题会被当讲义题吐出
-        # （没有 source_type=homework，homework-only 范围取不到；解答册内容还会混进讲义题库）
-        hw_related = set(hw_rep.get("homework_files") or []) | set(hw_rep.get("homework_solution_files") or [])
-        if hw_related and lecture_items:
-            dropped = [it for it in lecture_items if it.get("source_file") in hw_related]
-            lecture_items = [it for it in lecture_items if it.get("source_file") not in hw_related]
-            if dropped:
-                report["examples_detected"] = sum(1 for it in lecture_items
-                                                  if it["id"].startswith("lecture_example"))
-                report["quizzes_detected"] = sum(1 for it in lecture_items
-                                                 if it["id"].startswith("lecture_quiz"))
-                report["pairs_detected"] = sum(1 for it in lecture_items if it.get("answer_source_pages"))
-                report["warnings"].append("hw_lecture_overlap: 作业/解答文件里的 %d 个讲义型标记项"
-                                          "未按讲义题导入（该内容属于作业管线）" % len(dropped))
-
     # ---- render assets for figure-dependent items ----
     asset_root = args.asset_root
     page_pdf = {(pg["file"], pg["page"]): pg["_pdf"] for pg in pages if pg.get("_pdf")}
