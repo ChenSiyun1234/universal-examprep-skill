@@ -190,6 +190,32 @@ class Selector(unittest.TestCase):
         self.assertEqual((ch, ph), ("3", "1"))                    # phase 不再被折叠丢失
         self.assertEqual(kp, 2)                                   # 重复标签只插一行
 
+    def test_export_sqlite_never_overwrites_non_sqlite_file(self):
+        ws = _mk_ws(tempfile.mkdtemp())
+        bank_path = os.path.join(ws, "references", "quiz_bank.json")
+        r = subprocess.run([sys.executable, os.path.join(SCRIPTS, "select_questions.py"),
+                            "--workspace", ws, "--export-sqlite", bank_path],
+                           capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(r.returncode, 2)                         # 拒绝覆盖
+        json.load(open(bank_path, encoding="utf-8"))              # 题库完好
+        # 已有 sqlite 缓存可以安全重建
+        db = os.path.join(tempfile.mkdtemp(), "c.db")
+        self._run(ws, ["--export-sqlite", db, "--json"])
+        rc, out = self._run(ws, ["--export-sqlite", db, "--json"])
+        self.assertEqual(rc, 0)
+
+    def test_empty_dict_answer_not_official(self):
+        ws = _mk_ws(tempfile.mkdtemp(), [{"id": "edict1", "chapter": 1, "type": "subjective",
+                                          "question": "空对象答案？", "answer": {},
+                                          "source": "material", "ai_generated": False}])
+        db = os.path.join(tempfile.mkdtemp(), "c.db")
+        self._run(ws, ["--export-sqlite", db, "--json"])
+        import sqlite3
+        con = sqlite3.connect(db)
+        v = con.execute("SELECT has_official_answer FROM questions WHERE id='edict1'").fetchone()[0]
+        con.close()
+        self.assertEqual(v, 0)                                    # {} 与校验器口径一致
+
     def test_empty_string_source_type_rejected(self):
         ws = _mk_ws(tempfile.mkdtemp())
         r = subprocess.run([sys.executable, os.path.join(SCRIPTS, "select_questions.py"),
@@ -239,6 +265,19 @@ class KnowledgeIndex(unittest.TestCase):
         self.assertIn("ch1.md", kp["双标"]["wiki_files"])          # 经 phase:1 解析到 plan 的 wiki
         self.assertEqual(sorted(kp["双标"]["chapters"]), ["1", "3"])
         self.assertIn("ch2.md", kp["名章"]["wiki_files"])          # chapter 为 wiki 基名 → 反查命中
+
+    def test_index_chapter_label_prefix_matches_wiki(self):
+        tmp = tempfile.mkdtemp()
+        ws = _mk_ws(tmp, [{"id": "pfx1", "chapter": "ch1", "type": "subjective", "question": "前缀？",
+                           "answer": "H", "source": "material", "ai_generated": False,
+                           "knowledge_points": ["前缀"]}])
+        open(os.path.join(ws, "references", "wiki", "ch1_stack_queue.md"), "w", encoding="utf-8").write("# x")
+        open(os.path.join(ws, "study_plan.md"), "w", encoding="utf-8").write(
+            "# 计划\n## 阶段1：栈\n- references/wiki/ch1_stack_queue.md\n")
+        subprocess.run([sys.executable, os.path.join(SCRIPTS, "build_knowledge_index.py"),
+                        "--workspace", ws], capture_output=True, text=True, encoding="utf-8")
+        idx = json.load(open(os.path.join(ws, "references", "knowledge_index.json"), encoding="utf-8"))
+        self.assertIn("ch1_stack_queue.md", idx["knowledge_points"]["前缀"]["wiki_files"])
 
     def test_index_checklist_phase_context(self):
         # checklist 计划（- [ ] 阶段 1 后跟缩进 wiki 行）也能建立阶段→wiki 映射

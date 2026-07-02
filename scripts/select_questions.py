@@ -88,6 +88,12 @@ def match(q, args):
 def export_sqlite(bank, path):
     import sqlite3
     if os.path.exists(path):
+        # NEVER overwrite something that isn't a previous sqlite export（误指到 quiz_bank.json 等
+        # 工作区文件会把它删掉——按魔数校验，非 SQLite 文件一律拒绝）
+        with open(path, "rb") as f:
+            magic = f.read(16)
+        if not magic.startswith(b"SQLite format 3"):
+            _die("--export-sqlite 目标已存在且不是 SQLite 缓存文件，拒绝覆盖: %s" % path)
         os.remove(path)
     con = sqlite3.connect(path)
     try:
@@ -103,8 +109,10 @@ def export_sqlite(bank, path):
             def _nonblank(v):
                 if isinstance(v, str):
                     return bool(v.strip())             # 空白-only 答案不算有答案
-                if isinstance(v, list):
+                if isinstance(v, (list, tuple)):
                     return any(isinstance(x, str) and x.strip() for x in v)
+                if isinstance(v, dict):
+                    return bool(v)                     # {} 与校验器口径一致：不算有答案
                 return v is not None
             has_ans = official_src and (_nonblank(q.get("answer")) or _nonblank(q.get("answer_keywords")))
             con.execute("INSERT OR REPLACE INTO questions VALUES (?,?,?,?,?,?,?,?,?,?,?)",

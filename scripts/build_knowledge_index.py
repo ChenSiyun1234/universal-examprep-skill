@@ -97,7 +97,7 @@ def run(argv=None):
             base = kkey if kkey.endswith(".md") else kkey + ".md"
             for files in wiki_map.values():            # chapter 写的是 wiki 文件名 → 反查
                 for w in files:
-                    if w == base or w == kkey:
+                    if w == base or w == kkey or w.startswith(kkey + "_"):   # ch1 → ch1_stack_queue.md
                         if w not in wikis:
                             wikis.append(w)
         for k in kps:
