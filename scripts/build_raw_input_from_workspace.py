@@ -70,8 +70,8 @@ _HW_SOL_HEAD_RE = re.compile(r"^\s*[\)\.:\-]?\s*\(?\s*(?:solutions?|answers?|解
 _HW_SOL_HEAD_CONTENT_RE = re.compile(r"^\s*[\)\.\-]?\s*\(?\s*(?:solutions?|answers?|解答|答案)"
                                      r"\s*(?:#?\s*\d+(?:\.\d+)*(?:\s*\([A-Za-z]\)|[A-Za-z])?)?\s*\)?"
                                      r"\s*[:：]\s*\S", re.I)
-# answer_key / solution_key 的 key 是解答后缀的一部分——配对键计算前要一并剥掉
-_KEY_TOKEN_RE = re.compile(r"(?<![A-Za-z])keys?(?=[_\-. ()]|$)", re.I)
+# answer_key / solution_manual 的 key/manual 是解答后缀描述词——分类与配对键计算前一并剥掉
+_KEY_TOKEN_RE = re.compile(r"(?<![A-Za-z])(?:keys?|manuals?)(?=[_\-. ()]|$)", re.I)
 # answer-key 常见的「1. Answer: …」形式：编号在标记前面，被 _HEAD 吞掉——从匹配前缀里找回
 _SOL_PREFIX_NUM_RE = re.compile(r"^[ \t>*•·\-#]*(\d+(?:\.\d+)*(?:\([A-Za-z]\))?)\s*[.)）、]")
 # 「1a. Answer:」「1(a). Answer:」——字母/括号不在 _HEAD 字符类里，_HW_SOL_RE 根本到不了 Answer；
@@ -356,6 +356,18 @@ def extract_lecture_items(pages):
 # A3: homework / solution extraction — deterministic, filename-paired, fail-loud
 # ---------------------------------------------------------------------------
 
+
+def _sol_dir_segment(seg):
+    """One path segment is a SOLUTION directory only if, after removing 解答记号/描述词/连接词,
+    nothing but hw-ish tokens remains（solutions/ ✓、hw1_solutions/ ✓）——「answer_questions/」这类
+    动词短语目录装的是题面，整目录判解答会把作业全丢掉。"""
+    if not _SOL_TOKEN_RE.search(seg):
+        return False
+    rest = _SOL_TOKEN_RE.sub("", _KEY_TOKEN_RE.sub("", seg))
+    toks = re.findall(r"[A-Za-z一-鿿]+", rest)
+    return all(t.lower() in ("for", "to", "of", "the") or _HW_FILE_RE.search(t) for t in toks)
+
+
 def _hw_sepform(stem):
     """Separator-PRESERVING normal form（hw1_probability_worksheet / hw1a）——前缀配对要靠边界
     区分「作业名延长」（hw1_…）与「字母变体」（hw1a 是另一份作业），纯 alnum 规范形丢了这个信号。"""
@@ -398,7 +410,7 @@ def classify_homework_files(files):
         sol_before_adjacent = bool(sol_m and hw_m and sol_m.start() < hw_m.start()
                                    and not re.search(r"[0-9]", _between)
                                    and all(t.lower() in ("for", "to", "of", "the") for t in _btokens))
-        is_sol = bool(_SOL_TOKEN_RE.search(os.path.dirname(rel))
+        is_sol = bool(any(_sol_dir_segment(seg) for seg in os.path.dirname(rel).split("/"))
                       or (sol_m and (not hw_m or sol_m.start() > hw_m.start()))
                       or sol_before_adjacent)
         if not (_HW_FILE_RE.search(rel) or is_sol):
@@ -641,7 +653,8 @@ def extract_homework_items(pages):
                 last_num = m["num"]
             elif m["role"] == "solution" and m["num"] is None and last_num is not None:
                 m["num"] = last_num
-        marks = [m for m in marks_all if m["num"] is not None]
+        # (Continued) 标记是上一段的续页——切片要越过它，解答的后续页并入前一切片
+        marks = [m for m in marks_all if m["num"] is not None and not m.get("continued")]
         for i, mk in enumerate(marks):
             end = marks[i + 1]["start"] if i + 1 < len(marks) else len(stream)
             # 独立解答册的切片同样过 worksheet 空白判定——空白答卷（Answer 1: ______）
@@ -720,7 +733,7 @@ def extract_homework_items(pages):
         for mk2 in marks:
             if mk2["role"] == "problem" and not mk2.get("continued") and mk2["num"] not in first_start:
                 first_start[mk2["num"]] = mk2["start"]
-        tail_answers, tail_starts = {}, set()
+        tail_answers, tail_starts, sol_title_start = {}, set(), None
         if first_start:
             tail_begin = max(first_start.values())
             tail_marks = [(j, mk2) for j, mk2 in enumerate(marks)
@@ -730,8 +743,11 @@ def extract_homework_items(pages):
             titled = False
             if tail_marks:
                 first_tail = min(mk2["start"] for _j, mk2 in tail_marks)
-                titled = bool(re.search(r"^[ \t>*#]*(?:solutions?|answers?|解答|答案)\s*[:：]?\s*$",
-                                        stream[tail_begin:first_tail], re.I | re.M))
+                tm = re.search(r"^[ 	>*#]*(?:solutions?|answers?|解答|答案)\s*[:：]?\s*$",
+                               stream[tail_begin:first_tail], re.I | re.M)
+                if tm:
+                    titled = True
+                    sol_title_start = tail_begin + tm.start()   # 题面边界收到节标题——prompt 不含 Solutions 行
             if titled:
                 for j, mk2 in tail_marks:
                     tail_starts.add(mk2["start"])
@@ -754,7 +770,11 @@ def extract_homework_items(pages):
                     and marks[k]["num"] == mk["num"] and marks[k].get("continued"):
                 k += 1
             nxt = marks[k]["start"] if k < len(marks) else len(stream)
-            q_text = stream[mk["start"]:nxt].strip()
+            # 有 Solutions 节标题时，题面边界收到标题行首——最后一题的 prompt 不吞节标题
+            nxt_q = nxt
+            if sol_title_start is not None and mk["start"] < sol_title_start < nxt:
+                nxt_q = sol_title_start
+            q_text = stream[mk["start"]:nxt_q].strip()
             # inline solution: the next (non-continued) marker is an un/same-numbered Solution → the answer
             ans = None
             if k < len(marks) and marks[k]["role"] == "solution" \
@@ -769,7 +789,7 @@ def extract_homework_items(pages):
             if ans is None:
                 got = sol_answers.get((hf, mk["num"]))
                 ans = got[:3] if got else None
-            q_pages = _pages_for_span(bounds, mk["start"], nxt)
+            q_pages = _pages_for_span(bounds, mk["start"], nxt_q)
             # marker-only prompt: the heading is all the text extractor got — the real prompt is an
             # image on the page → page_reference（镜像 lecture 的 marker_only 语义），并渲染原页
             body_txt = q_text.split("\n", 1)[1] if "\n" in q_text else ""
@@ -1150,6 +1170,20 @@ def run(args, backend=None):
         homework_items, hw_rep = extract_homework_items(pages)
         report["warnings"].extend(hw_rep.pop("warnings"))
         report.update(hw_rep)
+        # 作业/解答文件不参与 lecture 抽取：作业里的 Quiz/Example 标题会被当讲义题吐出
+        # （没有 source_type=homework，homework-only 范围取不到；解答册内容还会混进讲义题库）
+        hw_related = set(hw_rep.get("homework_files") or []) | set(hw_rep.get("homework_solution_files") or [])
+        if hw_related and lecture_items:
+            dropped = [it for it in lecture_items if it.get("source_file") in hw_related]
+            lecture_items = [it for it in lecture_items if it.get("source_file") not in hw_related]
+            if dropped:
+                report["examples_detected"] = sum(1 for it in lecture_items
+                                                  if it["id"].startswith("lecture_example"))
+                report["quizzes_detected"] = sum(1 for it in lecture_items
+                                                 if it["id"].startswith("lecture_quiz"))
+                report["pairs_detected"] = sum(1 for it in lecture_items if it.get("answer_source_pages"))
+                report["warnings"].append("hw_lecture_overlap: 作业/解答文件里的 %d 个讲义型标记项"
+                                          "未按讲义题导入（该内容属于作业管线）" % len(dropped))
 
     # ---- render assets for figure-dependent items ----
     asset_root = args.asset_root

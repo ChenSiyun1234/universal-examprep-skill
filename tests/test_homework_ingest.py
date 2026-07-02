@@ -126,8 +126,10 @@ class HomeworkIngest(unittest.TestCase):
 
     def test_lecture_extraction_unaffected(self):
         tmp = tempfile.mkdtemp()
-        mat, be = _mk(tmp, {"hw1.pdf": HW1,
-                            "lec_ch01.pdf": ["Example 1.1 Problem\n求和。\nExample 1.1 Solution\n答案 3。"]})
+        mat, be = _mk(tmp, {"hw1.pdf": HW1})
+        with open(os.path.join(mat, "lec_ch01.pdf"), "wb") as f:   # 讲义在根目录（不在 homework/ 里）
+            f.write(b"%PDF-fake")
+        be.texts["lec_ch01.pdf"] = ["Example 1.1 Problem\n求和。\nExample 1.1 Solution\n答案 3。"]
         code, payload, report = _run(mat, be)
         ids = [q["id"] for q in payload["quiz_bank"]]
         self.assertTrue(any(i.startswith("lecture_example_1_1") for i in ids))   # lecture 管线原样
@@ -792,7 +794,54 @@ class HomeworkIngest(unittest.TestCase):
         q = next(x for x in payload["quiz_bank"] if x.get("source_type") == "homework")
         self.assertIn("真正的图表解答正文", q["answer"])
 
+    # ---- regression guards for Codex round-11 (5 findings) ----
+
+    def test_homework_files_excluded_from_lecture_extraction(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw8.pdf": ["Quiz 1.1 Problem\n作业里的讲义式标题。\nQuiz 1.1 Solution\n答案。"]})
+        code, payload, report = _run(mat, be)
+        lec = [q for q in payload["quiz_bank"] if q["id"].startswith("lecture_")]
+        self.assertFalse(lec)                                     # 作业文件不产出 lecture_* 项
+        self.assertTrue(any(w.startswith("hw_lecture_overlap") for w in report["warnings"]))
+
+    def test_continued_solution_pages_merged(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw9.pdf": ["Problem 1\n跨页解答的题面。"],
+                            "hw9_sol.pdf": ["Problem 1\nAnswer 1: 第一页解答。",
+                                            "Problem 1 (Continued)\n第二页解答续文。"]})
+        code, payload, report = _run(mat, be)
+        q = next(x for x in payload["quiz_bank"] if x.get("source_type") == "homework")
+        self.assertIn("第一页解答", q["answer"])
+        self.assertIn("第二页解答续文", q["answer"])                # 续页并入官方答案，不再被裁掉
+
+    def test_prompt_folder_named_answer_questions_is_homework(self):
+        hw, pairing = B.classify_homework_files(["answer_questions/hw1.pdf"])
+        self.assertEqual(hw, ["answer_questions/hw1.pdf"])        # 动词短语目录装的是题面
+        self.assertEqual(pairing, {})
+        hw2, pairing2 = B.classify_homework_files(["solutions/hw1.pdf", "homework/hw1.pdf"])
+        self.assertEqual(pairing2["solutions/hw1.pdf"], "homework/hw1.pdf")   # 纯解答目录不受影响
+
+    def test_solution_manual_prefix_is_companion(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw1.pdf": ["Problem 1\n手册配对的题面。"],
+                            "solution_manual_hw1.pdf": ["Problem 1\nAnswer 1: 手册里的官方答案。"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw), 1)                              # solution_manual 是解答不是第二份作业
+        self.assertIn("手册里的官方答案", hw[0]["answer"])
+
+    def test_prompt_does_not_swallow_solutions_heading(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw10.pdf": ["Problem 1\n题面一内容。\n\nProblem 2\n题面二内容。\n\n"
+                                         "Solutions\nProblem 1\n解答一。\n\nProblem 2\n解答二。"]})
+        code, payload, report = _run(mat, be)
+        hw = {q["homework_number"]: q for q in payload["quiz_bank"] if q.get("source_type") == "homework"}
+        self.assertNotIn("Solutions", hw[2]["question"])          # 最后一题的题面不吞节标题
+        self.assertIn("题面二内容", hw[2]["question"])
+        self.assertIn("解答二", hw[2]["answer"])
+
     def test_no_network_or_llm(self):
+
 
 
 
