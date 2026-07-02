@@ -437,7 +437,75 @@ class HomeworkIngest(unittest.TestCase):
         self.assertEqual(hw[1]["source_pages"], [1, 2])            # 页码覆盖续页
         self.assertFalse([w for w in report["warnings"] if "hw_duplicate_problem" in w])
 
+    # ---- regression guards for Codex round-5 (5 findings) ----
+
+    def test_same_line_answer_verb_stays_problem(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw18.pdf": ["Problem 1: Answer the following questions about stacks.\n"
+                                         "更多题面内容在此。"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw), 1)                              # 题面动词 Answer 不翻成解答段
+        self.assertIn("Answer the following", hw[0]["question"])
+        self.assertEqual(hw[0]["answer_status"], "unknown")
+        self.assertFalse([w for w in report["warnings"] if "hw_no_markers" in w])
+
+    def test_verb_answer_filenames_are_homework(self):
+        hw, pairing = B.classify_homework_files(["unanswered_hw1.pdf", "answer_questions_hw2.pdf"])
+        self.assertEqual(len(hw), 2)                              # 都是作业文件，不是解答
+        self.assertEqual(pairing, {})
+        hw2, pairing2 = B.classify_homework_files(["hw1.pdf", "hw1_answers.pdf"])
+        self.assertEqual(pairing2["hw1_answers.pdf"], "hw1.pdf")  # 真解答记号（hw 之后）照常配
+
+    def test_lettered_subparts_kept_distinct(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw19.pdf": ["Problem 1(a)\n第一小问题面。\nAnswer 1(a): 第一小问答案。\n\n"
+                                         "Problem 1(b)\n第二小问题面。"]})
+        code, payload, report = _run(mat, be)
+        hw = {str(q["homework_number"]): q for q in payload["quiz_bank"] if q.get("source_type") == "homework"}
+        self.assertEqual(sorted(hw), ["1a", "1b"])                # 字母小问不折叠成同一个 1
+        self.assertIn("第一小问答案", hw["1a"]["answer"])
+        self.assertEqual(hw["1b"]["answer_status"], "unknown")
+        self.assertEqual(len({q["id"] for q in hw.values()}), 2)
+
+    def test_sanitize_collision_ids_stay_unique(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(os.path.join(mat, "a", "b"), exist_ok=True)
+        os.makedirs(os.path.join(mat, "a_b"), exist_ok=True)
+        for sub in (("a", "b"), ("a_b",)):
+            with open(os.path.join(mat, *sub, "hw1.pdf"), "wb") as f:
+                f.write(b"%PDF-fake")
+        be = FakeBackend({"hw1.pdf": ["Problem 1\n消毒撞名的题面内容。"]})
+        code, payload, report = _run(mat, be)
+        ids = [q["id"] for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(ids), 2)
+        self.assertEqual(len(set(ids)), 2)                        # a/b 与 a_b 消毒同串也不撞 id
+
+    def test_mirrored_subtrees_pair(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        for wk in ("week1", "week2"):
+            os.makedirs(os.path.join(mat, "homework", wk), exist_ok=True)
+            os.makedirs(os.path.join(mat, "solutions", wk), exist_ok=True)
+            for top in ("homework", "solutions"):
+                with open(os.path.join(mat, top, wk, "hw1.pdf"), "wb") as f:
+                    f.write(b"%PDF-fake")
+
+        class MirBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                p = pdf_path.replace("\\", "/")
+                wk = "week1" if "week1" in p else "week2"
+                if "solutions" in p:
+                    return ["Problem 1\nAnswer 1: %s 的镜像答案。" % wk]
+                return ["Problem 1\n%s 的镜像题面。" % wk]
+        code, payload, report = _run(mat, MirBackend({}))
+        hw = {q["source_file"]: q for q in payload["quiz_bank"] if q.get("source_type") == "homework"}
+        self.assertIn("week1 的镜像答案", hw["homework/week1/hw1.pdf"]["answer"])   # 镜像子树各配各的
+        self.assertIn("week2 的镜像答案", hw["homework/week2/hw1.pdf"]["answer"])
+
     def test_no_network_or_llm(self):
+
 
 
 

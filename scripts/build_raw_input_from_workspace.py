@@ -47,16 +47,26 @@ _QUIZ_RE = re.compile(_HEAD + r"Quiz\s+" + _NUM, re.I | re.M)
 # a homework FILE is recognized by its path (folder or stem), NOT by content guessing
 _HW_FILE_RE = re.compile(r"(?:^|[\\/_\-. ])(?:hw|homework|assignments?|problem[ _-]?sets?|ps[ _\-]?\d|作业|习题)",
                          re.I)
-# tokens that mark a SOLUTION companion file (hw1_sol.pdf / HW2_Answers.pdf / 作业3答案.pdf)
-_SOL_TOKEN_RE = re.compile(r"solutions?|answers?|(?:^|[_\-. ])(?:sol|ans)(?=[_\-. ]|$)|答案|解答", re.I)
+# tokens that mark a SOLUTION companion file (hw1_sol.pdf / HW2_Answers.pdf / 作业3答案.pdf)。
+# solution/answer 需要词元边界：前面不能是字母（unanswered ≠ answers；hw1solution 的数字前缀合法），
+# 后面须是分隔符/括号/串尾——纯子串匹配会把 unanswered_hw1 误判成解答文件
+_SOL_TOKEN_RE = re.compile(r"(?<![A-Za-z])(?:solutions?|answers?)(?=[_\-. ()\\/]|$)"
+                           r"|(?:^|[_\-. ])(?:sol|ans)(?=[_\-. ]|$)|答案|解答", re.I)
+# 题号支持 教材式小数（1.1.2）与 字母小题（1(a) / 1a）——折叠会把真小题当重复丢掉
+_HW_NUM_PAT = r"(\d+(?:\.\d+)*(?:\s*\([A-Za-z]\)|[A-Za-z])?)"
 # problem headings inside homework/solution files（行首锚定，与 lecture 标记同族）
-_HW_PROB_RES = (re.compile(_HEAD + r"(?:Problem|Exercise|Question)\s*#?\s*(\d+(?:\.\d+)*)", re.I | re.M),
+_HW_PROB_RES = (re.compile(_HEAD + r"(?:Problem|Exercise|Question)\s*#?\s*" + _HW_NUM_PAT, re.I | re.M),
                 re.compile(_HEAD + r"(?:第\s*(\d+)\s*题|习题\s*(\d+)[.:：]?|题目\s*(\d+)[.:：]?)", re.M))
 # inline solution heading (same file, follows its problem)
-_HW_SOL_RE = re.compile(_HEAD + r"(?:Solution|Answer|解答|答案)\s*(?:#?\s*(\d+(?:\.\d+)*))?\s*(?:[.:：]|$)",
+_HW_SOL_RE = re.compile(_HEAD + r"(?:Solution|Answer|解答|答案)\s*(?:#?\s*" + _HW_NUM_PAT + r")?\s*(?:[.:：]|$)",
                         re.I | re.M)
+# 「Problem 1 Solution」这类解答段标题：号后【同一行】剩余部分必须整体就是 解答/答案 标记
+#（可带编号/收尾标点）——「Problem 1: Answer the following…」是题面动词，绝不能翻成解答段
+_HW_SOL_HEAD_RE = re.compile(r"^\s*[\)\.:\-]?\s*\(?\s*(?:solutions?|answers?|解答|答案)"
+                             r"\s*(?:#?\s*\d+(?:\.\d+)*(?:\s*\([A-Za-z]\)|[A-Za-z])?)?\s*\)?\s*[.:：]?\s*$",
+                             re.I)
 # answer-key 常见的「1. Answer: …」形式：编号在标记前面，被 _HEAD 吞掉——从匹配前缀里找回
-_SOL_PREFIX_NUM_RE = re.compile(r"^[ \t>*•·\-#]*(\d+(?:\.\d+)*)\s*[.)）、]")
+_SOL_PREFIX_NUM_RE = re.compile(r"^[ \t>*•·\-#]*(\d+(?:\.\d+)*(?:\([A-Za-z]\))?)\s*[.)）、]")
 
 # Two classes of asset cue. ASSET_EXCLUDE masks known false-positive phrases first.
 ASSET_EXCLUDE = ("table of contents", "figure it out", "figure out", "graph theory", "figure caption")
@@ -354,7 +364,12 @@ def classify_homework_files(files):
     for f in files:
         rel = f.replace("\\", "/")
         stem = os.path.splitext(os.path.basename(f))[0]
-        is_sol = bool(_SOL_TOKEN_RE.search(stem) or _SOL_TOKEN_RE.search(os.path.dirname(rel)))
+        sol_m = _SOL_TOKEN_RE.search(stem)
+        hw_m = _HW_FILE_RE.search(stem)
+        # 「answer_questions_hw1」的 answer 是动词开头、不是解答记号——文件名里的 sol 记号必须出现在
+        # hw 记号【之后】（hw1_sol / hw1solution / homework2solutions），或由目录名（solutions/）标记
+        is_sol = bool(_SOL_TOKEN_RE.search(os.path.dirname(rel))
+                      or (sol_m and (not hw_m or sol_m.start() > hw_m.start())))
         if not (_HW_FILE_RE.search(rel) or is_sol):
             continue                                   # solutions/hw1.pdf：目录名也是 solution 记号
         (sols if is_sol else hw).append(f)
@@ -383,11 +398,18 @@ def classify_homework_files(files):
             cands = [f for (d, n), fs in hw_by_key.items() if d in dirs and n
                      and (_pref(stripped, n) or _pref(n, stripped)) for f in fs]
             return cands[0] if len(cands) == 1 else None
-        # 逐级放宽：同目录 → 同父家族（week1/solutions ↔ week1/homework、week1 根）→ 全局唯一。
-        # 家族层让每周各配各的，不会因 week2 也有 hw1 而全局歧义配不上
+        # 逐级放宽：同目录 → 同父家族（week1/solutions ↔ week1/homework、week1 根）→ 镜像子树
+        # （solutions/week1 ↔ homework/week1：去掉第一段后的相对子路径相同）→ 全局唯一。
+        # 家族/镜像层让每周各配各的，不会因 week2 也有 hw1 而全局歧义配不上
         parent = os.path.dirname(sdir)
         family = {d for (d, _n) in hw_by_key if d == parent or os.path.dirname(d) == parent}
-        match = _lookup({sdir}) or _lookup(family) or _lookup({d for (d, _n) in hw_by_key})
+
+        def _tail_path(d):
+            return d.split("/", 1)[1] if "/" in d else None
+        mirror = {d for (d, _n) in hw_by_key
+                  if d != sdir and _tail_path(d) is not None and _tail_path(d) == _tail_path(sdir)}
+        match = (_lookup({sdir}) or _lookup(family) or _lookup(mirror)
+                 or _lookup({d for (d, _n) in hw_by_key}))
         pairing[sf] = match
     return hw, pairing
 
@@ -417,9 +439,11 @@ def _pages_for_span(bounds, a, b):
 
 
 def _hw_num(s):
-    """Problem number as int, or the original string for textbook-style decimals（1.1 ≠ 1）."""
+    """Problem number as int, or a normalized string for textbook decimals / lettered subparts
+    （1.1 ≠ 1；1(a) 与 1a 同号，规范成 '1a'）."""
     if s is None:
         return None
+    s = re.sub(r"[()\s]", "", s).lower()
     return int(s) if s.isdigit() else s
 
 
@@ -440,10 +464,13 @@ def _hw_markers(stream):
             # 角色词只看标题【同一行】号后的文字——下一行以 Answer 开头的题面（"Problem 1\nAnswer the
             # following…"）绝不能把题目翻成解答段
             tail = line[m.end() - m.start():][:48]
-            # 「Problem 1 Solution」是解答段标题不是新题——按号后紧跟的角色词判定（与 lecture 同族）
-            role = "solution" if _ROLE_SOLUTION_RE.match(tail) else "problem"
-            marks.append({"start": m.start(), "num": _hw_num(num), "role": role,
-                          "continued": bool(re.search(r"continued|[（(]\s*续", tail, re.I))})
+            continued = bool(re.search(r"continued|[（(]\s*续", tail, re.I))
+            # 「Problem 1 Solution」是解答段标题不是新题——要求号后剩余整行就是 解答/答案 标记
+            #（先剥掉 continued 记号；行尾锚定，「: Answer the following…」这类题面动词不受影响）
+            tail_role = re.sub(r"^\s*\(?\s*continued\b\s*\d*\s*\)?[\s:.\-]*", "", tail, flags=re.I)
+            role = "solution" if (_HW_SOL_HEAD_RE.match(tail) or _HW_SOL_HEAD_RE.match(tail_role)) \
+                else "problem"
+            marks.append({"start": m.start(), "num": _hw_num(num), "role": role, "continued": continued})
     for m in _HW_SOL_RE.finditer(stream):
         if _TOC_RE.search(_hw_line(stream, m)[:300]):
             continue                           # 「1. Answer ........ 5」目录行不是答案
@@ -496,6 +523,24 @@ def extract_homework_items(pages):
             if prev is None or (mk["role"] == "solution" and prev[3] != "solution"):
                 sol_answers[key] = (sf, body, _pages_for_span(bounds, mk["start"], end), mk["role"])
 
+    # id 词干必须对文件【单射】：消毒把 a/b/hw1 与 a_b/hw1 折叠成同串时，按原始相对路径哈希消歧
+    #（不撞名的文件保持原有可读 id 不变）
+    import hashlib as _hl
+
+    def _stem_of(hf):
+        s = re.sub(r"[^0-9A-Za-z_\-一-鿿]+", "_",
+                   os.path.splitext(hf.replace("\\", "/"))[0])   # 含子目录，week1/hw1 ≠ week2/hw1
+        if len(s) > 60:                                # 截断会撞 id——加内容哈希后缀保唯一
+            s = s[:52] + "_" + _hl.sha1(s.encode("utf-8")).hexdigest()[:7]
+        return s
+    hw_stems = {hf: _stem_of(hf) for hf in hw_files}
+    _counts = {}
+    for _s in hw_stems.values():
+        _counts[_s] = _counts.get(_s, 0) + 1
+    for hf, _s in list(hw_stems.items()):
+        if _counts[_s] > 1:
+            hw_stems[hf] = _s + "_" + _hl.sha1(hf.replace("\\", "/").encode("utf-8")).hexdigest()[:7]
+
     items = []
     for hf in hw_files:
         stream, bounds = _file_stream(pages, hf)
@@ -504,13 +549,7 @@ def extract_homework_items(pages):
         if not probs:
             report["warnings"].append("hw_no_markers: %s（识别为作业文件但没找到 Problem/第N题 标记）" % hf)
             continue
-        stem_full = re.sub(r"[^0-9A-Za-z_\-一-鿿]+", "_",
-                           os.path.splitext(hf.replace("\\", "/"))[0])   # 含子目录，week1/hw1 ≠ week2/hw1
-        if len(stem_full) > 60:                        # 截断会撞 id——加内容哈希后缀保唯一
-            import hashlib as _hl
-            stem = stem_full[:52] + "_" + _hl.sha1(stem_full.encode("utf-8")).hexdigest()[:7]
-        else:
-            stem = stem_full
+        stem = hw_stems[hf]
         seen_nums = set()
         dup_counts = {}
 
