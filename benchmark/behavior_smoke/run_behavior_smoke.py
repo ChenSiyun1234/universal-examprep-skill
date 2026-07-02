@@ -149,7 +149,9 @@ def scope_override_declared(text):
         pos = tag.start()
     off = 0
     for ln in t.splitlines(True):
-        if _is_question_item(ln.rstrip(chr(10))):
+        stripped = ln.rstrip("\n")
+        # 「题目：…」无编号提问行也是第一道题——声明必须先于它（不只认编号/bullet/[#id] 行）
+        if _is_question_item(stripped) or re.match(r"^\s*题目?\s*[:：]", stripped):
             pos = min(pos, off)
             break
         off += len(ln)

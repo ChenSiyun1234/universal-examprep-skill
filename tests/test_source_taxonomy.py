@@ -124,7 +124,9 @@ class Selector(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
 
     def test_sqlite_export_optional_generated(self):
-        ws = _mk_ws(tempfile.mkdtemp())
+        ws = _mk_ws(tempfile.mkdtemp(), [{"id": "mx1", "chapter": 1, "type": "subjective",
+                                          "question": "mixed 来源？", "answer": "Z", "source": "mixed",
+                                          "ai_generated": False}])
         db = os.path.join(tempfile.mkdtemp(), "cache.db")
         rc, out = self._run(ws, ["--export-sqlite", db, "--json"])
         self.assertTrue(os.path.isfile(db))
@@ -132,9 +134,13 @@ class Selector(unittest.TestCase):
         con = sqlite3.connect(db)
         n = con.execute("SELECT COUNT(*) FROM questions").fetchone()[0]
         kp = con.execute("SELECT COUNT(*) FROM knowledge_points WHERE knowledge_point='栈'").fetchone()[0]
+        mixed = con.execute("SELECT has_official_answer FROM questions WHERE id='mx1'").fetchone()[0]
+        hw = con.execute("SELECT has_official_answer FROM questions WHERE id='hw1'").fetchone()[0]
         con.close()
-        self.assertEqual(n, 4)
+        self.assertEqual(n, 5)
         self.assertEqual(kp, 2)
+        self.assertEqual(mixed, 0)     # mixed/unknown 来源答案 ≠ 官方答案（与视觉索引同口径）
+        self.assertEqual(hw, 1)
 
 
     # ---- regression guards for Codex round-1 (3 findings) ----
@@ -174,7 +180,7 @@ class KnowledgeIndex(unittest.TestCase):
 
 
 class ScopeContract(unittest.TestCase):
-    ENTRY_POINTS = ["SKILL.md", "AGENTS.md", "prompts/web_prompt.md", "skills/exam-quiz/SKILL.md",
+    ENTRY_POINTS = ["SKILL.md", "AGENTS.md", "prompts/web_prompt.md", "skills/exam-quiz/SKILL.md", "skills/exam-cram/SKILL.md",
                     "skills/exam-tutor/SKILL.md", "skills/exam-review/SKILL.md"]
 
     def test_all_entry_points_carry_override_marker(self):

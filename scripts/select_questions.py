@@ -94,8 +94,9 @@ def export_sqlite(bank, path):
                     "has_official_answer INTEGER, question TEXT)")
         con.execute("CREATE TABLE knowledge_points (question_id TEXT, knowledge_point TEXT)")
         for q in bank:
-            ai = q.get("ai_generated") is True or q.get("source") == "ai_generated"
-            has_ans = (not ai) and any(q.get(k) not in (None, "", []) for k in ("answer", "answer_keywords"))
+            # official = 教材/老师来源的答案；mixed/unknown/缺 source 都不算（与视觉索引同口径）
+            official_src = q.get("source") in ("teacher", "material") and q.get("ai_generated") is not True
+            has_ans = official_src and any(q.get(k) not in (None, "", []) for k in ("answer", "answer_keywords"))
             con.execute("INSERT OR REPLACE INTO questions VALUES (?,?,?,?,?,?,?,?,?,?)",
                         (str(q["id"]), q.get("type"), _chapter_of(q), q.get("source_type"),
                          q.get("difficulty") if isinstance(q.get("difficulty"), int)
