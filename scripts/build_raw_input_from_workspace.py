@@ -45,7 +45,7 @@ _QUIZ_RE = re.compile(_HEAD + r"Quiz\s+" + _NUM, re.I | re.M)
 
 # ---- A3: homework / solution files (separate PDFs paired by filename; inline solutions supported) ----
 # a homework FILE is recognized by its path (folder or stem), NOT by content guessing
-_HW_FILE_RE = re.compile(r"(?:^|[\\/_\-. ])(?:hw|homework|assignments?|problem[ _-]?sets?|ps\d|作业|习题)",
+_HW_FILE_RE = re.compile(r"(?:^|[\\/_\-. ])(?:hw|homework|assignments?|problem[ _-]?sets?|ps[ _\-]?\d|作业|习题)",
                          re.I)
 # tokens that mark a SOLUTION companion file (hw1_sol.pdf / HW2_Answers.pdf / 作业3答案.pdf)
 _SOL_TOKEN_RE = re.compile(r"solutions?|answers?|(?:^|[_\-. ])(?:sol|ans)(?=[_\-. ]|$)|答案|解答", re.I)
@@ -349,18 +349,33 @@ def classify_homework_files(files):
         if not (_HW_FILE_RE.search(rel) or is_sol):
             continue                                   # solutions/hw1.pdf：目录名也是 solution 记号
         (sols if is_sol else hw).append(f)
-    hw_by_norm = {_hw_norm(os.path.splitext(os.path.basename(f))[0]): f for f in hw}
+    # 目录感知配对：week1/hw1_sol 只配 week1/hw1（同名跨目录不串）；同目录找不到才允许全局唯一回退
+    hw_by_key = {}
+    for f in hw:
+        rel = f.replace("\\", "/")
+        hw_by_key.setdefault((os.path.dirname(rel), _hw_norm(os.path.splitext(os.path.basename(f))[0])),
+                             []).append(f)
     pairing = {}
     for sf in sols:
+        rel = sf.replace("\\", "/")
+        sdir = os.path.dirname(rel)
         stem = os.path.splitext(os.path.basename(sf))[0]
         stripped = _hw_norm(_SOL_TOKEN_RE.sub("", stem))
-        match = hw_by_norm.get(stripped)
-        if match is None:   # prefix fallback: hw1 vs hw1solutionsfinal——数字边界保护（hw1 ≠ hw10）
 
-            def _pref(a, b):
-                return a.startswith(b) and (len(a) == len(b) or not a[len(b)].isdigit())
-            cands = [f for n, f in hw_by_norm.items() if n and (_pref(stripped, n) or _pref(n, stripped))]
-            match = cands[0] if len(cands) == 1 else None
+        def _pref(a, b):
+            return a.startswith(b) and (len(a) == len(b) or not a[len(b)].isdigit())
+
+        def _lookup(dirs):
+            exact = [f for (d, n), fs in hw_by_key.items() if d in dirs and n == stripped for f in fs]
+            if len(exact) == 1:
+                return exact[0]
+            if exact:
+                return None
+            cands = [f for (d, n), fs in hw_by_key.items() if d in dirs and n
+                     and (_pref(stripped, n) or _pref(n, stripped)) for f in fs]
+            return cands[0] if len(cands) == 1 else None
+        # same-dir first, then its parent (solutions/hw1 → homework/hw1 case: try all dirs), then global
+        match = _lookup({sdir}) or _lookup({d for (d, _n) in hw_by_key})
         pairing[sf] = match
     return hw, pairing
 
@@ -453,8 +468,13 @@ def extract_homework_items(pages):
         if not probs:
             report["warnings"].append("hw_no_markers: %s（识别为作业文件但没找到 Problem/第N题 标记）" % hf)
             continue
-        stem = re.sub(r"[^0-9A-Za-z_\-一-鿿]+", "_",
-                      os.path.splitext(hf.replace("\\", "/"))[0])[:60]   # 含子目录，week1/hw1 与 week2/hw1 不同 id
+        stem_full = re.sub(r"[^0-9A-Za-z_\-一-鿿]+", "_",
+                           os.path.splitext(hf.replace("\\", "/"))[0])   # 含子目录，week1/hw1 ≠ week2/hw1
+        if len(stem_full) > 60:                        # 截断会撞 id——加内容哈希后缀保唯一
+            import hashlib as _hl
+            stem = stem_full[:52] + "_" + _hl.sha1(stem_full.encode("utf-8")).hexdigest()[:7]
+        else:
+            stem = stem_full
         seen_nums = set()
         dup_counts = {}
         for i, mk in enumerate(marks):
@@ -472,7 +492,11 @@ def extract_homework_items(pages):
                     and marks[i + 1]["num"] in (None, mk["num"]):
                 s_start = marks[i + 1]["start"]
                 s_end = next((m2["start"] for m2 in marks[i + 2:] if m2["role"] == "problem"), len(stream))
-                ans = (hf, stream[s_start:s_end].strip(), _pages_for_span(bounds, s_start, s_end))
+                a_body = stream[s_start:s_end].strip()
+                # worksheet 填空线（Answer: ______）不是官方答案——去掉标记行后只剩下划线/点/空白即忽略
+                a_tail = a_body.split("\n", 1)[1] if "\n" in a_body else re.sub(_HW_SOL_RE, "", a_body, count=1)
+                if re.sub(r"[_\s.．。:：…\-—]+", "", a_tail):
+                    ans = (hf, a_body, _pages_for_span(bounds, s_start, s_end))
             if ans is None:
                 got = sol_answers.get((hf, mk["num"]))
                 ans = got[:3] if got else None
@@ -480,12 +504,13 @@ def extract_homework_items(pages):
             # marker-only prompt: the heading is all the text extractor got — the real prompt is an
             # image on the page → page_reference（镜像 lecture 的 marker_only 语义），并渲染原页
             body_txt = q_text.split("\n", 1)[1] if "\n" in q_text else ""
-            marker_only = len(re.findall(r"[0-9A-Za-z一-鿿]", body_txt)) < 10
+            # 只有正文【完全没有】内容字符才算 marker-only——"2+2=?"/"求导" 这类短而完整的题面仍是 full
+            marker_only = len(re.findall(r"[0-9A-Za-z一-鿿]", body_txt)) == 0
             # chapter：只在题文/文件名明说时才标（第N章 / Chapter N / chNN）——作业号 ≠ 章节号，不硬编
             chm = (re.search(r"(?:第\s*(\d+)\s*章|Chapter\s+(\d+))", q_text, re.I)
                    or re.search(r"(?:^|[\/_\-. ])ch\s*0*(\d+)", hf, re.I))
             item = {"id": "hw_%s_%d" % (stem, mk["num"]), "type": "subjective",
-                    "question": q_text[:1500], "source": "material", "ai_generated": False,
+                    "question": q_text, "source": "material", "ai_generated": False,   # 不静默截断（长题保完整）
                     "source_type": "homework", "homework_number": mk["num"],
                     "question_text_status": "page_reference" if marker_only else "full",
                     "source_file": hf, "source_pages": q_pages or [bounds[0][1] if bounds else 1]}
@@ -493,7 +518,7 @@ def extract_homework_items(pages):
                 item["chapter"] = int(next(g for g in chm.groups() if g))
             if ans:
                 sf, body, apages = ans
-                item["answer"] = body[:2000]
+                item["answer"] = body                     # 不静默截断
                 item["answer_source_file"] = sf
                 item["answer_source_pages"] = apages or None
                 if item["answer_source_pages"] is None:

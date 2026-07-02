@@ -249,7 +249,79 @@ class HomeworkIngest(unittest.TestCase):
         q = next(x for x in payload["quiz_bank"] if x.get("source_type") == "homework")
         self.assertIn("目录版答案", q["answer"])                   # solutions/ 目录伴随被识别配对
 
+    # ---- regression guards for Codex round-2 (6 findings) ----
+
+    def test_same_basename_pairs_within_directory(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        for sub in ("week1", "week2"):
+            os.makedirs(os.path.join(mat, sub), exist_ok=True)
+            with open(os.path.join(mat, sub, "hw1.pdf"), "wb") as f:
+                f.write(b"%PDF-fake")
+            with open(os.path.join(mat, sub, "hw1_sol.pdf"), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class WeekBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                p = pdf_path.replace("\\", "/")
+                week = "week1" if "week1" in p else "week2"
+                if "sol" in p:
+                    return ["Problem 1\nAnswer 1: %s 的答案。" % week]
+                return ["Problem 1\n%s 的题面内容足够长。" % week]
+        code, payload, report = _run(mat, WeekBackend({}))
+        hw = {q["source_file"]: q for q in payload["quiz_bank"] if q.get("source_type") == "homework"}
+        self.assertIn("week1 的答案", hw["week1/hw1.pdf"]["answer"])   # 同目录配对，不跨目录串
+        self.assertIn("week2 的答案", hw["week2/hw1.pdf"]["answer"])
+
+    def test_long_stem_ids_stay_unique(self):
+        base = "very_long_lms_export_name_" + "x" * 50
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(os.path.join(mat, "hw"), exist_ok=True)
+        names = [base + "_alpha.pdf", base + "_beta.pdf"]
+        for n in names:
+            with open(os.path.join(mat, "hw", n), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class LongBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                return ["Problem 1\n长文件名题面内容足够长。"]
+        code, payload, report = _run(mat, LongBackend({}))
+        ids = [q["id"] for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(ids), 2)
+        self.assertEqual(len(set(ids)), 2)                        # 截断后哈希后缀保唯一
+
+    def test_short_but_complete_prompt_stays_full(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw8.pdf": ["Problem 1\n2+2=?\n\nProblem 2\n求导 x^2。"]})
+        code, payload, report = _run(mat, be)
+        hw = {q["homework_number"]: q for q in payload["quiz_bank"] if q.get("source_type") == "homework"}
+        self.assertEqual(hw[1]["question_text_status"], "full")   # 短而完整 ≠ 图片题
+        self.assertNotIn("requires_assets", hw[1])
+        self.assertEqual(hw[2]["question_text_status"], "full")
+
+    def test_long_question_not_silently_truncated(self):
+        long_q = "Problem 1\n" + "很长的编程大作业题面。" * 300
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw9.pdf": [long_q]})
+        code, payload, report = _run(mat, be)
+        q = next(x for x in payload["quiz_bank"] if x.get("source_type") == "homework")
+        self.assertGreater(len(q["question"]), 2000)              # 保留全文，不静默截断
+
+    def test_separated_ps_number_classified(self):
+        hw, pairing = B.classify_homework_files(["exports/ps 1.pdf", "exports/PS-2.pdf", "exports/ps_3.pdf"])
+        self.assertEqual(len(hw), 3)                              # ps 1 / PS-2 / ps_3 都识别为作业
+
+    def test_answer_blank_line_not_official_answer(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw10a.pdf": ["Problem 1\n计算 2+2。\nAnswer: ________\n\nProblem 2\n下一题题面。"]})
+        code, payload, report = _run(mat, be)
+        hw = {q["homework_number"]: q for q in payload["quiz_bank"] if q.get("source_type") == "homework"}
+        self.assertNotIn("answer", hw[1])                         # 填空线不是官方答案
+        self.assertEqual(hw[1]["answer_status"], "unknown")
+
     def test_no_network_or_llm(self):
+
 
         src = open(os.path.join(ROOT, "scripts", "build_raw_input_from_workspace.py"), encoding="utf-8").read()
         for banned in ("import requests", "urllib.request", "import anthropic", "import socket"):
