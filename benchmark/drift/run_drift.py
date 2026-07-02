@@ -367,8 +367,14 @@ def parse_state_json(text):
     phase = cp if isinstance(cp, int) and not isinstance(cp, bool) else None
 
     def _rows(field):
+        v = st.get(field)
+        if v is None:
+            v = []
+        if not isinstance(v, list):   # 标量/对象直接迭代会 TypeError 崩溃——按畸形输入统一报 DriftError
+            raise DriftError("files_after 里的 study_state.json 字段 %s 必须是数组，实际 %s"
+                             % (field, type(v).__name__))
         out = []
-        for r in (st.get(field) or []):
+        for r in v:
             if isinstance(r, dict):
                 rid = ("[#%s] " % r["id"]) if r.get("id") else ""
                 out.append((rid + str(r.get("note") or "")).strip())

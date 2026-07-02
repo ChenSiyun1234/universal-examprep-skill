@@ -90,9 +90,14 @@ def parse_md(text):
             if not any(c and c != "-" for c in cells):
                 continue
             ids = re.findall(r"\[#([^\]\s]+)\]", h)
+            tail = cells[2:]
+            # 模板表最后一列是状态——迁移 note 时必须剔除，否则状态在 note 和状态列各出现一次；
+            # 只有 3 列（无状态列）时整个尾部都是 note，状态回默认
+            status = tail[-1] if len(tail) >= 2 and tail[-1] else "待复盘"
+            note_cells = tail[:-1] if len(tail) >= 2 else tail
             cur.append({"id": ids[0] if ids else (cells[0] or None), "chapter": cells[1] if len(cells) > 1 else None,
-                        "note": " / ".join(c for c in cells[2:] if c) or (cells[0] if cells else ""),
-                        "status": cells[-1] if cells else "待复盘"})
+                        "note": " / ".join(c for c in note_cells if c) or (cells[0] if cells else ""),
+                        "status": status})
     return phase, mistakes, confusions
 
 

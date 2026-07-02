@@ -49,6 +49,23 @@ class Migration(unittest.TestCase):
         self.assertIn("当前进行阶段**：阶段 3", md)                # md 重渲染保持可解析形态
         self.assertIn("自动生成", md)
 
+    def test_migrated_note_excludes_status_cell(self):
+        ws = _mk_ws(tempfile.mkdtemp())
+        _up(ws, ["init"])
+        row = _state(ws)["mistake_archive"][0]
+        self.assertEqual(row["status"], "未复习")
+        self.assertNotIn("未复习", row["note"])                    # 状态不再在 note 里重复一份
+        self.assertIn("混淆LIFO", row["note"])
+
+    def test_migrated_three_col_row_keeps_note(self):
+        md = LEGACY_MD.replace("| [#q1] | 第1章 | 栈顺序 | 混淆LIFO | 未复习 |",
+                               "| [#q1] | 第1章 | 只有笔记没有状态列 |")
+        ws = _mk_ws(tempfile.mkdtemp(), md=md)
+        _up(ws, ["init"])
+        row = _state(ws)["mistake_archive"][0]
+        self.assertEqual(row["note"], "只有笔记没有状态列")         # 无状态列时整个尾部是 note
+        self.assertEqual(row["status"], "待复盘")
+
     def test_init_idempotent_without_force(self):
         ws = _mk_ws(tempfile.mkdtemp())
         _up(ws, ["init"])
@@ -255,6 +272,35 @@ class DriftJsonSnapshots(unittest.TestCase):
             D.evaluate(sc, t)
 
 
+    def test_t4_scalar_state_field_exits_2_not_traceback(self):
+        sys.path.insert(0, os.path.join(ROOT, "benchmark", "drift"))
+        import run_drift as D
+        sc = D.load_scenario(os.path.join(ROOT, "benchmark", "drift", "scenarios", "long_session_basic.json"))
+        d = tempfile.mkdtemp()
+        t = os.path.join(d, "t.jsonl")
+        bad = json.dumps({"version": 1, "current_phase": 2, "mistake_archive": 1})
+        with open(t, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"turn": 1, "assistant": "x",
+                                "files_after": {"study_state.json": bad}}) + "\n")
+        with self.assertRaises(D.DriftError):                     # 畸形快照统一走 DriftError，不 TypeError 崩
+            D.evaluate(sc, t)
+
+    def test_converter_tracks_state_json_snapshot(self):
+        sys.path.insert(0, os.path.join(ROOT, "benchmark", "drift"))
+        import convert_session_log as C
+        base = ["# Live Session", "", "## Turn 1", "", "### User", "u", "", "### Assistant", "a", "",
+                "### Events", "- write_file: study_state.json", ""]
+        # 有 write_file 无匹配快照 → 必须报错（否则 T4 拿旧状态继续算，漏掉重置/丢行）
+        with self.assertRaises(C.SessionLogError):
+            C.parse_session_log("\n".join(base))
+        good = base + ["### Files After: study_state.json", "```json",
+                       json.dumps({"version": 1, "current_phase": 1,
+                                   "mistake_archive": [], "confusion_log": []}),
+                       "```", ""]
+        rows = C.parse_session_log("\n".join(good))
+        self.assertIn("study_state.json", rows[0]["files_after"])  # 快照被跟踪进 files_after
+
+
 class Contract(unittest.TestCase):
     ENTRY_POINTS = ["SKILL.md", "AGENTS.md", "prompts/web_prompt.md", "skills/exam-cram/SKILL.md",
                     "skills/exam-quiz/SKILL.md", "skills/exam-tutor/SKILL.md", "skills/exam-review/SKILL.md"]
@@ -264,6 +310,12 @@ class Contract(unittest.TestCase):
             txt = open(os.path.join(ROOT, p), encoding="utf-8").read()
             self.assertIn("study_state.json", txt, p)
             self.assertIn("update_progress.py", txt, p)
+
+    def test_review_skill_documents_status_commands(self):
+        # replay 流要把行标成 已订正/已回顾 —— A4 边界必须给出官方状态命令，否则 agent 无合法持久化路径
+        txt = open(os.path.join(ROOT, "skills", "exam-review", "SKILL.md"), encoding="utf-8").read()
+        self.assertIn("set-mistake-status", txt)
+        self.assertIn("set-confusion-status", txt)
 
     def test_no_network_or_llm(self):
         src = open(os.path.join(SCRIPTS, "update_progress.py"), encoding="utf-8").read()
