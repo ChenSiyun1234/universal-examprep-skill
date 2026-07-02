@@ -43,6 +43,18 @@ _HEAD = r"^[ \t>*•·\-\d.)）、#]*"
 _EXAMPLE_RE = re.compile(_HEAD + r"Example\s+" + _NUM, re.I | re.M)
 _QUIZ_RE = re.compile(_HEAD + r"Quiz\s+" + _NUM, re.I | re.M)
 
+# ---- A3: homework / solution files (separate PDFs paired by filename; inline solutions supported) ----
+# a homework FILE is recognized by its path (folder or stem), NOT by content guessing
+_HW_FILE_RE = re.compile(r"(?:^|[\\/_\-. ])(?:hw|homework|assignments?|problem[ _-]?sets?|ps\d|作业|习题)",
+                         re.I)
+# tokens that mark a SOLUTION companion file (hw1_sol.pdf / HW2_Answers.pdf / 作业3答案.pdf)
+_SOL_TOKEN_RE = re.compile(r"solutions?|answers?|(?:^|[_\-. ])(?:sol|ans)(?=[_\-. ]|$)|答案|解答", re.I)
+# problem headings inside homework/solution files（行首锚定，与 lecture 标记同族）
+_HW_PROB_RES = (re.compile(_HEAD + r"(?:Problem|Exercise|Question)\s*#?\s*(\d+)", re.I | re.M),
+                re.compile(_HEAD + r"(?:第\s*(\d+)\s*题|习题\s*(\d+)[.:：]?|题目\s*(\d+)[.:：]?)", re.M))
+# inline solution heading (same file, follows its problem)
+_HW_SOL_RE = re.compile(_HEAD + r"(?:Solution|Answer|解答|答案)\s*#?\s*(\d+)?\s*[.:：]?", re.I | re.M)
+
 # Two classes of asset cue. ASSET_EXCLUDE masks known false-positive phrases first.
 ASSET_EXCLUDE = ("table of contents", "figure it out", "figure out", "graph theory", "figure caption")
 # STRONG: the question explicitly references a figure SHOWN to the student ("at right", "Venn", "shade
@@ -316,6 +328,173 @@ def extract_lecture_items(pages):
     return items
 
 
+# ---------------------------------------------------------------------------
+# A3: homework / solution extraction — deterministic, filename-paired, fail-loud
+# ---------------------------------------------------------------------------
+
+def _hw_norm(stem):
+    """Normalized pairing key: lowercase, keep alnum + CJK only（hw1_sol → hw1 after token strip）."""
+    return re.sub(r"[^a-z0-9一-鿿]+", "", stem.lower())
+
+
+def classify_homework_files(files):
+    """Split material files into (homework_files, {solution_file: paired_homework_file|None}).
+    Solutions pair by stripped-stem equality or prefix; an unpairable solution file is fail-loud."""
+    hw, sols = [], []
+    for f in files:
+        stem = os.path.splitext(os.path.basename(f))[0]
+        if not _HW_FILE_RE.search(f.replace("\\", "/")):
+            continue
+        (sols if _SOL_TOKEN_RE.search(stem) else hw).append(f)
+    hw_by_norm = {_hw_norm(os.path.splitext(os.path.basename(f))[0]): f for f in hw}
+    pairing = {}
+    for sf in sols:
+        stem = os.path.splitext(os.path.basename(sf))[0]
+        stripped = _hw_norm(_SOL_TOKEN_RE.sub("", stem))
+        match = hw_by_norm.get(stripped)
+        if match is None:   # prefix fallback: hw1 vs hw1solutionsfinal
+            cands = [f for n, f in hw_by_norm.items() if n and (stripped.startswith(n) or n.startswith(stripped))]
+            match = cands[0] if len(cands) == 1 else None
+        pairing[sf] = match
+    return hw, pairing
+
+
+def _file_stream(pages, f):
+    """Concatenate one file's page texts into a single stream + (offset, page_no) bounds table, so a
+    problem spanning pages slices naturally."""
+    parts, bounds, cur = [], [], 0
+    for pg in pages:
+        if pg["file"] != f:
+            continue
+        t = pg.get("text", "") or ""
+        bounds.append((cur, pg["page"]))
+        parts.append(t)
+        cur += len(t) + 1
+    return "\n".join(parts), bounds
+
+
+def _pages_for_span(bounds, a, b):
+    """Page numbers whose text overlaps stream span [a, b)."""
+    out = []
+    for i, (start, pno) in enumerate(bounds):
+        end = bounds[i + 1][0] if i + 1 < len(bounds) else float("inf")
+        if start < b and end > a:
+            out.append(pno)
+    return out
+
+
+def _hw_markers(stream):
+    """All problem/inline-solution markers in stream order: {start, num|None, role}."""
+    marks = []
+    for rx in _HW_PROB_RES:
+        for m in rx.finditer(stream):
+            num = next((g for g in m.groups() if g), None)
+            line = stream[m.start(): stream.find("\n", m.end()) if stream.find("\n", m.end()) >= 0 else len(stream)]
+            if _TOC_RE.search(line[:300]):
+                continue
+            marks.append({"start": m.start(), "num": int(num), "role": "problem"})
+    for m in _HW_SOL_RE.finditer(stream):
+        num = next((g for g in m.groups() if g), None)
+        marks.append({"start": m.start(), "num": int(num) if num else None, "role": "solution"})
+    marks.sort(key=lambda d: d["start"])
+    # de-dup identical (start) collisions (EN/CN patterns can't overlap, but be safe)
+    dedup, seen = [], set()
+    for mk in marks:
+        if mk["start"] in seen:
+            continue
+        seen.add(mk["start"])
+        dedup.append(mk)
+    return dedup
+
+
+def extract_homework_items(pages):
+    """Extract homework problems (+ answers from paired solution files OR inline Solution blocks)
+    into bank items with source_type='homework'. Returns (items, hw_report)."""
+    files = sorted({pg["file"] for pg in pages})
+    is_pdf = {f: any(pg.get("_pdf") for pg in pages if pg["file"] == f) for f in files}
+    hw_files, pairing = classify_homework_files(files)
+    report = {"homework_files": hw_files,
+              "homework_solution_files": sorted(pairing),
+              "homework_pairs": sorted([s, h] for s, h in pairing.items() if h),
+              "homework_problems": 0, "homework_answered": 0, "warnings": []}
+    for sf, h in sorted(pairing.items()):
+        if h is None:
+            report["warnings"].append("hw_unpaired_solution_file: %s（配不到对应作业题面文件，未导入答案）" % sf)
+
+    # answers available per (hw_file, num) from paired solution files
+    sol_answers = {}
+    for sf, hf in pairing.items():
+        if hf is None:
+            continue
+        stream, bounds = _file_stream(pages, sf)
+        marks = [m for m in _hw_markers(stream) if m["num"] is not None]
+        for i, mk in enumerate(marks):
+            end = marks[i + 1]["start"] if i + 1 < len(marks) else len(stream)
+            body = stream[mk["start"]:end].strip()
+            if body:
+                sol_answers.setdefault((hf, mk["num"]), (sf, body, _pages_for_span(bounds, mk["start"], end)))
+
+    items = []
+    for hf in hw_files:
+        stream, bounds = _file_stream(pages, hf)
+        marks = _hw_markers(stream)
+        probs = [m for m in marks if m["role"] == "problem"]
+        if not probs:
+            report["warnings"].append("hw_no_markers: %s（识别为作业文件但没找到 Problem/第N题 标记）" % hf)
+            continue
+        stem = re.sub(r"[^0-9A-Za-z_\-一-鿿]+", "_", os.path.splitext(os.path.basename(hf))[0])[:40]
+        seen_nums = set()
+        dup_counts = {}
+        for i, mk in enumerate(marks):
+            if mk["role"] != "problem":
+                continue
+            if mk["num"] in seen_nums:
+                dup_counts[mk["num"]] = dup_counts.get(mk["num"], 0) + 1   # 真实 PDF 里题号会反复出现
+                continue                                                    #（分页眉/解答区重现）——去重计数
+            seen_nums.add(mk["num"])
+            nxt = marks[i + 1]["start"] if i + 1 < len(marks) else len(stream)
+            q_text = stream[mk["start"]:nxt].strip()
+            # inline solution: the very next marker is an un/same-numbered Solution → its slice is the answer
+            ans = None
+            if i + 1 < len(marks) and marks[i + 1]["role"] == "solution" \
+                    and marks[i + 1]["num"] in (None, mk["num"]):
+                s_start = marks[i + 1]["start"]
+                s_end = next((m2["start"] for m2 in marks[i + 2:] if m2["role"] == "problem"), len(stream))
+                ans = (hf, stream[s_start:s_end].strip(), _pages_for_span(bounds, s_start, s_end))
+            if ans is None:
+                ans = sol_answers.get((hf, mk["num"]))
+            q_pages = _pages_for_span(bounds, mk["start"], nxt)
+            item = {"id": "hw_%s_%d" % (stem, mk["num"]), "type": "subjective",
+                    "question": q_text[:1500], "source": "material", "ai_generated": False,
+                    "source_type": "homework", "question_text_status": "full",
+                    "source_file": hf, "source_pages": q_pages or [bounds[0][1] if bounds else 1]}
+            if ans:
+                sf, body, apages = ans
+                item["answer"] = body[:2000]
+                item["answer_source_file"] = sf
+                item["answer_source_pages"] = apages or None
+                if item["answer_source_pages"] is None:
+                    del item["answer_source_pages"]
+                report["homework_answered"] += 1
+            else:
+                item["answer_status"] = "unknown"
+                report["warnings"].append("hw_unanswered: %s（没找到配对答案，考前需人工核对）" % item["id"])
+            # visual dependence — same heuristic family as lecture items; renderable only for PDF sources
+            if requires_assets_heuristic(q_text, renderable=is_pdf.get(hf, False)):
+                item["requires_assets"] = True
+                item["_render"] = True
+                item["_question_pages"] = [(hf, p) for p in (q_pages or [])]
+                if ans and requires_assets_heuristic(ans[1], renderable=is_pdf.get(ans[0], False)):
+                    item["_answer_pages"] = [(ans[0], p) for p in (ans[2] or [])]
+            items.append(item)
+            report["homework_problems"] += 1
+        if dup_counts:
+            report["warnings"].append("hw_duplicate_problem: %s（%s——每题保留第一处标记，重现多为页眉/"
+                                      "解答区重复）" % (hf, "、".join("Problem %d×%d" % (n, c)
+                                                                      for n, c in sorted(dup_counts.items()))))
+    return items, report
+
+
 def group_sections(pages):
     """Group pages into chapters. A chapter number comes from a lecture marker on the page, else from
     a `ch<NN>` token in the filename, else the chapter CARRIED FORWARD from the previous page of the
@@ -560,6 +739,8 @@ def build_arg_parser():
                    help="渲染依赖图的页面：never/auto/required（required 时无渲染后端/无 --asset-root 则报错）")
     p.add_argument("--extract-lecture-questions", choices=["never", "auto"], default="auto",
                    help="是否抽取讲义 Example/Quiz 题：never/auto")
+    p.add_argument("--extract-homework", choices=["never", "auto"], default="auto",
+                   help="是否抽取作业题（含题答分离 PDF 的自动配对与 inline Solution）：never/auto")
     p.add_argument("--course-name", default=None, help="科目名称（默认取材料目录名）")
     return p
 
@@ -624,6 +805,12 @@ def run(args, backend=None):
         for k in orphan_solution_keys(pages):
             report["warnings"].append("solution_without_problem: %s %d.%d" % k)
 
+    homework_items = []
+    if getattr(args, "extract_homework", "auto") != "never":
+        homework_items, hw_rep = extract_homework_items(pages)
+        report["warnings"].extend(hw_rep.pop("warnings"))
+        report.update(hw_rep)
+
     # ---- render assets for figure-dependent items ----
     asset_root = args.asset_root
     page_pdf = {(pg["file"], pg["page"]): pg["_pdf"] for pg in pages if pg.get("_pdf")}
@@ -648,7 +835,7 @@ def run(args, backend=None):
 
     can_write = bool(asset_root) and want_render and backend.can_render()
     rendered, missing_required = 0, []
-    for it in lecture_items:
+    for it in list(lecture_items) + list(homework_items):
         ans_files = {f for (f, _p) in it.get("_answer_pages", [])}
         if len(ans_files) > 1:   # answer pages span >1 source file → page numbers are ambiguous
             report["warnings"].append("answer_spans_multiple_files: %s (%s)"
@@ -711,7 +898,7 @@ def run(args, backend=None):
                             % (len(missing_required), "；".join(missing_required[:6]))}, report
 
     course = args.course_name or os.path.basename(os.path.abspath(materials)) or "未命名科目"
-    raw_input = build_raw_input(course, group_sections(pages), lecture_items)
+    raw_input = build_raw_input(course, group_sections(pages), lecture_items, homework_items)
     return 0, raw_input, report
 
 

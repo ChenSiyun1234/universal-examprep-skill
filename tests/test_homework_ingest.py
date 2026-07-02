@@ -1,0 +1,184 @@
+# -*- coding: utf-8 -*-
+"""A3 tests — homework/solution ingest: file classification, Q/A pairing across separate PDFs,
+inline solutions, provenance, source_type tagging, visual dependence, fail-loud orphans."""
+import json
+import os
+import sys
+import tempfile
+import unittest
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "scripts"))
+import build_raw_input_from_workspace as B   # noqa: E402
+
+PNG = b"\x89PNG\r\n\x1a\nfakepng"
+
+
+class FakeBackend(object):
+    name = "fake"
+
+    def __init__(self, texts_by_name):
+        self.texts = texts_by_name
+
+    def can_text(self):
+        return True
+
+    def can_render(self):
+        return True
+
+    def page_texts(self, pdf_path):
+        return self.texts[os.path.basename(pdf_path)]
+
+    def render_page_png(self, pdf_path, page_index):
+        return PNG
+
+
+HW1 = ["Problem 1\n求栈的出栈顺序。\n\nProblem 2\n给出队列复杂度并证明。",
+       "Problem 3\nShade the region shown at right in the Venn diagram."]
+HW1_SOL = ["Problem 1\n答案：LIFO 顺序。\n\nProblem 2\n答案：O(1)，证明略。"]
+HW2_INLINE = ["第1题\n解释二叉搜索树。\nSolution\n中序遍历有序。\n\n第2题\n无答案的题。"]
+ORPHAN_SOL = ["Problem 1\n这是找不到题面的答案。"]
+
+
+def _mk(tmp, names_texts):
+    mat = os.path.join(tmp, "mat")
+    os.makedirs(os.path.join(mat, "homework"), exist_ok=True)
+    fake = {}
+    for name, pages in names_texts.items():
+        path = os.path.join(mat, "homework", name)
+        with open(path, "wb") as f:
+            f.write(b"%PDF-fake")
+        fake[name] = pages
+    return mat, FakeBackend(fake)
+
+
+def _run(mat, backend, extra=None):
+    argv = ["--materials", mat, "--out", os.path.join(mat, "..", "raw.json"),
+            "--report", os.path.join(mat, "..", "rep.json")] + (extra or [])
+    args = B.build_arg_parser().parse_args(argv)
+    code, payload, report = B.run(args, backend=backend)
+    return code, payload, report
+
+
+class HomeworkIngest(unittest.TestCase):
+    def test_separate_solution_pdf_paired(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw1.pdf": HW1, "hw1_sol.pdf": HW1_SOL})
+        code, payload, report = _run(mat, be)
+        self.assertEqual(code, 0, report)
+        bank = {q["id"]: q for q in payload["quiz_bank"]}
+        q1 = bank["hw_hw1_1"]
+        self.assertEqual(q1["source_type"], "homework")
+        self.assertIn("出栈顺序", q1["question"])
+        self.assertIn("LIFO", q1["answer"])                       # 题答分离 PDF 自动配对
+        self.assertEqual(q1["answer_source_file"], "homework/hw1_sol.pdf")
+        self.assertEqual(q1["source_file"], "homework/hw1.pdf")
+        self.assertEqual(q1["source_pages"], [1])
+        self.assertEqual(report["homework_pairs"], [["homework/hw1_sol.pdf", "homework/hw1.pdf"]])
+        self.assertEqual(report["homework_problems"], 3)
+        self.assertEqual(report["homework_answered"], 2)
+
+    def test_unanswered_problem_fail_loud(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw1.pdf": HW1, "hw1_sol.pdf": HW1_SOL})
+        code, payload, report = _run(mat, be)
+        q3 = next(q for q in payload["quiz_bank"] if q["id"] == "hw_hw1_3")
+        self.assertNotIn("answer", q3)
+        self.assertEqual(q3["answer_status"], "unknown")
+        self.assertTrue(any(w.startswith("hw_unanswered: hw_hw1_3") for w in report["warnings"]))
+
+    def test_inline_solution_and_cn_markers(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"作业2.pdf": HW2_INLINE})
+        code, payload, report = _run(mat, be)
+        self.assertEqual(code, 0, report)
+        bank = {q["id"]: q for q in payload["quiz_bank"] if q.get("source_type") == "homework"}
+        q1 = next(q for q in bank.values() if q["id"].endswith("_1"))
+        self.assertIn("二叉搜索树", q1["question"])
+        self.assertIn("中序遍历有序", q1["answer"])                # inline Solution 归属前一题
+        self.assertNotIn("Solution", q1["question"].split("Solution")[0] + "")  # 题面在 Solution 前截断
+        q2 = next(q for q in bank.values() if q["id"].endswith("_2"))
+        self.assertEqual(q2["answer_status"], "unknown")
+
+    def test_unpaired_solution_file_warns_and_skips(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw9_solutions.pdf": ORPHAN_SOL})
+        code, payload, report = _run(mat, be)
+        self.assertTrue(any(w.startswith("hw_unpaired_solution_file") for w in report["warnings"]))
+        self.assertFalse([q for q in payload["quiz_bank"] if q.get("source_type") == "homework"])
+
+    def test_visual_dependent_homework_renders_assets(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw1.pdf": HW1, "hw1_sol.pdf": HW1_SOL})
+        asset_root = os.path.join(tmp, "ws", "references", "assets")
+        code, payload, report = _run(mat, be, ["--asset-root", asset_root])
+        q3 = next(q for q in payload["quiz_bank"] if q["id"] == "hw_hw1_3")
+        self.assertIs(q3["requires_assets"], True)                # Venn/shown at right → 图依赖
+        self.assertTrue(q3["assets"])
+        self.assertEqual(q3["assets"][0]["role"], "question_context")
+        self.assertTrue(os.path.isfile(os.path.join(asset_root, os.path.basename(q3["assets"][0]["path"]))))
+
+    def test_extract_homework_never_disables(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw1.pdf": HW1, "hw1_sol.pdf": HW1_SOL})
+        code, payload, report = _run(mat, be, ["--extract-homework", "never"])
+        self.assertFalse([q for q in payload["quiz_bank"] if q.get("source_type") == "homework"])
+
+    def test_lecture_extraction_unaffected(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw1.pdf": HW1,
+                            "lec_ch01.pdf": ["Example 1.1 Problem\n求和。\nExample 1.1 Solution\n答案 3。"]})
+        code, payload, report = _run(mat, be)
+        ids = [q["id"] for q in payload["quiz_bank"]]
+        self.assertTrue(any(i.startswith("lecture_example_1_1") for i in ids))   # lecture 管线原样
+        self.assertIn("hw_hw1_1", ids)
+
+    def test_duplicate_problem_number_kept_first(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw3.pdf": ["Problem 1\n第一处。\n\nProblem 1\n重复标记。"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw), 1)
+        self.assertIn("第一处", hw[0]["question"])
+        self.assertTrue(any(w.startswith("hw_duplicate_problem") for w in report["warnings"]))
+
+    def test_output_passes_ingest_and_validator(self):
+        # e2e: builder → ingest.py → validate_workspace.py（真 CLI），homework 项带标签通过校验
+        import subprocess
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw1.pdf": HW1, "hw1_sol.pdf": HW1_SOL})
+        raw = os.path.join(tmp, "raw.json")
+        ws = os.path.join(tmp, "ws")
+        args = B.build_arg_parser().parse_args(["--materials", mat, "--out", raw,
+                                                "--report", os.path.join(tmp, "rep.json"),
+                                                "--asset-root", os.path.join(ws, "references", "assets")])
+        code, payload, report = B.run(args, backend=be)
+        json.dump(payload, open(raw, "w", encoding="utf-8"), ensure_ascii=False)
+        r1 = subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "ingest.py"),
+                             "-i", raw, "-o", ws], capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(r1.returncode, 0, r1.stdout + r1.stderr)
+        bank = json.load(open(os.path.join(ws, "references", "quiz_bank.json"), encoding="utf-8"))
+        hw = [q for q in bank if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw), 3)                              # source_type 穿 ingest 存活
+        r2 = subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "validate_workspace.py"), ws],
+                            capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(r2.returncode, 0, r2.stdout + r2.stderr)
+
+    def test_classifier_pairs_variants(self):
+        hw, pairing = B.classify_homework_files(
+            ["homework/hw1.pdf", "homework/hw1_sol.pdf", "homework/HW2.pdf",
+             "homework/HW2_Answers.pdf", "homework/作业3.pdf", "homework/作业3答案.pdf",
+             "lectures/ch01.pdf"])
+        self.assertEqual(sorted(hw), ["homework/HW2.pdf", "homework/hw1.pdf", "homework/作业3.pdf"])
+        self.assertEqual(pairing["homework/hw1_sol.pdf"], "homework/hw1.pdf")
+        self.assertEqual(pairing["homework/HW2_Answers.pdf"], "homework/HW2.pdf")
+        self.assertEqual(pairing["homework/作业3答案.pdf"], "homework/作业3.pdf")
+
+    def test_no_network_or_llm(self):
+        src = open(os.path.join(ROOT, "scripts", "build_raw_input_from_workspace.py"), encoding="utf-8").read()
+        for banned in ("import requests", "urllib.request", "import anthropic", "import socket"):
+            self.assertNotIn(banned, src)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
