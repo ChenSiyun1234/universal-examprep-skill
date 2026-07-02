@@ -96,6 +96,16 @@ class LedgerCore(unittest.TestCase):
         src = open(os.path.join(ROOT, "tests", "test_live_smoke.py"), encoding="utf-8").read()
         self.assertIn("--no-ledger", src)                         # 离线套件绝不污染默认审计账本
 
+    def test_non_finite_numeric_rejected(self):
+        path = os.path.join(tempfile.mkdtemp(), "l.jsonl")
+        for bad in (float("nan"), float("inf"), float("-inf")):
+            with self.assertRaises(SystemExit):       # NaN/Infinity 不是可移植 JSON，绝不落盘
+                L.record({"kind": "other", "cost_usd": bad}, path)
+        self.assertFalse(os.path.isfile(path))
+        e, warn = L.try_record({"kind": "other", "cost_usd": float("nan")}, path)
+        self.assertIsNone(e)
+        self.assertIn("不受影响", warn)
+
     def test_committed_sample_is_valid(self):
         r = subprocess.run([sys.executable, os.path.join(RUNS, "ledger.py"),
                             "--ledger", os.path.join(RUNS, "ledger.sample.jsonl"), "verify"],
@@ -183,6 +193,24 @@ class LiveSmokeIntegration(unittest.TestCase):
         self.assertEqual(row["workspace_hash"], L.workspace_hash(rebuilt))      # 可从输入复算
         self.assertNotEqual(row["workspace_hash"],
                             L.workspace_hash(os.path.join(out, "workspace")))   # ≠ 被改写后的沙盒
+
+    def test_prompt_hash_reflects_actual_prompts(self):
+        # 多轮 prompt 含前轮回复——同一脚本、不同 agent 行为必须得到不同 prompt_hash
+        #（旧口径只哈希静态脚本，两次运行会同哈希，审计字段失义）
+        fake = os.path.join(ROOT, "tests", "fake_live_agent.py")
+        cmd = json.dumps([sys.executable, fake, "{prompt}"])
+        hashes = []
+        for drift in ("0", "1"):
+            out = tempfile.mkdtemp()
+            led = os.path.join(out, "ledger.jsonl")
+            env = dict(os.environ, RUN_SKILL_DRIFT_LLM="1", FAKE_DRIFT=drift)
+            subprocess.run([sys.executable, os.path.join(ROOT, "benchmark", "drift", "run_live_smoke.py"),
+                            "--agent-cmd", cmd, "--out-dir", out, "--ledger", led],
+                           capture_output=True, text=True, encoding="utf-8", env=env)
+            rows = [json.loads(x) for x in open(led, encoding="utf-8") if x.strip()]
+            self.assertEqual(len(rows), 1)
+            hashes.append(rows[0]["prompt_hash"])
+        self.assertNotEqual(hashes[0], hashes[1])
 
     def test_ledger_records_aborted_run(self):
         # 付费回合烧掉后 agent 失败中止（_die exit 3）——账本必须留一行审计记录，而不是无痕

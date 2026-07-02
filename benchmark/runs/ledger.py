@@ -31,6 +31,7 @@ import datetime
 import hashlib
 import itertools
 import json
+import math
 import os
 import sys
 import time
@@ -101,8 +102,11 @@ def validate_entry(e):
             probs.append("%s 必须是字符串" % k)
     for k in NUM_FIELDS:
         v = e.get(k)
-        if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0):
-            probs.append("%s 必须是非负数值" % k)
+        # NaN 的 v<0 为 False、inf 也是 float——不拦会把 NaN/Infinity 写进 JSONL（非可移植 JSON），
+        # 且 verify 用同一校验器会把坏行报成有效
+        if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float))
+                              or not math.isfinite(v) or v < 0):
+            probs.append("%s 必须是非负有限数值" % k)
     ec = e.get("exit_code")
     if ec is not None and (isinstance(ec, bool) or not isinstance(ec, int)):
         probs.append("exit_code 必须是整数")

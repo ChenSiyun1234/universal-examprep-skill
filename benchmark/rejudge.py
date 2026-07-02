@@ -308,18 +308,6 @@ def main():
         if fh:
             fh.close()
     if scores_out or answers_out:
-        try:                                          # B7: 导出运行记一行账（失败仅提示，不影响导出）
-            sys.path.insert(0, os.path.join(HERE, "runs"))
-            import ledger as _ledger
-            _e2, _warn2 = _ledger.try_record({
-                "kind": "rejudge_export", "model": args.judge_model if args.llm else None,
-                # scores 与 answers 是成对导出（aggregate_matrix.py 两个都要）——账本记全才可复现
-                "transcript_path": args.scores_out, "summary_path": args.answers_out,
-                "exit_code": 0,
-                "notes": "rows=%d llm=%s" % (n_exported[0], bool(args.llm))})
-            print(("[!] " + _warn2) if _warn2 else ("[+] 账本 run_id=%s" % _e2["run_id"]))
-        except Exception as e:
-            print("[!] ledger 不可用：%s" % e)
         print("[+] 导出 %d 条聚合用行%s%s（喂给 aggregate_matrix.py）" % (
             n_exported[0],
             (" -> scores: %s" % args.scores_out) if scores_out else "",
@@ -334,6 +322,22 @@ def main():
            "algo": {"matrix": algo_matrix, "convergence": algo_conv}, "psyc": {"matrix": psyc}}
     with open(os.path.join(MATRIX, "summary_corrected.json"), "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=2)
+
+    if scores_out or answers_out:
+        # B7: 账本行等 summary_corrected.json 落盘后再记——导出后聚合/写汇总若失败，进程非零退出，
+        # 不能留下一行说成功的 exit_code=0（失败仅提示，不影响运行结果）
+        try:
+            sys.path.insert(0, os.path.join(HERE, "runs"))
+            import ledger as _ledger
+            _e2, _warn2 = _ledger.try_record({
+                "kind": "rejudge_export", "model": args.judge_model if args.llm else None,
+                # scores 与 answers 是成对导出（aggregate_matrix.py 两个都要）——账本记全才可复现
+                "transcript_path": args.scores_out, "summary_path": args.answers_out,
+                "exit_code": 0,
+                "notes": "rows=%d llm=%s" % (n_exported[0], bool(args.llm))})
+            print(("[!] " + _warn2) if _warn2 else ("[+] 账本 run_id=%s" % _e2["run_id"]))
+        except Exception as e:
+            print("[!] ledger 不可用：%s" % e)
 
     old = {}
     if os.path.exists(os.path.join(MATRIX, "summary.json")):

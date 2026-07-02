@@ -383,6 +383,8 @@ def main(argv=None):
         except Exception as e:        # 记账绝不影响运行结果
             print("[!] ledger 不可用：%s" % e)
             _ledger = None
+    sent_prompts = []                     # 实际发出的每条完整 prompt（含逐轮对话历史）——审计哈希以此为准
+
     def _ledger_row(exit_code, transcript, summary, note):
         """B7: one auditable row per REAL run — success AND abort paths both come through here."""
         if _ledger is None:
@@ -390,7 +392,9 @@ def main(argv=None):
         try:
             _e, _warn = _ledger.try_record({
                 "kind": "live_smoke", "model": args.model,
-                "prompt_hash": _ledger.hash_text(PREAMBLE + json.dumps(spec, ensure_ascii=False)),
+                # 多轮 prompt 含前轮回复：只哈希静态脚本会让不同实际输入拿到相同 prompt_hash，
+                # 审计字段就失去「跑的到底是什么」的意义——哈希实际发送串
+                "prompt_hash": _ledger.hash_text(chr(0).join(sent_prompts)),
                 "workspace_hash": ws_hash0,
                 "transcript_path": transcript, "summary_path": summary,
                 "exit_code": exit_code, "notes": note,
@@ -407,6 +411,7 @@ def main(argv=None):
     try:
         for i, turn in enumerate(turns, 1):
             prompt = build_prompt(sandbox, digest, history, turn["user"], args.max_prompt_chars, progress)
+            sent_prompts.append(prompt)
             reply = call_agent(args.agent_cmd, prompt, args.turn_timeout, args.max_output_chars, cwd=sandbox)
             history += [("user", turn["user"]), ("assistant", reply)]
             for f in check_oracle(turn, reply):
