@@ -1095,7 +1095,64 @@ class HomeworkIngest(unittest.TestCase):
         wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
         self.assertNotIn("通用命名的答案", wiki_all)               # 解答册照常不进 wiki
 
+    # ---- regression guards for Codex round-16 (5 findings) ----
+
+    def test_root_hw_folder_keeps_solutions_out_of_wiki(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "homework")
+        os.makedirs(mat, exist_ok=True)
+        fake = {"worksheet1.pdf": ["Problem 1\n根级工作表题面。"],
+                "solutions.pdf": ["随笔式答案页，没有题号标记，纯答案内容。"]}
+        for name in fake:
+            with open(os.path.join(mat, name), "wb") as f:
+                f.write(b"%PDF-fake")
+        be = FakeBackend(fake)
+        code, payload, report = _run(mat, be)
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertNotIn("纯答案内容", wiki_all)                   # 根级 solutions.pdf 不漏进 wiki
+        self.assertTrue(any(w.startswith("hw_unpaired_solution_file") for w in report["warnings"]))
+
+    def test_paired_answers_header_list_split(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw25.pdf": ["Problem 1\n题面一内容。\n\nProblem 2\n题面二内容。"],
+                            "hw25_sol.pdf": ["Answers\n1. 独立册答案一\n2. 独立册答案二"]})
+        code, payload, report = _run(mat, be)
+        hw = {q["homework_number"]: q for q in payload["quiz_bank"] if q.get("source_type") == "homework"}
+        self.assertIn("独立册答案一", hw[1]["answer"])              # 独立答案册的编号清单按号拆
+        self.assertIn("独立册答案二", hw[2]["answer"])
+        self.assertNotIn("独立册答案二", hw[1]["answer"])
+
+    def test_answer_box_instructions_not_official_answer(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw26.pdf": ["Problem 1\nAnswer: Give a short proof in the box below.\n\n"
+                                         "Problem 2\n正常题面内容。\nAnswer: 42"]})
+        code, payload, report = _run(mat, be)
+        hw = {q["homework_number"]: q for q in payload["quiz_bank"] if q.get("source_type") == "homework"}
+        self.assertNotIn("answer", hw[1])                         # 答题栏指示语不是官方答案
+        self.assertEqual(hw[1]["answer_status"], "unknown")
+        self.assertIn("42", hw[2]["answer"])                      # 有题面内容的内联答案照常
+
+    def test_bare_key_suffix_is_companion(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw1.pdf": ["Problem 1\n裸 key 后缀的题面。"],
+                            "hw1_key.pdf": ["Problem 1\nAnswer 1: 裸 key 后缀的答案。"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw), 1)                              # hw1_key 是答案册不是第二份作业
+        self.assertIn("裸 key 后缀的答案", hw[0]["answer"])
+        hw2, pairing2 = B.classify_homework_files(["keyboard_hw2.pdf"])
+        self.assertEqual((len(hw2), pairing2), (1, {}))            # keyboard 词内 key 不受影响
+
+    def test_numeric_only_paired_solution_kept(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw27.pdf": ["Problem 1\n数值答案的题面。"],
+                            "hw27_sol.pdf": ["Problem 1\n4"]})
+        code, payload, report = _run(mat, be)
+        q = next(x for x in payload["quiz_bank"] if x.get("source_type") == "homework")
+        self.assertIn("4", q["answer"])                           # 纯数字/符号官方答案不被字母门槛拒掉
+
     def test_no_network_or_llm(self):
+
 
 
 

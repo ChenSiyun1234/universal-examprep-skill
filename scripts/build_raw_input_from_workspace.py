@@ -433,6 +433,15 @@ def classify_homework_files(files, root_name=""):
                        for t in rest_toks)
         sol_after_hw = bool(hw_m and any(m.start() > hw_m.start() and _terminal_solish(m)
                                          for m in _SOL_TOKEN_RE.finditer(stem_nokey)))
+        # 裸 key/manual 后缀（hw1_key.pdf）：描述词在 hw 记号之后且是终端形——本身就是答案册记号。
+        # 注意在【原始 stem】上找（stem_nokey 已剥掉描述词）
+        hw_m_raw = _HW_FILE_RE.search(stem)
+        desc_after_hw = bool(hw_m_raw and any(
+            m.start() > hw_m_raw.start()
+            and all(t.lower() in ("for", "to", "of", "the") or _HW_FILE_RE.search(t)
+                    for t in re.findall(r"[A-Za-z一-鿿]+", stem[m.end():]))
+            for m in _KEY_TOKEN_RE.finditer(stem)))
+        sol_after_hw = sol_after_hw or desc_after_hw
         is_sol = bool(any(_sol_dir_segment(seg) for seg in os.path.dirname(rel).split("/"))
                       or (sol_m and not hw_m) or sol_after_hw
                       or sol_before_adjacent)
@@ -514,8 +523,10 @@ def classify_homework_files(files, root_name=""):
         pairing[sf] = match
     for sf in [k for k, v in pairing.items() if v is None]:
         # 配不上且路径/文件名没有任何作业线索（solutions/ch01.pdf 这类通用解答目录装的
-        # 是讲义解答）——从作业管线除名，交还讲义配对，不再据为己有
-        if not _HW_FILE_RE.search(sf.replace(chr(92), "/")):
+        # 是讲义解答）——从作业管线除名，交还讲义配对，不再据为己有。
+        # 根目录本身就是作业文件夹时全部文件都在作业上下文里，不除名（否则根级
+        # solutions.pdf 会漏进 wiki 泄答案）
+        if not root_is_hw and not _HW_FILE_RE.search(sf.replace(chr(92), "/")):
             del pairing[sf]
     return hw, pairing
 
@@ -716,6 +727,28 @@ def extract_homework_items(pages, root_name=""):
             elif m["role"] == "solution" and m["num"] is None and last_num is not None:
                 m["num"] = last_num
         # (Continued) 标记是上一段的续页——切片要越过它，解答的后续页并入前一切片
+        # 无号「Answers」节 + 编号行（1. A1 / 2. A2）——与作业内联同规，按号拆给各题
+        for m in marks_all:
+            if m["role"] != "solution" or m["num"] is not None:
+                continue
+            end0 = next((m2["start"] for m2 in marks_all if m2["start"] > m["start"]), len(stream))
+            seg = stream[m["start"]:end0]
+            keyed_ms = list(re.finditer(
+                r"^[ " + chr(92) + r"t]*(" + chr(92) + r"d+(?:" + chr(92) + r"." + chr(92)
+                + r"d+)*(?:" + chr(92) + r"([A-Za-z]" + chr(92) + r"))?)[.)、][ " + chr(92) + r"t]",
+                seg, re.M))
+            if len({m2.group(1) for m2 in keyed_ms}) < 2:
+                continue
+            for x, m2 in enumerate(keyed_ms):
+                seg_end = keyed_ms[x + 1].start() if x + 1 < len(keyed_ms) else len(seg)
+                numk = _hw_num(m2.group(1))
+                key = (hf, numk)
+                if key in sol_answers:
+                    continue
+                got0 = _hw_nonblank_slice(stream, bounds, sf, m["start"] + m2.start(),
+                                          m["start"] + seg_end)
+                if got0:
+                    sol_answers[key] = got0 + ("solution",)
         marks = [m for m in marks_all if m["num"] is not None and not m.get("continued")]
         sol_nums = {m["num"] for m in marks if m["role"] == "solution"}
         for i, mk in enumerate(marks):
@@ -732,8 +765,11 @@ def extract_homework_items(pages, root_name=""):
                 bfirst, _, brest = got[1].partition(chr(10))
                 bm0 = next((mm for mm in (rx.match(bfirst) for rx in _HW_PROB_RES) if mm), None)
                 bsame = bfirst[bm0.end():] if bm0 else bfirst
-                if not (re.search(r"[A-Za-z一-鿿]", bsame) or re.search(r"[A-Za-z一-鿿]", brest)):
-                    continue           # 光秃的「Problem 1」标题不是复述兜底——空白答卷保持 unknown
+                leftover = re.sub(r"[_" + chr(92) + r"s.．。:：…" + chr(92) + r"-—＿]+", "",
+                                  bsame + brest)
+                if not leftover:
+                    continue           # 光秃的「Problem 1」标题不是复述兜底——空白答卷保持 unknown；
+                                       # 数字/符号答案（4、π/2）有剩余内容，照常保留
             key = (hf, mk["num"])
             prev = sol_answers.get(key)
             # 同号既有 Problem 复述又有 Answer 段时，答案段优先（不再"先到先得"存题面复述）
@@ -870,14 +906,27 @@ def extract_homework_items(pages, root_name=""):
             ans = None
             if k < len(marks) and marks[k]["role"] == "solution" \
                     and marks[k]["num"] in (None, mk["num"]):
-                s_start = marks[k]["start"]
-                s_end = next((m2["start"] for m2 in marks[k + 1:] if m2["role"] == "problem"), len(stream))
-                keyed = {m2.group(1) for m2 in re.finditer(r"^[ \t]*(\d+)[.)、]", stream[s_start:s_end], re.M)}
-                if marks[k]["num"] is None and len(keyed) >= 2:
-                    ans = None          # 无号「Answers」节头 + 多号列表——是整卷答案区，
-                                        # 按号拆给各题（见 inline_keys），不是本题的答案
+                head_line_end = stream.find(chr(10), mk["start"])
+                body_before = stream[head_line_end:marks[k]["start"]] if 0 <= head_line_end < marks[k]["start"] else ""
+                first_line_full = stream[mk["start"]:(head_line_end if head_line_end >= 0 else len(stream))]
+                bm0 = next((mm for mm in (rx.match(first_line_full) for rx in _HW_PROB_RES) if mm), None)
+                same_rest = first_line_full[bm0.end():] if bm0 else ""
+                if not re.search(r"[0-9A-Za-z一-鿿]", body_before + same_rest):
+                    ans = None         # 题面在答案标记前毫无内容——这行 Answer 是答题栏标签
+                                       #（如 Answer: Give a short proof…），属题面指示语，不是官方答案
+                    s_start = None
                 else:
-                    ans = _nonblank_slice(s_start, s_end)
+                    s_start = marks[k]["start"]
+                if s_start is not None:
+                    s_end = next((m2["start"] for m2 in marks[k + 1:] if m2["role"] == "problem"),
+                                 len(stream))
+                    keyed = {m2.group(1) for m2 in re.finditer(r"^[ \t]*(\d+)[.)、]",
+                                                               stream[s_start:s_end], re.M)}
+                    if marks[k]["num"] is None and len(keyed) >= 2:
+                        ans = None      # 无号「Answers」节头 + 多号列表——是整卷答案区，
+                                        # 按号拆给各题（见 inline_keys），不是本题的答案
+                    else:
+                        ans = _nonblank_slice(s_start, s_end)
             if ans is None:
                 ans = inline_keys.get(mk["num"])       # 同文件 answer-key 段（不相邻也配）
             if ans is None:
