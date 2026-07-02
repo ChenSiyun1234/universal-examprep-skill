@@ -370,10 +370,16 @@ def classify_homework_files(files):
         stem = os.path.splitext(os.path.basename(f))[0]
         sol_m = _SOL_TOKEN_RE.search(stem)
         hw_m = _HW_FILE_RE.search(stem)
-        # 「answer_questions_hw1」的 answer 是动词开头、不是解答记号——文件名里的 sol 记号必须出现在
-        # hw 记号【之后】（hw1_sol / hw1solution / homework2solutions），或由目录名（solutions/）标记
+        # 「answer_questions_hw1」的 answer 是动词开头、不是解答记号——文件名里的 sol 记号须在
+        # hw 记号【之后】（hw1_sol / homework2solutions），或在其前但两者【紧邻】（solutions_hw1 /
+        # 答案_作业3：中间只有分隔符，没有别的词——动词短语 answer_questions_hw1 因此仍归作业），
+        # 或由目录名（solutions/）标记
+        sol_before_adjacent = bool(sol_m and hw_m and sol_m.start() < hw_m.start()
+                                   and not re.search(r"[0-9A-Za-z一-鿿]",
+                                                     stem[sol_m.end():hw_m.start()]))
         is_sol = bool(_SOL_TOKEN_RE.search(os.path.dirname(rel))
-                      or (sol_m and (not hw_m or sol_m.start() > hw_m.start())))
+                      or (sol_m and (not hw_m or sol_m.start() > hw_m.start()))
+                      or sol_before_adjacent)
         if not (_HW_FILE_RE.search(rel) or is_sol):
             continue                                   # solutions/hw1.pdf：目录名也是 solution 记号
         (sols if is_sol else hw).append(f)
@@ -401,8 +407,10 @@ def classify_homework_files(files):
                 return exact[0]
             if exact:
                 return _AMBIG
+            # 前缀回退只允许【作业名延长解答名】方向（hw1_probability ← hw1_sol）——
+            # 反方向（hw1a_sol/hw1_extra_sol → hw1）会把别的作业的答案安到 hw1 头上
             cands = [f for (d, n), fs in hw_by_key.items() if d in dirs and n
-                     and (_pref(stripped, n) or _pref(n, stripped)) for f in fs]
+                     and _pref(n, stripped) for f in fs]
             if len(cands) == 1:
                 return cands[0]
             return _AMBIG if cands else None
@@ -579,7 +587,9 @@ def extract_homework_items(pages):
             标记后同行为空 → 答案须来自后续行（原有语义）。"""
             a_body = stream[s_start:s_end].strip()
             first, _, rest = a_body.partition("\n")
-            line_rest = re.sub(_HW_SOL_RE, "", first, count=1)
+            line_rest = re.sub(_HW_SOL_PRE_RE, "", first, count=1)   # 「1(a). Answer:」带号前缀也要剥掉
+            if line_rest == first:
+                line_rest = re.sub(_HW_SOL_RE, "", first, count=1)
             if line_rest.strip() and not re.sub(r"[_\s.．。:：…\-—＿]+", "", line_rest):
                 return None                        # 同行是填空线——worksheet 空栏，不是答案
             a_tail = rest if rest else line_rest
@@ -596,13 +606,33 @@ def extract_homework_items(pages):
                 got2 = _nonblank_slice(mk2["start"], end2)
                 if got2:
                     inline_keys[mk2["num"]] = got2
+        # 合并文件的「解答区」：全部题面首现之后，若还有一串【重复的 Problem N】标题且覆盖 ≥2 个
+        # 不同已见号（页眉重现只会重复单个号），把每段切片当该题的官方答案——不再当重复丢掉
+        first_start = {}
+        for mk2 in marks:
+            if mk2["role"] == "problem" and not mk2.get("continued") and mk2["num"] not in first_start:
+                first_start[mk2["num"]] = mk2["start"]
+        tail_answers, tail_starts = {}, set()
+        if first_start:
+            tail_begin = max(first_start.values())
+            tail_marks = [(j, mk2) for j, mk2 in enumerate(marks)
+                          if mk2["role"] == "problem" and not mk2.get("continued")
+                          and mk2["num"] in first_start and mk2["start"] > tail_begin
+                          and mk2["start"] > first_start[mk2["num"]]]
+            if len({mk2["num"] for _j, mk2 in tail_marks}) >= 2:
+                for j, mk2 in tail_marks:
+                    tail_starts.add(mk2["start"])
+                    end2 = marks[j + 1]["start"] if j + 1 < len(marks) else len(stream)
+                    got2 = _nonblank_slice(mk2["start"], end2)
+                    if got2 and mk2["num"] not in tail_answers:
+                        tail_answers[mk2["num"]] = got2
         for i, mk in enumerate(marks):
             if mk["role"] != "problem":
                 continue
             if mk["num"] in seen_nums:
-                if not mk.get("continued"):
+                if not mk.get("continued") and mk["start"] not in tail_starts:
                     dup_counts[mk["num"]] = dup_counts.get(mk["num"], 0) + 1   # 真实 PDF 里题号会反复出现
-                continue                                                    #（分页眉/解答区重现）——去重计数
+                continue                                                    #（分页眉重现）——去重计数
             seen_nums.add(mk["num"])
             # 跨页续题（Problem 1 (continued)）：同号 continued 标题是同一道题的续页——
             # 切片越过它们，续页文字/页码并入本题，不当成重复丢弃
@@ -621,6 +651,8 @@ def extract_homework_items(pages):
                 ans = _nonblank_slice(s_start, s_end)
             if ans is None:
                 ans = inline_keys.get(mk["num"])       # 同文件 answer-key 段（不相邻也配）
+            if ans is None:
+                ans = tail_answers.get(mk["num"])      # 同文件尾部「解答区」重复标题段
             if ans is None:
                 got = sol_answers.get((hf, mk["num"]))
                 ans = got[:3] if got else None

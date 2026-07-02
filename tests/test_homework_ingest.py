@@ -540,7 +540,61 @@ class HomeworkIngest(unittest.TestCase):
                                                  "week1/hw1_sol.pdf", "week2/hw1.pdf"])
         self.assertIsNone(pairing["week1/hw1_sol.pdf"])           # 本层歧义就地放弃，绝不配到 week2
 
+    # ---- regression guards for Codex round-7 (4 findings) ----
+
+    def test_prefixed_blank_answer_key_stays_unknown(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw22.pdf": ["Problem 1(a)\n第一小问题面。\n\nProblem 1(b)\n第二小问题面。\n\n"
+                                         "1(a). Answer: ________\n1(b). Answer: 真实答案内容。"]})
+        code, payload, report = _run(mat, be)
+        hw = {str(q["homework_number"]): q for q in payload["quiz_bank"] if q.get("source_type") == "homework"}
+        self.assertNotIn("answer", hw["1a"])                      # 带号前缀的填空线不是官方答案
+        self.assertEqual(hw["1a"]["answer_status"], "unknown")
+        self.assertIn("真实答案内容", hw["1b"]["answer"])
+
+    def test_solution_prefix_filenames_are_companions(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw1.pdf": ["Problem 1\n前缀式解答的题面。"],
+                            "solutions_hw1.pdf": ["Problem 1\nAnswer 1: 前缀式解答的答案。"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw), 1)                              # solutions_hw1 是伴随解答不是第二份作业
+        self.assertIn("前缀式解答的答案", hw[0]["answer"])
+        hw2, pairing2 = B.classify_homework_files(["作业3.pdf", "答案_作业3.pdf"])
+        self.assertEqual(pairing2["答案_作业3.pdf"], "作业3.pdf")   # 中文前缀同理
+        hw3, pairing3 = B.classify_homework_files(["answer_questions_hw2.pdf"])
+        self.assertEqual((len(hw3), pairing3), (1, {}))            # 动词短语仍归作业（中间夹词）
+
+    def test_repeated_headings_solutions_section_pairs(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw23.pdf": ["Problem 1\n题面一内容。\n\nProblem 2\n题面二内容。",
+                                         "Problem 1\n解答一正文。\n\nProblem 2\n解答二正文。"]})
+        code, payload, report = _run(mat, be)
+        hw = {q["homework_number"]: q for q in payload["quiz_bank"] if q.get("source_type") == "homework"}
+        self.assertEqual(len(hw), 2)                              # 解答区重复标题不是新题也不是垃圾重复
+        self.assertIn("解答一正文", hw[1]["answer"])
+        self.assertIn("解答二正文", hw[2]["answer"])
+        self.assertFalse([w for w in report["warnings"] if "hw_duplicate_problem" in w])
+
+    def test_page_header_repeat_still_deduped(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw24.pdf": ["Problem 1\n题面一。\n\nProblem 2\n题面二第一页。",
+                                         "Problem 2\n题面二第二页重复页眉后的正文。"]})
+        code, payload, report = _run(mat, be)
+        hw = {q["homework_number"]: q for q in payload["quiz_bank"] if q.get("source_type") == "homework"}
+        self.assertEqual(len(hw), 2)                              # 单号页眉重现仍按重复去重
+        self.assertEqual(hw[2]["answer_status"], "unknown")       # 不会被当成解答区
+        self.assertTrue([w for w in report["warnings"] if "hw_duplicate_problem" in w])
+
+    def test_alpha_suffix_solution_not_paired_to_base(self):
+        hw, pairing = B.classify_homework_files(["hw1.pdf", "hw1a_sol.pdf", "hw1_extra_sol.pdf"])
+        self.assertIsNone(pairing["hw1a_sol.pdf"])                # hw1a 的答案不能安到 hw1 头上
+        self.assertIsNone(pairing["hw1_extra_sol.pdf"])
+        hw2, pairing2 = B.classify_homework_files(["hw1_probability_worksheet.pdf", "hw1_sol.pdf"])
+        self.assertEqual(pairing2["hw1_sol.pdf"], "hw1_probability_worksheet.pdf")   # 作业名延长方向仍配
+
     def test_no_network_or_llm(self):
+
 
 
 
