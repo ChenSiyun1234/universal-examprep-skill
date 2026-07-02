@@ -83,17 +83,33 @@ def run(argv=None):
         if not kps or not isinstance(kps, list):
             untagged += 1
             continue
-        ch = q.get("chapter") if q.get("chapter") is not None else q.get("phase")
-        ch = str(ch) if ch is not None else None
+        # a bank item may carry BOTH the original chapter label and the review phase（chapter:3, phase:1），
+        # and the chapter value may be a wiki basename——都要能解析到 plan 的 wiki 放置
+        keys = []
+        for v in (q.get("chapter"), q.get("phase")):
+            if v is not None and str(v) not in keys:
+                keys.append(str(v))
+        wikis = []
+        for kkey in keys:
+            for w in wiki_map.get(kkey, []):
+                if w not in wikis:
+                    wikis.append(w)
+            base = kkey if kkey.endswith(".md") else kkey + ".md"
+            for files in wiki_map.values():            # chapter 写的是 wiki 文件名 → 反查
+                for w in files:
+                    if w == base or w == kkey:
+                        if w not in wikis:
+                            wikis.append(w)
         for k in kps:
             if not isinstance(k, str) or not k.strip():
                 continue
             rec = kp_index.setdefault(k.strip(), {"chapters": [], "wiki_files": [], "question_ids": []})
-            if ch and ch not in rec["chapters"]:
-                rec["chapters"].append(ch)
-                for w in wiki_map.get(ch, []):
-                    if w not in rec["wiki_files"]:
-                        rec["wiki_files"].append(w)
+            for kkey in keys:
+                if kkey not in rec["chapters"]:
+                    rec["chapters"].append(kkey)
+            for w in wikis:
+                if w not in rec["wiki_files"]:
+                    rec["wiki_files"].append(w)
             rec["question_ids"].append(str(q["id"]))
 
     out = args.out or os.path.join(args.workspace, "references", "knowledge_index.json")

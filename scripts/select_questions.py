@@ -60,8 +60,11 @@ def match(q, args):
         # counted separately, so a homework-only session can't quietly serve untagged lecture items
         if q.get("source_type") not in args.source_type:
             return False
-    if args.chapter is not None and _chapter_of(q) != str(args.chapter):
-        return False
+    if args.chapter is not None:
+        keys = {str(q.get("chapter")) if q.get("chapter") is not None else None,
+                str(q.get("phase")) if q.get("phase") is not None else None} - {None}
+        if str(args.chapter) not in keys:              # chapter OR phase（题可同时带原章号与复习阶段）
+            return False
     if args.knowledge_point:
         kps = q.get("knowledge_points") or []
         if not any(args.knowledge_point in k for k in kps if isinstance(k, str)):
@@ -96,7 +99,14 @@ def export_sqlite(bank, path):
         for q in bank:
             # official = 教材/老师来源的答案；mixed/unknown/缺 source 都不算（与视觉索引同口径）
             official_src = q.get("source") in ("teacher", "material") and q.get("ai_generated") is not True
-            has_ans = official_src and any(q.get(k) not in (None, "", []) for k in ("answer", "answer_keywords"))
+
+            def _nonblank(v):
+                if isinstance(v, str):
+                    return bool(v.strip())             # 空白-only 答案不算有答案
+                if isinstance(v, list):
+                    return any(isinstance(x, str) and x.strip() for x in v)
+                return v is not None
+            has_ans = official_src and (_nonblank(q.get("answer")) or _nonblank(q.get("answer_keywords")))
             con.execute("INSERT OR REPLACE INTO questions VALUES (?,?,?,?,?,?,?,?,?,?)",
                         (str(q["id"]), q.get("type"), _chapter_of(q), q.get("source_type"),
                          q.get("difficulty") if isinstance(q.get("difficulty"), int)

@@ -165,7 +165,44 @@ class Selector(unittest.TestCase):
         rc, out = self._run(ws, ["--source-type", "homework", "--chapter", "1", "--json"])
         self.assertEqual(json.loads(out)["untagged_excluded"], 1) # ch1 的 untagged1
 
+    # ---- regression guards for Codex round-3 ----
+
+    def test_chapter_or_phase_matching(self):
+        ws = _mk_ws(tempfile.mkdtemp(), [{"id": "dual1", "chapter": 3, "phase": 1, "type": "subjective",
+                                          "question": "双标题？", "answer": "E", "source": "material",
+                                          "ai_generated": False, "source_type": "homework"}])
+        rc, out = self._run(ws, ["--chapter", "3", "--json"])
+        self.assertIn("dual1", [i["id"] for i in json.loads(out)["items"]])   # 原章号可命中
+        rc, out = self._run(ws, ["--chapter", "1", "--json"])
+        self.assertIn("dual1", [i["id"] for i in json.loads(out)["items"]])   # 复习阶段也可命中
+
+    def test_blank_answer_not_official_in_cache(self):
+        ws = _mk_ws(tempfile.mkdtemp(), [{"id": "blank1", "chapter": 1, "type": "subjective",
+                                          "question": "空白答案？", "answer": "   ",
+                                          "source": "material", "ai_generated": False}])
+        db = os.path.join(tempfile.mkdtemp(), "c.db")
+        self._run(ws, ["--export-sqlite", db, "--json"])
+        import sqlite3
+        con = sqlite3.connect(db)
+        v = con.execute("SELECT has_official_answer FROM questions WHERE id='blank1'").fetchone()[0]
+        con.close()
+        self.assertEqual(v, 0)                                    # 空白-only 答案不算官方答案
+
 class KnowledgeIndex(unittest.TestCase):
+    def test_index_resolves_phase_and_wiki_basename_chapters(self):
+        ws = _mk_ws(tempfile.mkdtemp(), [
+            {"id": "dualk", "chapter": 3, "phase": 1, "type": "subjective", "question": "双标题？",
+             "answer": "E", "source": "material", "ai_generated": False, "knowledge_points": ["双标"]},
+            {"id": "wname", "chapter": "ch2", "type": "subjective", "question": "wiki 名章节？",
+             "answer": "F", "source": "material", "ai_generated": False, "knowledge_points": ["名章"]}])
+        subprocess.run([sys.executable, os.path.join(SCRIPTS, "build_knowledge_index.py"),
+                        "--workspace", ws], capture_output=True, text=True, encoding="utf-8")
+        idx = json.load(open(os.path.join(ws, "references", "knowledge_index.json"), encoding="utf-8"))
+        kp = idx["knowledge_points"]
+        self.assertIn("ch1.md", kp["双标"]["wiki_files"])          # 经 phase:1 解析到 plan 的 wiki
+        self.assertEqual(sorted(kp["双标"]["chapters"]), ["1", "3"])
+        self.assertIn("ch2.md", kp["名章"]["wiki_files"])          # chapter 为 wiki 基名 → 反查命中
+
     def test_index_maps_kp_to_chapter_wiki_questions(self):
         ws = _mk_ws(tempfile.mkdtemp())
         r = subprocess.run([sys.executable, os.path.join(SCRIPTS, "build_knowledge_index.py"),
@@ -197,6 +234,8 @@ class ScopeContract(unittest.TestCase):
         self.assertFalse(B.scope_override_declared("好的，来做图片题。\n\n题目 [#mc_q1] xx？"))
         untagged_first = "1. 这是未标号的题？\n\n⚠️ 临时覆盖你的 homework-only 范围偏好\n\n题目 [#mc_q1] xx？"
         self.assertFalse(B.scope_override_declared(untagged_first))   # 未标号题先出现也算违规
+        numbered_cn = "题目一：看图作答？\n\n⚠️ 临时覆盖你的 homework-only 范围偏好"
+        self.assertFalse(B.scope_override_declared(numbered_cn))      # 题目一：/题目 1： 也算第一道题
         late = "题目 [#mc_q1] xx？\n\n⚠️ 临时覆盖你的 homework-only 范围偏好"
         self.assertFalse(B.scope_override_declared(late))         # 声明必须在第一道题之前
 
