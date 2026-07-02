@@ -383,8 +383,11 @@ def classify_homework_files(files):
             cands = [f for (d, n), fs in hw_by_key.items() if d in dirs and n
                      and (_pref(stripped, n) or _pref(n, stripped)) for f in fs]
             return cands[0] if len(cands) == 1 else None
-        # same-dir first, then its parent (solutions/hw1 → homework/hw1 case: try all dirs), then global
-        match = _lookup({sdir}) or _lookup({d for (d, _n) in hw_by_key})
+        # 逐级放宽：同目录 → 同父家族（week1/solutions ↔ week1/homework、week1 根）→ 全局唯一。
+        # 家族层让每周各配各的，不会因 week2 也有 hw1 而全局歧义配不上
+        parent = os.path.dirname(sdir)
+        family = {d for (d, _n) in hw_by_key if d == parent or os.path.dirname(d) == parent}
+        match = _lookup({sdir}) or _lookup(family) or _lookup({d for (d, _n) in hw_by_key})
         pairing[sf] = match
     return hw, pairing
 
@@ -420,23 +423,36 @@ def _hw_num(s):
     return int(s) if s.isdigit() else s
 
 
+def _hw_line(stream, m):
+    nl = stream.find("\n", m.end())
+    return stream[m.start():(nl if nl >= 0 else len(stream))]
+
+
 def _hw_markers(stream):
-    """All problem/inline-solution markers in stream order: {start, num|None, role}."""
+    """All problem/inline-solution markers in stream order: {start, num|None, role, continued}."""
     marks = []
     for rx in _HW_PROB_RES:
         for m in rx.finditer(stream):
             num = next((g for g in m.groups() if g), None)
-            line = stream[m.start(): stream.find("\n", m.end()) if stream.find("\n", m.end()) >= 0 else len(stream)]
+            line = _hw_line(stream, m)
             if _TOC_RE.search(line[:300]):
                 continue
-            marks.append({"start": m.start(), "num": _hw_num(num), "role": "problem"})
+            # 角色词只看标题【同一行】号后的文字——下一行以 Answer 开头的题面（"Problem 1\nAnswer the
+            # following…"）绝不能把题目翻成解答段
+            tail = line[m.end() - m.start():][:48]
+            # 「Problem 1 Solution」是解答段标题不是新题——按号后紧跟的角色词判定（与 lecture 同族）
+            role = "solution" if _ROLE_SOLUTION_RE.match(tail) else "problem"
+            marks.append({"start": m.start(), "num": _hw_num(num), "role": role,
+                          "continued": bool(re.search(r"continued|[（(]\s*续", tail, re.I))})
     for m in _HW_SOL_RE.finditer(stream):
+        if _TOC_RE.search(_hw_line(stream, m)[:300]):
+            continue                           # 「1. Answer ........ 5」目录行不是答案
         num = next((g for g in m.groups() if g), None)
         if num is None:                        # 「1. Answer: …」——编号在标记前、被 _HEAD 吞掉，从前缀找回
             pm = _SOL_PREFIX_NUM_RE.match(m.group(0))
             if pm:
                 num = pm.group(1)
-        marks.append({"start": m.start(), "num": _hw_num(num), "role": "solution"})
+        marks.append({"start": m.start(), "num": _hw_num(num), "role": "solution", "continued": False})
     marks.sort(key=lambda d: d["start"])
     # de-dup identical (start) collisions (EN/CN patterns can't overlap, but be safe)
     dedup, seen = [], set()
@@ -497,26 +513,50 @@ def extract_homework_items(pages):
             stem = stem_full
         seen_nums = set()
         dup_counts = {}
+
+        def _nonblank_slice(s_start, s_end):
+            """Answer slice unless it's a worksheet blank（Answer: ______）——去掉标记行后只剩
+            下划线/点/空白即忽略。"""
+            a_body = stream[s_start:s_end].strip()
+            a_tail = a_body.split("\n", 1)[1] if "\n" in a_body else re.sub(_HW_SOL_RE, "", a_body, count=1)
+            if re.sub(r"[_\s.．。:：…\-—]+", "", a_tail):
+                return (hf, a_body, _pages_for_span(bounds, s_start, s_end))
+            return None
+
+        # 同文件「先全部题目、后统一 Answer 1/Answer 2」的 answer-key 段——按题号索引，
+        # 不要求解答紧跟在题面后面
+        inline_keys = {}
+        for j, mk2 in enumerate(marks):
+            if mk2["role"] == "solution" and mk2["num"] is not None and mk2["num"] not in inline_keys:
+                end2 = marks[j + 1]["start"] if j + 1 < len(marks) else len(stream)
+                got2 = _nonblank_slice(mk2["start"], end2)
+                if got2:
+                    inline_keys[mk2["num"]] = got2
         for i, mk in enumerate(marks):
             if mk["role"] != "problem":
                 continue
             if mk["num"] in seen_nums:
-                dup_counts[mk["num"]] = dup_counts.get(mk["num"], 0) + 1   # 真实 PDF 里题号会反复出现
+                if not mk.get("continued"):
+                    dup_counts[mk["num"]] = dup_counts.get(mk["num"], 0) + 1   # 真实 PDF 里题号会反复出现
                 continue                                                    #（分页眉/解答区重现）——去重计数
             seen_nums.add(mk["num"])
-            nxt = marks[i + 1]["start"] if i + 1 < len(marks) else len(stream)
+            # 跨页续题（Problem 1 (continued)）：同号 continued 标题是同一道题的续页——
+            # 切片越过它们，续页文字/页码并入本题，不当成重复丢弃
+            k = i + 1
+            while k < len(marks) and marks[k]["role"] == "problem" \
+                    and marks[k]["num"] == mk["num"] and marks[k].get("continued"):
+                k += 1
+            nxt = marks[k]["start"] if k < len(marks) else len(stream)
             q_text = stream[mk["start"]:nxt].strip()
-            # inline solution: the very next marker is an un/same-numbered Solution → its slice is the answer
+            # inline solution: the next (non-continued) marker is an un/same-numbered Solution → the answer
             ans = None
-            if i + 1 < len(marks) and marks[i + 1]["role"] == "solution" \
-                    and marks[i + 1]["num"] in (None, mk["num"]):
-                s_start = marks[i + 1]["start"]
-                s_end = next((m2["start"] for m2 in marks[i + 2:] if m2["role"] == "problem"), len(stream))
-                a_body = stream[s_start:s_end].strip()
-                # worksheet 填空线（Answer: ______）不是官方答案——去掉标记行后只剩下划线/点/空白即忽略
-                a_tail = a_body.split("\n", 1)[1] if "\n" in a_body else re.sub(_HW_SOL_RE, "", a_body, count=1)
-                if re.sub(r"[_\s.．。:：…\-—]+", "", a_tail):
-                    ans = (hf, a_body, _pages_for_span(bounds, s_start, s_end))
+            if k < len(marks) and marks[k]["role"] == "solution" \
+                    and marks[k]["num"] in (None, mk["num"]):
+                s_start = marks[k]["start"]
+                s_end = next((m2["start"] for m2 in marks[k + 1:] if m2["role"] == "problem"), len(stream))
+                ans = _nonblank_slice(s_start, s_end)
+            if ans is None:
+                ans = inline_keys.get(mk["num"])       # 同文件 answer-key 段（不相邻也配）
             if ans is None:
                 got = sol_answers.get((hf, mk["num"]))
                 ans = got[:3] if got else None

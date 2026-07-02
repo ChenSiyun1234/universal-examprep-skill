@@ -372,7 +372,73 @@ class HomeworkIngest(unittest.TestCase):
         hw, pairing = B.classify_homework_files(["hw2 (1).pdf", "hw2 (2).pdf", "hw2solutions.pdf"])
         self.assertIsNone(pairing["hw2solutions.pdf"])            # 真重名副本歧义时拒绝配对，不串答案
 
+    # ---- regression guards for Codex round-4 (5 findings) ----
+
+    def test_sibling_week_directories_pair(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        for wk in ("week1", "week2"):
+            os.makedirs(os.path.join(mat, wk, "homework"), exist_ok=True)
+            os.makedirs(os.path.join(mat, wk, "solutions"), exist_ok=True)
+            for sub in ("homework", "solutions"):
+                with open(os.path.join(mat, wk, sub, "hw1.pdf"), "wb") as f:
+                    f.write(b"%PDF-fake")
+
+        class WkBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                p = pdf_path.replace("\\", "/")
+                wk = "week1" if "week1" in p else "week2"
+                if "solutions" in p:
+                    return ["Problem 1\nAnswer 1: %s 的官方答案。" % wk]
+                return ["Problem 1\n%s 的题面内容。" % wk]
+        code, payload, report = _run(mat, WkBackend({}))
+        hw = {q["source_file"]: q for q in payload["quiz_bank"] if q.get("source_type") == "homework"}
+        self.assertIn("week1 的官方答案", hw["week1/homework/hw1.pdf"]["answer"])   # 同父家族层各配各的
+        self.assertIn("week2 的官方答案", hw["week2/homework/hw1.pdf"]["answer"])
+
+    def test_toc_line_not_recorded_as_answer(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw14.pdf": ["Problem 1\n题面内容在此。"],
+                            "hw14_sol.pdf": ["目录\n1. Answer ........ 5", "Problem 1\n真答案内容。"]})
+        code, payload, report = _run(mat, be)
+        q = next(x for x in payload["quiz_bank"] if x.get("source_type") == "homework")
+        self.assertIn("真答案内容", q["answer"])                   # 目录行被过滤，答案取真实解答页
+        self.assertNotIn("........", q["answer"])
+
+    def test_problem_n_solution_heading_is_inline_answer(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw15.pdf": ["Problem 1\n题面文字内容。\n\nProblem 1 Solution\n官方解答内容。\n\n"
+                                         "Problem 2\n下一题题面。"]})
+        code, payload, report = _run(mat, be)
+        hw = {q["homework_number"]: q for q in payload["quiz_bank"] if q.get("source_type") == "homework"}
+        self.assertEqual(len(hw), 2)                              # 解答段标题不是新题也不是重复
+        self.assertIn("官方解答内容", hw[1]["answer"])
+        self.assertEqual(hw[2]["answer_status"], "unknown")
+        self.assertFalse([w for w in report["warnings"] if "hw_duplicate_problem" in w])
+
+    def test_answer_key_after_all_problems_pairs(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw16.pdf": ["Problem 1\n题面一内容。\n\nProblem 2\n题面二内容。\n\n"
+                                         "Answer 1: 答案一内容。\nAnswer 2: 答案二内容。"]})
+        code, payload, report = _run(mat, be)
+        hw = {q["homework_number"]: q for q in payload["quiz_bank"] if q.get("source_type") == "homework"}
+        self.assertIn("答案一内容", hw[1]["answer"])                # 题目区与答案区分离也能按号配
+        self.assertIn("答案二内容", hw[2]["answer"])
+        self.assertNotIn("答案二内容", hw[1]["answer"])            # 各答案切片互不越界
+
+    def test_continued_problem_keeps_all_pages(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw17.pdf": ["Problem 1\n第一页题面内容。",
+                                         "Problem 1 (Continued)\n第二页续文内容。\n\nProblem 2\n下一题题面。"]})
+        code, payload, report = _run(mat, be)
+        hw = {q["homework_number"]: q for q in payload["quiz_bank"] if q.get("source_type") == "homework"}
+        self.assertEqual(len(hw), 2)                              # 续页标题不产生新题
+        self.assertIn("第二页续文内容", hw[1]["question"])          # 续页文字并入本题
+        self.assertEqual(hw[1]["source_pages"], [1, 2])            # 页码覆盖续页
+        self.assertFalse([w for w in report["warnings"] if "hw_duplicate_problem" in w])
+
     def test_no_network_or_llm(self):
+
 
 
 
