@@ -6,7 +6,7 @@
     {"user": "我回来了，继续上次的复习。", "kind": "resume", "phase_context": 1},
     {"user": "从阶段1考我一道题。", "kind": "quiz", "phase_context": 1},
     {"user": "我答 FIFO。", "phase_context": 1,
-     "expect_any": ["LIFO", "后进先出"], "forbid_any": ["答对了", "回答正确", "FIFO 正确", "FIFO 是正确", "FIFO 是对的", "答案是 FIFO", "没错，FIFO"]},
+     "expect_any": ["LIFO", "后进先出"], "forbid_any": ["答对了", "回答正确", "FIFO 正确", "FIFO 是正确", "FIFO 是对的", "没错，FIFO"]},
     {"user": "解释一下栈为什么是 LIFO。", "kind": "explanation", "phase_context": 1},
     {"user": "再来一道阶段1的题。", "kind": "quiz", "phase_context": 1},
     {"user": "阶段1差不多了，进入阶段2吧。", "phase_context": 2},

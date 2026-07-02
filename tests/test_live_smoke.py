@@ -372,6 +372,19 @@ class LiveSmoke(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertNotIn("Traceback", r.stderr)
 
+    def test_negative_budget_rejected(self):
+        r = _run(["--agent-cmd", AGENT_CMD, "--out-dir", tempfile.mkdtemp(), "--max-output-chars", "-9999"],
+                 {"RUN_SKILL_DRIFT_LLM": "1"})
+        self.assertEqual(r.returncode, 2)                        # never a negative byte cap → unbounded read
+
+    def test_correct_answer_mention_of_fifo_not_forbidden(self):
+        import importlib
+        sys.path.insert(0, DRIFT)
+        m = importlib.import_module("run_live_smoke")
+        spec = json.load(open(os.path.join(DRIFT, "templates", "live_smoke_turns.json"), encoding="utf-8"))
+        wrong = next(t for t in spec["turns"] if "FIFO" in t["user"])
+        self.assertEqual(m.check_oracle(wrong, "你的答案是 FIFO，但标准答案是 LIFO（后进先出）。"), [])
+
     def test_runner_is_offline_by_construction(self):
         src = open(RUNNER, encoding="utf-8").read()
         for banned in ("import requests", "import anthropic", "import openai",

@@ -281,6 +281,9 @@ def main(argv=None):
     ap.add_argument("--turn-timeout", type=int, default=120)
     args = ap.parse_args(argv)
 
+    for name in ("max_turns", "max_output_chars", "max_prompt_chars", "turn_timeout"):
+        if getattr(args, name) <= 0:
+            _die("--%s 必须为正整数，当前 %d" % (name.replace("_", "-"), getattr(args, name)))
     if os.environ.get("RUN_SKILL_DRIFT_LLM") != "1":
         _die("需要 RUN_SKILL_DRIFT_LLM=1 显式开启（会执行外部 agent 命令，可能产生真实调用成本）；"
              "CI/默认路径绝不运行", 2)
