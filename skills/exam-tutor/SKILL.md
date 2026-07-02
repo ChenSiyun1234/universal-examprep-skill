@@ -65,6 +65,8 @@ Teach exactly one current wiki chapter. Explain concepts with real-life metaphor
 零基础重点题精讲沿用同样的小标题（这题考什么 / 标准答题步骤 / 易错点 / 3分钟速记 / 现在轮到你）。
 
 ## Boundaries
+- **Scope filter & override (A2)**: default question pool is mixed; a student-restricted range (e.g. homework-only) is a recorded scope filter — serving items outside it requires the verbatim announcement 「⚠️ 临时覆盖你的 <scope> 范围偏好」 first, and untagged (`source_type` missing) items are excluded from restricted scopes with their count reported. Official selector: `scripts/select_questions.py`.
+
 - Do not stray beyond the current chapter. Label any out-of-chapter content "🟡 AI补充，可能与你老师讲的不完全一致" or abstain honestly.
 - Do not present AI additions as the teacher's words.
 - Do not skip "先跑算法" (run the algorithm first) and freehand a diagram from imagination.

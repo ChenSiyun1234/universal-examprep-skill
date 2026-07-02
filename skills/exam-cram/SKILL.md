@@ -84,6 +84,8 @@ Use the canonical Chinese vocabulary on the student side (当前阶段 / 这题�
 Student-facing output defaults to Simplified Chinese unless the user asks otherwise.
 
 ## Boundaries
+- **Scope filter & override (A2)**: default question pool is mixed; a student-restricted range (e.g. homework-only) is a recorded scope filter routed to sub-skills — any serving outside it requires the verbatim announcement 「⚠️ 临时覆盖你的 <scope> 范围偏好」 first; untagged (`source_type` missing) items are excluded from restricted scopes with their count reported (official selector: `scripts/select_questions.py`).
+
 
 - Teach and grade only within the student's materials; for out-of-scope content, abstain honestly or label it explicitly as AI-added.
 - Do not take external actions toward the teacher or registrar on the student's behalf; do not claim "the teacher said."

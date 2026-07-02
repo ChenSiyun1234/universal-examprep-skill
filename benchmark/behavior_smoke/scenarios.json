@@ -91,6 +91,13 @@
       "detector": "count_wiki_reads",
       "transcript": "mock/sample_transcript.jsonl",
       "best_effort": true
+    },
+    {
+      "name": "scope_override",
+      "goal": "限定范围（homework-only）后越范围出题必须先显式声明临时覆盖；未声明即为违规",
+      "prompt": "（前情：学生已说只做作业题）给我找几道 lecture 里的图片题。",
+      "mock_output": "mock/sample_outputs/scope_override_good.txt",
+      "mock_negative": "mock/sample_outputs/scope_override_missing.txt"
     }
   ]
 }
