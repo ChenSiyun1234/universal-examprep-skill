@@ -349,6 +349,15 @@ def extract_lecture_items(pages):
 # A3: homework / solution extraction — deterministic, filename-paired, fail-loud
 # ---------------------------------------------------------------------------
 
+def _hw_sepform(stem):
+    """Separator-PRESERVING normal form（hw1_probability_worksheet / hw1a）——前缀配对要靠边界
+    区分「作业名延长」（hw1_…）与「字母变体」（hw1a 是另一份作业），纯 alnum 规范形丢了这个信号。"""
+    s = re.sub(r"(?:\s*\(\d+\))+\s*$", "", stem)
+    s = re.sub(r"[^0-9A-Za-z一-鿿]+", "_", s.lower()).strip("_")
+    s = re.sub(r"^homework", "hw", s)
+    return re.sub(r"(?<!\d)0+(\d)", r"\1", s)
+
+
 def _hw_norm(stem):
     """Normalized pairing key: lowercase, keep alnum + CJK only（hw1_sol → hw1 after token strip）."""
     # 浏览器重复下载的副本后缀「hw2 (4)(1)」不参与配对——真重名副本会归到同一键，
@@ -396,8 +405,7 @@ def classify_homework_files(files):
         stem = os.path.splitext(os.path.basename(sf))[0]
         stripped = _hw_norm(_SOL_TOKEN_RE.sub("", stem))
 
-        def _pref(a, b):
-            return a.startswith(b) and (len(a) == len(b) or not a[len(b)].isdigit())
+        sol_sep = _hw_sepform(_SOL_TOKEN_RE.sub("", stem))
 
         _AMBIG = object()   # 本层有多个候选——必须终止，放宽范围只会配到别人的作业
 
@@ -407,13 +415,24 @@ def classify_homework_files(files):
                 return exact[0]
             if exact:
                 return _AMBIG
-            # 前缀回退只允许【作业名延长解答名】方向（hw1_probability ← hw1_sol）——
-            # 反方向（hw1a_sol/hw1_extra_sol → hw1）会把别的作业的答案安到 hw1 头上
-            cands = [f for (d, n), fs in hw_by_key.items() if d in dirs and n
-                     and _pref(n, stripped) for f in fs]
-            if len(cands) == 1:
+            # 前缀回退只允许【作业名延长解答名】方向，且延长处必须是分隔符边界
+            # （hw1_probability ← hw1_sol ✓；hw10 数字边界 ✗）——反方向（hw1a_sol/hw1_extra_sol → hw1）
+            # 会把别的作业的答案安到 hw1 头上。字母变体（hw1a/hw1b）是另一份作业：本层存在变体即歧义，
+            # 就地终止，绝不放宽到别处配错
+            cands, variants = [], 0
+            for (d, n), fs in hw_by_key.items():
+                if d not in dirs or not n or not sol_sep:
+                    continue
+                for f in fs:
+                    fsep = _hw_sepform(os.path.splitext(os.path.basename(f))[0])
+                    if fsep.startswith(sol_sep + "_"):
+                        cands.append(f)
+                    elif fsep != sol_sep and fsep.startswith(sol_sep) \
+                            and not fsep[len(sol_sep)].isdigit():
+                        variants += 1
+            if len(cands) == 1 and not variants:
                 return cands[0]
-            return _AMBIG if cands else None
+            return _AMBIG if (cands or variants) else None
         # 逐级放宽：同目录 → 同父家族（week1/solutions ↔ week1/homework、week1 根）→ 镜像子树
         # （solutions/week1 ↔ homework/week1：去掉第一段后的相对子路径相同）→ 全局唯一。
         # 家族/镜像层让每周各配各的；某层出现歧义（如 week1 同时有 hw1a/hw1b）就地放弃，
@@ -529,7 +548,18 @@ def extract_homework_items(pages):
               "homework_pairs": sorted([s, h] for s, h in pairing.items() if h),
               "homework_problems": 0, "homework_answered": 0, "warnings": []}
     for sf, h in sorted(pairing.items()):
-        if h is None:
+        if h is not None:
+            continue
+        # 自含题面+解答的 solutions 册（常见 LMS 导出只有 hw1_solutions.pdf 一个文件）——
+        # 有题面标记且有解答标记就按作业文件解析（inline/尾部解答照常配对），不再整册丢弃；
+        # 只有题面标记的孤儿答案册仍拒导入（把答案文本当题目会污染题库）
+        _st, _b = _file_stream(pages, sf)
+        _mks = _hw_markers(_st)
+        if any(m["role"] == "problem" for m in _mks) and any(m["role"] == "solution" for m in _mks):
+            hw_files.append(sf)
+            report["homework_files"] = sorted(set(report["homework_files"]) | {sf})
+            report["warnings"].append("hw_selfcontained_solutions: %s（未配对但自含题面+解答，按作业解析）" % sf)
+        else:
             report["warnings"].append("hw_unpaired_solution_file: %s（配不到对应作业题面文件，未导入答案）" % sf)
 
     # answers available per (hw_file, num) from paired solution files
@@ -538,7 +568,16 @@ def extract_homework_items(pages):
         if hf is None:
             continue
         stream, bounds = _file_stream(pages, sf)
-        marks = [m for m in _hw_markers(stream) if m["num"] is not None]
+        marks_all = _hw_markers(stream)
+        # 独立解答册常见排版「Problem 1 复述 → 无号 Solution → 真解答」：无号解答段继承前一个
+        # 带号题目的题号——否则被过滤后整段并进题面复述切片，真解答被埋没
+        last_num = None
+        for m in marks_all:
+            if m["role"] == "problem" and m["num"] is not None:
+                last_num = m["num"]
+            elif m["role"] == "solution" and m["num"] is None and last_num is not None:
+                m["num"] = last_num
+        marks = [m for m in marks_all if m["num"] is not None]
         for i, mk in enumerate(marks):
             end = marks[i + 1]["start"] if i + 1 < len(marks) else len(stream)
             body = stream[mk["start"]:end].strip()
@@ -710,6 +749,13 @@ def extract_homework_items(pages):
                                       "解答区重复）" % (hf, "、".join("Problem %s×%d" % (n, c)
                                                                       for n, c in sorted(dup_counts.items(),
                                                                                          key=lambda kv: str(kv[0])))))
+        # chapter 只在题文/文件名明说时才标（作业号≠章节号，绝不猜）——但没章节的题 --chapter 过滤
+        # 取不到，必须让用户知道并给出补标注的路径，而不是静默漏检索
+        no_ch = sum(1 for it in items if it["source_file"] == hf and "chapter" not in it)
+        if no_ch:
+            report["warnings"].append("hw_no_chapter: %s（%d 题无章节线索——select_questions 的 --chapter "
+                                      "过滤不会返回它们，可用 --source-type homework 全量取；要参与章节复习"
+                                      "请在题面或文件名标注 第N章/Chapter N/chNN）" % (hf, no_ch))
     return items, report
 
 

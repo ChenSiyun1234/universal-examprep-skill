@@ -593,7 +593,43 @@ class HomeworkIngest(unittest.TestCase):
         hw2, pairing2 = B.classify_homework_files(["hw1_probability_worksheet.pdf", "hw1_sol.pdf"])
         self.assertEqual(pairing2["hw1_sol.pdf"], "hw1_probability_worksheet.pdf")   # 作业名延长方向仍配
 
+    # ---- regression guards for Codex round-8 (4 findings) ----
+
+    def test_unnumbered_solution_block_in_paired_file(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw25.pdf": ["Problem 1\n真正的题面内容。"],
+                            "hw25_sol.pdf": ["Problem 1\n题面复述而已。\nSolution\n无号真解答内容在此。"]})
+        code, payload, report = _run(mat, be)
+        q = next(x for x in payload["quiz_bank"] if x.get("source_type") == "homework")
+        self.assertIn("无号真解答内容", q["answer"])                # 无号 Solution 继承前题号，解答段获胜
+        self.assertNotIn("题面复述", q["answer"])                  # 不再把复述切片当官方答案
+
+    def test_letter_variant_assignment_not_paired_to_base_sol(self):
+        hw, pairing = B.classify_homework_files(["hw1a.pdf", "hw1_sol.pdf"])
+        self.assertIsNone(pairing["hw1_sol.pdf"])                 # hw1 的答案不能安到 hw1a 头上
+
+    def test_selfcontained_solutions_pdf_extracted(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw1_solutions.pdf": ["Problem 1\n自含册的题面。\nSolution\n自含册的解答。\n\n"
+                                                  "Problem 2\n第二题题面。\nSolution\n第二题解答。"]})
+        code, payload, report = _run(mat, be)
+        hw = {q["homework_number"]: q for q in payload["quiz_bank"] if q.get("source_type") == "homework"}
+        self.assertEqual(len(hw), 2)                              # 自含题+解答的孤儿册按作业解析
+        self.assertIn("自含册的解答", hw[1]["answer"])
+        self.assertIn("第二题解答", hw[2]["answer"])
+        self.assertTrue(any(w.startswith("hw_selfcontained_solutions") for w in report["warnings"]))
+        self.assertFalse(any(w.startswith("hw_unpaired_solution_file") for w in report["warnings"]))
+
+    def test_chapterless_homework_gets_discovery_warning(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw26.pdf": ["Problem 1\n没有章节线索的题面。"]})
+        code, payload, report = _run(mat, be)
+        q = next(x for x in payload["quiz_bank"] if x.get("source_type") == "homework")
+        self.assertNotIn("chapter", q)                            # 作业号≠章节号：仍绝不猜
+        self.assertTrue(any(w.startswith("hw_no_chapter") for w in report["warnings"]))
+
     def test_no_network_or_llm(self):
+
 
 
 
