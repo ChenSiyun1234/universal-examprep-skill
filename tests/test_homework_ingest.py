@@ -1196,6 +1196,69 @@ class HomeworkIngest(unittest.TestCase):
         self.assertNotIn("answer", hw[1])                         # 填空线+尾随评分标注不是答案
         self.assertEqual(hw[1]["answer_status"], "unknown")
 
+    # ---- regression guards for Codex round-19 (5 findings) ----
+
+    def test_lettered_answer_key_entries_split(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw31.pdf": ["Problem 1a\n字母小问甲题面。\n\nProblem 1b\n字母小问乙题面。"],
+                            "hw31_sol.pdf": ["Answers\n1a. 字母小问答案甲。\n1b. 字母小问答案乙。"]})
+        code, payload, report = _run(mat, be)
+        by_num = {q["homework_number"]: q for q in payload["quiz_bank"]
+                  if q.get("source_type") == "homework"}
+        self.assertIn("字母小问答案甲", by_num["1a"].get("answer", ""))   # 1a. 裸字母键控行也按号拆
+        self.assertIn("字母小问答案乙", by_num["1b"].get("answer", ""))
+
+    def test_problem_colon_answer_instruction_stays_problem(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw32.pdf": ["Problem 1: Answer: Give a short proof of the theorem."]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw), 1)                              # 指示语首现不翻转成解答
+        self.assertIn("Give a short proof", hw[0].get("question") or "")
+        self.assertFalse(any(w.startswith("hw_no_markers") for w in report["warnings"]))
+
+    def test_unpaired_solutions_dir_file_kept_out_of_wiki(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(os.path.join(mat, "homework"), exist_ok=True)
+        os.makedirs(os.path.join(mat, "solutions"), exist_ok=True)
+        for rel in ("homework/hw1.pdf", "solutions/week1.pdf", "lec01.pdf"):
+            with open(os.path.join(mat, *rel.split("/")), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class WkBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                rel = pdf_path.replace(chr(92), "/")
+                if rel.endswith("homework/hw1.pdf"):
+                    return ["Problem 1\n作业一的题面。"]
+                if rel.endswith("solutions/week1.pdf"):
+                    return ["整册都是官方解答文字。"]
+                return ["讲义正文照常进 wiki。"]
+        code, payload, report = _run(mat, WkBackend({}))
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertNotIn("整册都是官方解答文字", wiki_all)         # 配不上也不准从解答目录漏进 wiki
+        self.assertIn("讲义正文照常进 wiki", wiki_all)
+
+    def test_answer_key_section_heading_detected(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw34.pdf": ["Problem 1\n键标题题面一。\n\nProblem 2\n键标题题面二。"],
+                            "hw34_sol.pdf": ["Answer Key\n1. 键标题答案一。\n2. 键标题答案二。"]})
+        code, payload, report = _run(mat, be)
+        by_num = {q["homework_number"]: q for q in payload["quiz_bank"]
+                  if q.get("source_type") == "homework"}
+        self.assertIn("键标题答案一", by_num[1].get("answer", ""))  # Answer Key 节头也算解答标题
+        self.assertIn("键标题答案二", by_num[2].get("answer", ""))
+
+    def test_markerless_numbered_answer_key_splits(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw35.pdf": ["Problem 1\n纯编号题面一。\n\nProblem 2\n纯编号题面二。"],
+                            "hw35_sol.pdf": ["1. 纯编号答案一。\n2. 纯编号答案二。"]})
+        code, payload, report = _run(mat, be)
+        by_num = {q["homework_number"]: q for q in payload["quiz_bank"]
+                  if q.get("source_type") == "homework"}
+        self.assertIn("纯编号答案一", by_num[1].get("answer", ""))  # 连标题都没有的答案册按号整拆
+        self.assertIn("纯编号答案二", by_num[2].get("answer", ""))
+
     def test_no_network_or_llm(self):
 
 
