@@ -275,6 +275,8 @@ def cmd_init(ws, args):
         try:
             with open(md_path, "r", encoding="utf-8") as f:
                 text = f.read()
+        except OSError as e:
+            _die("study_progress.md 无法读取（%s）——迁移未进行，请检查文件权限后重试" % e, 1)
         except UnicodeDecodeError as e:
             _die("study_progress.md 不是 UTF-8（%s）——这正是结构化状态要根治的乱码；"
                  "请先把 md 转存为 UTF-8 再 init（不要猜编码静默迁移）" % e, 1)

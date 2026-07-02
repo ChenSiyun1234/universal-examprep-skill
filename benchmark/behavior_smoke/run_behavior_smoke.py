@@ -499,7 +499,10 @@ def _state_row_written(fixture_path, sc, key, field, expect):
     except (OSError, ValueError):
         return False
     rows = st.get(field) or []
-    return any((expect or "") in (r.get("note") or "") for r in rows if isinstance(r, dict))
+    # add-mistake --id <qid> 把 qid 存在 id 字段、note 只写错因——按 id 或 note 任一匹配
+    return any(isinstance(r, dict) and ((expect or "") in (r.get("note") or "")
+                                        or (expect or "") == (r.get("id") or ""))
+               for r in rows)
 
 
 def validate_fixture_workspace(path):

@@ -562,6 +562,16 @@ class ValidatorSchema(unittest.TestCase):
         self.assertEqual(r.returncode, 1)                         # 悬空链接不能整段跳过校验
         self.assertIn("符号链接", r.stdout)
 
+    # ---- regression guards for Codex round-15 (5 findings) ----
+
+    def test_validator_rejects_state_directory(self):
+        ws = self._full_ws(None)
+        os.makedirs(os.path.join(ws, "study_state.json"))         # state 路径是目录
+        r = self._validate(ws)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("不是常规文件", r.stdout)                    # Tier-1 不再放行更新器写不进的工作区
+
+
     def test_md_phase_mismatch_warns(self):
         ws = self._full_ws({"current_phase": 2})                  # md 说 1，state 说 2
         with open(os.path.join(ws, "study_plan.md"), "w", encoding="utf-8") as f:
@@ -832,6 +842,43 @@ class DriftJsonSnapshots(unittest.TestCase):
                    encoding="utf-8").read()
         self.assertIn("study_state.json", tpl)
 
+    def test_t4_state_phase_valid_against_updated_plan(self):
+        sys.path.insert(0, os.path.join(ROOT, "benchmark", "drift"))
+        import run_drift as D
+        sc = D.load_scenario(os.path.join(ROOT, "benchmark", "drift", "scenarios", "long_session_basic.json"))
+        d = tempfile.mkdtemp()
+        t = os.path.join(d, "t.jsonl")
+        fx_plan = open(os.path.join(ROOT, sc["fixture"], "study_plan.md"), encoding="utf-8").read()
+        new_plan = fx_plan + chr(10) + "## 阶段9：附加冲刺（references/wiki/ch1_stack_queue.md）" + chr(10)
+        st9 = json.dumps({"version": 1, "current_phase": 9,
+                          "mistake_archive": [], "confusion_log": []}, ensure_ascii=False)
+        turns = [
+            {"turn": 1, "user": "我们改计划，加一个冲刺阶段9", "assistant": "好的，已按你的要求调整计划。",
+             "files_after": {"study_plan.md": new_plan}},
+            {"turn": 2, "assistant": "进入阶段9。", "phase_context": 9,
+             "files_after": {"study_state.json": st9}},
+        ]
+        with open(t, "w", encoding="utf-8") as f:
+            f.write(chr(10).join(json.dumps(x, ensure_ascii=False) for x in turns))
+        m = D.evaluate(sc, t)["metrics"]                        # 授权改计划后的新阶段不再被判坏输入
+        self.assertGreaterEqual(m["turns"], 2)
+
+    def test_smoke_state_row_matches_by_id(self):
+        sys.path.insert(0, os.path.join(ROOT, "benchmark", "behavior_smoke"))
+        import run_behavior_smoke as S
+        d = tempfile.mkdtemp()
+        fx = os.path.join(d, "fx")
+        os.makedirs(fx)
+        json.dump({"version": 1, "current_phase": 1}, open(os.path.join(fx, "study_state.json"),
+                                                             "w", encoding="utf-8"))
+        snap = os.path.join(d, "snap.json")
+        json.dump({"mistake_archive": [{"id": "mc_q2", "note": "只有错因没有题号"}]},
+                  open(snap, "w", encoding="utf-8"), ensure_ascii=False)
+        import unittest.mock as mock
+        with mock.patch.object(S, "_p", lambda rel: rel):
+            ok = S._state_row_written(fx, {"sa": snap}, "sa", "mistake_archive", "mc_q2")
+        self.assertTrue(ok)                                       # 官方 add-mistake 的 id 字段也算命中
+
     def test_t4_scalar_state_field_exits_2_not_traceback(self):
         sys.path.insert(0, os.path.join(ROOT, "benchmark", "drift"))
         import run_drift as D
@@ -920,7 +967,7 @@ class Contract(unittest.TestCase):
 
     def test_root_skill_bootstraps_state_when_python_available(self):
         txt = open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8").read()
-        self.assertIn("先跑 `python scripts/update_progress.py --workspace <ws> init`", txt)
+        self.assertIn("先跑 `python " + chr(34) + chr(36) + "{CLAUDE_SKILL_DIR}/scripts/update_progress.py" + chr(34), txt)
 
     def test_agents_md_prefers_state(self):
         txt = open(os.path.join(ROOT, "AGENTS.md"), encoding="utf-8").read()

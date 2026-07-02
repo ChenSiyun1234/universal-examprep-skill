@@ -419,8 +419,15 @@ def _session_snapshots(turns, state_established=False, plan_phases=None):
     (fixture or any turn), a LATER md-only write is a hand-edit of the generated view — it must
     NOT advance checkpoint/row metrics（那正是 A4 要抓的漂移）. md fallback is for legacy sessions."""
     out, stale_md = [], 0
+    plan_phases = set(plan_phases) if plan_phases else None
     for t in turns:
         fa = t.get("files_after") or {}
+        if "study_plan.md" in fa:
+            # 会话内获授权改计划后，state 的新阶段要对照【最新】计划快照——拿初始计划卡会把
+            # 合法改计划的转写误判成坏输入
+            newp = set(parse_plan_phases(fa["study_plan.md"]))
+            if newp:
+                plan_phases = newp
         # 违规判定连事件一起看：直接手写 JSONL 可以只给 write_file 事件、不带快照——
         # 光看 files_after 会漏掉正是要抓的 A4 手改
         evs = {str(e.get("path", "")).replace(chr(92), "/").rsplit("/", 1)[-1]

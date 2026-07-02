@@ -419,6 +419,8 @@ def validate(ws):
                                    and not os.path.realpath(state_path).startswith(
                                        os.path.realpath(ws) + os.sep)):
         err("study_state.json 是符号链接/经符号链接逃出工作区（技能会读/写这个事实源）")
+    elif os.path.lexists(state_path) and not os.path.isfile(state_path):
+        err("study_state.json 存在但不是常规文件（目录/特殊文件）——官方更新器无法持久化 state")
     elif os.path.isfile(state_path):
         try:
             st = json.loads(_read(state_path))
