@@ -99,6 +99,47 @@ class LiveSmoke(unittest.TestCase):
                                capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(score.returncode, 0, score.stdout + score.stderr)
 
+    # ---- regression guards for Codex round-1 (4 findings) ----
+
+    def test_checkpoint_state_carried_between_turns(self):
+        # turn 6 advances to phase 2 → the harness persists the checkpoint (snapshot in the T5b log +
+        # files_after in JSONL), so the turn-10 resume probe is scored against phase 2, not turn-1 state
+        out = tempfile.mkdtemp()
+        r = _run(["--agent-cmd", AGENT_CMD, "--out-dir", out], {"RUN_SKILL_DRIFT_LLM": "1"})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        md = open(os.path.join(out, "live_session.md"), encoding="utf-8").read()
+        self.assertIn("Files After: study_progress.md", md)
+        self.assertIn("当前阶段：2", md)
+        rows = [json.loads(x) for x in open(os.path.join(out, "live_session.jsonl"), encoding="utf-8")
+                if x.strip()]
+        snap_turns = [t for t in rows if (t.get("files_after") or {}).get("study_progress.md")]
+        self.assertTrue(snap_turns)                              # checkpoint snapshot reached the T4 layer
+        self.assertIn("当前阶段：2", snap_turns[0]["files_after"]["study_progress.md"])
+
+    def test_per_turn_oracle_gates_verdict(self):
+        # a probe whose reply violates expect_any must FAIL the run even when T4 metrics all pass
+        d = tempfile.mkdtemp()
+        spec = json.load(open(os.path.join(DRIFT, "templates", "live_smoke_turns.json"), encoding="utf-8"))
+        spec["turns"][2]["expect_any"] = ["绝不可能出现的oracle词XYZ"]
+        tf = os.path.join(d, "turns.json")
+        json.dump(spec, open(tf, "w", encoding="utf-8"), ensure_ascii=False)
+        r = _run(["--agent-cmd", AGENT_CMD, "--out-dir", d, "--turns", tf], {"RUN_SKILL_DRIFT_LLM": "1"})
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("oracle", r.stdout)
+
+    def test_default_turns_carry_probe_oracles(self):
+        spec = json.load(open(os.path.join(DRIFT, "templates", "live_smoke_turns.json"), encoding="utf-8"))
+        wrong = next(t for t in spec["turns"] if "FIFO" in t["user"])
+        self.assertIn("LIFO", wrong["expect_any"])               # wrong-answer probe has a grading oracle
+        divert = next(t for t in spec["turns"] if "游戏" in t["user"])
+        self.assertTrue(divert.get("expect_any"))                # diversion probe must demand a redirect
+
+    def test_max_turns_below_script_is_refused(self):
+        r = _run(["--agent-cmd", AGENT_CMD, "--out-dir", tempfile.mkdtemp(), "--max-turns", "1"],
+                 {"RUN_SKILL_DRIFT_LLM": "1"})
+        self.assertEqual(r.returncode, 2)                        # truncation would skip probes → refuse
+        self.assertIn("max-turns", r.stderr)
+
     def test_runner_is_offline_by_construction(self):
         src = open(RUNNER, encoding="utf-8").read()
         for banned in ("import requests", "import anthropic", "import openai",

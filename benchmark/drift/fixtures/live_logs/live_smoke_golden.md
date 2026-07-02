@@ -64,6 +64,23 @@ phase_context: 2
 ### Assistant
 好，阶段1 完成，我们进入阶段2 树，继续期末复习。
 
+### Events
+- write_file: study_progress.md
+
+### Files After: study_progress.md
+```text
+# 复习进度（study progress）
+
+当前阶段：2
+
+## 错题本（mistake archive）
+（暂无）
+
+## 疑难点（confusion tracker）
+（暂无）
+
+```
+
 ## Turn 7
 kind: quiz
 phase_context: 2
