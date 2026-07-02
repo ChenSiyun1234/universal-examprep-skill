@@ -568,7 +568,7 @@ class HomeworkIngest(unittest.TestCase):
     def test_repeated_headings_solutions_section_pairs(self):
         tmp = tempfile.mkdtemp()
         mat, be = _mk(tmp, {"hw23.pdf": ["Problem 1\n题面一内容。\n\nProblem 2\n题面二内容。",
-                                         "Problem 1\n解答一正文。\n\nProblem 2\n解答二正文。"]})
+                                         "Solutions\nProblem 1\n解答一正文。\n\nProblem 2\n解答二正文。"]})
         code, payload, report = _run(mat, be)
         hw = {q["homework_number"]: q for q in payload["quiz_bank"] if q.get("source_type") == "homework"}
         self.assertEqual(len(hw), 2)                              # 解答区重复标题不是新题也不是垃圾重复
@@ -642,7 +642,7 @@ class HomeworkIngest(unittest.TestCase):
         mat, be = _mk(tmp, {"hw1.pdf": ["Problem 1\n泄题检查的题面。"],
                             "hw1_sol.pdf": ["Problem 1\nAnswer 1: 泄题检查的官方答案。"]})
         code, payload, report = _run(mat, be)
-        wiki_all = " ".join(sec.get("wiki_content", "") for sec in payload.get("sections", []))
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
         self.assertNotIn("泄题检查的官方答案", wiki_all)            # 官方答案页绝不进章节 wiki
         q = next(x for x in payload["quiz_bank"] if x.get("source_type") == "homework")
         self.assertIn("泄题检查的官方答案", q["answer"])            # 但答案出处保留
@@ -710,7 +710,90 @@ class HomeworkIngest(unittest.TestCase):
         self.assertIs(hw[1]["requires_assets"], True)
         self.assertEqual(hw[2]["question_text_status"], "full")   # 带运算符的数字题面仍 full
 
+    # ---- regression guards for Codex round-10 (6 findings) ----
+
+    def test_solution_with_connector_prefix_is_companion(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw1.pdf": ["Problem 1\n连接词配对的题面。"],
+                            "solutions_for_hw1.pdf": ["Problem 1\nAnswer 1: 连接词配对的答案。"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw), 1)                              # solutions_for_hw1 是伴随解答
+        self.assertIn("连接词配对的答案", hw[0]["answer"])
+        hw2, pairing2 = B.classify_homework_files(["hw2.pdf", "answers_to_hw2.pdf"])
+        self.assertEqual(pairing2["answers_to_hw2.pdf"], "hw2.pdf")
+        hw3, pairing3 = B.classify_homework_files(["answer_questions_hw3.pdf"])
+        self.assertEqual((len(hw3), pairing3), (1, {}))            # 动词短语（questions 夹词）仍归作业
+
+    def test_selfcontained_same_line_prompt_extracted(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw2_solutions.pdf": ["Problem 1 Compute 2+2.\nSolution\n答案是 4。"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw), 1)                              # 同行题面也算真实题面
+        self.assertIn("答案是 4", hw[0]["answer"])
+        self.assertTrue(any(w.startswith("hw_selfcontained_solutions") for w in report["warnings"]))
+
+    def test_homework_pages_kept_out_of_wiki(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"作业2.pdf": ["第1题" + chr(10) + "作业题面。" + chr(10) + "Solution"
+                                          + chr(10) + "作业的官方解答内容。"]})
+        with open(os.path.join(mat, "lecture_ch1.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+        be.texts["lecture_ch1.pdf"] = ["Example 1.1 Problem" + chr(10) + "讲义正文知识点。"]
+        code, payload, report = _run(mat, be)
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertNotIn("作业的官方解答内容", wiki_all)            # inline 解答不泄进 wiki
+        self.assertNotIn("作业题面", wiki_all)                     # 作业册整册不进 wiki（题在 quiz_bank）
+        self.assertIn("讲义正文知识点", wiki_all)                  # 讲义照常进 wiki
+        q = next(x for x in payload["quiz_bank"] if x.get("source_type") == "homework")
+        self.assertIn("作业的官方解答内容", q["answer"])
+
+    def test_blank_answer_sheet_companion_stays_unknown(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw3.pdf": ["Problem 1\n空白答卷的题面。"],
+                            "hw3_sol.pdf": ["Problem 1\nAnswer 1: ________"]})
+        code, payload, report = _run(mat, be)
+        q = next(x for x in payload["quiz_bank"] if x.get("source_type") == "homework")
+        self.assertNotIn("answer", q)                             # 独立空白答卷不是官方答案
+        self.assertEqual(q["answer_status"], "unknown")
+
+    def test_untitled_multi_header_repeats_stay_questions(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw4.pdf": ["Problem 1\n题面一。\n\nProblem 2\n题面二。",
+                                        "Problem 1\n续页一正文。\n\nProblem 2\n续页二正文。"]})
+        code, payload, report = _run(mat, be)
+        hw = {q["homework_number"]: q for q in payload["quiz_bank"] if q.get("source_type") == "homework"}
+        self.assertEqual(hw[1]["answer_status"], "unknown")       # 无 Solutions 节标题的多号重现 ≠ 答案
+        self.assertEqual(hw[2]["answer_status"], "unknown")
+        self.assertTrue([w for w in report["warnings"] if "hw_duplicate_problem" in w])
+
+    def test_single_problem_unnumbered_solution_companion(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw5.pdf": ["Problem 1\n单题作业的题面。"],
+                            "hw5_sol.pdf": ["Solution\n整册就是这道题的解答。"]})
+        code, payload, report = _run(mat, be)
+        q = next(x for x in payload["quiz_bank"] if x.get("source_type") == "homework")
+        self.assertIn("整册就是这道题的解答", q["answer"])          # 无号单块解答按唯一题配上
+        tmp2 = tempfile.mkdtemp()
+        mat2, be2 = _mk(tmp2, {"hw6.pdf": ["Problem 1\n多题一。\n\nProblem 2\n多题二。"],
+                               "hw6_sol.pdf": ["Solution\n只有一块答案不知道归谁。"]})
+        code2, payload2, report2 = _run(mat2, be2)
+        hw2 = {q["homework_number"]: q for q in payload2["quiz_bank"] if q.get("source_type") == "homework"}
+        self.assertEqual(hw2[1]["answer_status"], "unknown")       # 多题作业不猜归属
+        self.assertEqual(hw2[2]["answer_status"], "unknown")
+
+    def test_figure_dash_artifact_not_a_blank(self):
+        # 真实解答首行常是图表轴线残渣（单个 '-'）——填空线须 ≥3 个连续填充符，不能误否真解答
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw7.pdf": ["Problem 1\n图表题的题面。"],
+                            "hw7_sol.pdf": ["Problem 1 Solution\n-\n6\ny\nx\n真正的图表解答正文。"]})
+        code, payload, report = _run(mat, be)
+        q = next(x for x in payload["quiz_bank"] if x.get("source_type") == "homework")
+        self.assertIn("真正的图表解答正文", q["answer"])
+
     def test_no_network_or_llm(self):
+
 
 
 

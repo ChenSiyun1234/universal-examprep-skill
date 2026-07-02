@@ -391,9 +391,13 @@ def classify_homework_files(files):
         # hw 记号【之后】（hw1_sol / homework2solutions），或在其前但两者【紧邻】（solutions_hw1 /
         # 答案_作业3：中间只有分隔符，没有别的词——动词短语 answer_questions_hw1 因此仍归作业），
         # 或由目录名（solutions/）标记
+        _between = stem_nokey[sol_m.end():hw_m.start()] if (sol_m and hw_m) else ""
+        _btokens = re.findall(r"[A-Za-z一-鿿]+", _between)
+        # sol 记号在 hw 记号之前时，中间只允许分隔符或连接词（for/to/of/the：solutions_for_hw1 /
+        # answers_to_hw1）——动词短语（answer_questions_hw1 的 questions）仍归作业
         sol_before_adjacent = bool(sol_m and hw_m and sol_m.start() < hw_m.start()
-                                   and not re.search(r"[0-9A-Za-z一-鿿]",
-                                                     stem_nokey[sol_m.end():hw_m.start()]))
+                                   and not re.search(r"[0-9]", _between)
+                                   and all(t.lower() in ("for", "to", "of", "the") for t in _btokens))
         is_sol = bool(_SOL_TOKEN_RE.search(os.path.dirname(rel))
                       or (sol_m and (not hw_m or sol_m.start() > hw_m.start()))
                       or sol_before_adjacent)
@@ -411,8 +415,9 @@ def classify_homework_files(files):
         rel = sf.replace("\\", "/")
         sdir = os.path.dirname(rel)
         stem = os.path.splitext(os.path.basename(sf))[0]
-        # 配对键要把 解答记号 和 key 后缀（answer_key/solution_key）一并剥掉——hw1_answer_key ↔ hw1
+        # 配对键要把 解答记号、key 后缀（answer_key）与连接词（solutions_for_hw1 的 for）一并剥掉
         stem_pair = _SOL_TOKEN_RE.sub("", _KEY_TOKEN_RE.sub("", stem))
+        stem_pair = re.sub(r"(?<![A-Za-z])(?:for|to|of|the)(?=[_. ()-]|$)", "", stem_pair, flags=re.I)
         stripped = _hw_norm(stem_pair)
 
         sol_sep = _hw_sepform(stem_pair)
@@ -551,6 +556,35 @@ def _hw_markers(stream):
     return dedup
 
 
+
+def _hw_blank_line(line):
+    """A worksheet BLANK line: nothing but filler（下划线/点/破折号）且至少 3 个连续填充符——
+    图表残渣里的单个 '-'/'.' 不是填空线，不能拿它否掉真实解答。"""
+    content = re.sub(r"[\s:：]+", "", line)
+    return bool(re.fullmatch(r"[_＿.．。…\-—]{3,}", content))
+
+
+def _hw_nonblank_slice(stream, bounds, fname, s_start, s_end):
+    """Answer slice unless it's a worksheet blank（Answer: ______）。判定看标记【同一行】：
+    标记后同行是可见填空线 → 整段拒绝——哪怕后面还有「Show your work」这类指示语；
+    标记后同行为空 → 看后续第一条非空行（多行空栏同理）。独立解答文件与同文件切片共用
+    这一判定，空白答卷绝不落成官方答案。"""
+    a_body = stream[s_start:s_end].strip()
+    first, _, rest = a_body.partition(chr(10))
+    line_rest = re.sub(_HW_SOL_PRE_RE, "", first, count=1)   # 「1(a). Answer:」带号前缀也要剥掉
+    if line_rest == first:
+        line_rest = re.sub(_HW_SOL_RE, "", first, count=1)
+    if line_rest.strip() and _hw_blank_line(line_rest):
+        return None                        # 同行是填空线——worksheet 空栏，不是答案
+    a_tail = rest if rest else line_rest
+    first_content = next((ln for ln in a_tail.splitlines() if ln.strip()), "")
+    if first_content and _hw_blank_line(first_content):
+        return None                        # 多行空栏（Answer: 换行后接填空线与指示语）同理
+    if re.sub(r"[_\s.．。:：…\-—＿]+", "", a_tail):
+        return (fname, a_body, _pages_for_span(bounds, s_start, s_end))
+    return None
+
+
 def extract_homework_items(pages):
     """Extract homework problems (+ answers from paired solution files OR inline Solution blocks)
     into bank items with source_type='homework'. Returns (items, hw_report)."""
@@ -571,15 +605,17 @@ def extract_homework_items(pages):
         _mks = _hw_markers(_st)
 
         def _has_prompt_text():
-            # 至少一道题在【解答标记之前】有真实题面文字——否则这是纯答案册
-            #（marker-only 题会把解答页渲染成 question_context，等于提问前泄答案）
+            # 至少一道题在【解答标记之前】有真实题面文字（标题同行的题面也算——与常规抽取同口径）
+            # ——否则这是纯答案册（marker-only 题会把解答页渲染成 question_context，提问前泄答案）
             for _j, _m in enumerate(_mks):
                 if _m["role"] != "problem":
                     continue
                 _end = _mks[_j + 1]["start"] if _j + 1 < len(_mks) else len(_st)
                 _body = _st[_m["start"]:_end]
-                _body = _body.split("\n", 1)[1] if "\n" in _body else ""
-                if re.search(r"[A-Za-z一-鿿]", _body):
+                _first, _, _rest = _body.partition("\n")
+                _m0 = next((mm for mm in (rx.match(_first) for rx in _HW_PROB_RES) if mm), None)
+                _same = _first[_m0.end():] if _m0 else ""
+                if re.search(r"[A-Za-z一-鿿]", _same) or re.search(r"[A-Za-z一-鿿]", _rest):
                     return True
             return False
         if any(m["role"] == "problem" for m in _mks) and any(m["role"] == "solution" for m in _mks) \
@@ -608,14 +644,32 @@ def extract_homework_items(pages):
         marks = [m for m in marks_all if m["num"] is not None]
         for i, mk in enumerate(marks):
             end = marks[i + 1]["start"] if i + 1 < len(marks) else len(stream)
-            body = stream[mk["start"]:end].strip()
-            if not body:
+            # 独立解答册的切片同样过 worksheet 空白判定——空白答卷（Answer 1: ______）
+            # 绝不落成官方答案，让题目如实 answer_status=unknown
+            got = _hw_nonblank_slice(stream, bounds, sf, mk["start"], end)
+            if got is None:
                 continue
+            if mk["role"] == "problem":
+                bfirst, _, brest = got[1].partition(chr(10))
+                bm0 = next((mm for mm in (rx.match(bfirst) for rx in _HW_PROB_RES) if mm), None)
+                bsame = bfirst[bm0.end():] if bm0 else bfirst
+                if not (re.search(r"[A-Za-z一-鿿]", bsame) or re.search(r"[A-Za-z一-鿿]", brest)):
+                    continue           # 光秃的「Problem 1」标题不是复述兜底——空白答卷保持 unknown
             key = (hf, mk["num"])
             prev = sol_answers.get(key)
             # 同号既有 Problem 复述又有 Answer 段时，答案段优先（不再"先到先得"存题面复述）
             if prev is None or (mk["role"] == "solution" and prev[3] != "solution"):
-                sol_answers[key] = (sf, body, _pages_for_span(bounds, mk["start"], end), mk["role"])
+                sol_answers[key] = got + (mk["role"],)
+        # 单题作业 + 无号单块解答册（Solution\n4 / Answer: 4）：文件名配对已无歧义地锁定伴随关系，
+        # 整册（从第一个解答标记起）就是这道题的答案——不再因标记无号而丢弃
+        if not any(k[0] == hf for k in sol_answers):
+            hw_marks = _hw_markers(_file_stream(pages, hf)[0])
+            hw_nums = {m["num"] for m in hw_marks if m["role"] == "problem" and m["num"] is not None}
+            first_sol = next((m for m in marks_all if m["role"] == "solution"), None)
+            if len(hw_nums) == 1 and first_sol is not None:
+                got = _hw_nonblank_slice(stream, bounds, sf, first_sol["start"], len(stream))
+                if got:
+                    sol_answers[(hf, next(iter(hw_nums)))] = got + ("solution",)
 
     # id 词干必须对文件【单射】：消毒把 a/b/hw1 与 a_b/hw1 折叠成同串时，按原始相对路径哈希消歧
     #（不撞名的文件保持原有可读 id 不变）
@@ -648,26 +702,7 @@ def extract_homework_items(pages):
         dup_counts = {}
 
         def _nonblank_slice(s_start, s_end):
-            """Answer slice unless it's a worksheet blank（Answer: ______）。判定看标记【同一行】：
-            标记后同行是可见填空线（只有下划线/点/破折号）→ 整段拒绝——哪怕后面还有
-            「Show your work」这类指示语，也不能把填空线+指示语当官方答案；
-            标记后同行为空 → 答案须来自后续行（原有语义）。"""
-            a_body = stream[s_start:s_end].strip()
-            first, _, rest = a_body.partition("\n")
-            line_rest = re.sub(_HW_SOL_PRE_RE, "", first, count=1)   # 「1(a). Answer:」带号前缀也要剥掉
-            if line_rest == first:
-                line_rest = re.sub(_HW_SOL_RE, "", first, count=1)
-            if line_rest.strip() and not re.sub(r"[_\s.．。:：…\-—＿]+", "", line_rest):
-                return None                        # 同行是填空线——worksheet 空栏，不是答案
-            a_tail = rest if rest else line_rest
-            # 多行空栏（Answer:\n________\nShow your work）同理：标记后第一条非空行是填空线
-            # → 整段拒绝，后随指示语不是答案
-            first_content = next((ln for ln in a_tail.splitlines() if ln.strip()), "")
-            if first_content and not re.sub(r"[_\s.．。:：…\-—＿]+", "", first_content):
-                return None
-            if re.sub(r"[_\s.．。:：…\-—＿]+", "", a_tail):
-                return (hf, a_body, _pages_for_span(bounds, s_start, s_end))
-            return None
+            return _hw_nonblank_slice(stream, bounds, hf, s_start, s_end)
 
         # 同文件「先全部题目、后统一 Answer 1/Answer 2」的 answer-key 段——按题号索引，
         # 不要求解答紧跟在题面后面
@@ -678,8 +713,9 @@ def extract_homework_items(pages):
                 got2 = _nonblank_slice(mk2["start"], end2)
                 if got2:
                     inline_keys[mk2["num"]] = got2
-        # 合并文件的「解答区」：全部题面首现之后，若还有一串【重复的 Problem N】标题且覆盖 ≥2 个
-        # 不同已见号（页眉重现只会重复单个号），把每段切片当该题的官方答案——不再当重复丢掉
+        # 合并文件的「解答区」：全部题面首现之后的重复 Problem N 标题串，且这串标题之前有一条
+        # 独立的 Solutions/Answers/解答 节标题行——没有节标题的多号重现（续页页眉没写 Continued）
+        # 只能按重复去重，绝不能把续页题面错当官方答案
         first_start = {}
         for mk2 in marks:
             if mk2["role"] == "problem" and not mk2.get("continued") and mk2["num"] not in first_start:
@@ -691,7 +727,12 @@ def extract_homework_items(pages):
                           if mk2["role"] == "problem" and not mk2.get("continued")
                           and mk2["num"] in first_start and mk2["start"] > tail_begin
                           and mk2["start"] > first_start[mk2["num"]]]
-            if len({mk2["num"] for _j, mk2 in tail_marks}) >= 2:
+            titled = False
+            if tail_marks:
+                first_tail = min(mk2["start"] for _j, mk2 in tail_marks)
+                titled = bool(re.search(r"^[ \t>*#]*(?:solutions?|answers?|解答|答案)\s*[:：]?\s*$",
+                                        stream[tail_begin:first_tail], re.I | re.M))
+            if titled:
                 for j, mk2 in tail_marks:
                     tail_starts.add(mk2["start"])
                     end2 = marks[j + 1]["start"] if j + 1 < len(marks) else len(stream)
@@ -1197,9 +1238,11 @@ def run(args, backend=None):
                             % (len(missing_required), "；".join(missing_required[:6]))}, report
 
     course = args.course_name or os.path.basename(os.path.abspath(materials)) or "未命名科目"
-    # 解答文件（配对的和未配对的答案册）绝不进章节 wiki——官方答案页混进 wiki 等于开卷前泄题；
-    # 它们只作为答案出处（answer_source_file）存在
-    sol_files = set(report.get("homework_solution_files") or [])
+    # 作业相关文件（题面册、配对/未配对解答册）都不进章节 wiki——解答册整册是答案、
+    # 作业册常带 inline Solution 块，混进 wiki 等于测验/复盘前泄题；题面与官方答案已完整
+    # 进入 quiz_bank（含出处 source_file/answer_source_file），wiki 只保留学习材料
+    sol_files = (set(report.get("homework_solution_files") or [])
+                 | set(report.get("homework_files") or []))
     wiki_pages = [pg for pg in pages if pg["file"] not in sol_files]
     raw_input = build_raw_input(course, group_sections(wiki_pages), lecture_items, homework_items)
     return 0, raw_input, report
