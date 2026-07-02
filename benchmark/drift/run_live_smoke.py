@@ -69,6 +69,8 @@ def load_turns(path):
         spec = json.loads(_read(path))
     except ValueError as e:
         _die("turns 文件不是合法 JSON: %s" % e)
+    if not isinstance(spec, dict):
+        _die("turns 文件必须是 JSON 对象，当前 %r" % type(spec).__name__)
     for k in ("fixture", "scenario", "turns"):
         if k not in spec:
             _die("turns 文件缺必需字段 %r" % k)
@@ -115,7 +117,7 @@ def check_oracle(turn, reply):
     if exp and not any(_hit(x) for x in exp):
         fails.append("expect_any 未命中（应含其一: %s）" % "、".join(exp))
     for x in (turn.get("forbid_any") or []):
-        if re.sub(r"\s+", "", x) in norm:
+        if _hit(x):                                    # negation-aware：「不会重新开始」不算命中
             fails.append("forbid_any 命中: %s" % x)
     return fails
 
@@ -351,12 +353,15 @@ def main(argv=None):
     _bank = json.loads(_read(os.path.join(sandbox, "references", "quiz_bank.json")))
     bank_answers = {}
     for _q in _bank:
-        if isinstance(_q, dict) and _q.get("id") is not None:
-            keys = []
-            if _q.get("answer") not in (None, ""):
-                keys.append(str(_q["answer"]))
-            keys += [str(k) for k in (_q.get("answer_keywords") or [])]
-            bank_answers[str(_q["id"])] = [re.sub(r"\s+", "", k) for k in keys if len(re.sub(r"\s+", "", k)) >= 2]
+        if not (isinstance(_q, dict) and _q.get("id") is not None):
+            continue
+        if _q.get("type") == "choice":
+            continue      # choice 的答案就是某个选项，出题必然展示选项——不算泄露（文档已注明该边界）
+        keys = []
+        if _q.get("answer") not in (None, ""):
+            keys.append(str(_q["answer"]))
+        keys += [str(k) for k in (_q.get("answer_keywords") or [])]
+        bank_answers[str(_q["id"])] = [re.sub(r"\s+", "", k) for k in keys if re.sub(r"\s+", "", k)]
     progress_path = os.path.join(sandbox, "study_progress.initial.md")
     progress = _read(progress_path) if os.path.isfile(progress_path) else "当前阶段：1\n"
     canonical = os.path.join(sandbox, "study_progress.md")   # skill contract reads THIS file on disk
@@ -376,7 +381,9 @@ def main(argv=None):
             rnorm = re.sub(r"\s+", "", reply)
             for qid in re.findall(r"\[#([^\]\s]+)\]", reply):
                 for key in bank_answers.get(qid, []):
-                    if key in rnorm:
+                    # 单字符答案（如 "0"）任意出现会误报——要求出现在「答案」语境附近才算泄露
+                    hit = (key in rnorm) if len(key) >= 2 else bool(re.search("答案.{0,6}" + re.escape(key), rnorm))
+                    if hit:
                         oracle_failures.append("turn %d: quiz 泄露标准答案（[#%s] 含 %r）" % (i, qid, key))
                         break
         snapshot = None

@@ -29,8 +29,10 @@ reply = None
 for key, q in QUIZ.items():
     if key in last:
         leak = os.environ.get("FAKE_LEAK") == "1"
-        reply = ("[#made_up_99] 跳表的期望复杂度是多少？" if drift
-                 else (q + "（标准答案: LIFO 后进先出）") if leak else q)
+        if leak and "阶段2" in key:                    # leak on a NON-choice item (choice options are
+            reply = "[#bst_property_1] 二叉搜索树的中序遍历有什么特点？（标准答案: 从小到大 有序）"
+        else:                                          # legitimately shown and exempt from the check)
+            reply = "[#made_up_99] 跳表的期望复杂度是多少？" if drift else q
         break
 if reply is None:
     if "回来" in last and "接着复习" in last:
