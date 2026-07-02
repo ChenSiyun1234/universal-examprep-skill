@@ -234,6 +234,32 @@ class Mutations(unittest.TestCase):
         self.assertEqual(len(_state(ws2)["mistake_archive"]), 1)  # 纯占位行仍被跳过
 
 
+    # ---- regression guards for Codex round-7 (6 findings) ----
+
+    def test_set_phase_must_be_in_plan(self):
+        ws = self._ready()
+        with open(os.path.join(ws, "study_plan.md"), "w", encoding="utf-8") as f:
+            f.write("# 计划\n## 阶段1：栈\n## 第2阶段：树\n")
+        r = _up(ws, ["set", "--phase", "99"])
+        self.assertNotEqual(r.returncode, 0)                      # 官方路径写之前就拒绝
+        self.assertIn("不在 study_plan.md", r.stderr)
+        self.assertNotEqual(_state(ws)["current_phase"], 99)      # 事实源未被污染
+        self.assertEqual(_up(ws, ["set", "--phase", "2"]).returncode, 0)   # 第N阶段写法也认
+
+    def test_symlinked_state_rejected_by_updater(self):
+        ws = _mk_ws(tempfile.mkdtemp(), md=None)
+        outside = os.path.join(tempfile.mkdtemp(), "evil_state.json")
+        json.dump({"version": 1, "current_phase": 1, "mistake_archive": [], "confusion_log": []},
+                  open(outside, "w", encoding="utf-8"))
+        try:
+            os.symlink(outside, os.path.join(ws, "study_state.json"))
+        except (OSError, NotImplementedError):
+            self.skipTest("no symlink privilege")
+        r = _up(ws, ["show"])
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("符号链接", r.stderr)                        # 读取前 fail-loud，不采纳外部事实源
+
+
     def test_set_updates_state_and_md(self):
         ws = self._ready()
         r = _up(ws, ["set", "--phase", "5", "--scope", "homework-only", "--mode", "查缺补漏",
@@ -559,6 +585,20 @@ class DriftJsonSnapshots(unittest.TestCase):
                                               "live_smoke_basic.json"), encoding="utf-8"))
         self.assertEqual(sc_live["thresholds"].get("md_write_after_state_max"), 0)
 
+    def test_t4_rejects_non_string_row_id(self):
+        sys.path.insert(0, os.path.join(ROOT, "benchmark", "drift"))
+        import run_drift as D
+        sc = D.load_scenario(os.path.join(ROOT, "benchmark", "drift", "scenarios", "long_session_basic.json"))
+        d = tempfile.mkdtemp()
+        t = os.path.join(d, "t.jsonl")
+        bad = json.dumps({"version": 1, "current_phase": 2, "confusion_log": [],
+                          "mistake_archive": [{"id": ["q1"], "note": "x"}]}, ensure_ascii=False)
+        with open(t, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"turn": 1, "assistant": "x",
+                                "files_after": {"study_state.json": bad}}) + chr(10))
+        with self.assertRaises(D.DriftError):                     # 伪键 id 不做 str() 硬转
+            D.evaluate(sc, t)
+
     def test_t4_scalar_state_field_exits_2_not_traceback(self):
         sys.path.insert(0, os.path.join(ROOT, "benchmark", "drift"))
         import run_drift as D
@@ -598,6 +638,17 @@ class Contract(unittest.TestCase):
             txt = open(os.path.join(ROOT, p), encoding="utf-8").read()
             self.assertIn("study_state.json", txt, p)
             self.assertIn("update_progress.py", txt, p)
+
+    def test_root_skill_lock_prefers_state(self):
+        txt = open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8").read()
+        self.assertIn("断点状态锁定 (`study_state.json`", txt)     # 根入口的状态锁对齐事实源
+        self.assertIn("set-check", txt)
+
+    def test_web_prompt_never_claims_local_writes(self):
+        txt = open(os.path.join(ROOT, "prompts", "web_prompt.md"), encoding="utf-8").read()
+        self.assertIn("网页端口径", txt)                          # A4 条款按网页端能力改写
+        self.assertIn("绝不要声称你已写入", txt)                   # 不许谎称本地写入
+        self.assertIn("只读事实源", txt)                          # 粘贴的 state 只读恢复
 
     def test_agents_md_prefers_state(self):
         txt = open(os.path.join(ROOT, "AGENTS.md"), encoding="utf-8").read()

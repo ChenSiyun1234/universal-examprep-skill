@@ -183,6 +183,10 @@ def render_md(state):
 
 def load_state(ws):
     path = os.path.join(ws, STATE_NAME)
+    if os.path.islink(path):
+        # A4 事实源绝不允许是符号链接：isfile 会跟随链接读工作区外的 JSON，悬空链接又会被当
+        # 「无 state」绕过降级——两种都必须 fail-loud
+        _die("study_state.json 是符号链接——事实源可能指向工作区外，拒绝读取（请替换为真实文件）", 1)
     if not os.path.isfile(path):
         return None
     try:
@@ -217,7 +221,7 @@ def save(ws, state, note):
             if os.path.exists(tmp):
                 os.remove(tmp)                      # 上次崩溃残留的普通 tmp——清掉重建
             # O_EXCL 独占创建：文件必须不存在才成功，绝不跟随同名链接/复用旧文件
-            fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)   # 数据文件不带可执行位
             with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
                 f.write(content)
             tmps.append((tmp, os.path.join(ws, name)))
@@ -304,12 +308,32 @@ def _require_state(ws):
     return st
 
 
+def _plan_phases(ws):
+    """Phase numbers listed in study_plan.md（阶段N / 第N阶段 双写法），plan 缺失/无阶段时返回空集。"""
+    plan_path = os.path.join(ws, "study_plan.md")
+    if not os.path.isfile(plan_path):
+        return set()
+    try:
+        with open(plan_path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except (OSError, UnicodeDecodeError):
+        return set()
+    return {int(m.group(1) or m.group(2))
+            for m in re.finditer(r"阶段\s*(\d+)|第\s*(\d+)\s*阶段", text)}
+
+
 def cmd_set(ws, args):
     st = _require_state(ws)
     changed = []
     if args.phase is not None:
         if args.phase < 1:
             _die("--phase 必须 ≥ 1")
+        plan = _plan_phases(ws)
+        if plan and args.phase not in plan:
+            # validator 事后能查出来，但官方变更路径必须【写之前】就拒绝——写入不存在的阶段
+            # 会让下一次会话恢复进不存在的阶段/wiki
+            _die("--phase %d 不在 study_plan.md 的阶段列表 %s 中——先改计划再设阶段"
+                 % (args.phase, sorted(plan)))
         st["current_phase"] = args.phase
         changed.append("phase=%d" % args.phase)
     for k in ("scope", "mode", "time_budget", "language"):

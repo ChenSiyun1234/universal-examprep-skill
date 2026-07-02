@@ -384,6 +384,11 @@ def parse_state_json(text):
             # 静默跳过会让坏 state 以「0 行」通过行持久化指标
             if not isinstance(r, dict) or not isinstance(r.get("note"), str) or not r["note"].strip():
                 raise DriftError("study_state.json 快照的 %s 行必须是含非空 note 的对象: %r" % (field, r))
+            for k in ("id", "status"):
+                if r.get(k) is not None and not isinstance(r[k], str):
+                    # 非字符串 id 被 str() 硬转会让行持久化在伪键下计算——坏写入必须 fail-loud
+                    raise DriftError("study_state.json 快照的 %s 行 %s 必须是字符串或省略: %r"
+                                     % (field, k, r))
             rid = ("[#%s] " % r["id"]) if r.get("id") else ""
             out.append((rid + r["note"]).strip())
         return out
