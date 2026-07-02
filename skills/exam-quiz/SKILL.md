@@ -41,7 +41,7 @@ Pull chapter/phase-scoped items from `references/quiz_bank.json`, present one it
    - `code` — check the key edits/output against `answer`.
    - `diagram` — do not judge the figure from memory: follow `render_hint` to run the standard algorithm first, derive the structure, then compare against the student's drawing; state that the instructor's drawing method takes precedence.
 3. **Escape hatch**: on a wrong answer, give the logic gap + the item's `explanation` + a hint. On the 2nd consecutive wrong answer, offer three choices — view hint / skip and archive the wrong item / continue — and proceed per the choice.
-4. **Archive**: record skipped or wrong items — with `study_state.json`, run `python scripts/update_progress.py --workspace <ws> add-mistake --id <qid> --chapter <ch> --note <错误原因>` (hand-editing the generated md loses the row on the next render); without state, write into the `study_progress.md` wrong-item archive.
+4. **Archive**: record skipped or wrong items — with `study_state.json`, run `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> add-mistake --id <qid> --chapter <ch> --note <错误原因>`（脚本按技能包根解析——学生工作区里没有 scripts/，不要按当前目录找） (hand-editing the generated md loses the row on the next render); without state, write into the `study_progress.md` wrong-item archive.
 5. **Source honesty**: when an item's or answer's `source` is `ai_generated`, flag it at grading time with 「⚠️ AI生成答案，非老师/教材提供」 (reference only, verify against the instructor/textbook).
 
 ## Output Contract
@@ -60,7 +60,7 @@ Pull chapter/phase-scoped items from `references/quiz_bank.json`, present one it
 - **题/答为 AI 生成**：⚠️ AI生成答案，非老师/教材提供，仅供参考，请和老师/教材核对。
 
 ## Boundaries
-- **Structured progress state (A4)**: when `study_state.json` exists it is the SINGLE SOURCE OF TRUTH — update it via `python scripts/update_progress.py --workspace <ws> set/add-mistake/add-confusion/render`; `study_progress.md` is a GENERATED view (hand edits are lost on the next render — never hand-patch it). If a state write fails, TELL the user; never continue as if it saved. Without `study_state.json` (no-Python fallback), a hand-maintained md stays valid.
+- **Structured progress state (A4)**: when `study_state.json` exists it is the SINGLE SOURCE OF TRUTH — update it via `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> set/add-mistake/add-confusion/render`（按技能包根解析脚本路径）; `study_progress.md` is a GENERATED view (hand edits are lost on the next render — never hand-patch it). If a state write fails, TELL the user; never continue as if it saved. Without `study_state.json` (no-Python fallback), a hand-maintained md stays valid.
 
 - When the bank holds relevant items, do not write your own. With no stored answer, do not force a verdict — mark ⚠️ or state the limitation plainly.
 - Do not judge diagram items from memory — the algorithm-derived standard structure is the reference.

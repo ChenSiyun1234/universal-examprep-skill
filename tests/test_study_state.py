@@ -909,8 +909,14 @@ class Contract(unittest.TestCase):
         self.assertEqual(r2["metrics"]["md_write_after_state"], 1)   # 违规会被该场景真实拦截
 
     def test_updater_paths_resolve_from_package(self):
-        cram = open(os.path.join(ROOT, "skills", "exam-cram", "SKILL.md"), encoding="utf-8").read()
-        self.assertIn('CLAUDE_SKILL_DIR' + chr(125) + '/scripts/update_progress.py', cram)
+        for rel in (("skills", "exam-cram", "SKILL.md"), ("skills", "exam-quiz", "SKILL.md"),
+                    ("skills", "exam-tutor", "SKILL.md"), ("AGENTS.md",)):
+            txt = open(os.path.join(ROOT, *rel), encoding="utf-8").read()
+            self.assertIn('CLAUDE_SKILL_DIR' + chr(125) + '/scripts/update_progress.py', txt, rel)
+
+    def test_agents_md_bootstraps_state(self):
+        txt = open(os.path.join(ROOT, "AGENTS.md"), encoding="utf-8").read()
+        self.assertIn('init' + chr(96) + ' 建立事实源', txt)       # 通用代理契约也先建 state
 
     def test_root_skill_bootstraps_state_when_python_available(self):
         txt = open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8").read()
