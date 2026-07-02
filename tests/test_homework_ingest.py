@@ -1040,7 +1040,63 @@ class HomeworkIngest(unittest.TestCase):
         self.assertEqual(len(hw), 1)                              # answer_questions 后缀是题面提示语
         self.assertFalse(any(w.startswith("hw_unpaired_solution_file") for w in report["warnings"]))
 
+    # ---- regression guards for Codex round-15 (5 findings) ----
+
+    def test_figure_question_with_same_page_answer_downgraded(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw22.pdf": ["Problem 1\nShade the Venn diagram shown at right.\n"
+                                         "Answer 1: 同页的官方答案。"]})
+        asset_root = os.path.join(tmp, "ws", "references", "assets")
+        code, payload, report = _run(mat, be, ["--asset-root", asset_root])
+        q = next(x for x in payload["quiz_bank"] if x.get("source_type") == "homework")
+        self.assertEqual(q["question_text_status"], "page_reference")   # 图依赖+同页答案 → 降级
+        self.assertNotIn("requires_assets", q)                    # 不假装可问、也不渲染泄题页
+        self.assertFalse(q.get("assets"))
+
+    def test_bare_answers_header_splits_by_number(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw23.pdf": ["Problem 1\n题面一内容。\n\nProblem 2\n题面二内容。\n\n"
+                                         "Answers\n1. 答案一内容\n2. 答案二内容"]})
+        code, payload, report = _run(mat, be)
+        hw = {q["homework_number"]: q for q in payload["quiz_bank"] if q.get("source_type") == "homework"}
+        self.assertIn("答案一内容", hw[1]["answer"])                # 按号拆分，不整块归最后一题
+        self.assertNotIn("答案二内容", hw[1]["answer"])
+        self.assertIn("答案二内容", hw[2]["answer"])
+
+    def test_restatement_then_titled_solutions_prefers_real_answer(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw24.pdf": ["Problem 1\n真正的题面。"],
+                            "hw24_sol.pdf": ["Problem 1\n题面复述而已。\n\nSolutions\n"
+                                             "Problem 1\n真正的官方解答。"]})
+        code, payload, report = _run(mat, be)
+        q = next(x for x in payload["quiz_bank"] if x.get("source_type") == "homework")
+        self.assertIn("真正的官方解答", q["answer"])                # 带标题解答区的真解答取代复述
+        self.assertNotIn("复述而已", q["answer"])
+
+    def test_sols_plural_abbreviation_pairs(self):
+        hw, pairing = B.classify_homework_files(["hw1.pdf", "hw1_sols.pdf"])
+        self.assertEqual(pairing["hw1_sols.pdf"], "hw1.pdf")      # sols 复数缩写是解答后缀
+
+    def test_materials_root_is_homework_folder(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "homework")                       # --materials 直接指向作业文件夹
+        os.makedirs(mat, exist_ok=True)
+        fake = {}
+        for name, pages in {"worksheet1.pdf": ["Problem 1\n通用命名的题面。"],
+                            "worksheet1_solutions.pdf": ["Problem 1\nAnswer 1: 通用命名的答案。"]}.items():
+            with open(os.path.join(mat, name), "wb") as f:
+                f.write(b"%PDF-fake")
+            fake[name] = pages
+        be = FakeBackend(fake)
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw), 1)                              # 根目录名补上作业线索
+        self.assertIn("通用命名的答案", hw[0]["answer"])
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertNotIn("通用命名的答案", wiki_all)               # 解答册照常不进 wiki
+
     def test_no_network_or_llm(self):
+
 
 
 

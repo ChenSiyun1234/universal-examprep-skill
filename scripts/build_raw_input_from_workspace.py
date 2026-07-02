@@ -51,7 +51,7 @@ _HW_FILE_RE = re.compile(r"(?:^|[\\/_\-. ])(?:hw|homework|assignments?|problem[ 
 # solution/answer 需要词元边界：前面不能是字母（unanswered ≠ answers；hw1solution 的数字前缀合法），
 # 后面须是分隔符/括号/串尾——纯子串匹配会把 unanswered_hw1 误判成解答文件
 _SOL_TOKEN_RE = re.compile(r"(?<![A-Za-z])(?:solutions?|answers?)(?=[_\-. ()\\/]|$)"
-                           r"|(?<![A-Za-z])(?:sol|ans)(?=[_\-. ()\\/]|$)|答案|解答", re.I)
+                           r"|(?<![A-Za-z])(?:sols?|ans)(?=[_\-. ()\\/]|$)|答案|解答", re.I)
 # 题号支持 教材式小数（1.1.2）与 字母小题（1(a) / 1a）——折叠会把真小题当重复丢掉
 _HW_NUM_PAT = r"(\d+(?:\.\d+)*(?:\s*\([A-Za-z]\)|[A-Za-z])?)"
 # problem headings inside homework/solution files（行首锚定，与 lecture 标记同族）
@@ -402,10 +402,12 @@ def _hw_norm(stem):
     return re.sub(r"(?<!\d)0+(\d)", r"\1", s)
 
 
-def classify_homework_files(files):
+def classify_homework_files(files, root_name=""):
     """Split material files into (homework_files, {solution_file: paired_homework_file|None}).
     Solutions pair by stripped-stem equality or prefix; an unpairable solution file is fail-loud."""
     hw, sols = [], []
+    # --materials 直接指向作业文件夹时，相对路径丢失目录线索——用根目录名补上
+    root_is_hw = bool(root_name and _HW_FILE_RE.search("/" + root_name))
     for f in files:
         rel = f.replace("\\", "/")
         stem = os.path.splitext(os.path.basename(f))[0]
@@ -434,7 +436,7 @@ def classify_homework_files(files):
         is_sol = bool(any(_sol_dir_segment(seg) for seg in os.path.dirname(rel).split("/"))
                       or (sol_m and not hw_m) or sol_after_hw
                       or sol_before_adjacent)
-        if not (_HW_FILE_RE.search(rel) or is_sol):
+        if not (_HW_FILE_RE.search(rel) or is_sol or root_is_hw):
             continue                                   # solutions/hw1.pdf：目录名也是 solution 记号
         (sols if is_sol else hw).append(f)
     # 目录感知配对：week1/hw1_sol 只配 week1/hw1（同名跨目录不串）；同目录找不到才允许全局唯一回退
@@ -636,12 +638,12 @@ def _hw_nonblank_slice(stream, bounds, fname, s_start, s_end):
     return None
 
 
-def extract_homework_items(pages):
+def extract_homework_items(pages, root_name=""):
     """Extract homework problems (+ answers from paired solution files OR inline Solution blocks)
     into bank items with source_type='homework'. Returns (items, hw_report)."""
     files = sorted({pg["file"] for pg in pages})
     is_pdf = {f: any(pg.get("_pdf") for pg in pages if pg["file"] == f) for f in files}
-    hw_files, pairing = classify_homework_files(files)
+    hw_files, pairing = classify_homework_files(files, root_name)
     report = {"homework_files": hw_files,
               "homework_solution_files": sorted(pairing),
               "homework_pairs": sorted([s, h] for s, h in pairing.items() if h),
@@ -688,6 +690,25 @@ def extract_homework_items(pages):
         marks_all = _hw_markers(stream)
         # 独立解答册常见排版「Problem 1 复述 → 无号 Solution → 真解答」：无号解答段继承前一个
         # 带号题目的题号——否则被过滤后整段并进题面复述切片，真解答被埋没
+        # 节标题位置要在继承改写 num 之前先记下（无号 solution 标记就是 Solutions/Answers 标题行）
+        header_starts = [m["start"] for m in marks_all
+                         if m["role"] == "solution" and m["num"] is None]
+        first_seen = {}
+        for m in marks_all:
+            if m["role"] == "problem" and m["num"] is not None and not m.get("continued") \
+                    and m["num"] not in first_seen:
+                first_seen[m["num"]] = m["start"]
+        if first_seen and header_starts:
+            tail_head = min(h for h in header_starts) if header_starts else None
+            last_first = max(first_seen.values())
+            heads_after = [h for h in header_starts if h > last_first]
+            if heads_after:
+                sec_start = min(heads_after)
+                for m in marks_all:
+                    if m["role"] == "problem" and m["num"] is not None \
+                            and m["start"] > sec_start and m["num"] in first_seen \
+                            and m["start"] > first_seen[m["num"]]:
+                        m["role"] = "solution"   # 带标题解答区里的重复题号标题＝该题解答段
         last_num = None
         for m in marks_all:
             if m["role"] == "problem" and m["num"] is not None:
@@ -773,11 +794,29 @@ def extract_homework_items(pages):
         # 不要求解答紧跟在题面后面
         inline_keys = {}
         for j, mk2 in enumerate(marks):
-            if mk2["role"] == "solution" and mk2["num"] is not None and mk2["num"] not in inline_keys:
-                end2 = marks[j + 1]["start"] if j + 1 < len(marks) else len(stream)
-                got2 = _nonblank_slice(mk2["start"], end2)
+            if mk2["role"] != "solution":
+                continue
+            end2 = marks[j + 1]["start"] if j + 1 < len(marks) else len(stream)
+            if mk2["num"] is not None:
+                if mk2["num"] not in inline_keys:
+                    got2 = _nonblank_slice(mk2["start"], end2)
+                    if got2:
+                        inline_keys[mk2["num"]] = got2
+                continue
+            # 无号「Answers」节头：其下的「1. …」「2. …」编号行是整卷答案区——按号拆给各题
+            seg = stream[mk2["start"]:end2]
+            keyed_ms = list(re.finditer(r"^[ \t]*(\d+(?:\.\d+)*(?:\([A-Za-z]\))?)[.)、][ \t]", seg, re.M))
+            if len({m2.group(1) for m2 in keyed_ms}) < 2:
+                continue
+            for x, m2 in enumerate(keyed_ms):
+                seg_end = keyed_ms[x + 1].start() if x + 1 < len(keyed_ms) else len(seg)
+                numk = _hw_num(m2.group(1))
+                if numk in inline_keys:
+                    continue
+                got2 = _hw_nonblank_slice(stream, bounds, hf,
+                                          mk2["start"] + m2.start(), mk2["start"] + seg_end)
                 if got2:
-                    inline_keys[mk2["num"]] = got2
+                    inline_keys[numk] = got2
         # 合并文件的「解答区」：全部题面首现之后的重复 Problem N 标题串，且这串标题之前有一条
         # 独立的 Solutions/Answers/解答 节标题行——没有节标题的多号重现（续页页眉没写 Continued）
         # 只能按重复去重，绝不能把续页题面错当官方答案
@@ -833,7 +872,12 @@ def extract_homework_items(pages):
                     and marks[k]["num"] in (None, mk["num"]):
                 s_start = marks[k]["start"]
                 s_end = next((m2["start"] for m2 in marks[k + 1:] if m2["role"] == "problem"), len(stream))
-                ans = _nonblank_slice(s_start, s_end)
+                keyed = {m2.group(1) for m2 in re.finditer(r"^[ \t]*(\d+)[.)、]", stream[s_start:s_end], re.M)}
+                if marks[k]["num"] is None and len(keyed) >= 2:
+                    ans = None          # 无号「Answers」节头 + 多号列表——是整卷答案区，
+                                        # 按号拆给各题（见 inline_keys），不是本题的答案
+                else:
+                    ans = _nonblank_slice(s_start, s_end)
             if ans is None:
                 ans = inline_keys.get(mk["num"])       # 同文件 answer-key 段（不相邻也配）
             if ans is None:
@@ -900,6 +944,10 @@ def extract_homework_items(pages):
                     item["requires_assets"] = True
                     item["_render"] = True
                     item["_question_pages"] = [(hf, p) for p in safe_q_pages]
+                else:
+                    # 图依赖题的唯一题面页含 inline 答案：不能渲染也不能当 full 出题——
+                    # 降级 page_reference（quiz 对无资产的 page_reference fail-closed 跳过）
+                    item["question_text_status"] = "page_reference"
                 if ans and requires_assets_heuristic(ans[1], renderable=is_pdf.get(ans[0], False)):
                     item["_render"] = True
                     item["_answer_pages"] = [(ans[0], p) for p in (ans[2] or [])]
@@ -1225,11 +1273,12 @@ def run(args, backend=None):
         return 4, {"error": "未从 --materials 提取到任何文本内容（页面为空或全是扫描件/图片）。请确认有可解析的 "
                             "PDF/.txt/.md（PDF 文本需 pypdf；图片/扫描件需 OCR，本工具不做）。"}, report
 
+    _mat_root_name = os.path.basename(os.path.normpath(os.path.abspath(materials)))
     # 作业/解答文件在【抽取前】就按文件名剔出讲义管线——lecture 的题/答配对跨页进行，
     # 事后过滤只能拦 source_file，拦不住讲义题从作业文件吸走 answer_source_file
     hw_related = set()
     if getattr(args, "extract_homework", "auto") != "never":
-        _hwf, _pairing = classify_homework_files(sorted({pg["file"] for pg in pages}))
+        _hwf, _pairing = classify_homework_files(sorted({pg["file"] for pg in pages}), _mat_root_name)
         hw_related = set(_hwf) | set(_pairing)
     lecture_pages = [pg for pg in pages if pg["file"] not in hw_related]
     lecture_items = []
@@ -1250,7 +1299,7 @@ def run(args, backend=None):
 
     homework_items = []
     if getattr(args, "extract_homework", "auto") != "never":
-        homework_items, hw_rep = extract_homework_items(pages)
+        homework_items, hw_rep = extract_homework_items(pages, _mat_root_name)
         report["warnings"].extend(hw_rep.pop("warnings"))
         report.update(hw_rep)
     # ---- render assets for figure-dependent items ----
