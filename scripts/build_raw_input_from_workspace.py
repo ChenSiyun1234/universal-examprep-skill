@@ -80,6 +80,14 @@ _SOL_PREFIX_NUM_RE = re.compile(r"^[ \t>*•·\-#]*(\d+(?:\.\d+)*(?:\([A-Za-z]\)
 _HW_SOL_PRE_RE = re.compile(r"^[ \t>*•·\-#]*(\d+(?:\.\d+)*(?:\s*\([A-Za-z]\)|[A-Za-z])?)\s*[.)）、]?\s*"
                             r"(?:Solutions?|Answers?|解答|答案)\s*(?:[.:：]|$)", re.I | re.M)
 # 题号之后紧跟的解答词（「Problem 1 Solution: …」的 Solution: 部分）——空白判定剥复合标题用
+# 「Answer:」标签行的答题栏指示语（告诉学生往哪儿写：in the box below / space provided /
+# 在下方作答）——其后再无内容时并回题面，绝不存成官方答案让测验拿指示语判分
+_HW_ANSBOX_INSTR_RE = re.compile(
+    r"(?i)\b(?:in|into|on|onto|using)[ \t]+(?:the|a|your)[ \t]+(?:answer[ \t]+|separate[ \t]+)?"
+    r"(?:box(?:es)?|space|blank|line|lines|sheet|grid|area)\b"
+    r"|\b(?:box(?:es)?|space|blank|line|lines|sheet|grid|area)[ \t]+(?:below|provided)\b"
+    r"|答题[框栏区]|在下[方面]|空白处")
+
 _HW_PROB_SOL_HEAD_RE = re.compile(r"^\s*[\).\-]?\s*\(?\s*(?:solutions?|answers?|解答|答案)\s*[.:：]?", re.I)
 
 # Two classes of asset cue. ASSET_EXCLUDE masks known false-positive phrases first.
@@ -486,6 +494,10 @@ def classify_homework_files(files, root_name=""):
                     fsep = _hw_sepform(os.path.splitext(os.path.basename(f))[0])
                     if fsep.startswith(sol_sep + "_"):
                         cands.append(f)
+                    elif fsep and sol_sep.endswith("_" + fsep):
+                        # 描述性前缀 + 作业名 + 解答后缀（answer_questions_hw1_sol ↔ hw1）：
+                        # 剥完解答记号后作业名是残键的分隔符边界后缀——同层多候选照样歧义终止
+                        cands.append(f)
                     elif fsep != sol_sep and fsep.startswith(sol_sep) \
                             and not fsep[len(sol_sep)].isdigit():
                         variants += 1
@@ -854,6 +866,7 @@ def extract_homework_items(pages, root_name=""):
             report["warnings"].append("hw_no_markers: %s（识别为作业文件但没找到 Problem/第N题 标记）" % hf)
             continue
         stem = hw_stems[hf]
+        prob_nums = {m["num"] for m in probs if m["num"] is not None}
         seen_nums = set()
         dup_counts = {}
 
@@ -876,7 +889,10 @@ def extract_homework_items(pages, root_name=""):
             # 无号「Answers」节头：其下的「1. …」「2. …」编号行是整卷答案区——按号拆给各题
             seg = stream[mk2["start"]:end2]
             keyed_ms = list(re.finditer(r"^[ \t]*(\d+(?:\.\d+)*(?:\([A-Za-z]\)|[A-Za-z])?)[.)、][ \t]", seg, re.M))
-            if len({m2.group(1) for m2 in keyed_ms}) < 2:
+            keyset = {_hw_num(m2.group(1)) for m2 in keyed_ms}
+            # 单条键控行（Answers 下只有「1. A」）只要号是本卷已知题号也按键拆——
+            # 相邻兜底会把它安给节前那道题；号不在题号集合的孤行仍视为普通编号列表
+            if len({m2.group(1) for m2 in keyed_ms}) < 2 and not (keyset and keyset <= prob_nums):
                 continue
             for x, m2 in enumerate(keyed_ms):
                 seg_end = keyed_ms[x + 1].start() if x + 1 < len(keyed_ms) else len(seg)
@@ -962,9 +978,23 @@ def extract_homework_items(pages, root_name=""):
                     keyed = {m2.group(1) for m2 in re.finditer(
                         r"^[ \t]*(\d+(?:\.\d+)*(?:\([A-Za-z]\)|[A-Za-z])?)[.)、]",
                         stream[s_start:s_end], re.M)}
-                    if marks[k]["num"] is None and len(keyed) >= 2:
-                        ans = None      # 无号「Answers」节头 + 多号列表——是整卷答案区，
-                                        # 按号拆给各题（见 inline_keys），不是本题的答案
+                    keyed_norm = {_hw_num(g) for g in keyed}
+                    sol_line, _, sol_rest = stream[s_start:s_end].partition(chr(10))
+                    if marks[k]["num"] is None and (len(keyed) >= 2
+                                                    or (keyed_norm and keyed_norm <= prob_nums)):
+                        ans = None      # 无号「Answers」节头 + 键控列表（多号，或单号但都是已知
+                                        # 题号）——是整卷答案区，按号拆给各题（见 inline_keys），
+                                        # 不是节前那道题的相邻答案
+                    elif marks[k]["num"] is None and _HW_ANSBOX_INSTR_RE.search(sol_line) \
+                            and not re.search(r"[0-9A-Za-z一-鿿]", sol_rest):
+                        # 「Answer: Give a short proof in the box below」——答题栏指示语，
+                        # 并回题面保持完整可问，题目如实无官方答案
+                        ans = None
+                        ext_end = next((m2["start"] for m2 in marks[k:] if m2["role"] == "problem"),
+                                       len(stream))
+                        if ext_end > nxt_q:
+                            nxt_q = ext_end
+                            q_text = stream[mk["start"]:nxt_q].strip()
                     else:
                         ans = _nonblank_slice(s_start, s_end)
             if ans is None:

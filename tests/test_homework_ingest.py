@@ -1259,6 +1259,39 @@ class HomeworkIngest(unittest.TestCase):
         self.assertIn("纯编号答案一", by_num[1].get("answer", ""))  # 连标题都没有的答案册按号整拆
         self.assertIn("纯编号答案二", by_num[2].get("answer", ""))
 
+    # ---- regression guards for Codex round-20 (3 new findings) ----
+
+    def test_single_entry_answer_key_goes_to_keyed_problem(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw41.pdf": ["Problem 1\n部分键题面一。\n\nProblem 2\n部分键题面二。\n\n"
+                                         "Answers\n1. 部分键答案一。"]})
+        code, payload, report = _run(mat, be)
+        by_num = {q["homework_number"]: q for q in payload["quiz_bank"]
+                  if q.get("source_type") == "homework"}
+        self.assertIn("部分键答案一", by_num[1].get("answer", ""))   # 单条键控行按号给 1，
+        self.assertNotIn("部分键答案一", by_num[2].get("answer", "") or "")   # 不给节前的 2
+
+    def test_answer_box_instruction_after_prompt_not_stored_as_answer(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw42.pdf": ["Problem 1\nProve the statement X.\n"
+                                         "Answer: Give a short proof in the box below."]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw), 1)
+        self.assertNotIn("box below", hw[0].get("answer", "") or "")   # 指示语不是官方答案
+        self.assertIn("Prove the statement X", hw[0].get("question") or "")
+        self.assertIn("box below", hw[0].get("question") or "")        # 指示语并回题面
+
+    def test_descriptive_prefix_solution_filename_pairs(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw43.pdf": ["Problem 1\n前缀配对题面。"],
+                            "answer_questions_hw43_sol.pdf": ["Problem 1 Solution\n前缀配对答案。"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw), 1)
+        self.assertIn("前缀配对答案", hw[0].get("answer", ""))   # 描述性前缀不挡住后缀锚定配对
+        self.assertFalse(any(w.startswith("hw_unpaired_solution_file") for w in report["warnings"]))
+
     def test_no_network_or_llm(self):
 
 
