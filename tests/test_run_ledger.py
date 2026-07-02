@@ -256,6 +256,24 @@ class LiveSmokeIntegration(unittest.TestCase):
         self.assertIn("## Turn 1", body)
         self.assertIn("接着复习", body)
 
+    def test_conversion_failure_row_has_no_phantom_transcript(self):
+        # T5b 转换失败中止时，账本 transcript_path 必须是 null（不能指向不存在的文件）、
+        # summary_path 指向已写出的 md
+        out = tempfile.mkdtemp()
+        led = os.path.join(out, "ledger.jsonl")
+        os.makedirs(os.path.join(out, "live_session.jsonl"))      # 让转换器的输出写入必然失败
+        fake = os.path.join(ROOT, "tests", "fake_live_agent.py")
+        cmd = json.dumps([sys.executable, fake, "{prompt}"])
+        env = dict(os.environ, RUN_SKILL_DRIFT_LLM="1")
+        r = subprocess.run([sys.executable, os.path.join(ROOT, "benchmark", "drift", "run_live_smoke.py"),
+                            "--agent-cmd", cmd, "--out-dir", out, "--ledger", led],
+                           capture_output=True, text=True, encoding="utf-8", env=env)
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        row = [json.loads(x) for x in open(led, encoding="utf-8") if x.strip()][0]
+        self.assertEqual(row["exit_code"], 3)
+        self.assertIsNone(row.get("transcript_path"))             # 不发布未产出的 jsonl 路径
+        self.assertTrue(row.get("summary_path") and os.path.isfile(row["summary_path"]))
+
     def test_ledger_records_aborted_run(self):
         # 付费回合烧掉后 agent 失败中止（_die exit 3）——账本必须留一行审计记录，而不是无痕
         out = tempfile.mkdtemp()

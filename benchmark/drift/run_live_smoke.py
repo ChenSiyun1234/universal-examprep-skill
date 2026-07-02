@@ -438,15 +438,19 @@ def main(argv=None):
             exchanges.append((turn, reply, snapshot))
             print("[+] turn %d/%d 完成（回复 %d 字）" % (i, len(turns), len(reply)))
 
-        log_path = os.path.join(args.out_dir, "live_session.md")
-        with open(log_path, "w", encoding="utf-8", newline="\n") as f:
+        md_candidate = os.path.join(args.out_dir, "live_session.md")
+        with open(md_candidate, "w", encoding="utf-8", newline="\n") as f:
             f.write(render_log(spec, exchanges))
-        jsonl_path = os.path.join(args.out_dir, "live_session.jsonl")
+        log_path = md_candidate                      # 写成功后才发布——账本路径必须指向真实产物
+        # 转换成功前不发布 jsonl 路径：转换失败中止时，账本 transcript_path 必须是 null
+        # 而不是一个不存在的文件（否则账本没法核查失败运行）
+        jsonl_candidate = os.path.join(args.out_dir, "live_session.jsonl")
         conv = subprocess.run([sys.executable, os.path.join(HERE, "convert_session_log.py"),
-                               "--in", log_path, "--out", jsonl_path],
+                               "--in", log_path, "--out", jsonl_candidate],
                               capture_output=True, text=True, encoding="utf-8")
         if conv.returncode != 0:
             _die("T5b 转换失败（exit %d）：%s" % (conv.returncode, (conv.stderr or "")[:400]), 3)
+        jsonl_path = jsonl_candidate
 
         score = subprocess.run([sys.executable, os.path.join(HERE, "run_drift.py"),
                                 "--scenario", scenario, "--transcript", jsonl_path],
