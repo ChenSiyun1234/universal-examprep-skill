@@ -628,7 +628,90 @@ class HomeworkIngest(unittest.TestCase):
         self.assertNotIn("chapter", q)                            # 作业号≠章节号：仍绝不猜
         self.assertTrue(any(w.startswith("hw_no_chapter") for w in report["warnings"]))
 
+    # ---- regression guards for Codex round-9 (7 findings) ----
+
+    def test_pure_answer_key_not_promoted_to_homework(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw9_key_solutions.pdf": ["Problem 1\nAnswer 1: 42\n\nProblem 2\nAnswer 2: 17"]})
+        code, payload, report = _run(mat, be)
+        self.assertFalse([q for q in payload["quiz_bank"] if q.get("source_type") == "homework"])
+        self.assertTrue(any(w.startswith("hw_unpaired_solution_file") for w in report["warnings"]))
+
+    def test_paired_solution_pages_kept_out_of_wiki(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw1.pdf": ["Problem 1\n泄题检查的题面。"],
+                            "hw1_sol.pdf": ["Problem 1\nAnswer 1: 泄题检查的官方答案。"]})
+        code, payload, report = _run(mat, be)
+        wiki_all = " ".join(sec.get("wiki_content", "") for sec in payload.get("sections", []))
+        self.assertNotIn("泄题检查的官方答案", wiki_all)            # 官方答案页绝不进章节 wiki
+        q = next(x for x in payload["quiz_bank"] if x.get("source_type") == "homework")
+        self.assertIn("泄题检查的官方答案", q["answer"])            # 但答案出处保留
+
+    def test_mirrored_trees_under_common_root_pair(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        for wk in ("week1", "week2"):
+            os.makedirs(os.path.join(mat, "course", "homework", wk), exist_ok=True)
+            os.makedirs(os.path.join(mat, "course", "solutions", wk), exist_ok=True)
+            for top in ("homework", "solutions"):
+                with open(os.path.join(mat, "course", top, wk, "hw1.pdf"), "wb") as f:
+                    f.write(b"%PDF-fake")
+
+        class RootBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                p = pdf_path.replace("\\", "/")
+                wk = "week1" if "week1" in p else "week2"
+                if "solutions" in p:
+                    return ["Problem 1\nAnswer 1: %s 公共前缀答案。" % wk]
+                return ["Problem 1\n%s 公共前缀题面。" % wk]
+        code, payload, report = _run(mat, RootBackend({}))
+        hw = {q["source_file"]: q for q in payload["quiz_bank"] if q.get("source_type") == "homework"}
+        self.assertIn("week1 公共前缀答案", hw["course/homework/week1/hw1.pdf"]["answer"])
+        self.assertIn("week2 公共前缀答案", hw["course/homework/week2/hw1.pdf"]["answer"])
+
+    def test_multiline_blank_answer_box_unknown(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw27.pdf": ["Problem 1\n计算 2+2。\nAnswer:\n________\nShow your work.\n\n"
+                                         "Problem 2\n下一题题面。"]})
+        code, payload, report = _run(mat, be)
+        hw = {q["homework_number"]: q for q in payload["quiz_bank"] if q.get("source_type") == "homework"}
+        self.assertNotIn("answer", hw[1])                         # 多行空栏+指示语不是官方答案
+        self.assertEqual(hw[1]["answer_status"], "unknown")
+
+    def test_answer_key_suffix_filenames_pair(self):
+        hw, pairing = B.classify_homework_files(["hw1.pdf", "hw1_answer_key.pdf"])
+        self.assertEqual(pairing["hw1_answer_key.pdf"], "hw1.pdf")
+        hw2, pairing2 = B.classify_homework_files(["hw2.pdf", "hw2_solution_key.pdf"])
+        self.assertEqual(pairing2["hw2_solution_key.pdf"], "hw2.pdf")
+        hw3, pairing3 = B.classify_homework_files(["keyboard_hw1.pdf"])
+        self.assertEqual((len(hw3), pairing3), (1, {}))            # keyboard 不是 key 后缀
+
+    def test_same_line_solution_content_pairs(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw28.pdf": ["Problem 1\n题面文字内容。\n\nProblem 1 Solution: A1 就是答案。\n\n"
+                                         "Problem 2\n下一题题面。"]})
+        code, payload, report = _run(mat, be)
+        hw = {q["homework_number"]: q for q in payload["quiz_bank"] if q.get("source_type") == "homework"}
+        self.assertIn("A1 就是答案", hw[1]["answer"])              # 同行带内容的解答段配上
+        self.assertEqual(hw[2]["answer_status"], "unknown")
+        tmp2 = tempfile.mkdtemp()
+        mat2, be2 = _mk(tmp2, {"hw29.pdf": ["Problem 1: Answer the following about stacks.\n更多题面。"]})
+        code2, payload2, report2 = _run(mat2, be2)
+        hw2 = [q for q in payload2["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw2), 1)                             # 题面动词形式不回退
+
+    def test_numeric_only_body_is_page_reference(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw30.pdf": ["Problem 1\n12\n\nProblem 2\n2+2=?"]})
+        asset_root = os.path.join(tmp, "ws", "references", "assets")
+        code, payload, report = _run(mat, be, ["--asset-root", asset_root])
+        hw = {q["homework_number"]: q for q in payload["quiz_bank"] if q.get("source_type") == "homework"}
+        self.assertEqual(hw[1]["question_text_status"], "page_reference")   # 页脚数字是抽取残渣
+        self.assertIs(hw[1]["requires_assets"], True)
+        self.assertEqual(hw[2]["question_text_status"], "full")   # 带运算符的数字题面仍 full
+
     def test_no_network_or_llm(self):
+
 
 
 

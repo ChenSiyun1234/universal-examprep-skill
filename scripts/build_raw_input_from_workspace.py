@@ -65,6 +65,13 @@ _HW_SOL_RE = re.compile(_HEAD + r"(?:Solution|Answer|解答|答案)\s*(?:#?\s*" 
 _HW_SOL_HEAD_RE = re.compile(r"^\s*[\)\.:\-]?\s*\(?\s*(?:solutions?|answers?|解答|答案)"
                              r"\s*(?:#?\s*\d+(?:\.\d+)*(?:\s*\([A-Za-z]\)|[A-Za-z])?)?\s*\)?\s*[.:：]?\s*$",
                              re.I)
+# 「Problem 1 Solution: A1」——解答词后带冒号+同行内容也是解答段；注意首字符不许是冒号，
+# 否则「Problem 1: Answer the following…」（冒号在解答词之前）会被误翻
+_HW_SOL_HEAD_CONTENT_RE = re.compile(r"^\s*[\)\.\-]?\s*\(?\s*(?:solutions?|answers?|解答|答案)"
+                                     r"\s*(?:#?\s*\d+(?:\.\d+)*(?:\s*\([A-Za-z]\)|[A-Za-z])?)?\s*\)?"
+                                     r"\s*[:：]\s*\S", re.I)
+# answer_key / solution_key 的 key 是解答后缀的一部分——配对键计算前要一并剥掉
+_KEY_TOKEN_RE = re.compile(r"(?<![A-Za-z])keys?(?=[_\-. ()]|$)", re.I)
 # answer-key 常见的「1. Answer: …」形式：编号在标记前面，被 _HEAD 吞掉——从匹配前缀里找回
 _SOL_PREFIX_NUM_RE = re.compile(r"^[ \t>*•·\-#]*(\d+(?:\.\d+)*(?:\([A-Za-z]\))?)\s*[.)）、]")
 # 「1a. Answer:」「1(a). Answer:」——字母/括号不在 _HEAD 字符类里，_HW_SOL_RE 根本到不了 Answer；
@@ -377,15 +384,16 @@ def classify_homework_files(files):
     for f in files:
         rel = f.replace("\\", "/")
         stem = os.path.splitext(os.path.basename(f))[0]
-        sol_m = _SOL_TOKEN_RE.search(stem)
-        hw_m = _HW_FILE_RE.search(stem)
+        stem_nokey = _KEY_TOKEN_RE.sub("", stem)       # answer_key/solution_key 的 key 属于解答后缀
+        sol_m = _SOL_TOKEN_RE.search(stem_nokey)
+        hw_m = _HW_FILE_RE.search(stem_nokey)
         # 「answer_questions_hw1」的 answer 是动词开头、不是解答记号——文件名里的 sol 记号须在
         # hw 记号【之后】（hw1_sol / homework2solutions），或在其前但两者【紧邻】（solutions_hw1 /
         # 答案_作业3：中间只有分隔符，没有别的词——动词短语 answer_questions_hw1 因此仍归作业），
         # 或由目录名（solutions/）标记
         sol_before_adjacent = bool(sol_m and hw_m and sol_m.start() < hw_m.start()
                                    and not re.search(r"[0-9A-Za-z一-鿿]",
-                                                     stem[sol_m.end():hw_m.start()]))
+                                                     stem_nokey[sol_m.end():hw_m.start()]))
         is_sol = bool(_SOL_TOKEN_RE.search(os.path.dirname(rel))
                       or (sol_m and (not hw_m or sol_m.start() > hw_m.start()))
                       or sol_before_adjacent)
@@ -403,9 +411,11 @@ def classify_homework_files(files):
         rel = sf.replace("\\", "/")
         sdir = os.path.dirname(rel)
         stem = os.path.splitext(os.path.basename(sf))[0]
-        stripped = _hw_norm(_SOL_TOKEN_RE.sub("", stem))
+        # 配对键要把 解答记号 和 key 后缀（answer_key/solution_key）一并剥掉——hw1_answer_key ↔ hw1
+        stem_pair = _SOL_TOKEN_RE.sub("", _KEY_TOKEN_RE.sub("", stem))
+        stripped = _hw_norm(stem_pair)
 
-        sol_sep = _hw_sepform(_SOL_TOKEN_RE.sub("", stem))
+        sol_sep = _hw_sepform(stem_pair)
 
         _AMBIG = object()   # 本层有多个候选——必须终止，放宽范围只会配到别人的作业
 
@@ -440,10 +450,13 @@ def classify_homework_files(files):
         parent = os.path.dirname(sdir)
         family = {d for (d, _n) in hw_by_key if d == parent or os.path.dirname(d) == parent}
 
-        def _tail_path(d):
-            return d.split("/", 1)[1] if "/" in d else None
+        def _mirror_key(d):
+            # 去掉路径里【本身就是 hw/sol 记号】的段（homework/solutions/…），其余段拼回——
+            # course/homework/week1 与 course/solutions/week1 同键（公共前缀不再挡镜像层）
+            return "/".join(seg for seg in d.split("/")
+                            if seg and not (_SOL_TOKEN_RE.search(seg) or _HW_FILE_RE.search(seg)))
         mirror = {d for (d, _n) in hw_by_key
-                  if d != sdir and _tail_path(d) is not None and _tail_path(d) == _tail_path(sdir)}
+                  if d != sdir and _mirror_key(d) == _mirror_key(sdir)}
         match = None
         for tier in ({sdir}, family, mirror, {d for (d, _n) in hw_by_key}):
             got = _lookup(tier)
@@ -510,8 +523,9 @@ def _hw_markers(stream):
             # 「Problem 1 Solution」是解答段标题不是新题——要求号后剩余整行就是 解答/答案 标记
             #（先剥掉 continued 记号；行尾锚定，「: Answer the following…」这类题面动词不受影响）
             tail_role = re.sub(r"^\s*\(?\s*continued\b\s*\d*\s*\)?[\s:.\-]*", "", tail, flags=re.I)
-            role = "solution" if (_HW_SOL_HEAD_RE.match(tail) or _HW_SOL_HEAD_RE.match(tail_role)) \
-                else "problem"
+            role = "solution" if (_HW_SOL_HEAD_RE.match(tail) or _HW_SOL_HEAD_RE.match(tail_role)
+                                  or _HW_SOL_HEAD_CONTENT_RE.match(tail)
+                                  or _HW_SOL_HEAD_CONTENT_RE.match(tail_role)) else "problem"
             marks.append({"start": m.start(), "num": _hw_num(num), "role": role, "continued": continued})
     for m in _HW_SOL_PRE_RE.finditer(stream):  # 「1a. Answer:」——先收带号前缀形式（同起点时它带号获胜）
         if _TOC_RE.search(_hw_line(stream, m)[:300]):
@@ -555,7 +569,21 @@ def extract_homework_items(pages):
         # 只有题面标记的孤儿答案册仍拒导入（把答案文本当题目会污染题库）
         _st, _b = _file_stream(pages, sf)
         _mks = _hw_markers(_st)
-        if any(m["role"] == "problem" for m in _mks) and any(m["role"] == "solution" for m in _mks):
+
+        def _has_prompt_text():
+            # 至少一道题在【解答标记之前】有真实题面文字——否则这是纯答案册
+            #（marker-only 题会把解答页渲染成 question_context，等于提问前泄答案）
+            for _j, _m in enumerate(_mks):
+                if _m["role"] != "problem":
+                    continue
+                _end = _mks[_j + 1]["start"] if _j + 1 < len(_mks) else len(_st)
+                _body = _st[_m["start"]:_end]
+                _body = _body.split("\n", 1)[1] if "\n" in _body else ""
+                if re.search(r"[A-Za-z一-鿿]", _body):
+                    return True
+            return False
+        if any(m["role"] == "problem" for m in _mks) and any(m["role"] == "solution" for m in _mks) \
+                and _has_prompt_text():
             hw_files.append(sf)
             report["homework_files"] = sorted(set(report["homework_files"]) | {sf})
             report["warnings"].append("hw_selfcontained_solutions: %s（未配对但自含题面+解答，按作业解析）" % sf)
@@ -632,6 +660,11 @@ def extract_homework_items(pages):
             if line_rest.strip() and not re.sub(r"[_\s.．。:：…\-—＿]+", "", line_rest):
                 return None                        # 同行是填空线——worksheet 空栏，不是答案
             a_tail = rest if rest else line_rest
+            # 多行空栏（Answer:\n________\nShow your work）同理：标记后第一条非空行是填空线
+            # → 整段拒绝，后随指示语不是答案
+            first_content = next((ln for ln in a_tail.splitlines() if ln.strip()), "")
+            if first_content and not re.sub(r"[_\s.．。:：…\-—＿]+", "", first_content):
+                return None
             if re.sub(r"[_\s.．。:：…\-—＿]+", "", a_tail):
                 return (hf, a_body, _pages_for_span(bounds, s_start, s_end))
             return None
@@ -707,8 +740,10 @@ def extract_homework_items(pages):
                 same_line = first_line[m0.end():].lstrip(" \t.:：、,，)）-—").strip()
                 if same_line:
                     body_txt = (same_line + "\n" + body_txt).strip()
-            # 只有正文【完全没有】内容字符才算 marker-only——"2+2=?"/"求导" 这类短而完整的题面仍是 full
-            marker_only = len(re.findall(r"[0-9A-Za-z一-鿿]", body_txt)) == 0
+            # 只有正文【没有实质内容】才算 marker-only——"2+2=?"/"求导" 这类短而完整的题面仍是 full；
+            # 纯数字正文（如 "Problem 1\n12" 的页脚页码）没有字母/CJK/运算符，是抽取残渣 → 按图片题处理
+            marker_only = (len(re.findall(r"[0-9A-Za-z一-鿿]", body_txt)) == 0
+                           or not re.search(r"[A-Za-z一-鿿+\-*/=^%<>?？()（）]", body_txt))
             # chapter：只在题文/文件名明说时才标（第N章 / Chapter N / chNN）——作业号 ≠ 章节号，不硬编
             chm = (re.search(r"(?:第\s*(\d+)\s*章|Chapter\s+(\d+))", q_text, re.I)
                    or re.search(r"(?:^|[\/_\-. ])ch\s*0*(\d+)", hf, re.I))
@@ -1162,7 +1197,11 @@ def run(args, backend=None):
                             % (len(missing_required), "；".join(missing_required[:6]))}, report
 
     course = args.course_name or os.path.basename(os.path.abspath(materials)) or "未命名科目"
-    raw_input = build_raw_input(course, group_sections(pages), lecture_items, homework_items)
+    # 解答文件（配对的和未配对的答案册）绝不进章节 wiki——官方答案页混进 wiki 等于开卷前泄题；
+    # 它们只作为答案出处（answer_source_file）存在
+    sol_files = set(report.get("homework_solution_files") or [])
+    wiki_pages = [pg for pg in pages if pg["file"] not in sol_files]
+    raw_input = build_raw_input(course, group_sections(wiki_pages), lecture_items, homework_items)
     return 0, raw_input, report
 
 
