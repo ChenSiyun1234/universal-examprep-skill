@@ -117,6 +117,40 @@ class Mutations(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
 
 
+    # ---- regression guards for Codex round-1 (P1 + 3 P2) ----
+
+    def test_set_status_by_id_and_index(self):
+        ws = self._ready()
+        _up(ws, ["add-mistake", "--id", "q9", "--note", "第一条"])
+        r = _up(ws, ["set-mistake-status", "--id", "q9", "--status", "已复盘"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        st = _state(ws)
+        row = next(x for x in st["mistake_archive"] if x.get("id") == "q9")
+        self.assertEqual(row["status"], "已复盘")                  # P1：官方状态更新路径
+        md = open(os.path.join(ws, "study_progress.md"), encoding="utf-8").read()
+        self.assertIn("已复盘", md)
+        r2 = _up(ws, ["set-confusion-status", "--index", "1", "--status", "已解决"])
+        self.assertEqual(r2.returncode, 0, r2.stderr)
+        self.assertEqual(_state(ws)["confusion_log"][0]["status"], "已解决")
+
+    def test_set_status_missing_target_fails(self):
+        ws = self._ready()
+        self.assertEqual(_up(ws, ["set-mistake-status", "--id", "nope", "--status", "x"]).returncode, 2)
+        self.assertEqual(_up(ws, ["set-mistake-status", "--status", "x"]).returncode, 2)
+        self.assertEqual(_up(ws, ["set-mistake-status", "--index", "99", "--status", "x"]).returncode, 2)
+
+    def test_failed_write_leaves_no_tmp_and_truth_intact(self):
+        ws = self._ready()
+        before = _state(ws)
+        md_dir = os.path.join(ws, "study_progress.md")
+        os.remove(md_dir)
+        os.makedirs(md_dir)                                       # md 路径变目录 → 写入必失败
+        r = _up(ws, ["set", "--phase", "9"])
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("告知用户", r.stderr)
+        self.assertEqual(_state(ws)["current_phase"], before["current_phase"])   # 事实源未超前
+        self.assertFalse([f for f in os.listdir(ws) if f.endswith(".tmp")])      # 无 tmp 残留
+
 class ValidatorSchema(unittest.TestCase):
     def _full_ws(self, state_patch=None):
         tmp = tempfile.mkdtemp()
@@ -159,6 +193,25 @@ class ValidatorSchema(unittest.TestCase):
             ws = self._full_ws(patch)
             r = self._validate(ws)
             self.assertEqual(r.returncode, 1, "patch=%r 应报错\n%s" % (patch, r.stdout))
+
+    def test_scalar_array_reports_without_crash(self):
+        ws = self._full_ws({"mistake_archive": 1})
+        r = self._validate(ws)
+        self.assertEqual(r.returncode, 1)                         # 结构化报错，不是 TypeError 崩栈
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_symlinked_state_rejected(self):
+        ws = self._full_ws(None)
+        outside = os.path.join(tempfile.mkdtemp(), "evil.json")
+        json.dump({"version": 1, "current_phase": 1}, open(outside, "w", encoding="utf-8"))
+        link = os.path.join(ws, "study_state.json")
+        try:
+            os.symlink(outside, link)
+        except (OSError, NotImplementedError):
+            self.skipTest("no symlink privilege")
+        r = self._validate(ws)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("符号链接", r.stdout)
 
     def test_md_phase_mismatch_warns(self):
         ws = self._full_ws({"current_phase": 2})                  # md 说 1，state 说 2

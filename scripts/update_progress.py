@@ -155,16 +155,27 @@ def load_state(ws):
 def save(ws, state, note):
     """Atomic UTF-8 write of BOTH the state json and the rendered md. Any failure is fail-loud."""
     state["last_updated"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    for name, content in ((STATE_NAME, json.dumps(state, ensure_ascii=False, indent=2)),
-                          (MD_NAME, render_md(state))):
-        path = os.path.join(ws, name)
-        tmp = path + ".tmp"
-        try:
+    # two-phase: stage BOTH tmp files first, then replace md, then state (the source of truth) LAST —
+    # a failure at any step leaves the truth un-advanced (worst case md is ahead; `render` repairs it)
+    plan = ((MD_NAME, render_md(state)),
+            (STATE_NAME, json.dumps(state, ensure_ascii=False, indent=2)))
+    tmps = []
+    try:
+        for name, content in plan:
+            tmp = os.path.join(ws, name) + ".tmp"
             with open(tmp, "w", encoding="utf-8", newline="\n") as f:
                 f.write(content)
+            tmps.append((tmp, os.path.join(ws, name)))
+        for tmp, path in tmps:
             os.replace(tmp, path)
-        except OSError as e:
-            _die("写入 %s 失败：%s——进度未更新，请告知用户（绝不静默继续）" % (name, e), 1)
+    except OSError as e:
+        for tmp, _ in tmps:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        _die("写入进度失败：%s——事实源 study_state.json 未被超前破坏；若 md 已先行更新，跑 render 即可"
+             "恢复一致。请告知用户（绝不静默继续）" % e, 1)
     print("[+] %s（state + md 已同步更新）" % note)
 
 
@@ -233,6 +244,27 @@ def cmd_add(ws, args, field, label):
     return 0
 
 
+def cmd_set_status(ws, args, field, label):
+    """P1: the contract forbids hand-editing md, so status transitions (待复盘→已复盘/已解决) MUST have
+    an official path too — locate by [#id] (all matching rows) or 1-based --index."""
+    st = _require_state(ws)
+    rows = st.get(field) or []
+    if args.id is not None:
+        hits = [r for r in rows if r.get("id") == args.id]
+    elif args.index is not None:
+        if not 1 <= args.index <= len(rows):
+            _die("--index 超界（1..%d）" % len(rows))
+        hits = [rows[args.index - 1]]
+    else:
+        _die("set-status 需要 --id 或 --index 定位行")
+    if not hits:
+        _die("没找到匹配行（%s id=%r）" % (label, args.id))
+    for r in hits:
+        r["status"] = args.status
+    save(ws, st, "%s 状态更新 ×%d → %s" % (label, len(hits), args.status))
+    return 0
+
+
 def cmd_render(ws, _args):
     st = _require_state(ws)
     save(ws, st, "render：md 已从 state 重建")
@@ -263,6 +295,11 @@ def run(argv=None):
         p.add_argument("--id", default=None)
         p.add_argument("--chapter", default=None)
         p.add_argument("--note", required=True)
+    for name in ("set-mistake-status", "set-confusion-status"):
+        p = sub.add_parser(name)
+        p.add_argument("--id", default=None, help="按 [#id] 定位（命中全部同 id 行）")
+        p.add_argument("--index", type=int, default=None, help="按 1 起序号定位")
+        p.add_argument("--status", required=True, help="如 已复盘/已解决/待复盘")
     sub.add_parser("render")
     sub.add_parser("show")
     args = ap.parse_args(argv)
@@ -277,6 +314,10 @@ def run(argv=None):
         return cmd_add(ws, args, "mistake_archive", "错题")
     if args.cmd == "add-confusion":
         return cmd_add(ws, args, "confusion_log", "疑难")
+    if args.cmd == "set-mistake-status":
+        return cmd_set_status(ws, args, "mistake_archive", "错题")
+    if args.cmd == "set-confusion-status":
+        return cmd_set_status(ws, args, "confusion_log", "疑难")
     if args.cmd == "render":
         return cmd_render(ws, args)
     return cmd_show(ws, args)

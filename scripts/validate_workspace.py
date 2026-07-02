@@ -407,7 +407,11 @@ def validate(ws):
 
     # ---- A4: structured state (study_state.json = source of truth when present) ----
     state_path = os.path.join(ws, "study_state.json")
-    if os.path.isfile(state_path):
+    if os.path.isfile(state_path) and (_is_symlink(state_path)
+                                       or not os.path.realpath(state_path).startswith(
+                                           os.path.realpath(ws) + os.sep)):
+        err("study_state.json 经符号链接逃出工作区（技能会读/写这个事实源）")
+    elif os.path.isfile(state_path):
         try:
             st = json.loads(_read(state_path))
         except UnicodeDecodeError:
@@ -425,6 +429,7 @@ def validate(ws):
                 if v is not None and not (isinstance(v, list)
                                           and all(isinstance(x, dict) for x in v)):
                     err(f"study_state.json 的 {field} 必须是对象数组，当前 {type(v).__name__}")
+                    continue                          # 标量/坏形态不再往下迭代（1 会 TypeError 崩栈）
                 for x in (v or []):
                     if isinstance(x, dict) and not (isinstance(x.get("note"), str) and x["note"].strip()):
                         err(f"study_state.json 的 {field} 行缺非空 note 字段: {x!r}")
