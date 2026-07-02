@@ -186,7 +186,7 @@ class DriftHarness(unittest.TestCase):
             data = json.load(f)
         self.assertTrue(data["all_passed"])
         names = sorted(r["scenario"] for r in data["results"])
-        self.assertEqual(names, ["live_smoke_basic", "long_session_basic"])   # every committed scenario ran
+        self.assertEqual(names, ["live_smoke_basic", "long_session_basic", "long_session_state"])   # every committed scenario ran
 
     # extra coverage: wrong-phase and untagged detection via small synthetic transcripts
     def test_wrong_phase_quiz_detected(self):

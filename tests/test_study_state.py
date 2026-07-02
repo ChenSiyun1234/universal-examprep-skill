@@ -887,6 +887,35 @@ class Contract(unittest.TestCase):
         txt = open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8").read()
         self.assertIn("从其 `mistake_archive`", txt)              # 根入口错题重温读事实源
 
+    def test_state_scenario_exercises_md_gate(self):
+        # 新 state-backed 场景真正武装 md_write_after_state 阈值（basic 场景对该阈值先天空转）
+        sc = json.load(open(os.path.join(ROOT, "benchmark", "drift", "scenarios",
+                                         "long_session_state.json"), encoding="utf-8"))
+        self.assertEqual(sc["thresholds"].get("md_write_after_state_max"), 0)
+        sys.path.insert(0, os.path.join(ROOT, "benchmark", "drift"))
+        import run_drift as D
+        r = D.evaluate(sc, os.path.join(ROOT, sc["transcript"]))
+        self.assertEqual(r["metrics"]["md_write_after_state"], 0)   # 官方双写不违规
+        self.assertGreaterEqual(r["metrics"]["mistake_rows_added"], 2)   # state 快照驱动行指标
+        import json as _j, tempfile as _t
+        rows = [_j.loads(x) for x in open(os.path.join(ROOT, sc["transcript"]), encoding="utf-8")
+                if x.strip()]
+        rows.append({"turn": 99, "assistant": "手改 md。",
+                     "events": [{"type": "write_file", "path": "study_progress.md"}]})
+        bad = os.path.join(_t.mkdtemp(), "bad.jsonl")
+        with open(bad, "w", encoding="utf-8") as f:
+            f.write(chr(10).join(_j.dumps(x, ensure_ascii=False) for x in rows))
+        r2 = D.evaluate(sc, bad)
+        self.assertEqual(r2["metrics"]["md_write_after_state"], 1)   # 违规会被该场景真实拦截
+
+    def test_updater_paths_resolve_from_package(self):
+        cram = open(os.path.join(ROOT, "skills", "exam-cram", "SKILL.md"), encoding="utf-8").read()
+        self.assertIn('CLAUDE_SKILL_DIR' + chr(125) + '/scripts/update_progress.py', cram)
+
+    def test_root_skill_bootstraps_state_when_python_available(self):
+        txt = open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8").read()
+        self.assertIn("先跑 `python scripts/update_progress.py --workspace <ws> init`", txt)
+
     def test_agents_md_prefers_state(self):
         txt = open(os.path.join(ROOT, "AGENTS.md"), encoding="utf-8").read()
         self.assertIn("存在 `study_state.json` 时从它恢复", txt)   # 先读进度条目对齐事实源

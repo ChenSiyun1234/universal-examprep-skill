@@ -207,6 +207,8 @@ def load_state(ws):
     try:
         with open(path, "r", encoding="utf-8") as f:
             st = json.load(f)
+    except OSError as e:
+        _die("study_state.json 无法读取（%s）——本次读取/保存未成功，请告知用户并检查文件权限" % e, 1)
     except UnicodeDecodeError as e:
         _die("study_state.json 不是 UTF-8（%s）——状态文件已损坏，请从 study_progress.md 重新 init" % e, 1)
     except ValueError as e:
