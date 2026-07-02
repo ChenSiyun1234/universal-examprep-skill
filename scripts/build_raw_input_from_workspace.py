@@ -57,8 +57,9 @@ _HW_NUM_PAT = r"(\d+(?:\.\d+)*(?:\s*\([A-Za-z]\)|[A-Za-z])?)"
 # problem headings inside homework/solution files（行首锚定，与 lecture 标记同族）
 _HW_PROB_RES = (re.compile(_HEAD + r"(?:Problem|Exercise|Question)\s*#?\s*" + _HW_NUM_PAT, re.I | re.M),
                 re.compile(_HEAD + r"(?:第\s*(\d+)\s*题|习题\s*(\d+)[.:：]?|题目\s*(\d+)[.:：]?)", re.M))
-# inline solution heading (same file, follows its problem)
-_HW_SOL_RE = re.compile(_HEAD + r"(?:Solutions?|Answers?|解答|答案)\s*(?:(?:to|for|of)\s+(?:Problem|Exercise|Question)\s*)?(?:#?\s*" + _HW_NUM_PAT + r")?\s*(?:[.:：]|$)",
+# inline solution heading (same file, follows its problem)。解答词与编号之间只许同行空白——
+# \s* 会跨换行把「Answers」节标题和下一行的「1.」吞成一个 num=1 标记，让整块答案区错归第一题
+_HW_SOL_RE = re.compile(_HEAD + r"(?:Solutions?|Answers?|解答|答案)[ \t]*(?:(?:to|for|of)[ \t]+(?:Problem|Exercise|Question)[ \t]*)?(?:#?[ \t]*" + _HW_NUM_PAT + r")?[ \t]*(?:[.:：]|$)",
                         re.I | re.M)
 # 「Problem 1 Solution」这类解答段标题：号后【同一行】剩余部分必须整体就是 解答/答案 标记
 #（可带编号/收尾标点）——「Problem 1: Answer the following…」是题面动词，绝不能翻成解答段
@@ -422,7 +423,13 @@ def classify_homework_files(files):
         sol_before_adjacent = bool(sol_m and hw_m and sol_m.start() < hw_m.start()
                                    and not re.search(r"[0-9]", _between)
                                    and all(t.lower() in ("for", "to", "of", "the") for t in _btokens))
-        sol_after_hw = bool(hw_m and any(m.start() > hw_m.start()
+        def _terminal_solish(m):
+            # 后置解答记号必须是「终端形」：其后只剩分隔符/连接词/hw 记号——
+            # hw1_answer_questions 的 answer 是动词（后跟宾语 questions），不是解答后缀
+            rest_toks = re.findall(r"[A-Za-z一-鿿]+", stem_nokey[m.end():])
+            return all(t.lower() in ("for", "to", "of", "the") or _HW_FILE_RE.search(t)
+                       for t in rest_toks)
+        sol_after_hw = bool(hw_m and any(m.start() > hw_m.start() and _terminal_solish(m)
                                          for m in _SOL_TOKEN_RE.finditer(stem_nokey)))
         is_sol = bool(any(_sol_dir_segment(seg) for seg in os.path.dirname(rel).split("/"))
                       or (sol_m and not hw_m) or sol_after_hw
@@ -482,14 +489,20 @@ def classify_homework_files(files):
         family = {d for (d, _n) in hw_by_key if d == parent or os.path.dirname(d) == parent}
 
         def _mirror_key(d):
-            # 去掉路径里【本身就是 hw/sol 记号】的段（homework/solutions/…），其余段拼回——
-            # course/homework/week1 与 course/solutions/week1 同键（公共前缀不再挡镜像层）
-            return "/".join(seg for seg in d.split("/")
-                            if seg and not (_SOL_TOKEN_RE.search(seg) or _HW_FILE_RE.search(seg)))
+            # 段内剥掉 hw/sol 记号与描述词后拼回（不是整段丢弃）——week1_solutions 与
+            # week1_homework 同键 week1，course/homework/week1 与 course/solutions/week1
+            # 同键 course/week1；纯记号段（solutions/）归空
+            segs = []
+            for seg in d.split("/"):
+                seg2 = _SOL_TOKEN_RE.sub("", _strip_sol_desc(seg))
+                seg2 = _HW_FILE_RE.sub("", seg2)
+                seg2 = re.sub(r"[^0-9A-Za-z一-鿿]+", "", seg2)
+                segs.append(seg2)
+            return "/".join(sg for sg in segs if sg)
         mirror = {d for (d, _n) in hw_by_key
                   if d != sdir and _mirror_key(d) == _mirror_key(sdir)}
         match = None
-        for tier in ({sdir}, family, mirror, {d for (d, _n) in hw_by_key}):
+        for tier in ({sdir}, mirror, family, {d for (d, _n) in hw_by_key}):
             got = _lookup(tier)
             if got is _AMBIG:
                 break
@@ -497,6 +510,11 @@ def classify_homework_files(files):
                 match = got
                 break
         pairing[sf] = match
+    for sf in [k for k, v in pairing.items() if v is None]:
+        # 配不上且路径/文件名没有任何作业线索（solutions/ch01.pdf 这类通用解答目录装的
+        # 是讲义解答）——从作业管线除名，交还讲义配对，不再据为己有
+        if not _HW_FILE_RE.search(sf.replace(chr(92), "/")):
+            del pairing[sf]
     return hw, pairing
 
 
@@ -862,15 +880,28 @@ def extract_homework_items(pages):
                 item["answer_status"] = "unknown"
                 report["warnings"].append("hw_unanswered: %s（没找到配对答案，考前需人工核对）" % item["id"])
             # visual dependence — same heuristic family as lecture items; renderable only for PDF sources
+            # 题面图渲染整页：若该页同时含本题的 inline 答案文本，整页作 question_context 会在
+            # 提问前泄答案（visual-first 契约）——这些页从题面图剔除；剔完没剩就 fail-loud 降级
+            ans_same_file_pages = set(ans[2] or []) if (ans and ans[0] == hf) else set()
+            safe_q_pages = [p for p in (q_pages or []) if p not in ans_same_file_pages]
+            if ans_same_file_pages and len(safe_q_pages) < len(q_pages or []):
+                report["warnings"].append("hw_prompt_page_contains_answer: %s（题面页与 inline 答案同页，"
+                                          "该页不作题面图；无独立题面页时按 page_reference 留待人工处理）"
+                                          % item["id"])
             if marker_only and is_pdf.get(hf, False):
-                item["requires_assets"] = True
-                item["_render"] = True
-                item["_question_pages"] = [(hf, p) for p in (q_pages or [])]
+                if safe_q_pages:
+                    item["requires_assets"] = True
+                    item["_render"] = True
+                    item["_question_pages"] = [(hf, p) for p in safe_q_pages]
+                # 没有干净题面页：保持 page_reference 且不设 requires_assets——quiz 流对无资产的
+                # page_reference 会 fail-closed 跳过，绝不整页泄答案
             elif requires_assets_heuristic(q_text, renderable=is_pdf.get(hf, False)):
-                item["requires_assets"] = True
-                item["_render"] = True
-                item["_question_pages"] = [(hf, p) for p in (q_pages or [])]
+                if safe_q_pages or not is_pdf.get(hf, False):
+                    item["requires_assets"] = True
+                    item["_render"] = True
+                    item["_question_pages"] = [(hf, p) for p in safe_q_pages]
                 if ans and requires_assets_heuristic(ans[1], renderable=is_pdf.get(ans[0], False)):
+                    item["_render"] = True
                     item["_answer_pages"] = [(ans[0], p) for p in (ans[2] or [])]
             elif ans and requires_assets_heuristic(ans[1], renderable=is_pdf.get(ans[0], False)):
                 # 题面纯文本、官方解答依赖图（see the graph below）——渲染答案侧原页作 answer_context，
