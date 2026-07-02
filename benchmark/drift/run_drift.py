@@ -354,6 +354,40 @@ def looks_like_question(line):
 
 # ---------------- metrics ----------------
 
+def parse_state_json(text):
+    """A4: parse a study_state.json snapshot into the same shape parse_progress returns. Rows are
+    rendered to "[#id] note" strings so persistence tracking (_row_key) works identically."""
+    try:
+        st = json.loads(text or "")
+    except ValueError as e:
+        raise DriftError("files_after 里的 study_state.json 不是合法 JSON: %s" % e)
+    if not isinstance(st, dict):
+        raise DriftError("files_after 里的 study_state.json 顶层必须是对象")
+    cp = st.get("current_phase")
+    phase = cp if isinstance(cp, int) and not isinstance(cp, bool) else None
+
+    def _rows(field):
+        out = []
+        for r in (st.get(field) or []):
+            if isinstance(r, dict):
+                rid = ("[#%s] " % r["id"]) if r.get("id") else ""
+                out.append((rid + str(r.get("note") or "")).strip())
+        return out
+    return {"phase": phase, "mistake_rows": _rows("mistake_archive"),
+            "confusion_rows": _rows("confusion_log")}
+
+
+def _snapshot_of(fa):
+    """Parsed progress snapshot from a turn's files_after — study_state.json (source of truth) wins,
+    study_progress.md (generated view / legacy) is the fallback."""
+    fa = fa or {}
+    if "study_state.json" in fa:
+        return parse_state_json(fa["study_state.json"])
+    if "study_progress.md" in fa:
+        return parse_progress(fa["study_progress.md"])
+    return None
+
+
 def _phase_of_turn(turn):
     pc = _as_phase(turn.get("phase_context"))                     # accept int OR numeric string "2"
     if pc is not None:
@@ -433,9 +467,9 @@ def compute_metrics(scenario, fixture_dir, turns):
         turn_phase.append(eff)
         if eff is not None:
             running = eff
-        pr = (t.get("files_after") or {}).get("study_progress.md")
-        if pr is not None and parse_progress(pr)["phase"] is not None:
-            running = parse_progress(pr)["phase"]
+        snap = _snapshot_of(t.get("files_after"))
+        if snap is not None and snap["phase"] is not None:
+            running = snap["phase"]
 
     # 1) goal retention — an assistant turn is off-goal if it wanders off / refuses to continue. This is a
     #    COARSE KEYWORD heuristic (blocklist) — it can't catch every paraphrase; full semantic goal-drift
@@ -561,9 +595,9 @@ def compute_metrics(scenario, fixture_dir, turns):
             if expected_phase is None:                            # report the FIRST resume's phases
                 expected_phase = exp
                 resumed_phase = min(targets) if targets else (1 if generic_restart else None)
-        pr = (t.get("files_after") or {}).get("study_progress.md")
-        if pr is not None and parse_progress(pr)["phase"] is not None:
-            run_ck = parse_progress(pr)["phase"]
+        snap = _snapshot_of(t.get("files_after"))
+        if snap is not None and snap["phase"] is not None:
+            run_ck = snap["phase"]
     reset_detected = reset_count
 
     # 5) provenance fidelity — a turn is an EXPLANATION turn whenever the USER asked to explain (or it is
@@ -575,9 +609,12 @@ def compute_metrics(scenario, fixture_dir, turns):
 
     # 6) mistake / confusion persistence — track rows by their [#id] when present (so rewording an existing
     #    row isn't a false 'loss'); rows without an id fall back to normalized text.
-    prog_snaps = _snapshots(turns, "study_progress.md", init_progress)
+    parsed = [parse_progress(init_progress)]
+    for t in turns:
+        snap = _snapshot_of(t.get("files_after"))
+        if snap is not None:
+            parsed.append(snap)
     mistake_added = confusion_added = rows_lost = 0
-    parsed = [parse_progress(s) for s in prog_snaps]
     for prev, cur in zip(parsed, parsed[1:]):
         for field, is_m in (("mistake_rows", True), ("confusion_rows", False)):
             pset = {_row_key(r) for r in prev[field]}

@@ -60,6 +60,8 @@ Pull chapter/phase-scoped items from `references/quiz_bank.json`, present one it
 - **题/答为 AI 生成**：⚠️ AI生成答案，非老师/教材提供，仅供参考，请和老师/教材核对。
 
 ## Boundaries
+- **Structured progress state (A4)**: when `study_state.json` exists it is the SINGLE SOURCE OF TRUTH — update it via `python scripts/update_progress.py --workspace <ws> set/add-mistake/add-confusion/render`; `study_progress.md` is a GENERATED view (hand edits are lost on the next render — never hand-patch it). If a state write fails, TELL the user; never continue as if it saved. Without `study_state.json` (no-Python fallback), a hand-maintained md stays valid.
+
 - When the bank holds relevant items, do not write your own. With no stored answer, do not force a verdict — mark ⚠️ or state the limitation plainly.
 - Do not judge diagram items from memory — the algorithm-derived standard structure is the reference.
 - **Fail-closed on assets**: never ask an item whose `requires_assets=true` or `maybe_requires_assets=true` when a required question-side asset is missing, unreadable, or cannot be displayed (e.g. web-only). A blocked item is skipped, not improvised — choose a full-text item instead. The validator (`scripts/validate_workspace.py`) rejects a workspace whose visual-required item lacks valid question-side asset files, so a clean workspace won't reach you in that state.

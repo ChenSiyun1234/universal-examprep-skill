@@ -533,7 +533,11 @@ def check_scenario_mock(name, sc, fixture_path=FIXTURE):
         ok = progress_has_confusion_row(_read(_p(sc["mock_output"])), sc.get("expect_confusion"))
         return ok, f"confusion_row_written={ok}"
     if name == "checkpoint_recovery":
-        ph = progress_current_phase(_read(os.path.join(fixture_path, "study_progress.md")))
+        state_p = os.path.join(fixture_path, "study_state.json")
+        if os.path.isfile(state_p):                    # A4: 结构化状态是唯一事实源，断点从 JSON 读
+            ph = json.loads(_read(state_p)).get("current_phase")
+        else:
+            ph = progress_current_phase(_read(os.path.join(fixture_path, "study_progress.md")))
         resume = _read(_p(sc["mock_output"]))
         refers = resume_refers_to_phase(resume, sc["expected_phase"])
         return (ph == sc["expected_phase"] and refers), f"current_phase={ph} resume_refers_current={refers}"

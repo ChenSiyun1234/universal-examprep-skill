@@ -84,6 +84,8 @@ Use the canonical Chinese vocabulary on the student side (当前阶段 / 这题�
 Student-facing output defaults to Simplified Chinese unless the user asks otherwise.
 
 ## Boundaries
+- **Structured progress state (A4)**: when `study_state.json` exists it is the SINGLE SOURCE OF TRUTH — update it via `python scripts/update_progress.py --workspace <ws> set/add-mistake/add-confusion/render`; `study_progress.md` is a GENERATED view (hand edits are lost on the next render — never hand-patch it). If a state write fails, TELL the user; never continue as if it saved. Without `study_state.json` (no-Python fallback), a hand-maintained md stays valid.
+
 - **Scope filter & override (A2)**: default question pool is mixed; a student-restricted range (e.g. homework-only) is a recorded scope filter routed to sub-skills — any serving outside it requires the verbatim announcement 「⚠️ 临时覆盖你的 <scope> 范围偏好」 first; untagged (`source_type` missing) items are excluded from restricted scopes with their count reported (official selector: `scripts/select_questions.py`).
 
 

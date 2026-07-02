@@ -405,6 +405,45 @@ def validate(ws):
         except OSError:
             pass
 
+    # ---- A4: structured state (study_state.json = source of truth when present) ----
+    state_path = os.path.join(ws, "study_state.json")
+    if os.path.isfile(state_path):
+        try:
+            st = json.loads(_read(state_path))
+        except UnicodeDecodeError:
+            err("study_state.json 不是 UTF-8——状态文件损坏（应由 update_progress.py 以 UTF-8 原子写入）")
+            st = None
+        except ValueError as e:
+            err(f"study_state.json 不是合法 JSON: {e}")
+            st = None
+        if isinstance(st, dict):
+            cp = st.get("current_phase")
+            if not (isinstance(cp, int) and not isinstance(cp, bool) and cp >= 1):
+                err(f"study_state.json 的 current_phase 必须是 ≥1 的整数，当前 {cp!r}")
+            for field in ("mistake_archive", "confusion_log", "knowledge_window"):
+                v = st.get(field)
+                if v is not None and not (isinstance(v, list)
+                                          and all(isinstance(x, dict) for x in v)):
+                    err(f"study_state.json 的 {field} 必须是对象数组，当前 {type(v).__name__}")
+                for x in (v or []):
+                    if isinstance(x, dict) and not (isinstance(x.get("note"), str) and x["note"].strip()):
+                        err(f"study_state.json 的 {field} 行缺非空 note 字段: {x!r}")
+            prefs = st.get("preferences")
+            if prefs is not None and not isinstance(prefs, dict):
+                err(f"study_state.json 的 preferences 必须是对象，当前 {type(prefs).__name__}")
+            # md is a GENERATED view — a phase mismatch means someone hand-patched it（下次渲染会丢）
+            prog_path2 = os.path.join(ws, "study_progress.md")
+            if isinstance(cp, int) and os.path.isfile(prog_path2):
+                try:
+                    m2 = re.search(r"(?:当前进行阶段|当前阶段)\D*?(\d+)", _read(prog_path2))
+                    if m2 and int(m2.group(1)) != cp:
+                        warn(f"study_progress.md 的阶段（{m2.group(1)}）与 study_state.json（{cp}）不一致——"
+                             "md 是生成视图，请用 update_progress.py render 重建，不要手改 md")
+                except OSError:
+                    pass
+        elif st is not None:
+            err("study_state.json 顶层必须是 JSON 对象")
+
     return errors, warnings, stats
 
 

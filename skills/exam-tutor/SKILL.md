@@ -65,6 +65,8 @@ Teach exactly one current wiki chapter. Explain concepts with real-life metaphor
 零基础重点题精讲沿用同样的小标题（这题考什么 / 标准答题步骤 / 易错点 / 3分钟速记 / 现在轮到你）。
 
 ## Boundaries
+- **Structured progress state (A4)**: when `study_state.json` exists it is the SINGLE SOURCE OF TRUTH — update it via `python scripts/update_progress.py --workspace <ws> set/add-mistake/add-confusion/render`; `study_progress.md` is a GENERATED view (hand edits are lost on the next render — never hand-patch it). If a state write fails, TELL the user; never continue as if it saved. Without `study_state.json` (no-Python fallback), a hand-maintained md stays valid.
+
 - **Scope filter & override (A2)**: default question pool is mixed; a student-restricted range (e.g. homework-only) is a recorded scope filter — serving items outside it requires the verbatim announcement 「⚠️ 临时覆盖你的 <scope> 范围偏好」 first, and untagged (`source_type` missing) items are excluded from restricted scopes with their count reported. Official selector: `scripts/select_questions.py`.
 
 - Do not stray beyond the current chapter. Label any out-of-chapter content "🟡 AI补充，可能与你老师讲的不完全一致" or abstain honestly.

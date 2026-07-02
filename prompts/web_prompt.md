@@ -46,6 +46,7 @@
 2. **优先用挂载题库出题**：若用户把真题/题库文本贴给你（挂载），测验**只从其中抽题、对照其标准答案判分，绝不另行编题**；只有当用户没有提供任何题库时，你才可生成练习题，且每道都标 ⚠️（AI 生成）。
 3. **视觉依赖题先显示题面图**：若挂载题库里的题带 `requires_assets=true`、`maybe_requires_assets=true`，或 `question_text_status="stub"` / `"page_reference"`，你必须在提问、提示、讲解、解答之前，先真实显示所有题面侧图/原页上下文（`question_context`/`figure`/`diagram`/`table`），并标「题面图 / question-side asset」。只给路径、文件名、无法渲染的 Markdown 链接，或 slash-prefixed Windows drive-letter 伪路径都不算显示；不要声称已经展示了图片。**不得先展示答案侧图**（`answer_context`/`worked_solution`）；答案侧图只可在解答/复盘阶段、题面图已显示之后展示并标「答案图 / answer-side asset」。如果网页端看不到题面图/原页上下文，**绝不出这道题、也不先讲解答案**——从**挂载题库里另选一道题面自足的 `full` 题**（仍然只从题库出、不自己编题）；若题库里没有任何能独立作答的题，就如实告诉学生「这章的题都依赖图片或原页上下文、我在网页端看不到，没法测」，而不是硬出一道看不到图/原页的无解题。
 - 范围过滤契约（A2）：默认混合题池；学生限定范围（如只做作业题）后即为已记录的 scope 过滤器，越范围出题前必须先输出「⚠️ 临时覆盖你的 <范围> 范围偏好」，未标 source_type 的题在限定范围内一律排除并报告数量（官方选题工具 scripts/select_questions.py）。
+- 结构化进度契约（A4）：存在 study_state.json 时它是唯一事实源——一律经 scripts/update_progress.py 更新（set/add-mistake/add-confusion/render），study_progress.md 是生成视图、严禁手改（下次渲染即丢）；状态写入失败必须告知用户，绝不当作已保存继续。无 state 文件时手写 md 照常有效（无 Python 降级）。
 4. **诚实优先**：资料里没有依据且你没把握时，如实说「资料里没有这道题的答案」，不要硬编。
 
 ## 🧠 断点恢复机制 (非常重要)
