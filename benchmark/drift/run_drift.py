@@ -383,15 +383,22 @@ def parse_state_json(text):
             "confusion_rows": _rows("confusion_log")}
 
 
-def _snapshot_of(fa):
-    """Parsed progress snapshot from a turn's files_after — study_state.json (source of truth) wins,
-    study_progress.md (generated view / legacy) is the fallback."""
-    fa = fa or {}
-    if "study_state.json" in fa:
-        return parse_state_json(fa["study_state.json"])
-    if "study_progress.md" in fa:
-        return parse_progress(fa["study_progress.md"])
-    return None
+def _session_snapshots(turns, state_established=False):
+    """Per-turn parsed progress snapshot (None = no usable snapshot that turn), honoring the A4
+    source-of-truth contract: within a turn study_state.json wins; and once state has appeared
+    (fixture or any turn), a LATER md-only write is a hand-edit of the generated view — it must
+    NOT advance checkpoint/row metrics（那正是 A4 要抓的漂移）. md fallback is for legacy sessions."""
+    out = []
+    for t in turns:
+        fa = t.get("files_after") or {}
+        if "study_state.json" in fa:
+            state_established = True
+            out.append(parse_state_json(fa["study_state.json"]))
+        elif "study_progress.md" in fa and not state_established:
+            out.append(parse_progress(fa["study_progress.md"]))
+        else:
+            out.append(None)
+    return out
 
 
 def _phase_of_turn(turn):
@@ -462,18 +469,22 @@ def compute_metrics(scenario, fixture_dir, turns):
 
     assistant_turns = [t for t in turns if t.get("assistant")]
 
+    # A4 source-of-truth aware per-turn snapshots — computed ONCE and shared by the checkpoint /
+    # row-persistence sections so the md-only-after-state rejection can't diverge between them
+    snaps = _session_snapshots(turns, os.path.isfile(os.path.join(fixture_dir, "study_state.json")))
+
     # RUNNING PHASE CONTEXT — carried forward so the wrong-phase / over-read checks can't be silently
     # disabled by omitting `phase_context`: a turn without an explicit phase inherits the session's
     # current phase (initial checkpoint → prior explicit phases / progress snapshots).
     running = parse_progress(init_progress)["phase"] or (canon[0] if canon else None)
     turn_phase = []
-    for t in turns:
+    for i, t in enumerate(turns):
         explicit = _phase_of_turn(t)
         eff = explicit if explicit is not None else running
         turn_phase.append(eff)
         if eff is not None:
             running = eff
-        snap = _snapshot_of(t.get("files_after"))
+        snap = snaps[i]
         if snap is not None and snap["phase"] is not None:
             running = snap["phase"]
 
@@ -577,7 +588,7 @@ def compute_metrics(scenario, fixture_dir, turns):
     # 4) checkpoint recovery — EVERY resume turn must continue from the current phase, not restart earlier.
     reset_count, resumed_phase, expected_phase = 0, None, None
     run_ck = parse_progress(init_progress)["phase"] or (canon[0] if canon else None)
-    for t in turns:
+    for i, t in enumerate(turns):
         is_resume = t.get("kind") == "resume" or RESUME_TRIGGERS.search(t.get("user", ""))
         if is_resume:
             exp, a = run_ck, t.get("assistant", "")
@@ -601,7 +612,7 @@ def compute_metrics(scenario, fixture_dir, turns):
             if expected_phase is None:                            # report the FIRST resume's phases
                 expected_phase = exp
                 resumed_phase = min(targets) if targets else (1 if generic_restart else None)
-        snap = _snapshot_of(t.get("files_after"))
+        snap = snaps[i]
         if snap is not None and snap["phase"] is not None:
             run_ck = snap["phase"]
     reset_detected = reset_count
@@ -616,8 +627,7 @@ def compute_metrics(scenario, fixture_dir, turns):
     # 6) mistake / confusion persistence — track rows by their [#id] when present (so rewording an existing
     #    row isn't a false 'loss'); rows without an id fall back to normalized text.
     parsed = [parse_progress(init_progress)]
-    for t in turns:
-        snap = _snapshot_of(t.get("files_after"))
+    for snap in snaps:
         if snap is not None:
             parsed.append(snap)
     mistake_added = confusion_added = rows_lost = 0

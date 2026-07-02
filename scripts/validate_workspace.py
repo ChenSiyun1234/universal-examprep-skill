@@ -424,6 +424,19 @@ def validate(ws):
             cp = st.get("current_phase")
             if not (isinstance(cp, int) and not isinstance(cp, bool) and cp >= 1):
                 err(f"study_state.json 的 current_phase 必须是 ≥1 的整数，当前 {cp!r}")
+            else:
+                # state 是断点事实源——阶段号必须真实存在于 study_plan.md，否则下次会话会恢复进
+                # 不存在的阶段/wiki（不能只靠生成视图 md 的那条 warning 兜底）
+                plan_path_a4 = os.path.join(ws, "study_plan.md")
+                if os.path.isfile(plan_path_a4):
+                    try:
+                        plan_phases_a4 = set(re.findall(r"阶段\s*(\d+)", _read(plan_path_a4)))
+                        if plan_phases_a4 and str(cp) not in plan_phases_a4:
+                            err(f"study_state.json 的 current_phase={cp} 不在 study_plan.md 的阶段列表 "
+                                f"{sorted(int(x) for x in plan_phases_a4)} 中（事实源指向不存在的阶段，"
+                                "断点无法恢复）")
+                    except OSError:
+                        pass
             for field in ("mistake_archive", "confusion_log", "knowledge_window"):
                 v = st.get(field)
                 if v is not None and not (isinstance(v, list)

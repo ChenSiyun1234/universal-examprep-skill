@@ -66,6 +66,33 @@ class Migration(unittest.TestCase):
         self.assertEqual(row["note"], "只有笔记没有状态列")         # 无状态列时整个尾部是 note
         self.assertEqual(row["status"], "待复盘")
 
+    def test_migration_preserves_phase_checklist(self):
+        md = LEGACY_MD + ("\n## 📊 知识点打卡状态\n- [x] **阶段 1**：栈与队列 (关联 `references/wiki/ch1.md`)\n"
+                          "- [ ] **阶段 2**：树 (关联 `references/wiki/ch2.md`)\n")
+        ws = _mk_ws(tempfile.mkdtemp(), md=md)
+        r = _up(ws, ["init"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        st = _state(ws)
+        self.assertEqual(len(st["phase_checklist"]), 2)           # 打卡状态随迁移进 state，不丢
+        self.assertTrue(st["phase_checklist"][0]["done"])
+        self.assertFalse(st["phase_checklist"][1]["done"])
+        out = open(os.path.join(ws, "study_progress.md"), encoding="utf-8").read()
+        self.assertIn("知识点打卡状态", out)                       # 生成视图渲染回打卡区
+        self.assertIn("- [x] **阶段 1**", out)
+        self.assertIn("- [ ] **阶段 2**", out)
+
+    def test_set_check_official_path(self):
+        md = LEGACY_MD + "\n## 📊 知识点打卡状态\n- [ ] **阶段 1**：栈与队列\n- [ ] **模拟测试**：综合自测\n"
+        ws = _mk_ws(tempfile.mkdtemp(), md=md)
+        _up(ws, ["init"])
+        r = _up(ws, ["set-check", "--match", "阶段 1"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(_state(ws)["phase_checklist"][0]["done"])  # 勾选走官方路径
+        self.assertIn("- [x] **阶段 1**", open(os.path.join(ws, "study_progress.md"), encoding="utf-8").read())
+        r = _up(ws, ["set-check", "--index", "1", "--undone"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(_state(ws)["phase_checklist"][0]["done"])
+
     def test_init_idempotent_without_force(self):
         ws = _mk_ws(tempfile.mkdtemp())
         _up(ws, ["init"])
@@ -88,6 +115,26 @@ class Mutations(unittest.TestCase):
         ws = _mk_ws(tempfile.mkdtemp())
         _up(ws, ["init"])
         return ws
+
+    def test_mutation_on_malformed_state_fails_loud(self):
+        ws = self._ready()
+        st = _state(ws)
+        st["mistake_archive"] = 1                                 # 手改/半写坏形态
+        json.dump(st, open(os.path.join(ws, "study_state.json"), "w", encoding="utf-8"))
+        r = _up(ws, ["add-mistake", "--note", "x"])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertNotIn("Traceback", r.stderr)                   # fail-loud _die，不是 Python 崩栈
+        self.assertIn("损坏", r.stderr)
+
+    def test_missing_optional_fields_tolerated(self):
+        ws = self._ready()
+        st = _state(ws)
+        for f in ("phase_checklist", "confusion_log"):            # 旧 schema 缺字段 → 按空列表补齐
+            st.pop(f, None)
+        json.dump(st, open(os.path.join(ws, "study_state.json"), "w", encoding="utf-8"))
+        r = _up(ws, ["add-confusion", "--note", "取模没搞懂"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(_state(ws)["confusion_log"]), 1)
 
     def test_set_updates_state_and_md(self):
         ws = self._ready()
@@ -232,9 +279,17 @@ class ValidatorSchema(unittest.TestCase):
 
     def test_md_phase_mismatch_warns(self):
         ws = self._full_ws({"current_phase": 2})                  # md 说 1，state 说 2
+        with open(os.path.join(ws, "study_plan.md"), "w", encoding="utf-8") as f:
+            f.write("# 计划\n## 阶段1：栈（references/wiki/ch1.md)\n## 阶段2：树（references/wiki/ch1.md）\n")
         r = self._validate(ws)
         self.assertEqual(r.returncode, 0)                         # 仅告警（md 是生成视图）
         self.assertIn("不一致", r.stdout)
+
+    def test_state_phase_outside_plan_errors(self):
+        ws = self._full_ws({"current_phase": 99})                 # 计划只有阶段1
+        r = self._validate(ws)
+        self.assertEqual(r.returncode, 1)                         # 事实源指向不存在的阶段 → 报错不是警告
+        self.assertIn("不在 study_plan.md", r.stdout)
 
 
 class DriftJsonSnapshots(unittest.TestCase):
@@ -271,6 +326,31 @@ class DriftJsonSnapshots(unittest.TestCase):
         with self.assertRaises(D.DriftError):
             D.evaluate(sc, t)
 
+
+    def test_t4_rejects_md_only_snapshot_after_state(self):
+        sys.path.insert(0, os.path.join(ROOT, "benchmark", "drift"))
+        import run_drift as D
+        sc = D.load_scenario(os.path.join(ROOT, "benchmark", "drift", "scenarios", "long_session_basic.json"))
+        d = tempfile.mkdtemp()
+        t = os.path.join(d, "t.jsonl")
+        st2 = json.dumps({"version": 1, "current_phase": 2,
+                          "mistake_archive": [{"id": "stack_lifo_1", "note": "误答 FIFO"}],
+                          "confusion_log": []}, ensure_ascii=False)
+        stale_md = ("当前阶段：9\n## ❌ 错题档案记录\n| 错题ID | 章节 | 原因 | 状态 |\n| :- | :- | :- | :- |\n"
+                    "| [#stack_lifo_1] | 1 | 误答 FIFO | 待复盘 |\n| [#fake_row_2] | 1 | 手改加行 | 待复盘 |\n")
+        turns = [
+            {"turn": 1, "assistant": "进入阶段2。", "phase_context": 2,
+             "files_after": {"study_state.json": st2}},
+            {"turn": 2, "assistant": "偷偷手改 md。",                # state 已确立后的 md-only 手改
+             "files_after": {"study_progress.md": stale_md}},
+            {"turn": 3, "user": "我回来了，继续复习", "kind": "resume",
+             "assistant": "欢迎回来！我们接着阶段2继续复习。"},
+        ]
+        with open(t, "w", encoding="utf-8") as f:
+            f.write("\n".join(json.dumps(x, ensure_ascii=False) for x in turns))
+        m = D.evaluate(sc, t)["metrics"]
+        self.assertEqual(m["mistake_rows_added"], 1)              # 手改 md 的加行不算数（state 才是事实源）
+        self.assertEqual(m["reset_detected"], 0)                  # 断点仍按 state 的阶段 2，不被 md 的 9 带跑
 
     def test_t4_scalar_state_field_exits_2_not_traceback(self):
         sys.path.insert(0, os.path.join(ROOT, "benchmark", "drift"))

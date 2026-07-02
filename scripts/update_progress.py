@@ -48,7 +48,7 @@ def default_state():
     return {"version": SCHEMA_VERSION, "current_phase": 1, "scope": None, "mode": None,
             "time_budget": None, "language": None, "preferences": {},
             "mistake_archive": [], "confusion_log": [], "knowledge_window": [],
-            "last_updated": None}
+            "phase_checklist": [], "last_updated": None}
 
 
 # ---------------- md → state (migration; tolerant of both bullet and table forms) ----------------
@@ -63,18 +63,26 @@ def parse_md(text):
     t = text or ""
     pm = re.search(r"(?:当前进行阶段|当前阶段|current\s*phase)\D*?(\d+)", t, re.I)
     phase = int(pm.group(1)) if pm else 1
-    mistakes, confusions, cur = [], [], None
+    mistakes, confusions, checklist, cur, in_checklist = [], [], [], None, False
     for ln in t.splitlines():
         h = ln.strip()
         is_heading = bool(re.match(r"^\s{0,3}(#{1,4}\s|\*\*)", ln))
+        if is_heading and re.search(r"打卡|checklist", h, re.I):
+            cur, in_checklist = None, True                        # 模板的 📊 知识点打卡状态 区
+            continue
         if is_heading and re.search(r"错题|mistake", h, re.I):
-            cur = mistakes
+            cur, in_checklist = mistakes, False
             continue
         if is_heading and re.search(r"疑难|困惑|confusion", h, re.I):
-            cur = confusions
+            cur, in_checklist = confusions, False
             continue
         if re.match(r"^\s{0,3}#{1,4}\s", ln):
-            cur = None
+            cur, in_checklist = None, False
+            continue
+        cm = re.match(r"^\s*[-*]\s*\[([ xX])\]\s*(\S.*)$", ln)
+        if in_checklist and cm:
+            # 每阶段完成/掌握状态必须随迁移进 state——渲染丢掉打卡区就是不可逆丢 per-phase 进度
+            checklist.append({"text": cm.group(2).strip(), "done": cm.group(1).lower() == "x"})
             continue
         if cur is None or _PLACEHOLDER.search(h):
             continue
@@ -98,7 +106,7 @@ def parse_md(text):
             cur.append({"id": ids[0] if ids else (cells[0] or None), "chapter": cells[1] if len(cells) > 1 else None,
                         "note": " / ".join(c for c in note_cells if c) or (cells[0] if cells else ""),
                         "status": status})
-    return phase, mistakes, confusions
+    return phase, mistakes, confusions, checklist
 
 
 # ---------------- state → md (generated view; keeps validator/T4-parseable shape) ----------------
@@ -126,6 +134,13 @@ def render_md(state):
                                                      state.get("time_budget") or "未设定"),
         "* **最后更新时间**：%s" % (state.get("last_updated") or "-"),
         "",
+    ]
+    if state.get("phase_checklist"):
+        # 打卡区随 state 一起渲染回来——迁移绝不丢每阶段完成状态；勾选走 set-check 官方路径
+        lines += ["## 📊 知识点打卡状态",
+                  "\n".join("- [%s] %s" % ("x" if r.get("done") else " ", r.get("text") or "")
+                            for r in state["phase_checklist"]), ""]
+    lines += [
         "## ❌ 错题档案记录",
         _tbl(state["mistake_archive"], ("错题ID", "关联章节", "错误原因分析", "状态")),
         "",
@@ -199,11 +214,15 @@ def cmd_init(ws, args):
         except UnicodeDecodeError as e:
             _die("study_progress.md 不是 UTF-8（%s）——这正是结构化状态要根治的乱码；"
                  "请先把 md 转存为 UTF-8 再 init（不要猜编码静默迁移）" % e, 1)
-        phase, mistakes, confusions = parse_md(text)
+        phase, mistakes, confusions, checklist = parse_md(text)
+    else:
+        checklist = []
     st = default_state()
-    st.update({"current_phase": phase, "mistake_archive": mistakes, "confusion_log": confusions})
-    save(ws, st, "init：从 %s 迁移（阶段 %d，错题 %d，疑难 %d）"
-         % (MD_NAME if os.path.isfile(md_path) else "空白", phase, len(mistakes), len(confusions)))
+    st.update({"current_phase": phase, "mistake_archive": mistakes, "confusion_log": confusions,
+               "phase_checklist": checklist})
+    save(ws, st, "init：从 %s 迁移（阶段 %d，错题 %d，疑难 %d，打卡 %d）"
+         % (MD_NAME if os.path.isfile(md_path) else "空白", phase, len(mistakes), len(confusions),
+            len(checklist)))
     return 0
 
 
@@ -211,6 +230,23 @@ def _require_state(ws):
     st = load_state(ws)
     if st is None:
         _die("尚无 study_state.json——先跑 `update_progress.py --workspace <ws> init` 迁移")
+    # 官方持久化路径必须 fail-loud：半写/手改导致的坏形态要在【变更前】报清楚，不能改到一半 Traceback
+    cp = st.get("current_phase")
+    if not (isinstance(cp, int) and not isinstance(cp, bool) and cp >= 1):
+        _die("study_state.json 损坏：current_phase 必须是 ≥1 的整数，当前 %r——请修复 state "
+             "或 init --force 从 md 重建" % cp, 1)
+    for field in ("mistake_archive", "confusion_log", "phase_checklist", "knowledge_window"):
+        v = st.get(field)
+        if v is None:
+            st[field] = []                             # 旧 schema 兼容：缺字段按空列表补齐
+        elif not isinstance(v, list) or any(not isinstance(x, dict) for x in v):
+            _die("study_state.json 损坏：%s 必须是对象数组，当前 %s——请修复 state "
+                 "或 init --force 从 md 重建" % (field, type(v).__name__), 1)
+    if st.get("preferences") is None:
+        st["preferences"] = {}
+    elif not isinstance(st["preferences"], dict):
+        _die("study_state.json 损坏：preferences 必须是对象，当前 %s"
+             % type(st["preferences"]).__name__, 1)
     return st
 
 
@@ -270,6 +306,28 @@ def cmd_set_status(ws, args, field, label):
     return 0
 
 
+def cmd_set_check(ws, args):
+    """打卡官方路径：md 是生成视图不许手改——勾/取消勾知识点打卡项走这里（--index 或 --match 定位）。"""
+    st = _require_state(ws)
+    rows = st["phase_checklist"]
+    if args.index is not None:
+        if not 1 <= args.index <= len(rows):
+            _die("--index 超界（1..%d）" % len(rows))
+        hits = [rows[args.index - 1]]
+    elif args.match:
+        hits = [r for r in rows if args.match in (r.get("text") or "")]
+        if not hits:
+            _die("没有打卡项包含 %r" % args.match)
+        if len(hits) > 1:
+            _die("匹配到 %d 个打卡项（%r）——请用更具体的 --match 或 --index" % (len(hits), args.match))
+    else:
+        _die("set-check 需要 --index 或 --match 定位打卡项")
+    for r in hits:
+        r["done"] = not args.undone
+    save(ws, st, "打卡%s：%s" % ("取消" if args.undone else "完成", (hits[0].get("text") or "")[:40]))
+    return 0
+
+
 def cmd_render(ws, _args):
     st = _require_state(ws)
     save(ws, st, "render：md 已从 state 重建")
@@ -305,6 +363,10 @@ def run(argv=None):
         p.add_argument("--id", default=None, help="按 [#id] 定位（命中全部同 id 行）")
         p.add_argument("--index", type=int, default=None, help="按 1 起序号定位")
         p.add_argument("--status", required=True, help="如 已复盘/已解决/待复盘")
+    p_chk = sub.add_parser("set-check")
+    p_chk.add_argument("--index", type=int, default=None, help="按 1 起序号定位打卡项")
+    p_chk.add_argument("--match", default=None, help="按包含文本定位（须唯一命中）")
+    p_chk.add_argument("--undone", action="store_true", help="取消勾选（默认为勾选完成）")
     sub.add_parser("render")
     sub.add_parser("show")
     args = ap.parse_args(argv)
@@ -323,6 +385,8 @@ def run(argv=None):
         return cmd_set_status(ws, args, "mistake_archive", "错题")
     if args.cmd == "set-confusion-status":
         return cmd_set_status(ws, args, "confusion_log", "疑难")
+    if args.cmd == "set-check":
+        return cmd_set_check(ws, args)
     if args.cmd == "render":
         return cmd_render(ws, args)
     return cmd_show(ws, args)
