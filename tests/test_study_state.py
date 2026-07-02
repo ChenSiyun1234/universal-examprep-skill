@@ -358,6 +358,26 @@ class Mutations(unittest.TestCase):
         self.assertFalse(os.path.isfile(os.path.join(ws, "study_state.json")))
 
 
+    # ---- regression guards for Codex round-12 (4 findings) ----
+
+    def test_blank_init_seeds_phase_from_plan(self):
+        ws = _mk_ws(tempfile.mkdtemp(), md=None)
+        with open(os.path.join(ws, "study_plan.md"), "w", encoding="utf-8") as f:
+            f.write("# 计划\n## 阶段2：树\n## 阶段3：图\n")      # 计划不含阶段1
+        r = _up(ws, ["init"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(_state(ws)["current_phase"], 2)          # 空白初始化落在计划内（min）
+        self.assertEqual(_up(ws, ["add-mistake", "--note", "x"]).returncode, 0)   # 后续更新不被卡死
+
+    def test_unreadable_plan_fails_loud(self):
+        ws = self._ready()
+        with open(os.path.join(ws, "study_plan.md"), "wb") as f:
+            f.write("阶段：乱码".encode("gbk"))                   # 计划存在但非 UTF-8
+        r = _up(ws, ["set", "--phase", "2"])
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("无法读取", r.stderr)                        # 不静默禁用阶段守卫
+
+
     def test_set_updates_state_and_md(self):
         ws = self._ready()
         r = _up(ws, ["set", "--phase", "5", "--scope", "homework-only", "--mode", "查缺补漏",
@@ -880,6 +900,23 @@ class Contract(unittest.TestCase):
     def test_review_output_contract_routes_state(self):
         txt = open(os.path.join(ROOT, "skills", "exam-review", "SKILL.md"), encoding="utf-8").read()
         self.assertIn("via `update_progress.py set-mistake-status`", txt)   # 输出契约也走官方路径
+
+    def test_cheatsheet_mastered_chapters_read_state(self):
+        txt = open(os.path.join(ROOT, "skills", "exam-cheatsheet", "SKILL.md"), encoding="utf-8").read()
+        self.assertIn("`current_phase`/`phase_checklist` when it exists", txt)
+
+    def test_behavior_smoke_asserts_state_writes(self):
+        spec = json.load(open(os.path.join(ROOT, "benchmark", "behavior_smoke", "scenarios.json"),
+                              encoding="utf-8"))
+        by = {sc["name"]: sc for sc in spec["scenarios"]}
+        self.assertIn("state_after", by["hint_skip_mistake_archive"])   # 冒烟断言 state 写入
+        self.assertIn("state_after", by["confusion_tracking"])
+        import subprocess
+        r = subprocess.run([sys.executable, os.path.join(ROOT, "benchmark", "behavior_smoke",
+                                                          "run_behavior_smoke.py"), "--mock"],
+                           capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("state_row=True", r.stdout)
 
     def test_review_skill_documents_status_commands(self):
         # replay 流要把行标成 已订正/已回顾 —— A4 边界必须给出官方状态命令，否则 agent 无合法持久化路径

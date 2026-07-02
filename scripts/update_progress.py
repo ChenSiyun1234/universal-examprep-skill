@@ -287,6 +287,9 @@ def cmd_init(ws, args):
                  "请先修正 md/计划再 init" % (phase, sorted(plan)), 1)
     else:
         checklist, prefs = [], {}
+        plan0 = _plan_phases(ws)
+        if plan0 and phase not in plan0:
+            phase = min(plan0)      # 空白初始化也要落在计划内——默认 1 可能不在阶段列表里
     st = default_state()
     st.update({"current_phase": phase, "mistake_archive": mistakes, "confusion_log": confusions,
                "phase_checklist": checklist})
@@ -353,8 +356,9 @@ def _plan_phases(ws):
     try:
         with open(plan_path, "r", encoding="utf-8") as f:
             text = f.read()
-    except (OSError, UnicodeDecodeError):
-        return set()
+    except (OSError, UnicodeDecodeError) as e:
+        # 静默当「无计划」会禁用阶段守卫，写出计划修好后才发现的坏断点——必须报错
+        _die("study_plan.md 存在但无法读取/非 UTF-8（%s）——阶段校验无法进行，请先修复计划文件" % e, 1)
     return {int(m.group(1) or m.group(2))
             for m in re.finditer(r"阶段\s*(\d+)|第\s*(\d+)\s*阶段", text)}
 
