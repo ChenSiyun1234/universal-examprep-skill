@@ -109,6 +109,10 @@ def record(entry, ledger_path=None):
     """Validate + append one row. Returns the written entry. Raises SystemExit(2) on invalid input."""
     e = dict(entry)
     e.setdefault("created_at", datetime.datetime.now().isoformat(timespec="seconds"))
+    if not isinstance(e["created_at"], str):
+        # run_id 派生要对 created_at 做 .replace——非字符串必须在这里先拒绝，
+        # 否则 AttributeError 会逃出 try_record 的 SystemExit/OSError 兜底
+        _die("record 被拒：created_at 必须是字符串")
     e.setdefault("run_id", "%s-%s" % (e["created_at"].replace(":", "").replace("-", ""),
                                       hash_text(json.dumps(e, sort_keys=True, ensure_ascii=False))[7:15]))
     probs = validate_entry(e)
@@ -130,6 +134,8 @@ def try_record(entry, ledger_path=None):
         return None, "ledger 记录失败（exit %s）——运行结果不受影响" % e.code
     except OSError as e:
         return None, "ledger 写入失败：%s——运行结果不受影响" % e
+    except Exception as e:  # never-raises 契约兜底：任何意外（如畸形字段类型）都降级为警告
+        return None, "ledger 记录异常：%s——运行结果不受影响" % e
 
 
 def load(ledger_path=None):
@@ -189,8 +195,10 @@ def run(argv=None):
     if args.cmd == "show":
         rows = load(args.ledger)
         for ln, e in rows[-args.last:]:
-            if e is None:
-                print("#%d <坏行>" % ln)
+            # 与 verify 同一校验口径——合法 JSON 但非对象（如 []）不能直接 .get()
+            probs = validate_entry(e) if e is not None else ["非法 JSON"]
+            if probs:
+                print("#%d <坏行：%s>" % (ln, "；".join(probs)))
             else:
                 print("#%d %s %s model=%s cost=%s exit=%s %s"
                       % (ln, e.get("run_id"), e.get("kind"), e.get("model") or "-",

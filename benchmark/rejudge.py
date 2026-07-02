@@ -313,7 +313,9 @@ def main():
             import ledger as _ledger
             _e2, _warn2 = _ledger.try_record({
                 "kind": "rejudge_export", "model": args.judge_model if args.llm else None,
-                "transcript_path": args.scores_out, "exit_code": 0,
+                # scores 与 answers 是成对导出（aggregate_matrix.py 两个都要）——账本记全才可复现
+                "transcript_path": args.scores_out, "summary_path": args.answers_out,
+                "exit_code": 0,
                 "notes": "rows=%d llm=%s" % (n_exported[0], bool(args.llm))})
             print(("[!] " + _warn2) if _warn2 else ("[+] 账本 run_id=%s" % _e2["run_id"]))
         except Exception as e:

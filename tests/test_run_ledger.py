@@ -3,6 +3,7 @@
 live-smoke integration (offline fake agent), warning-only failure semantics."""
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -62,6 +63,29 @@ class LedgerCore(unittest.TestCase):
         self.assertIsNone(e)
         self.assertIn("不受影响", warn)
 
+    def test_record_rejects_non_string_created_at(self):
+        path = os.path.join(tempfile.mkdtemp(), "l.jsonl")
+        with self.assertRaises(SystemExit):           # 拒绝而非 AttributeError（run_id 派生要 .replace）
+            L.record({"kind": "other", "created_at": 123}, path)
+        self.assertFalse(os.path.isfile(path))
+
+    def test_try_record_malformed_created_at_warns_not_raises(self):
+        e, warn = L.try_record({"kind": "other", "created_at": 123},
+                               os.path.join(tempfile.mkdtemp(), "l.jsonl"))
+        self.assertIsNone(e)
+        self.assertIn("不受影响", warn)               # never-raises 契约：畸形字段也只降级为警告
+
+    def test_show_handles_valid_json_non_dict_row(self):
+        path = os.path.join(tempfile.mkdtemp(), "l.jsonl")
+        L.record({"kind": "other"}, path)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write("[]\n")                           # 合法 JSON 但不是对象
+        r = subprocess.run([sys.executable, os.path.join(RUNS, "ledger.py"), "--ledger", path,
+                            "show", "--last", "5"], capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("坏行", r.stdout)
+        self.assertNotIn("Traceback", r.stderr)
+
     def test_committed_sample_is_valid(self):
         r = subprocess.run([sys.executable, os.path.join(RUNS, "ledger.py"),
                             "--ledger", os.path.join(RUNS, "ledger.sample.jsonl"), "verify"],
@@ -105,6 +129,50 @@ class LiveSmokeIntegration(unittest.TestCase):
                            capture_output=True, text=True, encoding="utf-8", env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertFalse(os.path.isfile(led))
+
+    def test_ledger_records_oracle_gated_exit_code(self):
+        # T4 判分通过但回合 oracle 未过 → 进程退出 1，账本必须记 1（而不是判分器的 0）
+        out = tempfile.mkdtemp()
+        led = os.path.join(out, "ledger.jsonl")
+        spec = json.load(open(os.path.join(ROOT, "benchmark", "drift", "templates",
+                                           "live_smoke_turns.json"), encoding="utf-8"))
+        spec["turns"].append({"user": "随便聊两句今天的进度。", "phase_context": 2,
+                              "expect_any": ["ZZZ_不可能出现的探针串_QQQ"]})
+        turns_path = os.path.join(out, "turns.json")
+        with open(turns_path, "w", encoding="utf-8") as f:
+            json.dump(spec, f, ensure_ascii=False)
+        fake = os.path.join(ROOT, "tests", "fake_live_agent.py")
+        cmd = json.dumps([sys.executable, fake, "{prompt}"])
+        env = dict(os.environ, RUN_SKILL_DRIFT_LLM="1")
+        r = subprocess.run([sys.executable, os.path.join(ROOT, "benchmark", "drift", "run_live_smoke.py"),
+                            "--agent-cmd", cmd, "--out-dir", out, "--ledger", led,
+                            "--turns", turns_path],
+                           capture_output=True, text=True, encoding="utf-8", env=env)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        rows = [json.loads(x) for x in open(led, encoding="utf-8") if x.strip()]
+        self.assertEqual(rows[0]["exit_code"], 1)
+
+    def test_ledger_workspace_hash_is_pre_run_fingerprint(self):
+        # 默认脚本会把阶段推进到 2（改写沙盒 study_progress.md）——账本指纹必须代表运行「输入」，
+        # 事后从原始 fixture 复算要能对上
+        out = tempfile.mkdtemp()
+        led = os.path.join(out, "ledger.jsonl")
+        fake = os.path.join(ROOT, "tests", "fake_live_agent.py")
+        cmd = json.dumps([sys.executable, fake, "{prompt}"])
+        env = dict(os.environ, RUN_SKILL_DRIFT_LLM="1")
+        r = subprocess.run([sys.executable, os.path.join(ROOT, "benchmark", "drift", "run_live_smoke.py"),
+                            "--agent-cmd", cmd, "--out-dir", out, "--ledger", led],
+                           capture_output=True, text=True, encoding="utf-8", env=env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        row = [json.loads(x) for x in open(led, encoding="utf-8") if x.strip()][0]
+        rebuilt = os.path.join(tempfile.mkdtemp(), "ws")
+        shutil.copytree(os.path.join(ROOT, "benchmark", "drift", "fixtures", "mini_course_long"), rebuilt)
+        prog = open(os.path.join(rebuilt, "study_progress.initial.md"), encoding="utf-8").read()
+        with open(os.path.join(rebuilt, "study_progress.md"), "w", encoding="utf-8", newline="\n") as f:
+            f.write(prog)
+        self.assertEqual(row["workspace_hash"], L.workspace_hash(rebuilt))      # 可从输入复算
+        self.assertNotEqual(row["workspace_hash"],
+                            L.workspace_hash(os.path.join(out, "workspace")))   # ≠ 被改写后的沙盒
 
     def test_ledger_failure_does_not_break_run(self):
         out = tempfile.mkdtemp()

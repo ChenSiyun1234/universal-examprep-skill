@@ -374,6 +374,15 @@ def main(argv=None):
     import re as _re
     m = _re.search(r"当前阶段：(\d+)", progress)
     cur_phase = int(m.group(1)) if m else 1
+    _ledger, ws_hash0 = None, None
+    if not args.no_ledger:            # B7: 指纹必须在回合循环改写 study_progress.md 之前取——
+        sys.path.insert(0, os.path.join(ROOT, "benchmark", "runs"))   # 账本行代表运行的「输入」，
+        try:                          # 事后按原始 fixture 重算才能对上
+            import ledger as _ledger
+            ws_hash0 = _ledger.workspace_hash(sandbox)
+        except Exception as e:        # 记账绝不影响运行结果
+            print("[!] ledger 不可用：%s" % e)
+            _ledger = None
     history, exchanges, oracle_failures = [], [], []
     for i, turn in enumerate(turns, 1):
         prompt = build_prompt(sandbox, digest, history, turn["user"], args.max_prompt_chars, progress)
@@ -421,16 +430,16 @@ def main(argv=None):
     print("[+] session log: %s\n[+] jsonl: %s" % (log_path, jsonl_path))
     if score.returncode not in (0, 1):
         _die("T4 判分器异常退出（%d）——不产生任何通过结论" % score.returncode, 3)
-    if not args.no_ledger:                       # B7: every real run leaves one auditable ledger row
-        sys.path.insert(0, os.path.join(ROOT, "benchmark", "runs"))
+    # oracle 门槛是最终判定的一部分——账本必须记「真实」退出码，否则被 oracle 拦下的失败在账本里成了通过
+    final_rc = 1 if oracle_failures else score.returncode
+    if _ledger is not None:                      # B7: every real run leaves one auditable ledger row
         try:
-            import ledger as _ledger
             _e, _warn = _ledger.try_record({
                 "kind": "live_smoke", "model": args.model,
                 "prompt_hash": _ledger.hash_text(PREAMBLE + json.dumps(spec, ensure_ascii=False)),
-                "workspace_hash": _ledger.workspace_hash(sandbox),
+                "workspace_hash": ws_hash0,
                 "transcript_path": jsonl_path, "summary_path": log_path,
-                "exit_code": score.returncode,
+                "exit_code": final_rc,
                 "notes": "turns=%d oracle_failures=%d" % (len(turns), len(oracle_failures)),
             }, args.ledger)
             if _warn:
@@ -443,8 +452,7 @@ def main(argv=None):
         for f in oracle_failures:                # a probe answered wrongly must not PASS on metrics alone
             print("[oracle-fail] " + f)
         print("[!] %d 个回合级 oracle 未通过（探针答复不符合脚本期望）" % len(oracle_failures))
-        return 1
-    return score.returncode                      # 0 = 达标；1 = 检出漂移（判分真实跑过才可能返回 0）
+    return final_rc                              # 0 = 达标；1 = 检出漂移/oracle 未过（判分真实跑过才可能返回 0）
 
 
 if __name__ == "__main__":
