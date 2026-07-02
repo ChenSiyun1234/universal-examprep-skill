@@ -161,6 +161,25 @@ class Mutations(unittest.TestCase):
         self.assertNotIn("Traceback", r.stderr)                   # fail-loud，不是渲染中途崩栈
         self.assertIn("损坏", r.stderr)
 
+    # ---- regression guards for Codex round-5 (5 findings) ----
+
+    def test_multiline_note_stays_single_table_row(self):
+        ws = self._ready()
+        r = _up(ws, ["add-mistake", "--id", "q9", "--note", "第一行原因\n第二行补充"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        md = open(os.path.join(ws, "study_progress.md"), encoding="utf-8").read()
+        row_lines = [ln for ln in md.splitlines() if "q9" in ln]
+        self.assertEqual(len(row_lines), 1)                       # 换行归一成空格，行结构不被拆散
+        self.assertIn("第一行原因 第二行补充", row_lines[0])
+        self.assertNotIn("\n第二行补充", md)
+
+    def test_init_rejects_invalid_phase_zero(self):
+        ws = _mk_ws(tempfile.mkdtemp(), md="当前阶段：0\n## 错题本\n（暂无）\n")
+        r = _up(ws, ["init"])
+        self.assertEqual(r.returncode, 1)                         # 迁移绝不产出损坏 state
+        self.assertIn("非法", r.stderr)
+        self.assertFalse(os.path.isfile(os.path.join(ws, "study_state.json")))
+
     def test_set_updates_state_and_md(self):
         ws = self._ready()
         r = _up(ws, ["set", "--phase", "5", "--scope", "homework-only", "--mode", "查缺补漏",
@@ -400,6 +419,7 @@ class DriftJsonSnapshots(unittest.TestCase):
         m = D.evaluate(sc, t)["metrics"]
         self.assertEqual(m["mistake_rows_added"], 1)              # 手改 md 的加行不算数（state 才是事实源）
         self.assertEqual(m["reset_detected"], 0)                  # 断点仍按 state 的阶段 2，不被 md 的 9 带跑
+        self.assertEqual(m["md_write_after_state"], 1)            # 且违规被计数曝光（阈值 0 会让场景 FAIL）
 
     def test_t4_seeds_from_fixture_state_json(self):
         # fixture 自带 study_state.json（阶段2 + 一条已有错题行）而生成视图 md 过期（阶段1、无行）——
@@ -454,6 +474,29 @@ class DriftJsonSnapshots(unittest.TestCase):
             with self.assertRaises(D.DriftError):
                 D.evaluate(sc, t)
 
+    def test_t4_rejects_malformed_state_rows(self):
+        sys.path.insert(0, os.path.join(ROOT, "benchmark", "drift"))
+        import run_drift as D
+        sc = D.load_scenario(os.path.join(ROOT, "benchmark", "drift", "scenarios", "long_session_basic.json"))
+        for bad_rows in ('["[#q1] 字符串行"]', '[{"id": "q1"}]'):   # 非对象行 / 缺非空 note
+            d = tempfile.mkdtemp()
+            t = os.path.join(d, "t.jsonl")
+            bad = '{"version": 1, "current_phase": 2, "mistake_archive": %s, "confusion_log": []}' % bad_rows
+            with open(t, "w", encoding="utf-8") as f:
+                f.write(json.dumps({"turn": 1, "assistant": "x",
+                                    "files_after": {"study_state.json": bad}}) + "\n")
+            with self.assertRaises(D.DriftError):                 # 坏行 fail-loud，不再以 0 行静默通过
+                D.evaluate(sc, t)
+
+    def test_md_write_after_state_is_gated_metric(self):
+        # 场景阈值 md_write_after_state_max=0 存在，且指标真会计数——A4 违规不只是被忽略
+        sc_json = json.load(open(os.path.join(ROOT, "benchmark", "drift", "scenarios",
+                                              "long_session_basic.json"), encoding="utf-8"))
+        self.assertEqual(sc_json["thresholds"].get("md_write_after_state_max"), 0)
+        sc_live = json.load(open(os.path.join(ROOT, "benchmark", "drift", "scenarios",
+                                              "live_smoke_basic.json"), encoding="utf-8"))
+        self.assertEqual(sc_live["thresholds"].get("md_write_after_state_max"), 0)
+
     def test_t4_scalar_state_field_exits_2_not_traceback(self):
         sys.path.insert(0, os.path.join(ROOT, "benchmark", "drift"))
         import run_drift as D
@@ -493,6 +536,11 @@ class Contract(unittest.TestCase):
             txt = open(os.path.join(ROOT, p), encoding="utf-8").read()
             self.assertIn("study_state.json", txt, p)
             self.assertIn("update_progress.py", txt, p)
+
+    def test_cram_restore_prefers_state(self):
+        # 恢复断点必须先读 study_state.json（事实源）——生成视图 md 过期/被手改时不能拿它当起点
+        txt = open(os.path.join(ROOT, "skills", "exam-cram", "SKILL.md"), encoding="utf-8").read()
+        self.assertIn("from `study_state.json` when it exists", txt)
 
     def test_review_skill_documents_status_commands(self):
         # replay 流要把行标成 已订正/已回顾 —— A4 边界必须给出官方状态命令，否则 agent 无合法持久化路径

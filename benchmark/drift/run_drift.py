@@ -380,9 +380,12 @@ def parse_state_json(text):
                              % (field, type(v).__name__))
         out = []
         for r in v:
-            if isinstance(r, dict):
-                rid = ("[#%s] " % r["id"]) if r.get("id") else ""
-                out.append((rid + str(r.get("note") or "")).strip())
+            # 与 validator/update 工具同一行 schema——字符串元素/缺 note 的行是坏写入，
+            # 静默跳过会让坏 state 以「0 行」通过行持久化指标
+            if not isinstance(r, dict) or not isinstance(r.get("note"), str) or not r["note"].strip():
+                raise DriftError("study_state.json 快照的 %s 行必须是含非空 note 的对象: %r" % (field, r))
+            rid = ("[#%s] " % r["id"]) if r.get("id") else ""
+            out.append((rid + r["note"]).strip())
         return out
     return {"phase": phase, "mistake_rows": _rows("mistake_archive"),
             "confusion_rows": _rows("confusion_log")}
@@ -393,17 +396,21 @@ def _session_snapshots(turns, state_established=False):
     source-of-truth contract: within a turn study_state.json wins; and once state has appeared
     (fixture or any turn), a LATER md-only write is a hand-edit of the generated view — it must
     NOT advance checkpoint/row metrics（那正是 A4 要抓的漂移）. md fallback is for legacy sessions."""
-    out = []
+    out, stale_md = [], 0
     for t in turns:
         fa = t.get("files_after") or {}
         if "study_state.json" in fa:
             state_established = True
             out.append(parse_state_json(fa["study_state.json"]))
-        elif "study_progress.md" in fa and not state_established:
-            out.append(parse_progress(fa["study_progress.md"]))
+        elif "study_progress.md" in fa:
+            if state_established:
+                stale_md += 1        # A4 违规：state 确立后手写生成视图——不采纳，且计数曝光（可设阈值门槛）
+                out.append(None)
+            else:
+                out.append(parse_progress(fa["study_progress.md"]))
         else:
             out.append(None)
-    return out
+    return out, stale_md
 
 
 def _phase_of_turn(turn):
@@ -477,7 +484,7 @@ def compute_metrics(scenario, fixture_dir, turns):
     # A4 source-of-truth aware per-turn snapshots — computed ONCE and shared by the checkpoint /
     # row-persistence sections so the md-only-after-state rejection can't diverge between them
     state_init = os.path.join(fixture_dir, "study_state.json")
-    snaps = _session_snapshots(turns, os.path.isfile(state_init))
+    snaps, md_after_state = _session_snapshots(turns, os.path.isfile(state_init))
     # 指标种子同理：fixture 自带 state 时，初始阶段/行都从 JSON 事实源来——
     # 生成视图 md 过期/不一致时不能拿它当会话起点
     try:
@@ -698,7 +705,7 @@ def compute_metrics(scenario, fixture_dir, turns):
         "resumed_phase": resumed_phase, "expected_phase": expected_phase, "reset_detected": reset_detected,
         "explanation_turns": len(expl), "provenance_fidelity": provenance_fidelity,
         "mistake_rows_added": mistake_added, "confusion_rows_added": confusion_added,
-        "progress_rows_lost": rows_lost,
+        "progress_rows_lost": rows_lost, "md_write_after_state": md_after_state,
         "wiki_reads": wiki_reads, "unique_wiki_files": wiki_files, "overread_flag": overread,
         "cost": cost,
     }
@@ -717,6 +724,7 @@ THRESHOLD_RULES = {
     "checkpoint_reset_max": ("reset_detected", "max"),
     "provenance_fidelity_min": ("provenance_fidelity", "min"),
     "progress_rows_lost_max": ("progress_rows_lost", "max"),
+    "md_write_after_state_max": ("md_write_after_state", "max"),   # A4: state 确立后手改生成视图的次数
     "wiki_unique_files_max": ("unique_wiki_files", "max"),
     "overread_max": ("overread_flag", "max"),
 }

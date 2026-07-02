@@ -112,6 +112,13 @@ def parse_md(text):
 
 # ---------------- state → md (generated view; keeps validator/T4-parseable shape) ----------------
 
+def _md_cell(v, default="-"):
+    """One Markdown table cell / bullet payload: | 会断列、换行会把一行拆成多行——都必须归一，
+    否则生成视图的行结构被破坏（进度面板与 md 回退解析都读不回这行）。"""
+    s = str(v) if v not in (None, "") else default
+    return re.sub(r"\s*[\r\n]+\s*", " ", s).replace("|", "/").strip()
+
+
 def render_md(state):
     def _tbl(rows, headers, default_status):
         out = ["| " + " | ".join(headers) + " |",
@@ -119,10 +126,10 @@ def render_md(state):
         if not rows:
             out.append("| " + " | ".join("（暂无）" if i == 0 else "-" for i in range(len(headers))) + " |")
         for r in rows:
-            rid = ("[#%s]" % r["id"]) if r.get("id") else "-"
-            out.append("| %s | %s | %s | %s |" % (rid, r.get("chapter") or "-",
-                                                  str(r.get("note") or "").replace("|", "/"),
-                                                  r.get("status") or default_status))
+            rid = ("[#%s]" % _md_cell(r["id"])) if r.get("id") else "-"
+            out.append("| %s | %s | %s | %s |" % (rid, _md_cell(r.get("chapter")),
+                                                  _md_cell(r.get("note"), default=""),
+                                                  _md_cell(r.get("status"), default=default_status)))
         return "\n".join(out)
 
     lines = [
@@ -139,7 +146,7 @@ def render_md(state):
     if state.get("phase_checklist"):
         # 打卡区随 state 一起渲染回来——迁移绝不丢每阶段完成状态；勾选走 set-check 官方路径
         lines += ["## 📊 知识点打卡状态",
-                  "\n".join("- [%s] %s" % ("x" if r.get("done") else " ", r.get("text") or "")
+                  "\n".join("- [%s] %s" % ("x" if r.get("done") else " ", _md_cell(r.get("text"), default=""))
                             for r in state["phase_checklist"]), ""]
     lines += [
         "## ❌ 错题档案记录",
@@ -216,6 +223,9 @@ def cmd_init(ws, args):
             _die("study_progress.md 不是 UTF-8（%s）——这正是结构化状态要根治的乱码；"
                  "请先把 md 转存为 UTF-8 再 init（不要猜编码静默迁移）" % e, 1)
         phase, mistakes, confusions, checklist = parse_md(text)
+        if phase < 1:
+            # 写入 0/负数会让下一次官方更新在 _require_state 处拒跑——迁移绝不产出损坏 state
+            _die("study_progress.md 的当前阶段 %d 非法（须 ≥1）——请先修正 md 再 init" % phase, 1)
     else:
         checklist = []
     st = default_state()

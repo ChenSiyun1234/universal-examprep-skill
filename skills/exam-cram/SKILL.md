@@ -35,7 +35,7 @@ Activate when the user is approaching an exam and asks for a cram plan, drill qu
 
 On every turn, run these preconditions FIRST (they are not a branch):
 
-1. If `study_progress.md` exists, read it first and restore the saved phase/progress. This is a precondition: after reading, continue routing. Do NOT stop at "progress restored."
+1. Restore the saved phase/progress FIRST — from `study_state.json` when it exists (A4 source of truth; `study_progress.md` is a generated view that may be stale or hand-edited), otherwise from `study_progress.md`. This is a precondition: after reading, continue routing. Do NOT stop at "progress restored."
 2. If the workspace is missing (no wiki, quiz bank, or progress), route to `exam-ingest` to build the workspace, then return here.
 
 Lazy-load rule: read only the single current wiki slice. Never preload `references/wiki/` or the whole `references/quiz_bank.json` on restore; pull only the relevant chapter or items when the current step needs them.
@@ -50,7 +50,7 @@ After restoring state, pick the ONE step that matches the user's intent and curr
 4. **Escape hatch**: when the user answers wrong twice in a row, offer three choices (view hint / skip and archive the mistake / continue) and proceed by the user's choice.
 5. **Final review / cheatsheet**: trigger when the workspace reaches the final-review stage (all study phases cleared, per `study_progress.md`/`study_plan.md`), OR when the user explicitly asks for a cheatsheet/review — NOT on the `sprint` or `panic` mode name alone. A fresh `panic`-mode student goes to step 1 teaching first (key-question coaching via `exam-tutor`); the cheatsheet is built from that taught content, not by jumping to an empty review. Load the mistake archive and confusion records first, then run sweep-and-cheatsheet. Delegate to `exam-review` and `exam-cheatsheet`.
 
-After each learning or checkpoint event, update `study_progress.md` (phase, check-ins, mistake archive, confusion records) and refresh the progress panel at the end of the reply. When file I/O is unavailable (pure web client), switch to "text breakpoints": output a copyable progress Summary at the end of each turn and ask the user to paste it back next turn.
+After each learning or checkpoint event, update the progress state (phase, check-ins, mistake archive, confusion records) — via `python scripts/update_progress.py --workspace <ws> set/add-mistake/add-confusion/set-mistake-status/set-confusion-status/set-check` when `study_state.json` exists (it regenerates `study_progress.md`), else by editing `study_progress.md` directly — and refresh the progress panel at the end of the reply. When file I/O is unavailable (pure web client), switch to "text breakpoints": output a copyable progress Summary at the end of each turn and ask the user to paste it back next turn.
 
 ### Modes
 
