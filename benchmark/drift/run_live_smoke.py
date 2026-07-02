@@ -306,6 +306,10 @@ def main(argv=None):
     ap.add_argument("--max-output-chars", type=int, default=4000)
     ap.add_argument("--max-prompt-chars", type=int, default=12000)
     ap.add_argument("--turn-timeout", type=int, default=120)
+    ap.add_argument("--ledger", default=None,
+                    help="运行账本路径（默认 benchmark/runs/ledger.jsonl）")
+    ap.add_argument("--no-ledger", action="store_true", help="本次不记账")
+    ap.add_argument("--model", default=None, help="仅用于账本标注（agent-cmd 背后的模型名）")
     args = ap.parse_args(argv)
 
     for name in ("max_turns", "max_output_chars", "max_prompt_chars", "turn_timeout"):
@@ -417,6 +421,24 @@ def main(argv=None):
     print("[+] session log: %s\n[+] jsonl: %s" % (log_path, jsonl_path))
     if score.returncode not in (0, 1):
         _die("T4 判分器异常退出（%d）——不产生任何通过结论" % score.returncode, 3)
+    if not args.no_ledger:                       # B7: every real run leaves one auditable ledger row
+        sys.path.insert(0, os.path.join(ROOT, "benchmark", "runs"))
+        try:
+            import ledger as _ledger
+            _e, _warn = _ledger.try_record({
+                "kind": "live_smoke", "model": args.model,
+                "prompt_hash": _ledger.hash_text(PREAMBLE + json.dumps(spec, ensure_ascii=False)),
+                "workspace_hash": _ledger.workspace_hash(sandbox),
+                "transcript_path": jsonl_path, "summary_path": log_path,
+                "exit_code": score.returncode,
+                "notes": "turns=%d oracle_failures=%d" % (len(turns), len(oracle_failures)),
+            }, args.ledger)
+            if _warn:
+                print("[!] " + _warn)
+            elif _e:
+                print("[+] 账本 run_id=%s" % _e["run_id"])
+        except Exception as e:                       # 记账绝不影响运行结果
+            print("[!] ledger 不可用：%s" % e)
     if oracle_failures:                          # per-turn oracles gate the verdict alongside T4 metrics —
         for f in oracle_failures:                # a probe answered wrongly must not PASS on metrics alone
             print("[oracle-fail] " + f)
