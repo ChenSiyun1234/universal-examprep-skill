@@ -174,6 +174,22 @@ class LiveSmokeIntegration(unittest.TestCase):
         self.assertNotEqual(row["workspace_hash"],
                             L.workspace_hash(os.path.join(out, "workspace")))   # ≠ 被改写后的沙盒
 
+    def test_ledger_records_aborted_run(self):
+        # 付费回合烧掉后 agent 失败中止（_die exit 3）——账本必须留一行审计记录，而不是无痕
+        out = tempfile.mkdtemp()
+        led = os.path.join(out, "ledger.jsonl")
+        cmd = json.dumps([sys.executable, "-c", "import sys; sys.exit(7)", "{prompt}"])
+        env = dict(os.environ, RUN_SKILL_DRIFT_LLM="1")
+        r = subprocess.run([sys.executable, os.path.join(ROOT, "benchmark", "drift", "run_live_smoke.py"),
+                            "--agent-cmd", cmd, "--out-dir", out, "--ledger", led, "--model", "fake-agent"],
+                           capture_output=True, text=True, encoding="utf-8", env=env)
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        rows = [json.loads(x) for x in open(led, encoding="utf-8") if x.strip()]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["exit_code"], 3)
+        self.assertIn("aborted", rows[0]["notes"])                # 记明是中止行
+        self.assertTrue(rows[0]["workspace_hash"].startswith("sha256:"))
+
     def test_ledger_failure_does_not_break_run(self):
         out = tempfile.mkdtemp()
         bad_led = os.path.join(out, "no_dir_here", "x", "..", "..", "l.jsonl")   # still writable? use a dir path
