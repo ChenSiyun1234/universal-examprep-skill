@@ -27,6 +27,7 @@ Exit codes: 0 = session scored and passed thresholds · 1 = scored but threshold
 import argparse
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -111,7 +112,7 @@ def bank_digest(fixture_dir):
     for q in bank:
         if isinstance(q, dict) and q.get("id") is not None:
             lines.append("- [#%s] (阶段%s) %s" % (q["id"], q.get("phase", q.get("chapter", "?")),
-                                                 str(q.get("question", ""))[:60]))
+                                                 str(q.get("question", ""))))   # FULL text — T4 校验题面前后缀
     return "\n".join(lines)
 
 
@@ -150,7 +151,8 @@ def call_agent(cmd_template, prompt, timeout, max_out):
     if not used:
         _die("--agent-cmd 必须含 {prompt} 占位符（作为单个参数传入）")
     try:
-        p = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", timeout=timeout)
+        p = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=timeout)
     except subprocess.TimeoutExpired:
         _die("agent 调用超时（%ds）——按失败中止，不评残缺会话" % timeout, 3)
     except OSError as e:
@@ -158,12 +160,31 @@ def call_agent(cmd_template, prompt, timeout, max_out):
     if p.returncode != 0:
         _die("agent 命令退出码 %d：%s" % (p.returncode, (p.stderr or "")[:400]), 3)
     out = (p.stdout or "").strip()
+    if "�" in out:
+        _die("agent 输出含非 UTF-8 字节（替换符出现）——按失败中止，不评乱码会话", 3)
     if not out:
         _die("agent 返回空回复——按失败中止", 3)
     if len(out) > max_out:
         _die("agent 单轮输出超出 --max-output-chars=%d（当前 %d）——截断会污染判分，按预算中止"
              % (max_out, len(out)), 3)
     return out
+
+
+_RESERVED_HEADING = re.compile(r"^#{2,3}(\s|$)")
+
+
+def _sanitize_reply(reply):
+    """A reply line that looks like a T5b structural heading (## Turn / ### Events / ### Files After …)
+    would be parsed as metadata and could inject fake events into the transcript. Defuse by indenting
+    such lines one space (T5b headings are line-anchored); content is otherwise preserved."""
+    out, n = [], 0
+    for ln in reply.splitlines():
+        if _RESERVED_HEADING.match(ln):
+            out.append(" " + ln)
+            n += 1
+        else:
+            out.append(ln)
+    return "\n".join(out), n
 
 
 def render_log(spec, exchanges):
@@ -177,7 +198,10 @@ def render_log(spec, exchanges):
             lines.append("kind: %s" % turn["kind"])
         if turn.get("phase_context") is not None:
             lines.append("phase_context: %s" % turn["phase_context"])
-        lines += ["", "### User", turn["user"], "", "### Assistant", reply, ""]
+        safe_reply, esc = _sanitize_reply(reply)
+        if esc:
+            print("[!] turn %d 回复含 %d 行保留标题，已转义防注入" % (i, esc))
+        lines += ["", "### User", turn["user"], "", "### Assistant", safe_reply, ""]
         if snapshot is not None:                       # checkpoint advanced this turn — record it so the
             lines += ["### Events", "- write_file: study_progress.md", "",   # T4 resume checks track the
                       "### Files After: study_progress.md",                   # RUNNING phase, not turn-1's
@@ -231,7 +255,9 @@ def main(argv=None):
             oracle_failures.append("turn %d: %s" % (i, f))
         snapshot = None
         tp = turn.get("phase_context")
-        if isinstance(tp, int) and tp != cur_phase:    # the script advanced the phase — the harness (as
+        if isinstance(tp, str) and tp.strip().isdigit():
+            tp = int(tp.strip())                       # T4/adapter 都接受数字字符串，这里同口径
+        if isinstance(tp, int) and not isinstance(tp, bool) and tp != cur_phase:    # the script advanced the phase — the harness (as
             cur_phase = tp                             # the 'environment') persists the checkpoint the
             progress = _progress_with_phase(progress, cur_phase)   # agent reads on later turns
             snapshot = progress
