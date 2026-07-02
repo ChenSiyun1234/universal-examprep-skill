@@ -265,6 +265,9 @@ def cmd_init(ws, args):
     if os.path.isfile(path) and not args.force:
         _die("study_state.json 已存在（init 幂等保护）；确要从 md 重建请加 --force")
     md_path = os.path.join(ws, MD_NAME)
+    if os.path.islink(md_path):
+        # isfile 会跟随链接把工作区外的文件迁进事实源——与 validator 同口径先拒
+        _die("study_progress.md 是符号链接——可能指向工作区外，拒绝迁移（请替换为真实文件）", 1)
     phase, mistakes, confusions = 1, [], []
     if os.path.isfile(md_path):
         try:

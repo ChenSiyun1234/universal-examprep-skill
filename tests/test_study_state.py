@@ -341,6 +341,23 @@ class Mutations(unittest.TestCase):
         self.assertTrue(all(x["id"] is None for x in rows))       # 渲染的 '-' 占位不回灌成 id
 
 
+    # ---- regression guards for Codex round-11 (4 findings) ----
+
+    def test_init_rejects_symlinked_md(self):
+        ws = _mk_ws(tempfile.mkdtemp(), md=None)
+        outside = os.path.join(tempfile.mkdtemp(), "evil.md")
+        with open(outside, "w", encoding="utf-8") as f:
+            f.write("当前阶段：1\n")
+        try:
+            os.symlink(outside, os.path.join(ws, "study_progress.md"))
+        except (OSError, NotImplementedError):
+            self.skipTest("no symlink privilege")
+        r = _up(ws, ["init"])
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("符号链接", r.stderr)                        # 外部文件不迁进事实源
+        self.assertFalse(os.path.isfile(os.path.join(ws, "study_state.json")))
+
+
     def test_set_updates_state_and_md(self):
         ws = self._ready()
         r = _up(ws, ["set", "--phase", "5", "--scope", "homework-only", "--mode", "查缺补漏",
@@ -766,6 +783,35 @@ class DriftJsonSnapshots(unittest.TestCase):
         with self.assertRaises(D.DriftError):                     # 计划外断点是坏输入，不进指标
             D.evaluate(sc, t)
 
+    def test_t4_state_only_fixture_without_initial_md(self):
+        import shutil
+        sys.path.insert(0, os.path.join(ROOT, "benchmark", "drift"))
+        import run_drift as D
+        sc = D.load_scenario(os.path.join(ROOT, "benchmark", "drift", "scenarios", "long_session_basic.json"))
+        fx = os.path.join(tempfile.mkdtemp(), "fx")
+        shutil.copytree(os.path.join(ROOT, sc["fixture"]), fx)
+        os.remove(os.path.join(fx, "study_progress.initial.md"))   # 纯 A4 fixture：只有 state
+        json.dump({"version": 1, "current_phase": 2,
+                   "mistake_archive": [], "confusion_log": []},
+                  open(os.path.join(fx, "study_state.json"), "w", encoding="utf-8"))
+        sc2 = dict(sc, fixture=fx)
+        d = tempfile.mkdtemp()
+        t = os.path.join(d, "t.jsonl")
+        with open(t, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"turn": 1, "user": "我回来了，继续复习", "kind": "resume",
+                                "assistant": "欢迎回来！我们接着阶段2继续复习。"},
+                               ensure_ascii=False) + chr(10))
+        m = D.evaluate(sc2, t)["metrics"]                        # 不再因缺 initial md 报 malformed
+        self.assertEqual(m["reset_detected"], 0)
+
+    def test_converter_docs_cover_state_snapshot(self):
+        doc = open(os.path.join(ROOT, "benchmark", "drift", "docs", "live_agent_pilot.md"),
+                   encoding="utf-8").read()
+        self.assertIn("write_file: study_state.json", doc)        # 运行手册与转换器契约一致
+        tpl = open(os.path.join(ROOT, "benchmark", "drift", "templates", "live_session_template.md"),
+                   encoding="utf-8").read()
+        self.assertIn("study_state.json", tpl)
+
     def test_t4_scalar_state_field_exits_2_not_traceback(self):
         sys.path.insert(0, os.path.join(ROOT, "benchmark", "drift"))
         import run_drift as D
@@ -830,6 +876,10 @@ class Contract(unittest.TestCase):
         # 恢复断点必须先读 study_state.json（事实源）——生成视图 md 过期/被手改时不能拿它当起点
         txt = open(os.path.join(ROOT, "skills", "exam-cram", "SKILL.md"), encoding="utf-8").read()
         self.assertIn("from `study_state.json` when it exists", txt)
+
+    def test_review_output_contract_routes_state(self):
+        txt = open(os.path.join(ROOT, "skills", "exam-review", "SKILL.md"), encoding="utf-8").read()
+        self.assertIn("via `update_progress.py set-mistake-status`", txt)   # 输出契约也走官方路径
 
     def test_review_skill_documents_status_commands(self):
         # replay 流要把行标成 已订正/已回顾 —— A4 边界必须给出官方状态命令，否则 agent 无合法持久化路径

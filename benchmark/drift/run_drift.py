@@ -486,7 +486,8 @@ def compute_metrics(scenario, fixture_dir, turns):
 
     try:                                                          # a bad FIXTURE is malformed input (exit 2),
         plan_text = _read(os.path.join(fixture_dir, "study_plan.md"))   # not a harness crash
-        init_progress = _read(os.path.join(fixture_dir, "study_progress.initial.md"))
+        init_md_path = os.path.join(fixture_dir, "study_progress.initial.md")
+        init_progress = _read(init_md_path) if os.path.isfile(init_md_path) else None
         bank = json.loads(_read(os.path.join(fixture_dir, "references", "quiz_bank.json")))
     except (IOError, OSError) as e:
         raise DriftError("fixture 文件读取失败: %s" % e)
@@ -517,8 +518,12 @@ def compute_metrics(scenario, fixture_dir, turns):
     # 指标种子同理：fixture 自带 state 时，初始阶段/行都从 JSON 事实源来——
     # 生成视图 md 过期/不一致时不能拿它当会话起点
     try:
-        init_snap = parse_state_json(_read(state_init), set(canon)) if os.path.isfile(state_init) \
-            else parse_progress(init_progress)
+        if os.path.isfile(state_init):
+            init_snap = parse_state_json(_read(state_init), set(canon))
+        elif init_progress is not None:
+            init_snap = parse_progress(init_progress)
+        else:
+            raise DriftError("fixture 需要 study_state.json 或 study_progress.initial.md 之一作为初始断点")
     except (IOError, OSError) as e:
         raise DriftError("fixture 的 study_state.json 读取失败: %s" % e)
 
