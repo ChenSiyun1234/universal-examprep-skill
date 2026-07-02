@@ -283,6 +283,44 @@ class Mutations(unittest.TestCase):
         self.assertIn("output contract IS the `update_progress.py add-confusion`", tracker)
 
 
+    # ---- regression guards for Codex round-9 (5 findings) ----
+
+    def test_init_preserves_preferences_section(self):
+        ws = self._ready()
+        _up(ws, ["set", "--pref", "讲解风格=七步模板", "--pref", "口吻=简洁"])
+        r = _up(ws, ["init", "--force"])                          # 官方推荐的恢复路径
+        self.assertEqual(r.returncode, 0, r.stderr)
+        st = _state(ws)
+        self.assertEqual(st["preferences"].get("讲解风格"), "七步模板")   # 偏好不因重建被静默丢
+        self.assertEqual(st["preferences"].get("口吻"), "简洁")
+
+    def test_state_dir_rejected_before_any_write(self):
+        ws = self._ready()
+        before_md = open(os.path.join(ws, "study_progress.md"), encoding="utf-8").read()
+        os.remove(os.path.join(ws, "study_state.json"))
+        os.makedirs(os.path.join(ws, "study_state.json"))         # state 路径变目录
+        r = _up(ws, ["init", "--force"])
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("拒绝写入", r.stderr)
+        self.assertEqual(open(os.path.join(ws, "study_progress.md"), encoding="utf-8").read(),
+                         before_md)                               # 生成视图未被先行打掉
+
+    def test_stale_phase_blocks_mutations_but_set_repairs(self):
+        ws = self._ready()
+        with open(os.path.join(ws, "study_plan.md"), "w", encoding="utf-8") as f:
+            f.write("# 计划\n## 阶段1：栈\n## 阶段2：树\n")
+        st = _state(ws)
+        st["current_phase"] = 9                                   # 手改/计划回滚后的陈旧断点
+        json.dump(st, open(os.path.join(ws, "study_state.json"), "w", encoding="utf-8"),
+                  ensure_ascii=False)
+        r = _up(ws, ["add-mistake", "--note", "x"])
+        self.assertEqual(r.returncode, 1)                         # 其他变更拒绝再保存坏断点
+        self.assertIn("已不在 study_plan.md", r.stderr)
+        r2 = _up(ws, ["set", "--phase", "2"])                     # 修复路径豁免并自校验新值
+        self.assertEqual(r2.returncode, 0, r2.stderr)
+        self.assertEqual(_up(ws, ["add-mistake", "--note", "x"]).returncode, 0)
+
+
     def test_set_updates_state_and_md(self):
         ws = self._ready()
         r = _up(ws, ["set", "--phase", "5", "--scope", "homework-only", "--mode", "查缺补漏",
@@ -358,9 +396,10 @@ class Mutations(unittest.TestCase):
         os.makedirs(md_dir)                                       # md 路径变目录 → 写入必失败
         r = _up(ws, ["set", "--phase", "9"])
         self.assertEqual(r.returncode, 1)
-        self.assertIn("告知用户", r.stderr)
+        self.assertIn("拒绝写入", r.stderr)                        # round-10 起：暂存任何 tmp 前就拦截
         self.assertEqual(_state(ws)["current_phase"], before["current_phase"])   # 事实源未超前
         self.assertFalse([f for f in os.listdir(ws) if f.endswith(".tmp")])      # 无 tmp 残留
+        self.assertTrue(os.path.isdir(os.path.join(ws, "study_progress.md")))    # 生成视图目录未被打掉
 
 class ValidatorSchema(unittest.TestCase):
     def _full_ws(self, state_patch=None):
@@ -651,6 +690,30 @@ class DriftJsonSnapshots(unittest.TestCase):
             "confusion_log": [{"chapter": "1", "note": "取模没搞懂"},
                                  {"chapter": "2", "note": "取模没搞懂"}]}, ensure_ascii=False))
         self.assertEqual(len(set(snap["confusion_rows"])), 2)     # 同 note 不同章不折叠
+
+    def test_t4_counts_md_write_event_after_state(self):
+        sys.path.insert(0, os.path.join(ROOT, "benchmark", "drift"))
+        import run_drift as D
+        sc = D.load_scenario(os.path.join(ROOT, "benchmark", "drift", "scenarios", "long_session_basic.json"))
+        d = tempfile.mkdtemp()
+        t = os.path.join(d, "t.jsonl")
+        st2 = json.dumps({"version": 1, "current_phase": 2, "mistake_archive": [],
+                          "confusion_log": []}, ensure_ascii=False)
+        turns = [
+            {"turn": 1, "assistant": "进入阶段2。", "files_after": {"study_state.json": st2}},
+            {"turn": 2, "assistant": "只写 md 事件、不带快照。",
+             "events": [{"type": "write_file", "path": "study_progress.md"}]},
+        ]
+        with open(t, "w", encoding="utf-8") as f:
+            f.write(chr(10).join(json.dumps(x, ensure_ascii=False) for x in turns))
+        m = D.evaluate(sc, t)["metrics"]
+        self.assertEqual(m["md_write_after_state"], 1)            # 纯事件形态的手改也计数
+
+    def test_review_trigger_and_cheatsheet_read_state(self):
+        cram = open(os.path.join(ROOT, "skills", "exam-cram", "SKILL.md"), encoding="utf-8").read()
+        self.assertIn("judged from `study_state.json`", cram)     # 终局复盘触发看事实源
+        sheet = open(os.path.join(ROOT, "skills", "exam-cheatsheet", "SKILL.md"), encoding="utf-8").read()
+        self.assertIn("Weak-spot source: `study_state.json`", sheet)   # 小抄弱点清单读事实源
 
     def test_t4_scalar_state_field_exits_2_not_traceback(self):
         sys.path.insert(0, os.path.join(ROOT, "benchmark", "drift"))

@@ -72,6 +72,15 @@ def parse_md(text):
     prefs = {"scope": _unset(sm.group(1), "混合题池") if sm else None,
              "mode": _unset(sm.group(2), "未设定") if sm else None,
              "time_budget": _unset(sm.group(3), "未设定") if sm else None}
+    # ⚙️ 偏好区（讲解风格等）也随迁移带走——init --force 恢复路径不能把已存偏好静默丢掉
+    preferences = {}
+    pref_sec = re.search(r"##[^\n]*偏好[^\n]*\n((?:\s*-[^\n]*\n?)*)", t)
+    if pref_sec:
+        for pl in pref_sec.group(1).splitlines():
+            pmatch = re.match(r"\s*-\s*([^:：]+)[:：]\s*(.+)$", pl)
+            if pmatch:
+                preferences[pmatch.group(1).strip()] = pmatch.group(2).strip()
+    prefs["preferences"] = preferences
     mistakes, confusions, checklist, cur, in_checklist = [], [], [], None, False
     for ln in t.splitlines():
         h = ln.strip()
@@ -209,7 +218,12 @@ def save(ws, state, note):
     plan = ((MD_NAME, render_md(state)),
             (STATE_NAME, json.dumps(state, ensure_ascii=False, indent=2)))
     for name, _content in plan:
-        tmp = os.path.join(ws, name) + ".tmp"
+        target = os.path.join(ws, name)
+        if os.path.lexists(target) and not os.path.islink(target) and not os.path.isfile(target):
+            # 目标是目录/特殊文件时，md 会先被 replace、随后 state 的 replace 才失败——
+            # 生成视图被打掉而事实源没写成，render 都救不回来。写任何 tmp 前先整体拒绝
+            _die("%s 已存在但不是常规文件（目录/特殊文件）——拒绝写入，请先手动清理" % target, 1)
+        tmp = target + ".tmp"
         if os.path.islink(tmp):
             # 可预测的 tmp 路径被替换成符号链接时，普通 open("w") 会顺着链接改写工作区外的任意文件
             # ——先整体拒绝（不创建任何 tmp），要求人工清理
@@ -270,13 +284,15 @@ def cmd_init(ws, args):
     for k in ("scope", "mode", "time_budget"):      # A2 范围/模式偏好随迁移带走——不带会静默放宽题池
         if prefs.get(k):
             st[k] = prefs[k]
+    if prefs.get("preferences"):                    # ⚙️ 偏好区（讲解风格等）同理——恢复路径不丢偏好
+        st["preferences"].update(prefs["preferences"])
     save(ws, st, "init：从 %s 迁移（阶段 %d，错题 %d，疑难 %d，打卡 %d）"
          % (MD_NAME if os.path.isfile(md_path) else "空白", phase, len(mistakes), len(confusions),
             len(checklist)))
     return 0
 
 
-def _require_state(ws):
+def _require_state(ws, repairing_phase=False):
     st = load_state(ws)
     if st is None:
         _die("尚无 study_state.json——先跑 `update_progress.py --workspace <ws> init` 迁移")
@@ -285,6 +301,13 @@ def _require_state(ws):
     if not (isinstance(cp, int) and not isinstance(cp, bool) and cp >= 1):
         _die("study_state.json 损坏：current_phase 必须是 ≥1 的整数，当前 %r——请修复 state "
              "或 init --force 从 md 重建" % cp, 1)
+    if not repairing_phase:
+        # 任何变更都不许把「已不在计划里的阶段」再保存一次（手改/计划回滚后的陈旧断点）——
+        # 只有 set --phase（修复路径，自己校验新值）豁免，否则连修复命令都进不来
+        plan = _plan_phases(ws)
+        if plan and cp not in plan:
+            _die("study_state.json 的 current_phase=%d 已不在 study_plan.md 的阶段列表 %s 中——"
+                 "先用 `set --phase <计划内阶段>` 修正断点再做其他更新" % (cp, sorted(plan)), 1)
     for field in ("mistake_archive", "confusion_log", "phase_checklist", "knowledge_window"):
         v = st.get(field)
         if v is None:
@@ -328,7 +351,8 @@ def _plan_phases(ws):
 
 
 def cmd_set(ws, args):
-    st = _require_state(ws)
+    # 提供 --phase 时豁免陈旧断点检查（这是修复路径；新值下面自行对照计划校验）
+    st = _require_state(ws, repairing_phase=args.phase is not None)
     changed = []
     if args.phase is not None:
         if args.phase < 1:

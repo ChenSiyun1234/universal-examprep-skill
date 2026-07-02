@@ -416,17 +416,21 @@ def _session_snapshots(turns, state_established=False):
     out, stale_md = [], 0
     for t in turns:
         fa = t.get("files_after") or {}
+        # 违规判定连事件一起看：直接手写 JSONL 可以只给 write_file 事件、不带快照——
+        # 光看 files_after 会漏掉正是要抓的 A4 手改
+        evs = {str(e.get("path", "")).replace(chr(92), "/").rsplit("/", 1)[-1]
+               for e in (t.get("events") or []) if e.get("type") == "write_file"}
+        md_touch = "study_progress.md" in fa or "study_progress.md" in evs
+        state_touch = "study_state.json" in fa or "study_state.json" in evs
         if "study_state.json" in fa:
             state_established = True
             out.append(parse_state_json(fa["study_state.json"]))
-        elif "study_progress.md" in fa:
-            if state_established:
-                stale_md += 1        # A4 违规：state 确立后手写生成视图——不采纳，且计数曝光（可设阈值门槛）
-                out.append(None)
-            else:
-                out.append(parse_progress(fa["study_progress.md"]))
+        elif "study_progress.md" in fa and not state_established:
+            out.append(parse_progress(fa["study_progress.md"]))
         else:
             out.append(None)
+        if state_established and md_touch and not state_touch:
+            stale_md += 1            # A4 违规：state 确立后只动生成视图 md（官方更新会两个都写）
     return out, stale_md
 
 

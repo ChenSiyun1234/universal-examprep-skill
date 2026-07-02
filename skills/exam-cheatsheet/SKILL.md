@@ -18,10 +18,10 @@ Trigger when all study phases are basically cleared and review is wrapping up, O
 ## Inputs
 - `references/wiki/` — core conclusions/formulas per chapter. Iterate through **all mastered chapters** from `study_plan.md`/`study_progress.md`, reading each chapter slice one at a time (never dump the whole wiki into context at once) so the sheet covers every mastered chapter.
 - `references/quiz_bank.json` — teacher-flagged key items and their answer frameworks.
-- `study_progress.md` — mistakes, confusion entries, and per-chapter mastery. Read mistakes and confusion entries FIRST.
+- Weak-spot source: `study_state.json` (`mistake_archive` / `confusion_log` / `phase_checklist`) when it exists — the A4 source of truth; else `study_progress.md` (mistakes, confusion entries, per-chapter mastery; a generated view that may be stale). Read mistakes and confusion entries FIRST.
 
 ## Workflow
-1. **Load weak spots first.** Read mistakes and confusion entries from `study_progress.md` before anything else, so the cram sheet prioritizes what the user still loses points on.
+1. **Load weak spots first.** Read mistakes and confusion entries — from `study_state.json` when it exists, else `study_progress.md` — before anything else, so the cram sheet prioritizes what the user still loses points on.
 2. **Extract the skeleton.** For each chapter keep only the highest-frequency / highest-scoring formulas, conclusions, and one-sentence term definitions. Drop everything else.
 3. **Answer templates.** For teacher-flagged key items in `references/quiz_bank.json`, give a copy-it-in-the-exam answer framework / solution-step list; attach a 3-minute mnemonic.
 4. **Weak-spot column.** List mistakes and still-open confusion entries in their own column as the last thing to review before the exam.
