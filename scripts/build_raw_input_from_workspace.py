@@ -53,7 +53,8 @@ _SOL_TOKEN_RE = re.compile(r"solutions?|answers?|(?:^|[_\-. ])(?:sol|ans)(?=[_\-
 _HW_PROB_RES = (re.compile(_HEAD + r"(?:Problem|Exercise|Question)\s*#?\s*(\d+)", re.I | re.M),
                 re.compile(_HEAD + r"(?:第\s*(\d+)\s*题|习题\s*(\d+)[.:：]?|题目\s*(\d+)[.:：]?)", re.M))
 # inline solution heading (same file, follows its problem)
-_HW_SOL_RE = re.compile(_HEAD + r"(?:Solution|Answer|解答|答案)\s*#?\s*(\d+)?\s*[.:：]?", re.I | re.M)
+_HW_SOL_RE = re.compile(_HEAD + r"(?:Solution|Answer|解答|答案)\s*(?:#?\s*(\d+))?\s*(?:[.:：]|$)",
+                        re.I | re.M)
 
 # Two classes of asset cue. ASSET_EXCLUDE masks known false-positive phrases first.
 ASSET_EXCLUDE = ("table of contents", "figure it out", "figure out", "graph theory", "figure caption")
@@ -342,18 +343,23 @@ def classify_homework_files(files):
     Solutions pair by stripped-stem equality or prefix; an unpairable solution file is fail-loud."""
     hw, sols = [], []
     for f in files:
+        rel = f.replace("\\", "/")
         stem = os.path.splitext(os.path.basename(f))[0]
-        if not _HW_FILE_RE.search(f.replace("\\", "/")):
-            continue
-        (sols if _SOL_TOKEN_RE.search(stem) else hw).append(f)
+        is_sol = bool(_SOL_TOKEN_RE.search(stem) or _SOL_TOKEN_RE.search(os.path.dirname(rel)))
+        if not (_HW_FILE_RE.search(rel) or is_sol):
+            continue                                   # solutions/hw1.pdf：目录名也是 solution 记号
+        (sols if is_sol else hw).append(f)
     hw_by_norm = {_hw_norm(os.path.splitext(os.path.basename(f))[0]): f for f in hw}
     pairing = {}
     for sf in sols:
         stem = os.path.splitext(os.path.basename(sf))[0]
         stripped = _hw_norm(_SOL_TOKEN_RE.sub("", stem))
         match = hw_by_norm.get(stripped)
-        if match is None:   # prefix fallback: hw1 vs hw1solutionsfinal
-            cands = [f for n, f in hw_by_norm.items() if n and (stripped.startswith(n) or n.startswith(stripped))]
+        if match is None:   # prefix fallback: hw1 vs hw1solutionsfinal——数字边界保护（hw1 ≠ hw10）
+
+            def _pref(a, b):
+                return a.startswith(b) and (len(a) == len(b) or not a[len(b)].isdigit())
+            cands = [f for n, f in hw_by_norm.items() if n and (_pref(stripped, n) or _pref(n, stripped))]
             match = cands[0] if len(cands) == 1 else None
         pairing[sf] = match
     return hw, pairing
@@ -431,8 +437,13 @@ def extract_homework_items(pages):
         for i, mk in enumerate(marks):
             end = marks[i + 1]["start"] if i + 1 < len(marks) else len(stream)
             body = stream[mk["start"]:end].strip()
-            if body:
-                sol_answers.setdefault((hf, mk["num"]), (sf, body, _pages_for_span(bounds, mk["start"], end)))
+            if not body:
+                continue
+            key = (hf, mk["num"])
+            prev = sol_answers.get(key)
+            # 同号既有 Problem 复述又有 Answer 段时，答案段优先（不再"先到先得"存题面复述）
+            if prev is None or (mk["role"] == "solution" and prev[3] != "solution"):
+                sol_answers[key] = (sf, body, _pages_for_span(bounds, mk["start"], end), mk["role"])
 
     items = []
     for hf in hw_files:
@@ -442,7 +453,8 @@ def extract_homework_items(pages):
         if not probs:
             report["warnings"].append("hw_no_markers: %s（识别为作业文件但没找到 Problem/第N题 标记）" % hf)
             continue
-        stem = re.sub(r"[^0-9A-Za-z_\-一-鿿]+", "_", os.path.splitext(os.path.basename(hf))[0])[:40]
+        stem = re.sub(r"[^0-9A-Za-z_\-一-鿿]+", "_",
+                      os.path.splitext(hf.replace("\\", "/"))[0])[:60]   # 含子目录，week1/hw1 与 week2/hw1 不同 id
         seen_nums = set()
         dup_counts = {}
         for i, mk in enumerate(marks):
@@ -462,12 +474,23 @@ def extract_homework_items(pages):
                 s_end = next((m2["start"] for m2 in marks[i + 2:] if m2["role"] == "problem"), len(stream))
                 ans = (hf, stream[s_start:s_end].strip(), _pages_for_span(bounds, s_start, s_end))
             if ans is None:
-                ans = sol_answers.get((hf, mk["num"]))
+                got = sol_answers.get((hf, mk["num"]))
+                ans = got[:3] if got else None
             q_pages = _pages_for_span(bounds, mk["start"], nxt)
+            # marker-only prompt: the heading is all the text extractor got — the real prompt is an
+            # image on the page → page_reference（镜像 lecture 的 marker_only 语义），并渲染原页
+            body_txt = q_text.split("\n", 1)[1] if "\n" in q_text else ""
+            marker_only = len(re.findall(r"[0-9A-Za-z一-鿿]", body_txt)) < 10
+            # chapter：只在题文/文件名明说时才标（第N章 / Chapter N / chNN）——作业号 ≠ 章节号，不硬编
+            chm = (re.search(r"(?:第\s*(\d+)\s*章|Chapter\s+(\d+))", q_text, re.I)
+                   or re.search(r"(?:^|[\/_\-. ])ch\s*0*(\d+)", hf, re.I))
             item = {"id": "hw_%s_%d" % (stem, mk["num"]), "type": "subjective",
                     "question": q_text[:1500], "source": "material", "ai_generated": False,
-                    "source_type": "homework", "question_text_status": "full",
+                    "source_type": "homework", "homework_number": mk["num"],
+                    "question_text_status": "page_reference" if marker_only else "full",
                     "source_file": hf, "source_pages": q_pages or [bounds[0][1] if bounds else 1]}
+            if chm:
+                item["chapter"] = int(next(g for g in chm.groups() if g))
             if ans:
                 sf, body, apages = ans
                 item["answer"] = body[:2000]
@@ -480,7 +503,11 @@ def extract_homework_items(pages):
                 item["answer_status"] = "unknown"
                 report["warnings"].append("hw_unanswered: %s（没找到配对答案，考前需人工核对）" % item["id"])
             # visual dependence — same heuristic family as lecture items; renderable only for PDF sources
-            if requires_assets_heuristic(q_text, renderable=is_pdf.get(hf, False)):
+            if marker_only and is_pdf.get(hf, False):
+                item["requires_assets"] = True
+                item["_render"] = True
+                item["_question_pages"] = [(hf, p) for p in (q_pages or [])]
+            elif requires_assets_heuristic(q_text, renderable=is_pdf.get(hf, False)):
                 item["requires_assets"] = True
                 item["_render"] = True
                 item["_question_pages"] = [(hf, p) for p in (q_pages or [])]

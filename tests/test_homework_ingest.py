@@ -67,7 +67,7 @@ class HomeworkIngest(unittest.TestCase):
         code, payload, report = _run(mat, be)
         self.assertEqual(code, 0, report)
         bank = {q["id"]: q for q in payload["quiz_bank"]}
-        q1 = bank["hw_hw1_1"]
+        q1 = bank["hw_homework_hw1_1"]
         self.assertEqual(q1["source_type"], "homework")
         self.assertIn("出栈顺序", q1["question"])
         self.assertIn("LIFO", q1["answer"])                       # 题答分离 PDF 自动配对
@@ -82,10 +82,10 @@ class HomeworkIngest(unittest.TestCase):
         tmp = tempfile.mkdtemp()
         mat, be = _mk(tmp, {"hw1.pdf": HW1, "hw1_sol.pdf": HW1_SOL})
         code, payload, report = _run(mat, be)
-        q3 = next(q for q in payload["quiz_bank"] if q["id"] == "hw_hw1_3")
+        q3 = next(q for q in payload["quiz_bank"] if q["id"] == "hw_homework_hw1_3")
         self.assertNotIn("answer", q3)
         self.assertEqual(q3["answer_status"], "unknown")
-        self.assertTrue(any(w.startswith("hw_unanswered: hw_hw1_3") for w in report["warnings"]))
+        self.assertTrue(any(w.startswith("hw_unanswered: hw_homework_hw1_3") for w in report["warnings"]))
 
     def test_inline_solution_and_cn_markers(self):
         tmp = tempfile.mkdtemp()
@@ -112,7 +112,7 @@ class HomeworkIngest(unittest.TestCase):
         mat, be = _mk(tmp, {"hw1.pdf": HW1, "hw1_sol.pdf": HW1_SOL})
         asset_root = os.path.join(tmp, "ws", "references", "assets")
         code, payload, report = _run(mat, be, ["--asset-root", asset_root])
-        q3 = next(q for q in payload["quiz_bank"] if q["id"] == "hw_hw1_3")
+        q3 = next(q for q in payload["quiz_bank"] if q["id"] == "hw_homework_hw1_3")
         self.assertIs(q3["requires_assets"], True)                # Venn/shown at right → 图依赖
         self.assertTrue(q3["assets"])
         self.assertEqual(q3["assets"][0]["role"], "question_context")
@@ -131,7 +131,7 @@ class HomeworkIngest(unittest.TestCase):
         code, payload, report = _run(mat, be)
         ids = [q["id"] for q in payload["quiz_bank"]]
         self.assertTrue(any(i.startswith("lecture_example_1_1") for i in ids))   # lecture 管线原样
-        self.assertIn("hw_hw1_1", ids)
+        self.assertIn("hw_homework_hw1_1", ids)
 
     def test_duplicate_problem_number_kept_first(self):
         tmp = tempfile.mkdtemp()
@@ -174,7 +174,83 @@ class HomeworkIngest(unittest.TestCase):
         self.assertEqual(pairing["homework/HW2_Answers.pdf"], "homework/HW2.pdf")
         self.assertEqual(pairing["homework/作业3答案.pdf"], "homework/作业3.pdf")
 
+    # ---- regression guards for Codex round-1 (7 findings) ----
+
+    def test_bare_answer_word_not_a_marker(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw4.pdf": ["Problem 1\nAnswer the following questions about stacks.\n更多题面内容在此。"]})
+        code, payload, report = _run(mat, be)
+        q = next(x for x in payload["quiz_bank"] if x.get("source_type") == "homework")
+        self.assertIn("Answer the following", q["question"])      # 没被裁成 inline 答案
+        self.assertEqual(q["answer_status"], "unknown")
+
+    def test_subdir_files_get_distinct_ids(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        for sub in ("week1", "week2"):
+            os.makedirs(os.path.join(mat, sub), exist_ok=True)
+            with open(os.path.join(mat, sub, "hw1.pdf"), "wb") as f:
+                f.write(b"%PDF-fake")
+        be = FakeBackend({"hw1.pdf": ["Problem 1\n本周题面内容足够长了吧。"]})
+        code, payload, report = _run(mat, be)
+        ids = sorted(q["id"] for q in payload["quiz_bank"] if q.get("source_type") == "homework")
+        self.assertEqual(len(ids), 2)
+        self.assertNotEqual(ids[0], ids[1])                       # week1/week2 不同 id
+
+    def test_chapter_only_when_stated(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw5.pdf": ["Problem 1\n本题考察第 3 章 的内容，请作答完整过程。",
+                                        "Problem 2\n没有章节线索的题面文字内容。"]})
+        code, payload, report = _run(mat, be)
+        hw = {q["homework_number"]: q for q in payload["quiz_bank"] if q.get("source_type") == "homework"}
+        self.assertEqual(hw[1]["chapter"], 3)                     # 题文明说 → 标 chapter
+        self.assertNotIn("chapter", hw[2])                        # 不硬编（作业号 ≠ 章节号）
+
+    def test_hw1_solution_never_pairs_hw10(self):
+        hw, pairing = B.classify_homework_files(["homework/hw10.pdf", "homework/hw1_sol.pdf"])
+        self.assertIsNone(pairing["homework/hw1_sol.pdf"])        # 数字边界：hw1 ≠ hw10
+
+    def test_solution_file_prefers_answer_slice(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw6.pdf": ["Problem 1\n题面：求栈顺序的完整过程。"],
+                            "hw6_sol.pdf": ["Problem 1\n题面复述而已。\nAnswer 1: 真正的答案是 LIFO。"]})
+        code, payload, report = _run(mat, be)
+        q = next(x for x in payload["quiz_bank"] if x.get("source_type") == "homework")
+        self.assertIn("LIFO", q["answer"])                        # 答案段优先于题面复述
+        self.assertFalse(q["answer"].startswith("Problem 1"))
+
+    def test_marker_only_prompt_becomes_page_reference(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw7.pdf": ["Problem 1\n"]})          # 只有标题，真题面是页上的图
+        asset_root = os.path.join(tmp, "ws", "references", "assets")
+        code, payload, report = _run(mat, be, ["--asset-root", asset_root])
+        q = next(x for x in payload["quiz_bank"] if x.get("source_type") == "homework")
+        self.assertEqual(q["question_text_status"], "page_reference")
+        self.assertIs(q["requires_assets"], True)
+        self.assertTrue(q["assets"])                              # 原页已渲染挂上
+
+    def test_solutions_directory_companion(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(os.path.join(mat, "homework"), exist_ok=True)
+        os.makedirs(os.path.join(mat, "solutions"), exist_ok=True)
+        with open(os.path.join(mat, "homework", "hw1.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+        with open(os.path.join(mat, "solutions", "hw1.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+
+        class DirBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                if "solutions" in pdf_path.replace("\\", "/"):
+                    return ["Problem 1\nAnswer 1: 目录版答案在此。"]
+                return ["Problem 1\n目录版题面内容足够长。"]
+        be = DirBackend({})
+        code, payload, report = _run(mat, be)
+        q = next(x for x in payload["quiz_bank"] if x.get("source_type") == "homework")
+        self.assertIn("目录版答案", q["answer"])                   # solutions/ 目录伴随被识别配对
+
     def test_no_network_or_llm(self):
+
         src = open(os.path.join(ROOT, "scripts", "build_raw_input_from_workspace.py"), encoding="utf-8").read()
         for banned in ("import requests", "urllib.request", "import anthropic", "import socket"):
             self.assertNotIn(banned, src)
