@@ -72,6 +72,9 @@ def load_turns(path):
     for k in ("fixture", "scenario", "turns"):
         if k not in spec:
             _die("turns 文件缺必需字段 %r" % k)
+    for k in ("fixture", "scenario"):
+        if not isinstance(spec[k], str) or not spec[k].strip():
+            _die("turns.%s 必须是非空字符串路径，当前 %r" % (k, spec[k]))
     if not isinstance(spec["turns"], list) or not spec["turns"]:
         _die("turns 必须是非空数组")
     for i, t in enumerate(spec["turns"], 1):
@@ -89,8 +92,9 @@ def load_turns(path):
                 and not (isinstance(pc, str) and pc.strip().isdigit()):
             _die("turns[%d].phase_context 必须是整数或数字字符串，当前 %r（先修脚本再花钱跑）" % (i, pc))
         kd = t.get("kind")
-        if kd is not None and not isinstance(kd, str):
-            _die("turns[%d].kind 必须是字符串，当前 %r" % (i, kd))
+        if kd is not None and (not isinstance(kd, str) or not kd.strip()
+                               or "\n" in kd or "\r" in kd):
+            _die("turns[%d].kind 必须是非空单行字符串，当前 %r（先修脚本再花钱跑）" % (i, kd))
     return spec
 
 
@@ -153,7 +157,10 @@ def call_agent(cmd_template, prompt, timeout, max_out, cwd=None):
         except Exception:
             _die("--agent-cmd JSON 数组格式非法")
     else:
-        toks = shlex.split(cmd_template, posix=(os.name != "nt"))
+        try:
+            toks = shlex.split(cmd_template, posix=(os.name != "nt"))
+        except ValueError as e:
+            _die("--agent-cmd 解析失败（引号不配对？）: %s" % e)
         if os.name == "nt":                            # posix=False keeps surrounding quotes — strip them
             toks = [t[1:-1] if len(t) >= 2 and t[0] == t[-1] and t[0] in "\"'" else t for t in toks]
     argv = []

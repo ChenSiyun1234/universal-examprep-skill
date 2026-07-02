@@ -326,7 +326,51 @@ class LiveSmoke(unittest.TestCase):
         spec = json.load(open(os.path.join(DRIFT, "templates", "live_smoke_turns.json"), encoding="utf-8"))
         last = spec["turns"][-1]
         self.assertIn("阶段2", last["expect_any"])                # wrong-phase resume text can't pass silently
-        self.assertIn("阶段1", last["forbid_any"])
+        self.assertIn("从阶段1", last["forbid_any"])              # restart-intent phrasing, NOT bare 阶段1
+        # precision: mentioning phase 1 as COMPLETED must not be forbidden (Codex round-6 false-positive)
+        import importlib
+        sys.path.insert(0, DRIFT)
+        m = importlib.import_module("run_live_smoke")
+        self.assertEqual(m.check_oracle(last, "阶段1已完成，现在继续阶段2的二叉搜索树复习。"), [])
+
+
+    # ---- regression guards for Codex round-6 (precision + pre-flight) ----
+
+    def test_correct_replies_not_falsely_forbidden(self):
+        # round-6 hardening over-corrected; these CORRECT replies must pass the oracles
+        import importlib
+        sys.path.insert(0, DRIFT)
+        m = importlib.import_module("run_live_smoke")
+        spec = json.load(open(os.path.join(DRIFT, "templates", "live_smoke_turns.json"), encoding="utf-8"))
+        wrong = next(t for t in spec["turns"] if "FIFO" in t["user"])
+        self.assertEqual(m.check_oracle(wrong, "FIFO 对应队列，栈是 LIFO（后进先出）。"), [])
+        bypass = "答对了，FIFO 是正确答案。"
+        self.assertTrue(m.check_oracle(wrong, bypass))           # real affirmation still caught
+
+    def test_whitespace_kind_rejected_pre_flight(self):
+        d = tempfile.mkdtemp()
+        spec = json.load(open(os.path.join(DRIFT, "templates", "live_smoke_turns.json"), encoding="utf-8"))
+        spec["turns"][0]["kind"] = "  "
+        tf = os.path.join(d, "turns.json")
+        json.dump(spec, open(tf, "w", encoding="utf-8"), ensure_ascii=False)
+        r = _run(["--agent-cmd", AGENT_CMD, "--out-dir", d, "--turns", tf], {"RUN_SKILL_DRIFT_LLM": "1"})
+        self.assertEqual(r.returncode, 2)
+        self.assertFalse(os.path.isfile(os.path.join(d, "live_session.md")))   # zero paid calls
+
+    def test_non_string_fixture_in_turns_exits_2(self):
+        d = tempfile.mkdtemp()
+        spec = {"fixture": 123, "scenario": "x.json", "turns": [{"user": "hi"}]}
+        tf = os.path.join(d, "turns.json")
+        json.dump(spec, open(tf, "w", encoding="utf-8"))
+        r = _run(["--agent-cmd", AGENT_CMD, "--out-dir", d, "--turns", tf], {"RUN_SKILL_DRIFT_LLM": "1"})
+        self.assertEqual(r.returncode, 2)
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_unmatched_quote_agent_cmd_exits_2(self):
+        r = _run(["--agent-cmd", "python 'oops {prompt}", "--out-dir", tempfile.mkdtemp()],
+                 {"RUN_SKILL_DRIFT_LLM": "1"})
+        self.assertEqual(r.returncode, 2)
+        self.assertNotIn("Traceback", r.stderr)
 
     def test_runner_is_offline_by_construction(self):
         src = open(RUNNER, encoding="utf-8").read()
