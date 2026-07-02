@@ -81,6 +81,8 @@ def parse_md(text):
             if pmatch:
                 preferences[pmatch.group(1).strip()] = pmatch.group(2).strip()
     prefs["preferences"] = preferences
+    lm = re.search(r"语言偏好\**\s*：\s*(.+)", t)
+    prefs["language"] = lm.group(1).strip() if lm else None
     mistakes, confusions, checklist, cur, in_checklist = [], [], [], None, False
     for ln in t.splitlines():
         h = ln.strip()
@@ -130,7 +132,8 @@ def parse_md(text):
             # 只有 3 列（无状态列）时整个尾部都是 note，状态回默认
             status = tail[-1] if len(tail) >= 2 and tail[-1] else default_status
             note_cells = tail[:-1] if len(tail) >= 2 else tail
-            cur.append({"id": ids[0] if ids else (cells[0] or None), "chapter": cells[1] if len(cells) > 1 else None,
+            first_cell = cells[0] if cells and cells[0] not in ("-", "") else None   # 渲染的 '-' 占位≠id
+            cur.append({"id": ids[0] if ids else first_cell, "chapter": cells[1] if len(cells) > 1 else None,
                         "note": " / ".join(c for c in note_cells if c) or (cells[0] if cells else ""),
                         "status": status})
     return phase, mistakes, confusions, checklist, prefs
@@ -167,8 +170,11 @@ def render_md(state):
                                                      state.get("mode") or "未设定",
                                                      state.get("time_budget") or "未设定"),
         "* **最后更新时间**：%s" % (state.get("last_updated") or "-"),
-        "",
     ]
+    if state.get("language"):
+        # 语言偏好也要能从生成视图迁回来——init --force 恢复路径不丢 set --language
+        lines.append("* **语言偏好**：%s" % _md_cell(state["language"], default=""))
+    lines.append("")
     if state.get("phase_checklist"):
         # 打卡区随 state 一起渲染回来——迁移绝不丢每阶段完成状态；勾选走 set-check 官方路径
         lines += ["## 📊 知识点打卡状态",
@@ -281,7 +287,7 @@ def cmd_init(ws, args):
     st = default_state()
     st.update({"current_phase": phase, "mistake_archive": mistakes, "confusion_log": confusions,
                "phase_checklist": checklist})
-    for k in ("scope", "mode", "time_budget"):      # A2 范围/模式偏好随迁移带走——不带会静默放宽题池
+    for k in ("scope", "mode", "time_budget", "language"):   # A2 范围/模式/语言偏好随迁移带走
         if prefs.get(k):
             st[k] = prefs[k]
     if prefs.get("preferences"):                    # ⚙️ 偏好区（讲解风格等）同理——恢复路径不丢偏好

@@ -321,6 +321,26 @@ class Mutations(unittest.TestCase):
         self.assertEqual(_up(ws, ["add-mistake", "--note", "x"]).returncode, 0)
 
 
+    # ---- regression guards for Codex round-10 (5 findings) ----
+
+    def test_language_survives_forced_rebuild(self):
+        ws = self._ready()
+        _up(ws, ["set", "--language", "English"])
+        r = _up(ws, ["init", "--force"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(_state(ws)["language"], "English")       # 语言偏好经生成视图迁回
+
+    def test_forced_rebuild_keeps_idless_rows_idless(self):
+        ws = self._ready()
+        _up(ws, ["add-confusion", "--note", "无 id 的疑难甲"])
+        _up(ws, ["add-confusion", "--note", "无 id 的疑难乙"])
+        r = _up(ws, ["init", "--force"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rows = [x for x in _state(ws)["confusion_log"] if "无 id" in x["note"]]
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(all(x["id"] is None for x in rows))       # 渲染的 '-' 占位不回灌成 id
+
+
     def test_set_updates_state_and_md(self):
         ws = self._ready()
         r = _up(ws, ["set", "--phase", "5", "--scope", "homework-only", "--mode", "查缺补漏",
@@ -715,6 +735,37 @@ class DriftJsonSnapshots(unittest.TestCase):
         sheet = open(os.path.join(ROOT, "skills", "exam-cheatsheet", "SKILL.md"), encoding="utf-8").read()
         self.assertIn("Weak-spot source: `study_state.json`", sheet)   # 小抄弱点清单读事实源
 
+    def test_t4_state_event_without_snapshot_establishes_state(self):
+        sys.path.insert(0, os.path.join(ROOT, "benchmark", "drift"))
+        import run_drift as D
+        sc = D.load_scenario(os.path.join(ROOT, "benchmark", "drift", "scenarios", "long_session_basic.json"))
+        d = tempfile.mkdtemp()
+        t = os.path.join(d, "t.jsonl")
+        turns = [
+            {"turn": 1, "assistant": "官方工具写了 state（裸事件）。",
+             "events": [{"type": "write_file", "path": "study_state.json"}]},
+            {"turn": 2, "assistant": "手改 md。",
+             "files_after": {"study_progress.md": "当前阶段：9"}},
+        ]
+        with open(t, "w", encoding="utf-8") as f:
+            f.write(chr(10).join(json.dumps(x, ensure_ascii=False) for x in turns))
+        m = D.evaluate(sc, t)["metrics"]
+        self.assertEqual(m["md_write_after_state"], 1)            # 裸事件也确立事实源，md-only 被记违规
+
+    def test_t4_rejects_state_phase_outside_plan(self):
+        sys.path.insert(0, os.path.join(ROOT, "benchmark", "drift"))
+        import run_drift as D
+        sc = D.load_scenario(os.path.join(ROOT, "benchmark", "drift", "scenarios", "long_session_basic.json"))
+        d = tempfile.mkdtemp()
+        t = os.path.join(d, "t.jsonl")
+        bad = json.dumps({"version": 1, "current_phase": 99,
+                          "mistake_archive": [], "confusion_log": []})
+        with open(t, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"turn": 1, "assistant": "x",
+                                "files_after": {"study_state.json": bad}}) + chr(10))
+        with self.assertRaises(D.DriftError):                     # 计划外断点是坏输入，不进指标
+            D.evaluate(sc, t)
+
     def test_t4_scalar_state_field_exits_2_not_traceback(self):
         sys.path.insert(0, os.path.join(ROOT, "benchmark", "drift"))
         import run_drift as D
@@ -765,6 +816,10 @@ class Contract(unittest.TestCase):
         self.assertIn("网页端口径", txt)                          # A4 条款按网页端能力改写
         self.assertIn("绝不要声称你已写入", txt)                   # 不许谎称本地写入
         self.assertIn("只读事实源", txt)                          # 粘贴的 state 只读恢复
+
+    def test_root_skill_final_review_reads_state(self):
+        txt = open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8").read()
+        self.assertIn("从其 `mistake_archive`", txt)              # 根入口错题重温读事实源
 
     def test_agents_md_prefers_state(self):
         txt = open(os.path.join(ROOT, "AGENTS.md"), encoding="utf-8").read()

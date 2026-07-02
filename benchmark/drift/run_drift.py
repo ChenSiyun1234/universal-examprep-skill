@@ -362,9 +362,11 @@ def looks_like_question(line):
 
 # ---------------- metrics ----------------
 
-def parse_state_json(text):
+def parse_state_json(text, plan_phases=None):
     """A4: parse a study_state.json snapshot into the same shape parse_progress returns. Rows are
-    rendered to "[#id] note" strings so persistence tracking (_row_key) works identically."""
+    rendered to "[#id] note" strings so persistence tracking (_row_key) works identically.
+    传入 plan_phases 时阶段还必须落在计划内——validator/update 工具拒收的 99 号断点，
+    T4 也不能让它把 expected_phase 带进沟里。"""
     try:
         st = json.loads(text or "")
     except ValueError as e:
@@ -376,6 +378,9 @@ def parse_state_json(text):
     # 静默当 None/照单全收会让断点与阶段限定指标从错误阶段继续算，掩盖坏写入
     if not (isinstance(cp, int) and not isinstance(cp, bool) and cp >= 1):
         raise DriftError("study_state.json 快照的 current_phase 必须是 ≥1 的整数，当前 %r" % cp)
+    if plan_phases and cp not in plan_phases:
+        raise DriftError("study_state.json 快照的 current_phase=%d 不在计划阶段 %s 中（断点不可恢复）"
+                         % (cp, sorted(plan_phases)))
     phase = cp
 
     def _rows(field):
@@ -408,7 +413,7 @@ def parse_state_json(text):
             "confusion_rows": _rows("confusion_log")}
 
 
-def _session_snapshots(turns, state_established=False):
+def _session_snapshots(turns, state_established=False, plan_phases=None):
     """Per-turn parsed progress snapshot (None = no usable snapshot that turn), honoring the A4
     source-of-truth contract: within a turn study_state.json wins; and once state has appeared
     (fixture or any turn), a LATER md-only write is a hand-edit of the generated view — it must
@@ -424,7 +429,10 @@ def _session_snapshots(turns, state_established=False):
         state_touch = "study_state.json" in fa or "study_state.json" in evs
         if "study_state.json" in fa:
             state_established = True
-            out.append(parse_state_json(fa["study_state.json"]))
+            out.append(parse_state_json(fa["study_state.json"], plan_phases))
+        elif "study_state.json" in evs:
+            state_established = True   # 只有 write_file 事件、没带快照——事实源同样已确立，
+            out.append(None)           # 后续 md-only 不能再当 legacy 来源
         elif "study_progress.md" in fa and not state_established:
             out.append(parse_progress(fa["study_progress.md"]))
         else:
@@ -505,11 +513,11 @@ def compute_metrics(scenario, fixture_dir, turns):
     # A4 source-of-truth aware per-turn snapshots — computed ONCE and shared by the checkpoint /
     # row-persistence sections so the md-only-after-state rejection can't diverge between them
     state_init = os.path.join(fixture_dir, "study_state.json")
-    snaps, md_after_state = _session_snapshots(turns, os.path.isfile(state_init))
+    snaps, md_after_state = _session_snapshots(turns, os.path.isfile(state_init), set(canon))
     # 指标种子同理：fixture 自带 state 时，初始阶段/行都从 JSON 事实源来——
     # 生成视图 md 过期/不一致时不能拿它当会话起点
     try:
-        init_snap = parse_state_json(_read(state_init)) if os.path.isfile(state_init) \
+        init_snap = parse_state_json(_read(state_init), set(canon)) if os.path.isfile(state_init) \
             else parse_progress(init_progress)
     except (IOError, OSError) as e:
         raise DriftError("fixture 的 study_state.json 读取失败: %s" % e)

@@ -53,7 +53,7 @@ metadata:
    * 若学生**连续答错 2 次**，智能体必须主动提供选项：“*是否跳过此题并将该题自动归档至错题本？*” 如果用户选择跳过，立即在进度文件中记录并放行。
 
 ### 第四步：易错扫雷与冲刺 (Diagnostic & Review)
-1. **错题本重温**：进入最后一阶段，智能体必须读取 `study_progress.md` 中的错题记录，重新调取 `references/quiz_bank.json` 中的原题，进行扫雷测试。**重做错题时同样遵守第三步的「依赖图的题 visual-first + fail-closed」门禁**：`requires_assets=true` / `maybe_requires_assets=true` / `stub` / `page_reference` 的错题，须先把题面侧图/原页上下文真正显示出来；显示不了就跳过，不让学生重做一道看不到题面的题。
+1. **错题本重温**：进入最后一阶段，智能体必须读取错题记录——存在 `study_state.json` 时从其 `mistake_archive`/`confusion_log` 读取（事实源；`study_progress.md` 是可能过期的生成视图），否则读 `study_progress.md`——再重新调取 `references/quiz_bank.json` 中的原题，进行扫雷测试。**重做错题时同样遵守第三步的「依赖图的题 visual-first + fail-closed」门禁**：`requires_assets=true` / `maybe_requires_assets=true` / `stub` / `page_reference` 的错题，须先把题面侧图/原页上下文真正显示出来；显示不了就跳过，不让学生重做一道看不到题面的题。
 2. **生成 Cheat Sheet**：全员通关后，在工作区为用户生成复习总结报告 `walkthrough.md`，内含该科目的**考前极简速记小抄（Cheat Sheet）**。
 
 ---
