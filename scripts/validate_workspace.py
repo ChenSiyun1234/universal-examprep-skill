@@ -451,8 +451,14 @@ def validate(ws):
                     err(f"study_state.json 的 {field} 必须是对象数组，当前 {type(v).__name__}")
                     continue                          # 标量/坏形态不再往下迭代（1 会 TypeError 崩栈）
                 for x in (v or []):
-                    if isinstance(x, dict) and not (isinstance(x.get("note"), str) and x["note"].strip()):
+                    if not isinstance(x, dict):
+                        continue
+                    if not (isinstance(x.get("note"), str) and x["note"].strip()):
                         err(f"study_state.json 的 {field} 行缺非空 note 字段: {x!r}")
+                    # 与 update_progress 的行 schema 对齐——validator 放行的 state 官方更新器必须能用
+                    for k in ("id", "status"):
+                        if x.get(k) is not None and not isinstance(x[k], str):
+                            err(f"study_state.json 的 {field} 行 {k} 必须是字符串或省略: {x!r}")
             pc = st.get("phase_checklist")
             if pc is not None and not (isinstance(pc, list) and all(isinstance(x, dict) for x in pc)):
                 err(f"study_state.json 的 phase_checklist 必须是对象数组，当前 {type(pc).__name__}")

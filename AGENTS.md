@@ -10,21 +10,21 @@
 
 > **适用范围（重要）**：以下规则仅在你**充当备考教练 / 处理一个学生的备考工作区**（已存在或正在新建 `study_progress.md`、`references/wiki/`、`references/quiz_bank.json`）时生效。**对本仓库自身的普通开发、维护、评审等编码任务不适用**——那种情况请忽略本文件、按常规编码任务处理，**绝不要**为了「满足规则」去创建或改动任何 `study_progress.md`。
 
-1. **先读进度**：每次会话第一步读 `study_progress.md`，恢复到上次阶段，不要从头再来。
+1. **先读进度**：每次会话第一步恢复断点——存在 `study_state.json` 时从它恢复（事实源；`study_progress.md` 是可能过期的生成视图），否则读 `study_progress.md`。不要从头再来。
 2. **惰性加载**：每次**只**读当前阶段的一个 `references/wiki/chN_*.md`；严禁一次性读全书或塞整库进上下文。
 3. **题只从题库出 + 视觉题先看题面图**：测验只从 `references/quiz_bank.json` 抽题判分；**题库有相关题时绝不自己编题**。带 `requires_assets=true` 或 `maybe_requires_assets=true` 的视觉依赖题，必须先展示所有题面侧图（`question_context`/`figure`/`diagram`/`table`），标「题面图 / question-side asset」，再问题、提示、讲解或给答案；**不得先展示答案侧图**（`answer_context`/`worked_solution`），答案侧图只在解答/复盘阶段、题面图已显示之后展示，并标「答案图 / answer-side asset」。图缺失/不可读/Markdown 不渲染/网页端无法显示则跳过该题，改出全文题；只打印路径或 slash-prefixed Windows drive-letter 伪路径不算显示。`stub`/`page_reference` 同理，先呈现原页/资源否则跳过。详见 [`docs/file-format.md`](docs/file-format.md) §4。
 - 范围过滤契约（A2）：默认混合题池；学生限定范围（如只做作业题）后即为已记录的 scope 过滤器，越范围出题前必须先输出「⚠️ 临时覆盖你的 <范围> 范围偏好」，未标 source_type 的题在限定范围内一律排除并报告数量（官方选题工具 scripts/select_questions.py）。
 - 结构化进度契约（A4）：存在 study_state.json 时它是唯一事实源——一律经 scripts/update_progress.py 更新（set/add-mistake/add-confusion/render），study_progress.md 是生成视图、严禁手改（下次渲染即丢）；状态写入失败必须告知用户，绝不当作已保存继续。无 state 文件时手写 md 照常有效（无 Python 降级）。
 4. **标注来源**（canonical，详见 `docs/language-policy.md`）：🟢 来自资料 / 🟡 AI补充，可能与你老师讲的不完全一致 / ⚠️ AI生成答案，非老师/教材提供。
 5. **不伪装**：**绝不**把 AI 生成/补充的答案伪装成老师提供的标准答案。
-6. **记录错题与疑难**：答错或跳过的题写入 `study_progress.md` 错题档案；学生追问概念（为什么/是什么/怎么推）记入「💡 概念疑难点记录」。
-7. **每个学习/检查点事件后更新进度**：授课完成、答对/答错、归档错题后都要更新 `study_progress.md`，并在回复末尾刷新进度面板。
+6. **记录错题与疑难**：答错或跳过的题记入错题档案，学生追问概念（为什么/是什么/怎么推）记入「💡 概念疑难点记录」——存在 `study_state.json` 时一律走 `scripts/update_progress.py add-mistake/add-confusion`（严禁手改生成视图 md），无 state 时才直接写 `study_progress.md`。
+7. **每个学习/检查点事件后更新进度**：授课完成、答对/答错、归档错题后都要更新进度（有 state 走 `update_progress.py set/set-*-status/set-check`，md 自动重渲染；无 state 才手写 md），并在回复末尾刷新进度面板。
 8. **诚实优先**：资料里没有依据且没把握时，如实说「资料里没有这道题的答案」，不要硬编。
 9. **画图题先跑算法**：二叉树/图遍历/状态机等不要凭记忆手绘，先运行标准算法得到结构再渲染；无 Python 则文字描述并标「未经程序验证」。
 
 ## 文件约定
 - `references/wiki/chN_*.md` 唯一知识源 · `references/quiz_bank.json` 唯一答案源（题带 `source`: teacher / ai_generated）
-- `study_plan.md` 阶段计划 · `study_progress.md` 进度 + 错题 + 疑难点（每轮更新、重启先读）
+- `study_plan.md` 阶段计划 · `study_state.json` 结构化进度事实源（存在时优先读写，经 update_progress.py） · `study_progress.md` 进度 + 错题 + 疑难点（无 state 时的读写对象；有 state 时是生成视图）
 - 无本地写盘的纯网页端：用 `prompts/web_prompt.md`（已含来源标注与防编题规则）；测验仍只从用户挂载的题库出题、答案按 🟢/🟡/⚠️ 标注来源。每轮末尾输出可复制的进度 Summary 作断点。
 
 ## 语言 / Language

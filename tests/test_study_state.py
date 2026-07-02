@@ -180,6 +180,60 @@ class Mutations(unittest.TestCase):
         self.assertIn("非法", r.stderr)
         self.assertFalse(os.path.isfile(os.path.join(ws, "study_state.json")))
 
+    # ---- regression guards for Codex round-6 (5 findings) ----
+
+    def test_symlinked_tmp_rejected_before_write(self):
+        ws = self._ready()
+        outside = os.path.join(tempfile.mkdtemp(), "victim.txt")
+        with open(outside, "w", encoding="utf-8") as f:
+            f.write("外部文件不许被截断")
+        try:
+            os.symlink(outside, os.path.join(ws, "study_state.json.tmp"))
+        except (OSError, NotImplementedError):
+            self.skipTest("no symlink privilege")
+        r = _up(ws, ["set", "--phase", "1", "--mode", "x"])
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("符号链接", r.stderr)                        # 拒绝写入，不跟随链接
+        self.assertEqual(open(outside, encoding="utf-8").read(), "外部文件不许被截断")
+
+    def test_stale_plain_tmp_cleaned_and_overwritten(self):
+        ws = self._ready()
+        with open(os.path.join(ws, "study_state.json.tmp"), "w", encoding="utf-8") as f:
+            f.write("上次崩溃的残留")
+        r = _up(ws, ["set", "--phase", "2"])
+        self.assertEqual(r.returncode, 0, r.stderr)               # 普通残留 tmp 清掉重建，不误伤
+        self.assertEqual(_state(ws)["current_phase"], 2)
+        self.assertFalse([f for f in os.listdir(ws) if f.endswith(".tmp")])
+
+    def test_migration_preserves_scope_and_mode(self):
+        md = ("# 🎯 复习进度\n\n## ⏱️ 当前复习断点\n* **当前进行阶段**：阶段 2\n"
+              "* **范围/模式**：homework-only ｜ 查缺补漏 ｜ 时间预算 3天\n\n"
+              "## ❌ 错题档案记录\n（暂无）\n")
+        ws = _mk_ws(tempfile.mkdtemp(), md=md)
+        r = _up(ws, ["init"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        st = _state(ws)
+        self.assertEqual(st["scope"], "homework-only")            # A2 范围偏好不因迁移被静默放宽
+        self.assertEqual(st["mode"], "查缺补漏")
+        self.assertEqual(st["time_budget"], "3天")
+        ws2 = _mk_ws(tempfile.mkdtemp())                          # 默认「混合题池｜未设定」→ 保持 None
+        _up(ws2, ["init"])
+        self.assertIsNone(_state(ws2).get("scope"))
+
+    def test_real_row_containing_placeholder_text_kept(self):
+        md = LEGACY_MD.replace("| [#q1] | 第1章 | 栈顺序 | 混淆LIFO | 未复习 |",
+                               "| [#q1] | 第1章 | 空集（暂无）元素时的处理 | 混淆边界 | 未复习 |")
+        ws = _mk_ws(tempfile.mkdtemp(), md=md)
+        _up(ws, ["init"])
+        st = _state(ws)
+        self.assertEqual(len(st["mistake_archive"]), 1)           # 含（暂无）字样的真实行不被当占位符丢
+        self.assertIn("空集（暂无）元素", st["mistake_archive"][0]["note"])
+        md2 = LEGACY_MD + "\n| （暂无） | - | - | - |\n"
+        ws2 = _mk_ws(tempfile.mkdtemp(), md=md2)
+        _up(ws2, ["init"])
+        self.assertEqual(len(_state(ws2)["mistake_archive"]), 1)  # 纯占位行仍被跳过
+
+
     def test_set_updates_state_and_md(self):
         ws = self._ready()
         r = _up(ws, ["set", "--phase", "5", "--scope", "homework-only", "--mode", "查缺补漏",
@@ -344,6 +398,14 @@ class ValidatorSchema(unittest.TestCase):
         with open(os.path.join(ws2, "study_progress.md"), "w", encoding="utf-8") as f:
             f.write("当前阶段：2\n## 错题本\n（暂无）\n## 疑难点\n（暂无）\n")
         self.assertEqual(self._validate(ws2).returncode, 0)       # 合法「第N阶段」计划不误伤
+
+    def test_state_row_id_status_types_validated(self):
+        r = self._validate(self._full_ws({"mistake_archive": [
+            {"id": ["q1"], "note": "x", "status": "待复盘"}]}))
+        self.assertEqual(r.returncode, 1)                         # id 非字符串 → err
+        r = self._validate(self._full_ws({"confusion_log": [
+            {"id": "c1", "note": "x", "status": {"s": 1}}]}))
+        self.assertEqual(r.returncode, 1)                         # status 非字符串 → err
 
     def test_md_phase_mismatch_warns(self):
         ws = self._full_ws({"current_phase": 2})                  # md 说 1，state 说 2
@@ -536,6 +598,11 @@ class Contract(unittest.TestCase):
             txt = open(os.path.join(ROOT, p), encoding="utf-8").read()
             self.assertIn("study_state.json", txt, p)
             self.assertIn("update_progress.py", txt, p)
+
+    def test_agents_md_prefers_state(self):
+        txt = open(os.path.join(ROOT, "AGENTS.md"), encoding="utf-8").read()
+        self.assertIn("存在 `study_state.json` 时从它恢复", txt)   # 先读进度条目对齐事实源
+        self.assertIn("add-mistake/add-confusion", txt)             # 记录条目走官方路径
 
     def test_cram_restore_prefers_state(self):
         # 恢复断点必须先读 study_state.json（事实源）——生成视图 md 过期/被手改时不能拿它当起点

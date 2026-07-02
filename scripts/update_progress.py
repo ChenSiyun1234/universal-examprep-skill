@@ -63,6 +63,15 @@ def parse_md(text):
     t = text or ""
     pm = re.search(r"(?:当前进行阶段|当前阶段|current\s*phase)\D*?(\d+)", t, re.I)
     phase = int(pm.group(1)) if pm else 1
+    # A2 范围/模式偏好也要随迁移带走（生成视图的 范围/模式 行）——丢了 scope 会静默放宽题池
+    sm = re.search(r"范围/模式\**\s*：\s*(.*?)\s*｜\s*(.*?)\s*｜\s*时间预算\s*(.*)", t)
+
+    def _unset(v, *defaults):
+        v = (v or "").strip()
+        return None if (not v or v in defaults) else v
+    prefs = {"scope": _unset(sm.group(1), "混合题池") if sm else None,
+             "mode": _unset(sm.group(2), "未设定") if sm else None,
+             "time_budget": _unset(sm.group(3), "未设定") if sm else None}
     mistakes, confusions, checklist, cur, in_checklist = [], [], [], None, False
     for ln in t.splitlines():
         h = ln.strip()
@@ -84,19 +93,27 @@ def parse_md(text):
             # 每阶段完成/掌握状态必须随迁移进 state——渲染丢掉打卡区就是不可逆丢 per-phase 进度
             checklist.append({"text": cm.group(2).strip(), "done": cm.group(1).lower() == "x"})
             continue
-        if cur is None or _PLACEHOLDER.search(h):
+        if cur is None:
             continue
         default_status = "待回顾" if cur is confusions else "待复盘"   # 疑难走 待回顾→已回顾 契约
         if re.match(r"^\s*[-*]\s+\S", ln):
+            body = re.sub(r"^\s*[-*]\s+", "", h).strip()
+            # 只有整条就是占位符才跳过——真实笔记里出现「（暂无）」字样（如问空集的题）不能被丢
+            if _PLACEHOLDER.fullmatch(body):
+                continue
             ids = re.findall(r"\[#([^\]\s]+)\]", h)
             cur.append({"id": ids[0] if ids else None, "chapter": None,
-                        "note": re.sub(r"^\s*[-*]\s+", "", h), "status": default_status})
+                        "note": body, "status": default_status})
         elif h.startswith("|") and not _TABLE_SEP.match(ln):
             low = h.lower()
             if sum(1 for w in _HDR_WORDS if w in low) >= 2:
                 continue
             cells = [c.strip(" *`") for c in h.strip("|").split("|")]
             if not any(c and c != "-" for c in cells):
+                continue
+            # 整行占位（|（暂无）| - | - | - |）才跳过——数据行里含「（暂无）」字样照常迁移
+            if cells and _PLACEHOLDER.fullmatch(cells[0] or "") \
+                    and all(c in ("", "-") for c in cells[1:]):
                 continue
             ids = re.findall(r"\[#([^\]\s]+)\]", h)
             tail = cells[2:]
@@ -107,7 +124,7 @@ def parse_md(text):
             cur.append({"id": ids[0] if ids else (cells[0] or None), "chapter": cells[1] if len(cells) > 1 else None,
                         "note": " / ".join(c for c in note_cells if c) or (cells[0] if cells else ""),
                         "status": status})
-    return phase, mistakes, confusions, checklist
+    return phase, mistakes, confusions, checklist, prefs
 
 
 # ---------------- state → md (generated view; keeps validator/T4-parseable shape) ----------------
@@ -187,11 +204,21 @@ def save(ws, state, note):
     # a failure at any step leaves the truth un-advanced (worst case md is ahead; `render` repairs it)
     plan = ((MD_NAME, render_md(state)),
             (STATE_NAME, json.dumps(state, ensure_ascii=False, indent=2)))
+    for name, _content in plan:
+        tmp = os.path.join(ws, name) + ".tmp"
+        if os.path.islink(tmp):
+            # 可预测的 tmp 路径被替换成符号链接时，普通 open("w") 会顺着链接改写工作区外的任意文件
+            # ——先整体拒绝（不创建任何 tmp），要求人工清理
+            _die("检测到符号链接临时文件 %s——可能指向工作区外，拒绝写入（请手动清理后重试）" % tmp, 1)
     tmps = []
     try:
         for name, content in plan:
             tmp = os.path.join(ws, name) + ".tmp"
-            with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+            if os.path.exists(tmp):
+                os.remove(tmp)                      # 上次崩溃残留的普通 tmp——清掉重建
+            # O_EXCL 独占创建：文件必须不存在才成功，绝不跟随同名链接/复用旧文件
+            fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
                 f.write(content)
             tmps.append((tmp, os.path.join(ws, name)))
         for tmp, path in tmps:
@@ -222,15 +249,18 @@ def cmd_init(ws, args):
         except UnicodeDecodeError as e:
             _die("study_progress.md 不是 UTF-8（%s）——这正是结构化状态要根治的乱码；"
                  "请先把 md 转存为 UTF-8 再 init（不要猜编码静默迁移）" % e, 1)
-        phase, mistakes, confusions, checklist = parse_md(text)
+        phase, mistakes, confusions, checklist, prefs = parse_md(text)
         if phase < 1:
             # 写入 0/负数会让下一次官方更新在 _require_state 处拒跑——迁移绝不产出损坏 state
             _die("study_progress.md 的当前阶段 %d 非法（须 ≥1）——请先修正 md 再 init" % phase, 1)
     else:
-        checklist = []
+        checklist, prefs = [], {}
     st = default_state()
     st.update({"current_phase": phase, "mistake_archive": mistakes, "confusion_log": confusions,
                "phase_checklist": checklist})
+    for k in ("scope", "mode", "time_budget"):      # A2 范围/模式偏好随迁移带走——不带会静默放宽题池
+        if prefs.get(k):
+            st[k] = prefs[k]
     save(ws, st, "init：从 %s 迁移（阶段 %d，错题 %d，疑难 %d，打卡 %d）"
          % (MD_NAME if os.path.isfile(md_path) else "空白", phase, len(mistakes), len(confusions),
             len(checklist)))
