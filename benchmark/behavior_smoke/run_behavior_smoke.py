@@ -134,6 +134,30 @@ def has_canonical_provenance_labels(text):
     return True
 
 
+def scope_override_declared(text):
+    """A2 scope contract: serving items OUTSIDE the active scope must carry the verbatim override
+    marker BEFORE the first question item — a declaration after the item does not count."""
+    t = text or ""
+    m = re.search(r"⚠️\s*临时覆盖你的\s*\S+\s*范围偏好", t)
+    if not m:
+        return False
+    # the FIRST question item may be an UNTAGGED question line, not only a [#id] tag — a quiz asked
+    # before the declaration must fail either way
+    pos = len(t)
+    tag = re.search(r"\[#[^\]]+\]", t)
+    if tag:
+        pos = tag.start()
+    off = 0
+    for ln in t.splitlines(True):
+        stripped = ln.rstrip("\n")
+        # 「题目：…」无编号提问行也是第一道题——声明必须先于它（不只认编号/bullet/[#id] 行）
+        if _is_question_item(stripped) or re.match(r"^\s*题目?\s*[一二三四五六七八九十\d]*\s*[:：]", stripped):
+            pos = min(pos, off)
+            break
+        off += len(ln)
+    return m.start() < pos
+
+
 def _heading_present(text, name):
     """True if `name` is a section HEADING — markdown (## / **bold**), an ordered-list heading
     (`1. 考点拆解`), OR the skill's documented bracket block (`【考点拆解】`) — not an inline mention."""
@@ -494,6 +518,10 @@ def check_scenario_mock(name, sc, fixture_path=FIXTURE):
         good = assert_quiz_ids_in_bank(good_txt, scoped) and n_good >= min_q
         bad = assert_quiz_ids_in_bank(_read(_p(sc["mock_negative"])), scoped)
         return (good and not bad), f"good={good} n={n_good}>={min_q} invented/oos_caught={not bad} ch/phase={ch}"
+    if name == "scope_override":
+        good = scope_override_declared(_read(_p(sc["mock_output"])))
+        bad = scope_override_declared(_read(_p(sc["mock_negative"])))
+        return (good and not bad), f"declared={good} undeclared_caught={not bad}"
     if name == "provenance_labels":
         ok = has_canonical_provenance_labels(_read(_p(sc["mock_output"])))
         return ok, f"all_canonical_labels={ok}"
