@@ -102,10 +102,17 @@ def check_oracle(turn, reply):
     """Per-turn smoke oracle: expect_any = at least one substring must appear (e.g. the wrong-answer
     probe expects the correct grading to mention LIFO); forbid_any = none may appear. Heuristic
     substrings, not semantic grading — but they stop a probe from being satisfiable by ANY reply."""
-    norm = re.sub(r"\s+", "", reply)                 # 空白归一化：'FIFO是正确' 不再靠空格差异绕过
+    norm = re.sub(r"\s+", "", reply)
+    def _hit(x):
+        xx = re.sub(r"\s+", "", x)
+        for m in re.finditer(re.escape(xx), norm):
+            pre = norm[max(0, m.start() - 6):m.start()]
+            if not any(n in pre for n in ("不是", "不叫", "并非", "没有", "绝不是")):
+                return True
+        return False                 # 空白归一化：'FIFO是正确' 不再靠空格差异绕过
     fails = []
     exp = turn.get("expect_any")
-    if exp and not any(re.sub(r"\s+", "", x) in norm for x in exp):
+    if exp and not any(_hit(x) for x in exp):
         fails.append("expect_any 未命中（应含其一: %s）" % "、".join(exp))
     for x in (turn.get("forbid_any") or []):
         if re.sub(r"\s+", "", x) in norm:
@@ -147,6 +154,21 @@ def build_prompt(fixture_dir, digest, history, user_text, max_chars, progress):
     return prompt
 
 
+def _kill_tree(proc):
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           capture_output=True, timeout=15)
+        else:
+            import signal
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
 def call_agent(cmd_template, prompt, timeout, max_out, cwd=None):
     # --agent-cmd accepts a shell-ish template OR a JSON array（Windows 路径反斜杠在 posix shlex 下会被
     # 吃掉，JSON 数组是跨平台的精确形式）
@@ -180,7 +202,10 @@ def call_agent(cmd_template, prompt, timeout, max_out, cwd=None):
     err_cap = 65536
     got, err_got = {}, {"data": b""}
     try:
-        proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
+        popen_kw = {}
+        if os.name != "nt":
+            popen_kw["start_new_session"] = True   # own process group → killable as a tree
+        proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd, **popen_kw)
     except OSError as e:
         _die("agent 命令无法执行: %s" % e, 3)
 
@@ -203,16 +228,16 @@ def call_agent(cmd_template, prompt, timeout, max_out, cwd=None):
     te.start()
     t.join(timeout)
     if t.is_alive():
-        proc.kill()
+        _kill_tree(proc)
         _die("agent 调用超时（%ds）——按失败中止，不评残缺会话" % timeout, 3)
     data = got.get("data") or b""
     if len(data) > cap_bytes:
-        proc.kill()
+        _kill_tree(proc)
         _die("agent 输出超出读取上限（%d 字节）——按预算中止，不评被截断的会话" % cap_bytes, 3)
     try:
         rc = proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        _kill_tree(proc)
         _die("agent 输出后未退出（%ds）——按失败中止" % timeout, 3)
     te.join(5)
     err_text = err_got["data"].decode("utf-8", "replace")
@@ -323,6 +348,15 @@ def main(argv=None):
         f.write("created by run_live_smoke.py; safe to delete\n")
 
     digest = bank_digest(sandbox)
+    _bank = json.loads(_read(os.path.join(sandbox, "references", "quiz_bank.json")))
+    bank_answers = {}
+    for _q in _bank:
+        if isinstance(_q, dict) and _q.get("id") is not None:
+            keys = []
+            if _q.get("answer") not in (None, ""):
+                keys.append(str(_q["answer"]))
+            keys += [str(k) for k in (_q.get("answer_keywords") or [])]
+            bank_answers[str(_q["id"])] = [re.sub(r"\s+", "", k) for k in keys if len(re.sub(r"\s+", "", k)) >= 2]
     progress_path = os.path.join(sandbox, "study_progress.initial.md")
     progress = _read(progress_path) if os.path.isfile(progress_path) else "当前阶段：1\n"
     canonical = os.path.join(sandbox, "study_progress.md")   # skill contract reads THIS file on disk
@@ -338,6 +372,13 @@ def main(argv=None):
         history += [("user", turn["user"]), ("assistant", reply)]
         for f in check_oracle(turn, reply):
             oracle_failures.append("turn %d: %s" % (i, f))
+        if turn.get("kind") == "quiz":                 # a quiz prompt must not LEAK the standard answer
+            rnorm = re.sub(r"\s+", "", reply)
+            for qid in re.findall(r"\[#([^\]\s]+)\]", reply):
+                for key in bank_answers.get(qid, []):
+                    if key in rnorm:
+                        oracle_failures.append("turn %d: quiz 泄露标准答案（[#%s] 含 %r）" % (i, qid, key))
+                        break
         snapshot = None
         tp = turn.get("phase_context")
         if isinstance(tp, str) and tp.strip().isdigit():

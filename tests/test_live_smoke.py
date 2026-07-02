@@ -26,6 +26,7 @@ def _run(args, env_extra=None):
     env = dict(os.environ)
     env.pop("RUN_SKILL_DRIFT_LLM", None)
     env.pop("FAKE_DRIFT", None)
+    env.pop("FAKE_LEAK", None)
     env.update(env_extra or {})
     return subprocess.run([sys.executable, RUNNER] + args,
                           capture_output=True, text=True, encoding="utf-8", env=env)
@@ -384,6 +385,22 @@ class LiveSmoke(unittest.TestCase):
         spec = json.load(open(os.path.join(DRIFT, "templates", "live_smoke_turns.json"), encoding="utf-8"))
         wrong = next(t for t in spec["turns"] if "FIFO" in t["user"])
         self.assertEqual(m.check_oracle(wrong, "你的答案是 FIFO，但标准答案是 LIFO（后进先出）。"), [])
+
+    def test_negated_expect_not_a_hit(self):
+        import importlib
+        sys.path.insert(0, DRIFT)
+        m = importlib.import_module("run_live_smoke")
+        spec = json.load(open(os.path.join(DRIFT, "templates", "live_smoke_turns.json"), encoding="utf-8"))
+        wrong = next(t for t in spec["turns"] if "FIFO" in t["user"])
+        self.assertTrue(m.check_oracle(wrong, "不对哦，标准答案不是 LIFO。"))   # 否定的 LIFO 不算命中
+        self.assertEqual(m.check_oracle(wrong, "不对，栈是 LIFO（后进先出）。"), [])
+
+    def test_quiz_answer_leak_fails_run(self):
+        out = tempfile.mkdtemp()
+        r = _run(["--agent-cmd", AGENT_CMD, "--out-dir", out],
+                 {"RUN_SKILL_DRIFT_LLM": "1", "FAKE_LEAK": "1"})
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("泄露标准答案", r.stdout)
 
     def test_runner_is_offline_by_construction(self):
         src = open(RUNNER, encoding="utf-8").read()

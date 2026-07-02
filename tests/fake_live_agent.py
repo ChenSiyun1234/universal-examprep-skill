@@ -28,7 +28,9 @@ QUIZ = {
 reply = None
 for key, q in QUIZ.items():
     if key in last:
-        reply = "[#made_up_99] 跳表的期望复杂度是多少？" if drift else q
+        leak = os.environ.get("FAKE_LEAK") == "1"
+        reply = ("[#made_up_99] 跳表的期望复杂度是多少？" if drift
+                 else (q + "（标准答案: LIFO 后进先出）") if leak else q)
         break
 if reply is None:
     if "回来" in last and "接着复习" in last:
