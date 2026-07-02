@@ -1365,6 +1365,37 @@ class HomeworkIngest(unittest.TestCase):
         self.assertIn("中文小数答案一", by_num["1.1"].get("answer", ""))
         self.assertIn("中文小数答案二", by_num["1.2"].get("answer", ""))
 
+    # ---- regression guards for Codex round-22 (3 findings) ----
+
+    def test_numbered_answer_box_label_not_stored_as_answer(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw61.pdf": ["Problem 1\n1. Answer: Give a short proof in the box below."]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw), 1)
+        self.assertFalse((hw[0].get("answer") or "").strip())     # 带号答题栏标签不是官方答案
+        self.assertIn("box below", hw[0].get("question") or "")   # 指示语并回题面
+
+    def test_compact_keyed_answer_rows_split(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw62.pdf": ["Problem 1\n紧凑键题面一。\n\nProblem 2\n紧凑键题面二。"],
+                            "hw62_sol.pdf": ["1.紧凑键答案一。\n2)紧凑键答案二。"]})
+        code, payload, report = _run(mat, be)
+        by_num = {q["homework_number"]: q for q in payload["quiz_bank"]
+                  if q.get("source_type") == "homework"}
+        self.assertIn("紧凑键答案一", by_num[1].get("answer", ""))   # 1.A 紧凑形也按号拆
+        self.assertIn("紧凑键答案二", by_num[2].get("answer", ""))
+
+    def test_glued_prompt_letter_not_taken_as_subpart(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw63.pdf": ["Problem 2Compute 2+2 and explain."],
+                            "hw63_sol.pdf": ["2. 胶连题号的答案。"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw), 1)
+        self.assertEqual(hw[0]["homework_number"], 2)             # 不是 2c——胶连首字母不吞
+        self.assertIn("胶连题号的答案", hw[0].get("answer", ""))   # 答案键 2. 配得上
+
     def test_no_network_or_llm(self):
 
 

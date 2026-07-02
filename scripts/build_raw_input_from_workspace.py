@@ -53,7 +53,8 @@ _HW_FILE_RE = re.compile(r"(?:^|[\\/_\-. ])(?:hw|homework|assignments?|problem[ 
 _SOL_TOKEN_RE = re.compile(r"(?<![A-Za-z])(?:solutions?|answers?)(?=[_\-. ()\\/]|$)"
                            r"|(?<![A-Za-z])(?:sols?|ans)(?=[_\-. ()\\/]|$)|答案|解答", re.I)
 # 题号支持 教材式小数（1.1.2）与 字母小题（1(a) / 1a）——折叠会把真小题当重复丢掉
-_HW_NUM_PAT = r"(\d+(?:\.\d+)*(?:\s*\([A-Za-z]\)|[A-Za-z])?)"
+# 裸字母小问要求后面不再跟字母——PDF 抽取丢空格的「Problem 2Compute」不许把 C 吞成小问 2c
+_HW_NUM_PAT = r"(\d+(?:\.\d+)*(?:\s*\([A-Za-z]\)|[A-Za-z](?![A-Za-z]))?)"
 # problem headings inside homework/solution files（行首锚定，与 lecture 标记同族）
 _HW_PROB_RES = (re.compile(_HEAD + r"(?:Problem|Exercise|Question)\s*#?\s*" + _HW_NUM_PAT, re.I | re.M),
                 re.compile(_HEAD + r"(?:第\s*" + _HW_NUM_PAT + r"\s*题|习题\s*" + _HW_NUM_PAT
@@ -769,7 +770,7 @@ def extract_homework_items(pages, root_name=""):
         # 文件名配对已锁定伴随关系，整册按号拆
         if not marks_all:
             keyed_ms = list(re.finditer(
-                r"^[ \t]*(\d+(?:\.\d+)*(?:[ \t]*\([A-Za-z]\)|[A-Za-z])?)[.)、][ \t]", stream, re.M))
+                r"^[ \t]*(\d+(?:\.\d+)*(?:[ \t]*\([A-Za-z]\)|[A-Za-z])?)[.)、](?:[ \t]+|(?=[A-Za-z一-鿿（(]))", stream, re.M))
             keyset0 = {_hw_num(m2.group(1)) for m2 in keyed_ms}
             # 多号整册按号拆；单号但恰是配对作业的已知题号也拆（与 inline 路径 round-20 同规）
             if len({m2.group(1) for m2 in keyed_ms}) >= 2 or (keyset0 and keyset0 <= _hw_prob_nums(hf)):
@@ -788,7 +789,7 @@ def extract_homework_items(pages, root_name=""):
             end0 = next((m2["start"] for m2 in marks_all if m2["start"] > m["start"]), len(stream))
             seg = stream[m["start"]:end0]
             keyed_ms = list(re.finditer(
-                r"^[ \t]*(\d+(?:\.\d+)*(?:[ \t]*\([A-Za-z]\)|[A-Za-z])?)[.)、][ \t]", seg, re.M))
+                r"^[ \t]*(\d+(?:\.\d+)*(?:[ \t]*\([A-Za-z]\)|[A-Za-z])?)[.)、](?:[ \t]+|(?=[A-Za-z一-鿿（(]))", seg, re.M))
             keyset0 = {_hw_num(m2.group(1)) for m2 in keyed_ms}
             # 单条键控行（Answers 下只有「1. A1」）号是配对作业已知题号也按键拆——否则被
             # 相邻/整块兜底并给错题（与 inline 路径 round-20 同规）
@@ -925,7 +926,7 @@ def extract_homework_items(pages, root_name=""):
                 continue
             # 无号「Answers」节头：其下的「1. …」「2. …」编号行是整卷答案区——按号拆给各题
             seg = stream[mk2["start"]:end2]
-            keyed_ms = list(re.finditer(r"^[ \t]*(\d+(?:\.\d+)*(?:[ \t]*\([A-Za-z]\)|[A-Za-z])?)[.)、][ \t]", seg, re.M))
+            keyed_ms = list(re.finditer(r"^[ \t]*(\d+(?:\.\d+)*(?:[ \t]*\([A-Za-z]\)|[A-Za-z])?)[.)、](?:[ \t]+|(?=[A-Za-z一-鿿（(]))", seg, re.M))
             keyset = {_hw_num(m2.group(1)) for m2 in keyed_ms}
             # 单条键控行（Answers 下只有「1. A」）只要号是本卷已知题号也按键拆——
             # 相邻兜底会把它安给节前那道题；号不在题号集合的孤行仍视为普通编号列表
@@ -998,7 +999,8 @@ def extract_homework_items(pages, root_name=""):
                 first_line_full = stream[mk["start"]:(head_line_end if head_line_end >= 0 else len(stream))]
                 bm0 = next((mm for mm in (rx.match(first_line_full) for rx in _HW_PROB_RES) if mm), None)
                 same_rest = first_line_full[bm0.end():] if bm0 else ""
-                if marks[k]["num"] is None                         and not re.search(r"[0-9A-Za-z一-鿿]", body_before + same_rest):
+                no_pre = not re.search(r"[0-9A-Za-z一-鿿]", body_before + same_rest)
+                if marks[k]["num"] is None and no_pre:
                     ans = None         # 题面在答案标记前毫无内容——这行 Answer 是答题栏标签
                                        #（如 Answer: Give a short proof…），属题面指示语，不是官方答案
                     s_start = None
@@ -1022,11 +1024,18 @@ def extract_homework_items(pages, root_name=""):
                         ans = None      # 无号「Answers」节头 + 键控列表（多号，或单号但都是已知
                                         # 题号）——是整卷答案区，按号拆给各题（见 inline_keys），
                                         # 不是节前那道题的相邻答案
-                    elif marks[k]["num"] is None and _HW_ANSBOX_INSTR_RE.search(sol_line) \
+                    elif (marks[k]["num"] is None
+                          or (marks[k]["num"] == mk["num"] and no_pre)) \
+                            and _HW_ANSBOX_INSTR_RE.search(sol_line) \
                             and not re.search(r"[0-9A-Za-z一-鿿]", sol_rest):
-                        # 「Answer: Give a short proof in the box below」——答题栏指示语，
-                        # 并回题面保持完整可问，题目如实无官方答案
+                        # 「Answer: Give a short proof in the box below」——答题栏指示语，并回
+                        # 题面保持完整可问，题目如实无官方答案。带号形「1. Answer: 指示语」在
+                        # 题面为空时同治；「Answer 1: 真实答案」无指示语词不受影响
                         ans = None
+                        got_lbl = inline_keys.get(mk["num"])
+                        if got_lbl and got_lbl[1] == stream[s_start:s_end].strip():
+                            # 同一标签段先被 inline_keys 收走——一并撤销，防兜底把指示语捡回当答案
+                            del inline_keys[mk["num"]]
                         ext_end = next((m2["start"] for m2 in marks[k:] if m2["role"] == "problem"),
                                        len(stream))
                         if ext_end > nxt_q:
