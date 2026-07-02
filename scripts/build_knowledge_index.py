@@ -110,7 +110,8 @@ def run(argv=None):
             for w in wikis:
                 if w not in rec["wiki_files"]:
                     rec["wiki_files"].append(w)
-            rec["question_ids"].append(str(q["id"]))
+            if str(q["id"]) not in rec["question_ids"]:   # 同一题重复同名标签只记一次
+                rec["question_ids"].append(str(q["id"]))
 
     out = args.out or os.path.join(args.workspace, "references", "knowledge_index.json")
     with open(out, "w", encoding="utf-8", newline="\n") as f:

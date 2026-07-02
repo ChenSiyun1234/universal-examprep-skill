@@ -176,6 +176,22 @@ class Selector(unittest.TestCase):
         rc, out = self._run(ws, ["--chapter", "1", "--json"])
         self.assertIn("dual1", [i["id"] for i in json.loads(out)["items"]])   # 复习阶段也可命中
 
+    def test_items_expose_both_chapter_and_phase(self):
+        ws = _mk_ws(tempfile.mkdtemp(), [{"id": "dual2", "chapter": 3, "phase": 1, "type": "subjective",
+                                          "question": "双标？", "answer": "E", "source": "material",
+                                          "ai_generated": False, "source_type": "homework"}])
+        rc, out = self._run(ws, ["--chapter", "1", "--json"])
+        it = next(i for i in json.loads(out)["items"] if i["id"] == "dual2")
+        self.assertEqual(it["chapter"], 3)                        # 原章号保留
+        self.assertEqual(it["phase"], 1)                          # 复习阶段不被折叠丢失
+
+    def test_empty_source_type_filter_rejected(self):
+        ws = _mk_ws(tempfile.mkdtemp())
+        r = subprocess.run([sys.executable, os.path.join(SCRIPTS, "select_questions.py"),
+                            "--workspace", ws, "--source-type", ","],
+                           capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(r.returncode, 2)                         # 空过滤器 ≠ 不过滤
+
     def test_blank_answer_not_official_in_cache(self):
         ws = _mk_ws(tempfile.mkdtemp(), [{"id": "blank1", "chapter": 1, "type": "subjective",
                                           "question": "空白答案？", "answer": "   ",
@@ -202,6 +218,15 @@ class KnowledgeIndex(unittest.TestCase):
         self.assertIn("ch1.md", kp["双标"]["wiki_files"])          # 经 phase:1 解析到 plan 的 wiki
         self.assertEqual(sorted(kp["双标"]["chapters"]), ["1", "3"])
         self.assertIn("ch2.md", kp["名章"]["wiki_files"])          # chapter 为 wiki 基名 → 反查命中
+
+    def test_index_dedupes_repeated_tags(self):
+        ws = _mk_ws(tempfile.mkdtemp(), [{"id": "dup1", "chapter": 1, "type": "subjective",
+                                          "question": "重复标签？", "answer": "G", "source": "material",
+                                          "ai_generated": False, "knowledge_points": ["重", "重"]}])
+        subprocess.run([sys.executable, os.path.join(SCRIPTS, "build_knowledge_index.py"),
+                        "--workspace", ws], capture_output=True, text=True, encoding="utf-8")
+        idx = json.load(open(os.path.join(ws, "references", "knowledge_index.json"), encoding="utf-8"))
+        self.assertEqual(idx["knowledge_points"]["重"]["question_ids"], ["dup1"])   # 只记一次
 
     def test_index_maps_kp_to_chapter_wiki_questions(self):
         ws = _mk_ws(tempfile.mkdtemp())

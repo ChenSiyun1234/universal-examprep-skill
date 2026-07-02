@@ -140,6 +140,8 @@ def run(argv=None):
 
     if args.source_type:
         vals = [v.strip() for v in args.source_type.split(",") if v.strip()]
+        if not vals:
+            _die("--source-type 为空（如 ','）——空过滤器不等于不过滤，请给出至少一个来源")
         bad = [v for v in vals if v not in SOURCE_TYPES]
         if bad:
             _die("非法 source_type: %s（应为 %s）" % (bad, sorted(SOURCE_TYPES)))
@@ -169,7 +171,8 @@ def run(argv=None):
         print(json.dumps({"total_matched": total, "returned": len(hits),
                           "untagged_excluded": untagged,
                           "items": [{"id": str(q["id"]), "type": q.get("type"),
-                                     "chapter": _chapter_of(q), "source_type": q.get("source_type"),
+                                     "chapter": q.get("chapter"), "phase": q.get("phase"),
+                                     "source_type": q.get("source_type"),
                                      "knowledge_points": q.get("knowledge_points"),
                                      "difficulty": q.get("difficulty"),
                                      "requires_assets": q.get("requires_assets") is True,
