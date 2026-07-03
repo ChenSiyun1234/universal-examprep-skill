@@ -1627,9 +1627,14 @@ def _strip_answer_prefix(ans_text):
     """剥解答标题（Quiz X.Y Solution / Answer: / 答案：）与键前缀（1. / 1(a). / 1a.）——
     choice/fill_blank 的答案归一共用。"""
     t = " ".join(str(ans_text or "").split())
+    # 带编号的标题形无歧义，可无分隔符剥（Quiz 1.1 Solution … / Problem 1 Solution …）
     t = re.sub(r"(?i)^(?:quiz|example)\s+\d+(?:\.\d+)*\s*(?:solutions?|answers?)\s*[:：.]?\s*", "", t)
-    t = re.sub(r"(?i)^(?:problem|exercise|question)?\s*#?\d*(?:\.\d+)*\s*"
-               r"(?:solutions?|answers?|解答|答案)\s*[:：.]?\s*", "", t)
+    t = re.sub(r"(?i)^(?:problem|exercise|question)\s*#?\s*\d+(?:\.\d+)*"
+               r"(?:\s*\([A-Za-z]\)|[A-Za-z])?\s*(?:solutions?|answers?|解答|答案)\s*[:：.]?\s*", "", t)
+    # 裸解答词必须带编号或分隔符才剥——「Answer 1: B」「Answer: LIFO」剥，
+    # 「Solution set」这类正文短语绝不剥（过剥实测）
+    t = re.sub(r"(?i)^(?:solutions?|answers?|解答|答案)"
+               r"(?:\s*#?\s*\d+(?:\.\d+)*(?:\s*\([A-Za-z]\)|[A-Za-z])?\s*[:：.]?|\s*[:：.])\s*", "", t)
     t = re.sub(r"^\d+(?:\.\d+)*(?:\s*\([A-Za-z]\)|[A-Za-z])?\s*[.)、]\s*", "", t)
     return t.strip()
 
@@ -1679,7 +1684,12 @@ def _classify_question_type(q_text):
         elif not ln.strip():
             block_open = False                         # 空行结束选项块——其后说明行不并入
         elif opts and block_open:
-            opts[-1] = opts[-1] + " " + ln.strip()     # 选项跨行——续行并入上一项
+            if re.match(r"(?i)^\s*(?:explain|show|justify|prove|describe|discuss|note|hints?|"
+                        r"circle|select|choose|mark|write|请|说明|解释|证明|注意|提示|选出|圈出|写出)\b",
+                        ln) or _HW_ANSBOX_INSTR_RE.search(ln):
+                block_open = False                     # 紧随选项的答题指令不是选项续行
+            else:
+                opts[-1] = opts[-1] + " " + ln.strip()     # 选项跨行——续行并入上一项
     if len(letters) >= 2 and letters == [chr(65 + i) for i in range(len(letters))]:
         return "choice", opts
     # 行内选项：讲义题面常被空白折叠成一行（… A. 对的 B. 错的）——只认 A．/A:/（A）
@@ -1701,9 +1711,13 @@ def _classify_question_type(q_text):
     prev = ""
     for ln in (q_text or "").splitlines():
         if _BLANK_RUN_RE.search(ln):
-            ctx = prev + " " + ln
-            # 填空线若挨着 答案/解答/作答 关键词，是答题栏不是题面挖空——保持主观题
-            if not re.search(r"(?i)answers?|solutions?|show\s+your\s+work|答案|解答|作答|答题", ctx):
+            # 只有【标签形状】才算答题栏：标签紧贴空线（Answer: ____）、整行是指示语、
+            # 或上一行以答案标签结尾——「Answer the following: f(x)= ____」是真填空题
+            label_before = re.search(r"(?i)(?:answers?|solutions?|答案|解答|作答|答题)"
+                                     r"[处栏]?\s*[:：]?\s*[_＿]", ln)
+            label_prev = re.search(r"(?i)(?:answers?|solutions?|答案|解答|作答|答题)"
+                                   r"[处栏]?\s*[:：]?\s*$", prev)
+            if not (label_before or label_prev or _HW_ANSBOX_INSTR_RE.search(ln)):
                 return "fill_blank", None
         if ln.strip():
             prev = ln

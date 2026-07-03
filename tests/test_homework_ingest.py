@@ -2628,6 +2628,31 @@ class HomeworkIngest(unittest.TestCase):
         self.assertEqual(lec[0]["type"], "fill_blank")
         self.assertEqual(lec[0].get("answer"), "LIFO")             # 判分对的是填的值，不是标题
 
+    def test_answer_prefix_stripping_precision(self):
+        self.assertEqual(B._strip_answer_prefix("Answer 1: B"), "B")          # 欠剥修复
+        self.assertEqual(B._strip_answer_prefix("Answer: LIFO"), "LIFO")
+        self.assertEqual(B._strip_answer_prefix("Solution set"), "Solution set")   # 过剥修复
+        self.assertEqual(B._strip_answer_prefix("Quiz 1.1 Solution Solution set"), "Solution set")
+        self.assertEqual(B._strip_answer_prefix("Problem 1 Solution B"), "B")
+        self.assertEqual(B._strip_answer_prefix("1(a). B"), "B")
+
+    def test_instruction_after_options_without_blank_line(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw107.pdf": ["Problem 1\n选出正确项：\nA. alpha\nB. beta\nExplain your choice."],
+                            "hw107_sol.pdf": ["1. beta"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(hw[0]["type"], "choice")
+        self.assertEqual(hw[0]["options"][1], "B. beta")           # 无空行的指令也不卷进选项
+        self.assertEqual(hw[0].get("answer"), "B")                 # 选项正文归一不受污染
+
+    def test_prompt_mentioning_answer_still_fill_blank(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw108.pdf": ["Problem 1\nAnswer the following: f'(x) = ______ 。"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(hw[0]["type"], "fill_blank")              # 提到 answer 的真填空不误伤
+
     def test_no_network_or_llm(self):
 
 
