@@ -52,8 +52,9 @@ _HW_FILE_RE = re.compile(r"(?:^|[\\/_\-. ])(?:hw|homework|assignments?|problem[ 
 # 挂掉 lecture 抽取的 flake 根源）
 _HW_ROOT_RE = re.compile(
     r"(?:^|[\\/_\-. ])(?:(?:hw|homework|assignments?|problem[ _-]?sets?|psets?)[ _\-]?\d*"
-    r"|ps[ _\-]?\d+)(?=$|[\\/_\-. ()]|solutions?|answers?|sols?|ans|keys?|manuals?)"
-    r"|作业|习题", re.I)
+    r"|ps[ _\-]?\d+)"
+    r"(?=$|[\\/_\-. ()]|(?:solutions?|answers?|sols?|ans|keys?|manuals?)(?:$|[\\/_\-. ()0-9]))"
+    r"|(?:作业|习题)(?=$|[\\/_\-. ()0-9]|答案|解答|册|本|集)", re.I)
 # tokens that mark a SOLUTION companion file (hw1_sol.pdf / HW2_Answers.pdf / 作业3答案.pdf)。
 # solution/answer 需要词元边界：前面不能是字母（unanswered ≠ answers；hw1solution 的数字前缀合法），
 # 后面须是分隔符/括号/串尾——纯子串匹配会把 unanswered_hw1 误判成解答文件
@@ -101,7 +102,9 @@ _HW_ANSBOX_INSTR_RE = re.compile(
     r"(?i)\b(?:in|into|on|onto|using)[ \t]+(?:the|a|your)[ \t]+(?:answer[ \t]+|separate[ \t]+)?"
     r"(?:box(?:es)?|space|blank|line|lines|sheet|grid|area)\b"
     r"|\b(?:box(?:es)?|space|blank|line|lines|sheet|grid|area)[ \t]+(?:below|provided)\b"
-    r"|答题[框栏区]|在下[方面]|空白处")
+    r"|\bshow[ \t]+(?:all[ \t]+)?(?:your[ \t]+)?work\b"
+    r"|\b(?:explain|justify)[ \t]+your[ \t]+(?:reasoning|answer|steps)\b"
+    r"|答题[框栏区]|在下[方面]|空白处|写出(?:计算|解题)?过程|说明理由")
 
 # 键控答案行的统一正则：编号 + [.)、] 分隔（1. A / 1a. x / 1 (a). y，紧凑形 1.A），或
 # 教材式小数号 + 空白直接跟内容（1.1 A——小数号后常不写分隔点）。捕获组二选一，
@@ -416,8 +419,9 @@ def _pure_sol_stem(stem):
     """文件名剥掉解答描述词后【只剩】解答记号/连接词/版本词/hw 记号——纯解答名
     （solutions / final_answers / hw1_key ✓；questions_answers 的 questions 是实义词 ✗）。
     比 _sol_dir_segment 的目录后缀规则窄：Q&A 讲义（questions_answers.pdf）不能被误杀出 wiki。"""
-    stem = _strip_sol_desc(stem)
-    if not _SOL_TOKEN_RE.search(stem):
+    has_key = bool(_KEY_TOKEN_RE.search(stem))     # key/manual 描述词本身也是答案册记号——
+    stem = _strip_sol_desc(stem)                   # 先剥再查会把 key.pdf / final_key.pdf 漏成讲义
+    if not (_SOL_TOKEN_RE.search(stem) or has_key):
         return False
     rest = _SOL_TOKEN_RE.sub("", stem)
     toks = re.findall(r"[A-Za-z一-鿿]+", rest)
@@ -812,14 +816,15 @@ def extract_homework_items(pages, root_name=""):
         if not marks_all:
             keyed_ms = _keyline_filter(_HW_KEYLINE_RE.finditer(stream), _hw_prob_nums(hf))
             keyset0 = {_keyline_num(m2) for m2 in keyed_ms}
-            # 键控拆分一律要求号集 ⊆ 配对作业的已知题号——单题册里带编号的解答步骤
-            # （1. 求导… 2. 解方程…）不是答案清单，按号拆会把官方解答截成第一步
-            if keyset0 and keyset0 <= _hw_prob_nums(hf):
+            # 拆分条件：号集 ⊆ 已知题号（单条键可拆），或命中 ≥2 个已知题号（真键清单——
+            # 尾随「3. Grading note」注记不打碎拆分）；只命中 1 个的编号解答步骤仍不拆
+            if keyset0 and (keyset0 <= _hw_prob_nums(hf)
+                            or len(keyset0 & _hw_prob_nums(hf)) >= 2):
                 for x, m2 in enumerate(keyed_ms):
                     seg_end = keyed_ms[x + 1].start() if x + 1 < len(keyed_ms) else len(stream)
                     numk = _keyline_num(m2)
-                    if (hf, numk) in sol_answers:
-                        continue
+                    if numk not in _hw_prob_nums(hf) or (hf, numk) in sol_answers:
+                        continue               # 非题号条目（注记行）只当分段边界，不存为答案
                     got0 = _hw_nonblank_slice(stream, bounds, sf, m2.start(), seg_end)
                     if got0:
                         sol_answers[(hf, numk)] = got0 + ("solution",)
@@ -831,17 +836,18 @@ def extract_homework_items(pages, root_name=""):
             seg = stream[m["start"]:end0]
             keyed_ms = _keyline_filter(_HW_KEYLINE_RE.finditer(seg), _hw_prob_nums(hf))
             keyset0 = {_keyline_num(m2) for m2 in keyed_ms}
-            # 键控拆分一律要求号集 ⊆ 配对作业的已知题号（单条「1. A1」可拆、单题册的
-            # 编号解答步骤不拆——步骤号集不会都落在题号集合里）
-            if not (keyset0 and keyset0 <= _hw_prob_nums(hf)):
+            # 拆分条件：号集 ⊆ 已知题号，或命中 ≥2 个已知题号（尾随注记不打碎拆分）；
+            # 只命中 1 个的编号解答步骤仍不拆
+            if not (keyset0 and (keyset0 <= _hw_prob_nums(hf)
+                                 or len(keyset0 & _hw_prob_nums(hf)) >= 2)):
                 continue
             m["_section"] = True       # 已按号拆分的节头——继承不得再把它归给上一题
             for x, m2 in enumerate(keyed_ms):
                 seg_end = keyed_ms[x + 1].start() if x + 1 < len(keyed_ms) else len(seg)
                 numk = _keyline_num(m2)
                 key = (hf, numk)
-                if key in sol_answers:
-                    continue
+                if numk not in _hw_prob_nums(hf) or key in sol_answers:
+                    continue               # 注记行只当分段边界
                 got0 = _hw_nonblank_slice(stream, bounds, sf, m["start"] + m2.start(),
                                           m["start"] + seg_end)
                 if got0:
@@ -968,15 +974,15 @@ def extract_homework_items(pages, root_name=""):
             seg = stream[mk2["start"]:end2]
             keyed_ms = _keyline_filter(_HW_KEYLINE_RE.finditer(seg), prob_nums)
             keyset = {_keyline_num(m2) for m2 in keyed_ms}
-            # 键控拆分一律要求号集 ⊆ 本卷已知题号——单条「1. A」可拆（相邻兜底会把它安给
-            # 节前那道题）；编号解答步骤/普通编号列表不在题号集合里，不拆
-            if not (keyset and keyset <= prob_nums):
+            # 拆分条件：号集 ⊆ 已知题号，或命中 ≥2 个已知题号（尾随注记不打碎拆分）；
+            # 只命中 1 个的编号步骤/普通列表不拆
+            if not (keyset and (keyset <= prob_nums or len(keyset & prob_nums) >= 2)):
                 continue
             for x, m2 in enumerate(keyed_ms):
                 seg_end = keyed_ms[x + 1].start() if x + 1 < len(keyed_ms) else len(seg)
                 numk = _keyline_num(m2)
-                if numk in inline_keys:
-                    continue
+                if numk not in prob_nums or numk in inline_keys:
+                    continue               # 注记行只当分段边界
                 got2 = _hw_nonblank_slice(stream, bounds, hf,
                                           mk2["start"] + m2.start(), mk2["start"] + seg_end)
                 if got2:
@@ -1075,7 +1081,9 @@ def extract_homework_items(pages, root_name=""):
                     keyed_norm = {_keyline_num(m2) for m2 in _keyline_filter(
                         _HW_KEYLINE_RE.finditer(stream[s_start:s_end]), prob_nums)}
                     sol_line, _, sol_rest = stream[s_start:s_end].partition(chr(10))
-                    if marks[k]["num"] is None and keyed_norm and keyed_norm <= prob_nums:
+                    if marks[k]["num"] is None and keyed_norm \
+                            and (keyed_norm <= prob_nums
+                                 or len(keyed_norm & prob_nums) >= 2):
                         ans = None      # 无号「Answers」节头 + 键控列表（多号，或单号但都是已知
                                         # 题号）——是整卷答案区，按号拆给各题（见 inline_keys），
                                         # 不是节前那道题的相邻答案

@@ -1525,6 +1525,48 @@ class HomeworkIngest(unittest.TestCase):
         wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
         self.assertIn("问答讲义的正文内容", wiki_all)              # Q&A 讲义不因文件名被误杀
 
+    def test_root_name_boundaries_hardened(self):
+        for bad in ("mat-ps4keyboard", "tmp_hw3ansible", "非作业资料", "tmp习题abc"):
+            self.assertIsNone(B._HW_ROOT_RE.search("/" + bad), bad)   # 后缀/中文都要词元边界
+        for good in ("HW3", "hw2solutions", "ps4", "problem set 2", "作业3", "线代作业", "习题册"):
+            self.assertIsNotNone(B._HW_ROOT_RE.search("/" + good), good)
+
+    def test_bare_key_file_kept_out_of_wiki(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        for rel in ("hw1.pdf", "final_key.pdf"):
+            with open(os.path.join(mat, rel), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class KeyBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                if pdf_path.replace(chr(92), "/").endswith("final_key.pdf"):
+                    return ["裸键名答案册内容。"]
+                return ["Problem 1\n裸键名题面。"]
+        code, payload, report = _run(mat, KeyBackend({}))
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertNotIn("裸键名答案册内容", wiki_all)              # key.pdf 类裸键名不漏 wiki
+
+    def test_extra_numbered_note_does_not_break_key_split(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw91.pdf": ["Problem 1\n注记题面一。\n\nProblem 2\n注记题面二。"],
+                            "hw91_sol.pdf": ["Answers\n1. 注记答案一。\n2. 注记答案二。\n3. Grading note only."]})
+        code, payload, report = _run(mat, be)
+        by_num = {q["homework_number"]: q for q in payload["quiz_bank"]
+                  if q.get("source_type") == "homework"}
+        self.assertIn("注记答案一", by_num[1].get("answer", ""))    # 尾随注记不打碎键拆分
+        self.assertIn("注记答案二", by_num[2].get("answer", ""))
+        self.assertNotIn("Grading note", by_num[2].get("answer", ""))   # 注记只当分段边界
+
+    def test_show_your_work_instruction_not_stored(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw92.pdf": ["Problem 1\nAnswer:\nShow your work."]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw), 1)
+        self.assertFalse((hw[0].get("answer") or "").strip())     # 常见 worksheet 指令不是答案
+
     def test_no_network_or_llm(self):
 
 
