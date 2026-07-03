@@ -76,21 +76,17 @@ class BehaviorSmokeTest(unittest.TestCase):
 
     def test_b1_every_scenario_documented(self):
         # B1 覆盖矩阵收尾守卫——防止新增/改名场景后文档静默漂移、matrix 与实现脱节。
+        # 守卫**从 scenarios.json 派生**（遍历 names），而非硬编码子集：新增一个场景却漏更 README
+        # 或 coverage-matrix，下面任一断言都会红。
         names = [sc["name"] for sc in H.load_scenarios()["scenarios"]]
-        # (1) README 是逐场景注册表：每个 scenario 必须有一行（新增场景漏更 README 就红）
         readme = _read("README.md")
-        for n in names:
-            self.assertIn("`%s`" % n, readme, "behavior_smoke/README.md 未登记场景 %s（B1：新增场景须同步文档）" % n)
-        # (2) coverage-matrix 按名点到的场景是「显式映射」——这些名字必须都是真实场景（renamed/removed
-        #     会红）且确实在 matrix 里登记；比只查总数强，能抓「改了名但 matrix 没跟」。
         matrix = open(os.path.join(ROOT, "benchmark", "docs", "coverage-matrix.md"), encoding="utf-8").read()
-        matrix_named = ("zero_basic_key_question", "teaching_template", "visual_first_assets",
-                        "scope_override", "time_budget_no_questions", "knowledge_window_recheck",
-                        "lazy_load_best_effort")
-        for n in matrix_named:
-            self.assertIn(n, set(names), "coverage-matrix 点名了不存在的行为场景 %s（stale 引用）" % n)
-            self.assertIn("`%s`" % n, matrix, "coverage-matrix 应按名登记行为场景 %s" % n)
-        # (3) matrix 点名的 Tier 4 长会话场景在 drift/ 下（非 behavior smoke），也必须真实存在且被点名
+        for n in names:
+            # README 是逐场景注册表（每个 scenario 一行）；coverage-matrix 也逐个按名登记（能力行的
+            # mock 格里点名场景，或读者说明里点名 best-effort 场景）——两处都必须出现该场景名。
+            self.assertIn("`%s`" % n, readme, "behavior_smoke/README.md 未登记场景 %s（新增场景须同步文档）" % n)
+            self.assertIn("`%s`" % n, matrix, "coverage-matrix.md 未登记场景 %s（新增场景须同步 matrix）" % n)
+        # matrix 点名的 Tier 4 长会话场景在 drift/ 下（非 behavior smoke），也必须真实存在且被点名
         drift_named = "mode_urgent_no_questions"
         self.assertTrue(
             os.path.isfile(os.path.join(ROOT, "benchmark", "drift", "scenarios", drift_named + ".json")),
