@@ -196,6 +196,26 @@ class DriftHarness(unittest.TestCase):
         ])
         self.assertEqual(m["md_write_after_state"], 1)
 
+    def test_idless_generated_row_hand_edit_flagged(self):
+        # idless 生成表行（首列 '-'）的同数手改也要抓；官方 set-*-status 只改状态列不误报
+        st1 = json.dumps({"version": 1, "current_phase": 2,
+                          "mistake_archive": [{"chapter": "1", "note": "无id笔记一"}],
+                          "confusion_log": []}, ensure_ascii=False)
+        hdr = ("| 错题ID | 关联章节 | 错误原因分析 | 状态 |" + chr(10)
+               + "| :--- | :--- | :--- | :--- |" + chr(10))
+        md1 = "当前阶段：2" + chr(10) + "## 错题档案记录" + chr(10) + hdr + "| - | 1 | 无id笔记一 | 待复盘 |" + chr(10)
+        md2 = "当前阶段：2" + chr(10) + "## 错题档案记录" + chr(10) + hdr + "| - | 1 | 手改替换的内容 | 待复盘 |" + chr(10)
+        md3 = "当前阶段：2" + chr(10) + "## 错题档案记录" + chr(10) + hdr + "| - | 1 | 手改替换的内容 | 已订正 |" + chr(10)
+        m = _eval_turns([
+            {"turn": 1, "assistant": "记录。", "phase_context": 2,
+             "files_after": {"study_state.json": st1, "study_progress.md": md1}},
+            {"turn": 2, "assistant": "替换。", "phase_context": 2,
+             "files_after": {"study_state.json": st1, "study_progress.md": md2}},
+            {"turn": 3, "assistant": "只改状态。", "phase_context": 2,
+             "files_after": {"study_state.json": st1, "study_progress.md": md3}},
+        ])
+        self.assertEqual(m["md_write_after_state"], 1)            # turn2 抓到；turn3 状态列不误报
+
     def test_missing_transcript_exits_2(self):
         r = _cli(["--scenario", SCEN, "--transcript", os.path.join(TR, "does_not_exist.jsonl")])
         self.assertEqual(r.returncode, 2)

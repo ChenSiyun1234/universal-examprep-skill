@@ -72,7 +72,7 @@ def _plan_phase_nums(text):
         for m in re.finditer(r"阶段\s*(\d+)|第\s*(\d+)\s*阶段|[Pp]hase\s*(\d+)", ln):
             g = next(x for x in m.groups() if x)
             if int(g) >= 1:
-                nums.add(g)
+                nums.add(str(int(g)))      # 规范十进制——「阶段01」要能配上 current_phase=1
     return nums
 
 
@@ -468,6 +468,9 @@ def validate(ws):
                                           and all(isinstance(x, dict) for x in v)):
                     err(f"study_state.json 的 {field} 必须是对象数组，当前 {type(v).__name__}")
                     continue                          # 标量/坏形态不再往下迭代（1 会 TypeError 崩栈）
+                if field == "knowledge_window":
+                    continue    # 与更新器同 schema：knowledge_window 只要求对象数组——
+                                # 行内元数据不强求 note，validator 不能拒收官方更新器可用的 state
                 for x in (v or []):
                     if not isinstance(x, dict):
                         continue

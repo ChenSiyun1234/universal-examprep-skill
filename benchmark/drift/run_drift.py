@@ -429,6 +429,17 @@ def _snap_text(fa, name):
     return v
 
 
+def _dual_key(row):
+    """双写比对用的行键：idless 生成表行首列是占位 '-'，_row_key 会把所有此类行折叠成同一个
+    cell:- 键、同数替换互相隐身——这里降级为【去状态列】的内容键（最后一列是状态，官方
+    set-*-status 只改它、state 行串不含状态，不能因此误报）。其余行沿用 _row_key。"""
+    k = _row_key(row)
+    if k != "cell:-":
+        return k
+    cells = row.strip().strip("|").split("|")
+    return "tx:" + re.sub(r"\s+", "", "|".join(cells[:-1] if len(cells) > 1 else cells))
+
+
 def _session_snapshots(turns, state_established=False, plan_phases=None):
     """Per-turn parsed progress snapshot (None = no usable snapshot that turn), honoring the A4
     source-of-truth contract: within a turn study_state.json wins; and once state has appeared
@@ -467,10 +478,10 @@ def _session_snapshots(turns, state_established=False, plan_phases=None):
                 # 不直接比 md↔state 行键——跨源无 id 行键格式不可比会误报；
                 # 同源对比（md↔md、state↔state）没有这个问题
                 md_snap = parse_progress(_snap_text(fa, "study_progress.md"))
-                md_keys = ([_row_key(r) for r in md_snap["mistake_rows"]],
-                           [_row_key(r) for r in md_snap["confusion_rows"]])
-                st_keys = ([_row_key(r) for r in snap["mistake_rows"]],
-                           [_row_key(r) for r in snap["confusion_rows"]])
+                md_keys = ([_dual_key(r) for r in md_snap["mistake_rows"]],
+                           [_dual_key(r) for r in md_snap["confusion_rows"]])
+                st_keys = ([_dual_key(r) for r in snap["mistake_rows"]],
+                           [_dual_key(r) for r in snap["confusion_rows"]])
                 if md_snap["phase"] is not None and md_snap["phase"] != snap["phase"]:
                     # 断点面板陈旧：state 已到新阶段而生成视图还停在旧阶段——官方更新每次写
                     # state 都重渲染 md，双快照阶段必然一致

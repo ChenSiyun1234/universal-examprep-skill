@@ -584,6 +584,18 @@ class ValidatorSchema(unittest.TestCase):
         self.assertIn("无法读取", r.stdout)
         self.assertNotIn("Traceback", r.stderr)
 
+    def test_zero_padded_plan_phase_accepted(self):
+        ws = self._full_ws({"current_phase": 1})
+        with open(os.path.join(ws, "study_plan.md"), "w", encoding="utf-8", newline=chr(10)) as f:
+            f.write("# 计划" + chr(10) + "## 阶段01：栈（references/wiki/ch1.md）" + chr(10))
+        r = self._validate(ws)
+        self.assertNotIn("不在 study_plan.md", r.stdout)          # 「阶段01」规范化后配上 cp=1
+
+    def test_knowledge_window_rows_without_note_accepted(self):
+        ws = self._full_ws({"knowledge_window": [{"chapter": 1, "opened": True}]})
+        r = self._validate(ws)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)    # 与更新器同 schema：不强求 note
+
     def test_good_state_passes(self):
         ws = self._full_ws({"mistake_archive": [{"id": "q1", "chapter": "1", "note": "x", "status": "待复盘"}]})
         r = self._validate(ws)
