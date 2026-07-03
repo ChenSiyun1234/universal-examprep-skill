@@ -216,6 +216,32 @@ class DriftHarness(unittest.TestCase):
         ])
         self.assertEqual(m["md_write_after_state"], 1)            # turn2 抓到；turn3 状态列不误报
 
+    def test_first_turn_same_count_md_hand_edit_flagged(self):
+        # fixture 给了 state+初始 md 双基线：首个双写快照的同数手改（state 与基线一致、
+        # md 行被替换）也要计违规
+        import shutil
+        sc = dict(D.load_scenario(os.path.join(DRIFT, "scenarios", "long_session_state.json")))
+        d = tempfile.mkdtemp()
+        fx = os.path.join(d, "fx")
+        shutil.copytree(os.path.join(DRIFT, "fixtures", "mini_course_long_state"), fx)
+        st0 = json.dumps({"version": 1, "current_phase": 1,
+                          "mistake_archive": [{"id": "q1", "note": "误答"}],
+                          "confusion_log": []}, ensure_ascii=False)
+        with open(os.path.join(fx, "study_state.json"), "w", encoding="utf-8") as f:
+            f.write(st0)
+        with open(os.path.join(fx, "study_progress.initial.md"), "w", encoding="utf-8") as f:
+            f.write("当前阶段：1" + chr(10) + "## 错题本" + chr(10) + "- [#q1] 误答" + chr(10))
+        sc["fixture"] = fx
+        t = os.path.join(d, "t.jsonl")
+        md_edit = "当前阶段：1" + chr(10) + "## 错题本" + chr(10) + "- [#q9] 首回合手改的行" + chr(10)
+        with open(t, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"turn": 1, "assistant": "首回合。", "phase_context": 1,
+                                "files_after": {"study_state.json": st0,
+                                                "study_progress.md": md_edit}},
+                               ensure_ascii=False) + chr(10))
+        r = D.evaluate(sc, t)
+        self.assertGreaterEqual(r["metrics"]["md_write_after_state"], 1)
+
     def test_missing_transcript_exits_2(self):
         r = _cli(["--scenario", SCEN, "--transcript", os.path.join(TR, "does_not_exist.jsonl")])
         self.assertEqual(r.returncode, 2)

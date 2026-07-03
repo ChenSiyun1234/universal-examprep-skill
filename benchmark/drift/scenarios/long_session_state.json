@@ -1,6 +1,6 @@
 {
   "name": "long_session_state",
-  "fixture": "benchmark/drift/fixtures/mini_course_long",
+  "fixture": "benchmark/drift/fixtures/mini_course_long_state",
   "transcript": "benchmark/drift/transcripts/good_session_state.jsonl",
   "requires_state": true,
   "goal_markers": [

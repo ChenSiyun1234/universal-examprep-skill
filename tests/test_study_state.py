@@ -116,6 +116,14 @@ class Migration(unittest.TestCase):
         self.assertEqual(r2.returncode, 0, r2.stderr)
         self.assertEqual(_state(ws)["current_phase"], 2)
 
+    def test_bold_heading_ends_section(self):
+        md = LEGACY_MD + "**下一步**" + chr(10) + "- 这行是待办不是疑难记录" + chr(10)
+        ws = _mk_ws(tempfile.mkdtemp(), md=md)
+        _up(ws, ["init"])
+        st = _state(ws)
+        self.assertEqual(len(st["confusion_log"]), 1)             # 加粗标题终结上一节
+        self.assertNotIn("待办", st["confusion_log"][0]["note"])
+
     def test_init_adopts_legacy_md(self):
         ws = _mk_ws(tempfile.mkdtemp())
         r = _up(ws, ["init"])

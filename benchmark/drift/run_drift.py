@@ -440,12 +440,12 @@ def _dual_key(row):
     return "tx:" + re.sub(r"\s+", "", "|".join(cells[:-1] if len(cells) > 1 else cells))
 
 
-def _session_snapshots(turns, state_established=False, plan_phases=None):
+def _session_snapshots(turns, state_established=False, plan_phases=None, init_dual=None):
     """Per-turn parsed progress snapshot (None = no usable snapshot that turn), honoring the A4
     source-of-truth contract: within a turn study_state.json wins; and once state has appeared
     (fixture or any turn), a LATER md-only write is a hand-edit of the generated view — it must
     NOT advance checkpoint/row metrics（那正是 A4 要抓的漂移）. md fallback is for legacy sessions."""
-    out, stale_md, prev_dual = [], 0, None
+    out, stale_md, prev_dual = [], 0, init_dual
     plan_phases = set(plan_phases) if plan_phases else None
     for t in turns:
         fa = t.get("files_after") or {}
@@ -582,8 +582,7 @@ def compute_metrics(scenario, fixture_dir, turns):
     # requires_state 的 A4 场景即使 fixture 没带 state 文件也从「事实源已确立」起步——
     # 纯 md 手改转写不能在 state 场景白拿 md_write_after_state=0（那正是要抓的回归）
     require_state = bool(scenario.get("requires_state")) or os.path.isfile(state_init)
-    snaps, md_after_state = _session_snapshots(turns, require_state, set(canon))
-    # 指标种子同理：fixture 自带 state 时，初始阶段/行都从 JSON 事实源来——
+    # 指标种子：fixture 自带 state 时，初始阶段/行都从 JSON 事实源来——
     # 生成视图 md 过期/不一致时不能拿它当会话起点
     try:
         if os.path.isfile(state_init):
@@ -597,6 +596,18 @@ def compute_metrics(scenario, fixture_dir, turns):
         raise DriftError("fixture 的 study_state.json 不是 UTF-8: %s" % e)
     except (IOError, OSError) as e:
         raise DriftError("fixture 的 study_state.json 读取失败: %s" % e)
+
+    # 首个双写快照的同数手改也要有比对基线：fixture 同时给了 state 与初始 md 时，用它们
+    # 做 prev_dual 种子（同源比对——md 基线配 md、state 基线配 state；只有一侧就没有基线，
+    # 首回合仍靠行数/阶段背离兜底）
+    init_dual = None
+    if os.path.isfile(state_init) and init_progress is not None:
+        md0 = parse_progress(init_progress)
+        init_dual = (([_dual_key(r) for r in md0["mistake_rows"]],
+                      [_dual_key(r) for r in md0["confusion_rows"]]),
+                     ([_dual_key(r) for r in init_snap["mistake_rows"]],
+                      [_dual_key(r) for r in init_snap["confusion_rows"]]))
+    snaps, md_after_state = _session_snapshots(turns, require_state, set(canon), init_dual)
 
     # RUNNING PHASE CONTEXT — carried forward so the wrong-phase / over-read checks can't be silently
     # disabled by omitting `phase_context`: a turn without an explicit phase inherits the session's

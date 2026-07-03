@@ -100,7 +100,9 @@ def parse_md(text):
         if is_heading and re.search(r"疑难|困惑|confusion", h, re.I):
             cur, in_checklist, tbl_cols = confusions, False, None
             continue
-        if re.match(r"^\s{0,3}#{1,4}\s", ln):
+        if is_heading:
+            # 非已知区的任何标题（含 **加粗** 形式）都终结当前节——否则「**下一步**」之后的
+            # 普通列表会被误并进上一个档案区
             cur, in_checklist, tbl_cols = None, False, None
             continue
         cm = re.match(r"^\s*[-*]\s*\[([ xX])\]\s*(\S.*)$", ln)
