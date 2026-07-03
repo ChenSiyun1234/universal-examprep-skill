@@ -64,6 +64,13 @@ _EXAM_NEG_RE = re.compile(
     re.I)
 
 
+# 章节式讲义名（ch01 / chapter2 / lec3 / week4 / 第3章）——目录/根的试卷上下文不覆盖它们：
+# final_exam_prep/ch01.pdf 是复习用的讲义，不是卷子
+_CHAPTERISH_RE = re.compile(
+    r"(?:^|[\\/_\-. ])(?:ch(?:apter)?[ _-]?\d|lec(?:t(?:ure)?)?[ _-]?\d|week[ _-]?\d"
+    r"|unit[ _-]?\d|topic[ _-]?\d|session[ _-]?\d)|第\s*[一二三四五六七八九十\d]+\s*[章讲节课]", re.I)
+
+
 def _seg_exam(seg):
     """单个路径段是试卷信号：带试卷记号且【同段】没有讲义/行政负例词——
     midterm_notes/、期中复习/ 说自己是笔记/复习材料，不是试卷。"""
@@ -80,7 +87,11 @@ def _is_exam_path(rel, root_name=""):
     segs[-1] = os.path.splitext(segs[-1])[0]
     if _EXAM_NEG_RE.search(segs[-1]):
         return False                       # 文件名负例词一票否决（exams/期末复习笔记.pdf 是笔记）
-    if any(_seg_exam(sg) for sg in segs):
+    if _seg_exam(segs[-1]):
+        return True                        # 文件名自身就是试卷信号
+    if _CHAPTERISH_RE.search(segs[-1]):
+        return False                       # 目录/根上下文不覆盖章节式讲义名
+    if any(_seg_exam(sg) for sg in segs[:-1]):
         return True
     return bool(root_name and _seg_exam(root_name))
 # 根目录名误判会把整个讲义库当作业上下文——记号后必须在词元边界收尾（HW3 / ps4 /
@@ -540,8 +551,11 @@ def classify_homework_files(files, root_name=""):
         hw_m_raw = _HW_FILE_RE.search(stem)
         if hw_m_raw is None and not _EXAM_NEG_RE.search(stem):
             hw_m_raw = _EXAM_FILE_RE.search(stem)      # midterm_key.pdf：试卷记号与 hw 记号同权当锚
-        desc_after_hw = bool(hw_m_raw and any(
-            m.start() > hw_m_raw.start()
+        # 试卷上下文来自目录/根（exams/2020_key.pdf、2023期末真题/1_key.pdf）时锚定串首——
+        # 试卷语境下键描述词后缀本身就是答案册记号
+        _a0 = 0 if (hw_m_raw is None and _is_exam_path(rel, root_name)) else None
+        desc_after_hw = bool((hw_m_raw is not None or _a0 is not None) and any(
+            m.start() > (hw_m_raw.start() if hw_m_raw is not None else _a0)
             and all(t.lower() in _SOL_TRAIL_OK or _HW_FILE_RE.search(t)
                     for t in re.findall(r"[A-Za-z一-鿿]+", stem[m.end():]))
             for m in _KEY_TOKEN_RE.finditer(stem)))
@@ -798,12 +812,18 @@ def _hw_nonblank_slice(stream, bounds, fname, s_start, s_end):
     return None
 
 
-def extract_homework_items(pages, root_name=""):
+def extract_homework_items(pages, root_name="", exclude=frozenset()):
     """Extract homework problems (+ answers from paired solution files OR inline Solution blocks)
     into bank items with source_type='homework'. Returns (items, hw_report)."""
     files = sorted({pg["file"] for pg in pages})
     is_pdf = {f: any(pg.get("_pdf") for pg in pages if pg["file"] == f) for f in files}
     hw_files, pairing = classify_homework_files(files, root_name)
+    if exclude:
+        # 已归还讲义管线的讲义式试卷文件——这边绝不再当题面册解析（防双吃/答案卷进题面）；
+        # 指向它们的配对项一并摘除（解答册自会走 unpaired 警告，不静默）
+        hw_files = [f for f in hw_files if f not in exclude]
+        pairing = {sf: (None if hf in exclude else hf) for sf, hf in pairing.items()
+                   if sf not in exclude}
     exam_files = {f for f in hw_files if _is_exam_path(f, root_name)}
     report = {"exam_files": sorted(exam_files),
               "homework_files": hw_files,
@@ -1581,18 +1601,27 @@ def run(args, backend=None):
     # 作业/解答文件在【抽取前】就按文件名剔出讲义管线——lecture 的题/答配对跨页进行，
     # 事后过滤只能拦 source_file，拦不住讲义题从作业文件吸走 answer_source_file
     hw_related = set()
+    exam_rerouted = set()
     if getattr(args, "extract_homework", "auto") != "never":
         _hwf, _pairing = classify_homework_files(sorted({pg["file"] for pg in pages}), _mat_root_name)
         hw_related = set(_hwf) | set(_pairing)
         # 试卷命名但内容是讲义式 Quiz/Example 标记（quiz3.pdf 内含 Quiz 1.1）——作业/试卷解析器
-        # 不认这种标记，剔出讲义管线会一题不剩；无作业标记且有讲义标记的归还讲义管线抽题
-        #（wiki 排除照旧：它仍在 homework_files 里，题答内容绝不进复习材料）
+        # 不认 Quiz X.Y Solution，硬解析会把解答文本卷进题面（泄答案）；讲义标记数不少于
+        # 作业式题标记数就归还讲义管线（wiki 排除照旧：文件仍按作业类挡在 wiki 外），
+        # 归还集同时传给作业抽取端，绝不两头都吃
+        exam_rerouted = set()
         for _f in sorted(hw_related):
             if not _is_exam_path(_f, _mat_root_name):
                 continue
             _st0, _b0 = _file_stream(pages, _f)
-            if not _hw_markers(_st0) and detect_lecture_markers(_st0):
+            _lecm = detect_lecture_markers(_st0)
+            _probct = sum(1 for m in _hw_markers(_st0) if m.get("role") == "problem")
+            if _lecm and len(_lecm) >= max(1, _probct):
                 hw_related.discard(_f)
+                exam_rerouted.add(_f)
+                report["warnings"].append(
+                    "exam_lecture_style: %s（试卷命名但内容以讲义式 Quiz/Example 标记为主——"
+                    "已按讲义题导入 quiz_bank，正文不进 wiki）" % _f)
     lecture_pages = [pg for pg in pages if pg["file"] not in hw_related]
     lecture_items = []
     if args.extract_lecture_questions != "never":
@@ -1612,7 +1641,8 @@ def run(args, backend=None):
 
     homework_items = []
     if getattr(args, "extract_homework", "auto") != "never":
-        homework_items, hw_rep = extract_homework_items(pages, _mat_root_name)
+        homework_items, hw_rep = extract_homework_items(pages, _mat_root_name,
+                                                        exclude=exam_rerouted)
         report["warnings"].extend(hw_rep.pop("warnings"))
         report.update(hw_rep)
     # ---- render assets for figure-dependent items ----
@@ -1706,7 +1736,8 @@ def run(args, backend=None):
     # 作业册常带 inline Solution 块，混进 wiki 等于测验/复盘前泄题；题面与官方答案已完整
     # 进入 quiz_bank（含出处 source_file/answer_source_file），wiki 只保留学习材料
     sol_files = (set(report.get("homework_solution_files") or [])
-                 | set(report.get("homework_files") or []))
+                 | set(report.get("homework_files") or [])
+                 | exam_rerouted)          # 归还讲义管线的讲义式试卷：题答进 quiz_bank、正文仍挡出 wiki
     # 解答目录（solutions/、hw1_solutions/）里配不上作业的文件（solutions/week1.pdf）会退出
     # 作业配对、交还讲义管线补配讲义答案——但整册仍是官方解答，照样挡在 wiki 外
     sol_dir_files = {pg["file"] for pg in pages

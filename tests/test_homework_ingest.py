@@ -1810,6 +1810,71 @@ class HomeworkIngest(unittest.TestCase):
         wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
         self.assertNotIn("期中键答案", wiki_all)
 
+    def test_exam_dir_key_file_pairs_as_solution(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(os.path.join(mat, "exams"), exist_ok=True)
+        for rel in ("exams/2020.pdf", "exams/2020_key.pdf"):
+            with open(os.path.join(mat, *rel.split("/")), "wb") as f:
+                f.write(b"%PDF-fake")
+        with open(os.path.join(mat, "lec01.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+
+        class KyBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                rel = pdf_path.replace(chr(92), "/")
+                if rel.endswith("2020_key.pdf"):
+                    return ["Problem 1 Solution\n目录卷键答案。"]
+                if rel.endswith("2020.pdf"):
+                    return ["Problem 1\n目录卷题面。"]
+                return ["讲义正文内容。"]
+        code, payload, report = _run(mat, KyBackend({}))
+        ex = [q for q in payload["quiz_bank"] if q.get("source_type") == "exam"]
+        self.assertEqual(len(ex), 1)                              # 目录上下文的 key 是答案册
+        self.assertIn("目录卷键答案", ex[0].get("answer", ""))
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertNotIn("目录卷键答案", wiki_all)
+
+    def test_quiz_handout_with_stray_problem_line_prefers_lecture(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        for rel in ("quiz4.pdf", "lec01.pdf"):
+            with open(os.path.join(mat, rel), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class QzBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                if "quiz4" in pdf_path:
+                    return ["Quiz 1.1 Problem\n占优小测题面。\nQuiz 1.1 Solution\n占优小测答案。\n"
+                            "Problem 1\n杂散的一行。"]
+                return ["讲义正文内容。"]
+        code, payload, report = _run(mat, QzBackend({}))
+        ex = [q for q in payload["quiz_bank"] if q.get("source_type") == "exam"]
+        self.assertFalse(ex)                                      # 讲义标记占优→不走作业解析器
+        lec = [q for q in payload["quiz_bank"] if q["id"].startswith("lecture_")]
+        self.assertTrue(any("占优小测题面" in (q.get("question") or "") for q in lec))
+        self.assertFalse(any("占优小测答案" in (q.get("question") or "")
+                             for q in payload["quiz_bank"]))       # 答案绝不卷进任何题面
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertNotIn("占优小测答案", wiki_all)                 # 归还讲义管线但正文仍挡出 wiki
+
+    def test_exam_root_does_not_swallow_chapterish_lectures(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "final_exam_prep")
+        os.makedirs(mat)
+        for rel in ("ch01.pdf", "1.pdf"):
+            with open(os.path.join(mat, rel), "wb") as f:
+                f.write(b"%PDF-fake")
+        be = FakeBackend({"ch01.pdf": ["章节讲义的正文知识点。"],
+                          "1.pdf": ["Problem 1\n备考卷题面。"]})
+        code, payload, report = _run(mat, be)
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertIn("章节讲义的正文知识点", wiki_all)            # ch01 是讲义，不被根上下文吞掉
+        ex = [q for q in payload["quiz_bank"] if q.get("source_type") == "exam"]
+        self.assertEqual(len(ex), 1)                              # 裸编号 1.pdf 仍按卷子收
+        self.assertIn("备考卷题面", ex[0].get("question") or "")
+
     def test_no_network_or_llm(self):
 
 
