@@ -1364,7 +1364,7 @@ def group_sections(pages, notes=None):
         # CamelCase（LectureChapter02）单列大小写敏感分支放行
         _base = os.path.basename(f or "")
         m = (re.search(r"(?<![A-Za-z])ch(?:apter)?[ _-]?0*(\d+)", _base, re.I)
-             or re.search(r"(?<=[a-z])Chapter[ _-]?0*(\d+)", _base))
+             or re.search(r"(?<=[a-z])Ch(?:apter)?[ _-]?0*(\d+)", _base))   # 驼峰缩写 LectureCh02 也放行（大写 C 区分 march）
         if markers:
             ch = markers[0]["chapter"]
             clue_files.add(f)

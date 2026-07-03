@@ -2499,6 +2499,8 @@ class HomeworkIngest(unittest.TestCase):
         code, payload, report = _run(mat, CcBackend({}))
         self.assertTrue(any(ph.get("phase_num") == 2 or "第 2 章" in (ph.get("phase_name") or "")
                             for ph in payload["phases"]))         # CamelCase Chapter02 归第 2 章
+        self.assertTrue(B.re.search(r"(?<=[a-z])Ch(?:apter)?[ _-]?0*(\d+)", "LectureCh02"))
+        self.assertIsNone(B.re.search(r"(?<=[a-z])Ch(?:apter)?[ _-]?0*(\d+)", "march-2024"))
         self.assertFalse(any(w.startswith("chapter_unassigned")
                              for w in report["warnings"]))
 
