@@ -471,7 +471,11 @@ def _session_snapshots(turns, state_established=False, plan_phases=None):
                            [_row_key(r) for r in md_snap["confusion_rows"]])
                 st_keys = ([_row_key(r) for r in snap["mistake_rows"]],
                            [_row_key(r) for r in snap["confusion_rows"]])
-                if (len(md_snap["mistake_rows"]) + len(md_snap["confusion_rows"])
+                if md_snap["phase"] is not None and md_snap["phase"] != snap["phase"]:
+                    # 断点面板陈旧：state 已到新阶段而生成视图还停在旧阶段——官方更新每次写
+                    # state 都重渲染 md，双快照阶段必然一致
+                    stale_md += 1
+                elif (len(md_snap["mistake_rows"]) + len(md_snap["confusion_rows"])
                         != len(snap["mistake_rows"]) + len(snap["confusion_rows"])):
                     # 双向都算：md 多行=手加，md 少行=state 进了新行而给学生看的生成视图没跟上
                     #（官方更新每次写 state 都重渲染 md，双快照行数必然一致）

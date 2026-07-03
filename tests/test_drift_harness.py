@@ -181,6 +181,21 @@ class DriftHarness(unittest.TestCase):
         ])
         self.assertEqual(m["md_write_after_state"], 1)
 
+    def test_stale_md_phase_in_dual_write_flagged(self):
+        # 双写但生成视图的断点还停在旧阶段——面板陈旧同样计违规
+        st2 = json.dumps({"version": 1, "current_phase": 2,
+                          "mistake_archive": [{"id": "q1", "note": "误答"}],
+                          "confusion_log": []}, ensure_ascii=False)
+        md_ok = "当前阶段：2\n## 错题本\n- [#q1] 误答\n"
+        md_stale = "当前阶段：1\n## 错题本\n- [#q1] 误答\n"
+        m = _eval_turns([
+            {"turn": 1, "assistant": "推进。", "phase_context": 2,
+             "files_after": {"study_state.json": st2, "study_progress.md": md_ok}},
+            {"turn": 2, "assistant": "又写。", "phase_context": 2,
+             "files_after": {"study_state.json": st2, "study_progress.md": md_stale}},
+        ])
+        self.assertEqual(m["md_write_after_state"], 1)
+
     def test_missing_transcript_exits_2(self):
         r = _cli(["--scenario", SCEN, "--transcript", os.path.join(TR, "does_not_exist.jsonl")])
         self.assertEqual(r.returncode, 2)
