@@ -1632,7 +1632,7 @@ class HomeworkIngest(unittest.TestCase):
                      "past_paper.pdf", "sample exam.pdf", "practice-midterm.pdf",
                      "期末试卷A卷.pdf", "真题2014.pdf", "模拟卷.pdf", "模拟试卷（偏难).pdf",
                      "2019期中.pdf", "月考试题.pdf", "exams/2020.pdf",
-                     "midtermsolutions.pdf", "examanswers.pdf"):
+                     "midtermsolutions.pdf", "examanswers.pdf", "期末时间复杂度试题.pdf"):
             self.assertTrue(B._is_exam_path(good), good)
         for bad in ("example.pdf", "os_example_question2.pdf", "final_version.pdf",
                     "final report.pdf", "模拟滤波器.pdf", "期末复习提纲.pdf",
@@ -1934,8 +1934,72 @@ class HomeworkIngest(unittest.TestCase):
         code, payload, report = _run(mat, RvBackend({}))
         wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
         self.assertNotIn("带后缀答案册的标准答案", wiki_all)      # 负例词不否决答案册的排除
-        self.assertTrue(any("hw_unpaired_solution_file" in w or "hw_no_markers" in w
-                            for w in report["warnings"]))         # 且有警告留痕，不静默
+        ex = [q for q in payload["quiz_bank"] if q.get("source_type") == "exam"]
+        self.assertEqual(len(ex), 1)                              # round-5 起 review 尾缀可剥，
+        self.assertIn("带后缀答案册的标准答案", ex[0].get("answer", ""))   # 答案册直接配回卷子
+
+    def test_glued_compound_answer_key_pairs(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        for rel in ("midterm.pdf", "midtermanswerkey.pdf", "lec01.pdf"):
+            with open(os.path.join(mat, rel), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class GkBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                rel = pdf_path.replace(chr(92), "/")
+                if rel.endswith("midtermanswerkey.pdf"):
+                    return ["Problem 1 Solution\n复合胶连键答案。"]
+                if rel.endswith("midterm.pdf"):
+                    return ["Problem 1\n复合胶连键题面。"]
+                return ["讲义正文内容。"]
+        code, payload, report = _run(mat, GkBackend({}))
+        ex = [q for q in payload["quiz_bank"] if q.get("source_type") == "exam"]
+        self.assertEqual(len(ex), 1)
+        self.assertIn("复合胶连键答案", ex[0].get("answer", ""))   # answerkey 复合胶连也拆
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertNotIn("复合胶连键答案", wiki_all)
+
+    def test_review_suffixed_exam_key_pairs_and_never_leaks(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        for rel in ("midterm.pdf", "midterm_key_review.pdf", "lec01.pdf"):
+            with open(os.path.join(mat, rel), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class KrBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                rel = pdf_path.replace(chr(92), "/")
+                if rel.endswith("midterm_key_review.pdf"):
+                    return ["Problem 1 Solution\n带审阅后缀键答案。"]
+                if rel.endswith("midterm.pdf"):
+                    return ["Problem 1\n带审阅后缀键题面。"]
+                return ["讲义正文内容。"]
+        code, payload, report = _run(mat, KrBackend({}))
+        ex = [q for q in payload["quiz_bank"] if q.get("source_type") == "exam"]
+        self.assertEqual(len(ex), 1)                              # review 后缀不否决答案册锚定
+        self.assertIn("带审阅后缀键答案", ex[0].get("answer", ""))
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertNotIn("带审阅后缀键答案", wiki_all)
+
+    def test_exam_root_generic_solutions_reroute_with_paper(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "2020期末真题")
+        os.makedirs(mat)
+        for rel in ("1.pdf", "solutions.pdf"):
+            with open(os.path.join(mat, rel), "wb") as f:
+                f.write(b"%PDF-fake")
+        be = FakeBackend({"1.pdf": ["Quiz 1.1 Problem\n随卷小测题面。"],
+                          "solutions.pdf": ["Quiz 1.1 Solution\n随卷小测官方解答。"]})
+        code, payload, report = _run(mat, be)
+        lec = [q for q in payload["quiz_bank"] if q["id"].startswith("lecture_")]
+        got = [q for q in lec if "随卷小测题面" in (q.get("question") or "")]
+        self.assertTrue(got)                                      # 卷子归还讲义管线
+        self.assertIn("随卷小测官方解答", got[0].get("answer", ""))   # 解答册随行配对
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertNotIn("随卷小测官方解答", wiki_all)             # 正文照旧挡出 wiki
 
     def test_no_network_or_llm(self):
 

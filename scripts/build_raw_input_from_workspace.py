@@ -59,7 +59,7 @@ _EXAM_FILE_RE = re.compile(
 # 试卷负例守卫：期末【复习提纲/串讲/笔记】是讲义、期中考试【安排/范围】是行政通知——
 # 这些词与试卷词同现时不按试卷收（讲义类照常走讲义管线，绝不猜）
 _EXAM_NEG_RE = re.compile(
-    r"课件|讲义|讲稿|教案|提纲|笔记|总结|归纳|串讲|考点|知识点|重点|复习|安排|通知|范围|时间表?"
+    r"课件|讲义|讲稿|教案|提纲|笔记|总结|归纳|串讲|考点|知识点|重点|复习|安排|通知|范围|时间表|考试时间"
     r"|(?<![A-Za-z])(?:lectures?|slides?|notes?|handouts?|reviews?|outlines?|syllabus|schedules?)(?![A-Za-z])",
     re.I)
 
@@ -73,7 +73,7 @@ def _deglue_exam(stem):
     """试卷词与解答/键词胶连（midtermsolutions / finalanswers / quizkey）——插分隔符让
     解答记号检测、配对键剥离与试卷记号边界照常工作。"""
     return re.sub(r"(?i)(midterms?|finals?|exams?|examinations?|quiz(?:zes)?\d*)"
-                  r"(solutions?|answers?|soln?s?|keys?|ans)(?![a-z])",
+                  r"((?:solutions?|answers?|soln?s?|ans)(?:keys?|manuals?)?|keys?)(?![a-z])",
                   lambda m: m.group(1) + "_" + m.group(2), stem)
 
 
@@ -142,7 +142,7 @@ _KEY_TOKEN_RE = re.compile(r"(?<![A-Za-z])(?:keys?|manuals?)(?=[_\-. ()]|$)", re
 # 其余实义词（hw1_answer_questions 的 questions）仍按动词短语归作业
 _SOL_TRAIL_OK = frozenset((
     "for", "to", "of", "the", "v", "ver", "version", "final", "rev", "revised",
-    "updated", "update", "new", "latest", "copy", "draft", "fixed", "corrected",
+    "updated", "update", "new", "latest", "copy", "draft", "fixed", "corrected", "review", "reviewed",
     "修订", "最终", "更新", "终版", "新版"))
 # answer-key 常见的「1. Answer: …」形式：编号在标记前面，被 _HEAD 吞掉——从匹配前缀里找回
 _SOL_PREFIX_NUM_RE = re.compile(r"^[ \t>*•·\-#]*(\d+(?:\.\d+)*(?:\([A-Za-z]\))?)\s*[.)）、]")
@@ -555,8 +555,10 @@ def classify_homework_files(files, root_name=""):
         # 裸 key/manual 后缀（hw1_key.pdf）：描述词在 hw 记号之后且是终端形——本身就是答案册记号。
         # 注意在【原始 stem】上找（stem_nokey 已剥掉描述词）
         hw_m_raw = _HW_FILE_RE.search(stem)
-        if hw_m_raw is None and not _EXAM_NEG_RE.search(stem):
-            hw_m_raw = _EXAM_FILE_RE.search(stem)      # midterm_key.pdf：试卷记号与 hw 记号同权当锚
+        if hw_m_raw is None:
+            # midterm_key.pdf：试卷记号与 hw 记号同权当锚。这里不做负例否决——
+            # midterm_key_review 的 review 否决的是题面卷分类，不否决它是答案册
+            hw_m_raw = _EXAM_FILE_RE.search(stem)
         # 试卷上下文来自目录/根（exams/2020_key.pdf、2023期末真题/1_key.pdf）时锚定串首——
         # 试卷语境下键描述词后缀本身就是答案册记号
         _in_exam_ctx = (bool(root_name and _seg_exam(root_name))
@@ -593,7 +595,7 @@ def classify_homework_files(files, root_name=""):
         # 版本/修订尾缀剥掉后的备选键——先按原键精确配（hw2_v2_sol ↔ hw2_v2 优先），
         # 原键配不上才试去版本键（hw1_solutions_v2 ↔ hw1）
         stripped_ver = _hw_norm(re.sub(
-            r"(?i)(?<![0-9A-Za-z])(?:v\d+|ver(?:sion)?|final|rev(?:ised)?|updated?|new|latest|"
+            r"(?i)(?<![0-9A-Za-z])(?:v\d+|ver(?:sion)?|final|rev(?:ised|iewed|iew)?|updated?|new|latest|"
             r"copy|draft|fixed|corrected|修订|最终|更新|终版|新版)(?=[_. ()-]|$)", "", stem_pair))
 
         sol_sep = _hw_sepform(stem_pair)
@@ -1636,6 +1638,26 @@ def run(args, backend=None):
                 report["warnings"].append(
                     "exam_lecture_style: %s（试卷命名但内容以讲义式 Quiz/Example 标记为主——"
                     "已按讲义题导入 quiz_bank，正文不进 wiki）" % _f)
+        # 解答册随行：配对到已归还卷子的、或试卷上下文（目录/根）里的无主解答册——
+        # 内容同样以讲义式标记为主就随卷归还，让讲义配对拿到官方解答（正文照旧不进 wiki）
+        for _sf, _hf in _pairing.items():
+            if _sf in exam_rerouted or _sf not in hw_related:
+                continue
+            _sf_rel = _sf.replace(chr(92), "/")
+            _ctx = (_hf in exam_rerouted) or (_hf is None and (
+                bool(_mat_root_name and _seg_exam(_mat_root_name))
+                or any(_seg_exam(sg) for sg in os.path.dirname(_sf_rel).split("/") if sg)))
+            if not _ctx:
+                continue
+            _st0, _b0 = _file_stream(pages, _sf)
+            _lecm = detect_lecture_markers(_st0)
+            _probct = sum(1 for m in _hw_markers(_st0) if m.get("role") == "problem")
+            if _lecm and len(_lecm) >= max(1, _probct):
+                hw_related.discard(_sf)
+                exam_rerouted.add(_sf)
+                report["warnings"].append(
+                    "exam_lecture_style: %s（试卷解答册且内容以讲义式标记为主——随卷归还"
+                    "讲义管线配对官方解答，正文不进 wiki）" % _sf)
     lecture_pages = [pg for pg in pages if pg["file"] not in hw_related]
     lecture_items = []
     if args.extract_lecture_questions != "never":
