@@ -369,6 +369,112 @@ def no_unsolicited_closing_blocks(text):
     本探测器不看上下文；学生真的要求了的场景在 dispatch 层豁免（不跑本检查）。"""
     return not any(_heading_present(text, name) for name in OPTIONAL_CLOSER_NAMES)
 
+
+# ---- A6：时间宽裕度行为（≤1天严禁提问 / 窗口外知识点回问或实测）------------------------------
+# ≤1天 契约是「一个问题都不许问」——所以判定不靠白名单 cue，而是：只要出现**面向用户、需其回答的
+# 非反问问句**就算违约。两个信号：(1) 整段收尾即停下等学生（最后一句是问句）；(2) 中途出现明确要
+# 学生拿主意/许可/报状态/选择的问句。自答式反问（你可能会问…？/问完立刻自答）与纯陈述句不算。
+# DRIFT 侧 run_drift.py 有一份等价副本，二者由 tests parity 锁一致。
+_STUDENT_ASK_CUE = re.compile(
+    r"你想|你要|你希望|你打算|你更|你觉得|你认为|你选|你决定|你来定|由你|你自己|你先|"
+    r"你(?:还)?记得|你会(?:不会)?|你能(?:不能)?|你有(?:没有)?|你是(?:不是|否)|你(?:比较)?熟|"
+    r"你复习到|你学到|要不要|想不想|请问|需要我|哪一?章|从哪|"
+    r"(?:先讲|先复习|先看|先做|先学|讲|复习|看|做|来)[^，。？?！!\n]{0,8}还是|"
+    r"需(?:不需)?要(?:我|先)|要(?:不要)?先|用不用(?:先|我)|该(?:先|不该)|哪个先|先哪|先(?:讲|复习|看|做|学|过)(?:什么|哪|谁)|"
+    # 通用许可/回检/下一步问句（还有问题吗 / 可以吗 / 接下来怎么安排）——≤1天 里这些也算提问
+    r"还有(?:什么|没有)?问题|有没有(?:什么)?问题|有问题吗|还有(?:不懂|不会|疑问)|哪里不(?:懂|会|清楚)|"
+    r"可以吗|可不可以|行吗|行不行|好吗|好不好|方便吗|需要吗|要吗|"
+    r"接下来(?:怎么|怎样|如何|想|要|需要)|下一步(?:怎么|想|要)|怎么安排|如何安排|怎么(?:样)?进行|"
+    r"do you\b|would you\b|are you\b|have you\b|can you\b|which chapter\b|what.*\byou\b|"
+    r"should i\b|shall i\b|want me to\b|which.*first\b|any questions\b",
+    re.I)
+# 自答式反问前缀（你/您可能会问…？——自问自答，不停下等学生）
+_RHETORICAL_PREFACE = re.compile(
+    r"[你您]可能(?:会)?问|[你您]也许(?:会)?问|[你您](?:有没有|是不是|会不会)想过|[你您]是不是(?:觉得|以为)|"
+    r"[你您]也许(?:会)?好奇|[你您]可能(?:会)?好奇|试想|想象一下|不妨想")
+# 紧接着的自答句（问完自己立刻给答案）
+_SELF_ANSWER = re.compile(
+    r"^(?:因为|答案|其实|这是因为|这(?:正)?是|正是|原因|答[:：]|because|the answer|it'?s because|"
+    r"here'?s why)", re.I)
+
+
+def asks_student_question(text):
+    """是否向学生抛出了需其回答的**非反问**问句（会停下来等学生）。≤1天 契约=一个问题都不许问，
+    故：整段收尾是非反问问句（停下等学生），或中途出现明确要学生拿主意/许可/报状态/选择的问句，
+    都算。自答式反问（你可能会问…？/问完立刻自答）与纯陈述句不算。跨软换行、行内非行尾问号、中英皆识别。"""
+    t = re.sub(r"[ \t]*\n[ \t]*", " ", text or "").strip()  # 软换行并为空格：跨行问句也能识别
+    sents = [s.strip() for s in re.split(r"(?<=[？?。！!；;])\s*", t) if s.strip()]
+    if not sents:
+        return False
+    # (1) 收尾即停下等学生：最后一句是问句且非反问前缀 → 违约（不需要白名单 cue）
+    last = sents[-1]
+    if (last.endswith("？") or last.endswith("?")) and not _RHETORICAL_PREFACE.search(last):
+        return True
+    # (2) 中途的明确元问句（让学生拿主意/许可/报状态/选择），排除反问与紧接自答
+    for i, s in enumerate(sents):
+        if not (s.endswith("？") or s.endswith("?")):
+            continue
+        if _RHETORICAL_PREFACE.search(s):
+            continue
+        nxt = sents[i + 1] if i + 1 < len(sents) else ""
+        if _SELF_ANSWER.match(nxt):
+            continue
+        if _STUDENT_ASK_CUE.search(s):
+            return True
+    return False
+
+
+def urgent_no_student_questions_ok(text):
+    """≤1天档：严禁向用户提问（任何问题都在浪费复习时间）——纯讲解陈述句，没有面向学生的问句。"""
+    return not asks_student_question(text)
+
+
+# 回想类复核（问学生是否记得）与出题实测类复核分开——>7天 档契约要求用难题实测，不能只问「还记得吗」。
+_RECALL_CUE = re.compile(
+    r"还记得|是否(?:还)?记得|记不记得|复述一?[遍下]|能不能(?:说|讲|复述|做出|想起)|说说看|想一想.*是什么|"
+    r"考考你|考考自己")
+_TEST_CUE = re.compile(
+    r"先做一道题|来一道题|做(?:一)?道题|做题(?:验证|检验|实测)?|实测一?下?|测一?测|测一?下|"
+    r"用.{0,8}(?:难?题|例题).{0,6}(?:实测|检验|验证|考|试)|出(?:一)?道(?:难?题|题)")
+_WINDOW_RECHECK_CUE = re.compile(_RECALL_CUE.pattern + "|" + _TEST_CUE.pattern)
+# 复核所在**分句**里若含拒绝/否定/反事实词，视为没真的复核。「会不会/行不行」里的「不会」不算拒绝
+# （那是复核问句本身），故 不会 用后视排除 会/还/行。此外把「否定式的发问/实测」（不问/不实测/不测…）
+# 也算拒绝——「我不问你还记得吗，直接用」不是复核。
+_WINDOW_REFUSAL = re.compile(
+    r"(?<![会还行])不(?:会|做|想|去|再|打算|出)|不(?:问|实测|测|考|检验|核对?)|"
+    r"不用|无需|无须|不需要|没(?:有)?(?:先|去|怎么)|"
+    r"别(?:再|又|去)|懒得|就当你|默认你|不再|本来该|本应|原本(?:该|想)")
+# 整份回答最终"默认还会/直接当会了"的收口——无论前面问没问都算没真复核（先确认…但我就当你会了）。
+_WINDOW_DEFAULT_OUT = re.compile(r"(?:就当|默认|直接当|当)你(?:已经|都|应该)?(?:会|懂|记得|掌握|没问题|行|OK)")
+
+
+def _has_unconditional_default(t):
+    """整份回答里是否有**未被否定的**「默认还会」收口——「不会默认你会」这类否定式安全声明不算。"""
+    for m in _WINDOW_DEFAULT_OUT.finditer(t or ""):
+        pre = (t or "")[max(0, m.start() - 5):m.start()]
+        if not re.search(r"[不别没绝]|无需|无须", pre):
+            return True
+    return False
+
+
+def window_out_rechecked(text, require_test=False):
+    """遇到「窗口外」的知识点必须真的复核，不能默认还会。检测：既点明窗口外语境，又在某个**未被否定
+    的分句**里做了真实复核。`require_test=True`（>7天 档）时**只认出题实测**——只问「还记得吗」不算，
+    契约要求用对应难题实测；`require_test=False`（3-7天 档）时回想发问或出题实测都算。
+    只说「先确认一下」不发问、或末尾「我就当你会了」默认收口，一律不算真复核；但「不会默认你会」这类
+    否定式安全声明不误伤。"""
+    t = text or ""
+    if not re.search(r"窗口外|上次(?:讲过|学过)了?有?一?阵|好一?阵子没", t):
+        return False
+    if _has_unconditional_default(t):               # 最终（未被否定地）默认还会 → 前面问了也白问
+        return False
+    cue = _TEST_CUE if require_test else _WINDOW_RECHECK_CUE
+    for c in re.split(r"[。！？!?；;，,、\n]", t):
+        if cue.search(c) and not _WINDOW_REFUSAL.search(c):
+            return True
+    return False
+
+
 def visual_first_asset_display_ok(text, fixture_path=FIXTURE):
     """Smoke-check a visual-required output contract.
 
@@ -756,6 +862,21 @@ def check_scenario_mock(name, sc, fixture_path=FIXTURE):
                 and has_zero_basic_sections(good_txt))
         legacy_bad = teaching_template_ok(_read(_p(sc["mock_negative_legacy"])))
         return (good and not legacy_bad), f"seven_step_good={good} legacy_two_section_caught={not legacy_bad}"
+    if name == "time_budget_no_questions":
+        # ≤1天档：好例纯讲解无学生问句；反例向学生抛澄清/偏好问句 → 被抓
+        good = urgent_no_student_questions_ok(_read(_p(sc["mock_output"])))
+        bad = urgent_no_student_questions_ok(_read(_p(sc["mock_negative"])))
+        return (good and not bad), f"urgent_no_questions_good={good} question_in_1day_caught={not bad}"
+    if name == "knowledge_window_recheck":
+        # 3-7天：好例回问/实测都算；反例默认还会 → 被抓。
+        good = window_out_rechecked(_read(_p(sc["mock_output"])))
+        bad = window_out_rechecked(_read(_p(sc["mock_negative"])))
+        # >7天：必须出题实测——好例出题过；只口头回问的反例在 require_test 下被抓（契约要求难题实测）。
+        test_good = window_out_rechecked(_read(_p(sc["mock_test"])), require_test=True)
+        recall_only = window_out_rechecked(_read(_p(sc["mock_negative_recall_only"])), require_test=True)
+        return (good and not bad and test_good and not recall_only), (
+            f"rechecked_good={good} assumed_known_caught={not bad} "
+            f"test_good={test_good} recall_only_in_over7d_caught={not recall_only}")
     if name == "teaching_template":
         good_txt = _read(_p(sc["mock_output"]))
         liberal_txt = _read(_p(sc["mock_liberal"]))

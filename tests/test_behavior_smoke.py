@@ -65,7 +65,7 @@ class BehaviorSmokeTest(unittest.TestCase):
             "mock_liberal", "mock_ai_answer", "mock_negative_skip_ask", "mock_negative_formula_first",
             "mock_negative_no_source", "mock_negative_unlabeled_source", "mock_negative_missing_warn",
             "mock_negative_warn_title", "mock_negative_unsolicited_closers", "mock_optin_closers",
-            "mock_negative_legacy",
+            "mock_negative_legacy", "mock_test", "mock_negative_recall_only",
         )
         for sc in spec["scenarios"]:
             for k in file_keys:
@@ -647,6 +647,86 @@ class BehaviorSmokeTest(unittest.TestCase):
         zb = _read("mock/sample_outputs/zero_basic_explain.txt")
         self.assertTrue(H.teaching_template_ok(zb) and H.question_source_block_ok(zb)
                         and H.has_zero_basic_sections(zb), "零基础七步好例应三项全过")
+
+    def test_a6_time_budget_no_questions_detector(self):
+        # ≤1天档：好例纯讲解无学生问句；反例向学生抛澄清/偏好问句必须被抓
+        self.assertTrue(H.urgent_no_student_questions_ok(_read("mock/sample_outputs/time_budget_1day_good.txt")),
+                        "≤1天纯讲解好例不应有学生问句")
+        self.assertFalse(H.urgent_no_student_questions_ok(_read("mock/sample_outputs/time_budget_1day_bad.txt")),
+                         "≤1天向学生提问必须被抓")
+        # 讲解里的自答式反问（不含学生澄清线索）不算学生问句、不误伤
+        self.assertFalse(H.asks_student_question("为什么顺序表随机访问更快？因为地址可直接算出。"))
+        self.assertTrue(H.asks_student_question("你想先从哪一章开始？"))
+        self.assertTrue(H.asks_student_question("要不要我先讲栈？"))
+        # 陈述句里出现「你」但不是问句（不以 ？结尾）不算
+        self.assertFalse(H.asks_student_question("接下来我给你讲栈的三个操作。"))
+        # 自答式反问前缀 / 紧接自答 不算（False Positive 防护）
+        self.assertFalse(H.asks_student_question("你可能会问：这道题为什么选 B？因为它满足性质。"),
+                         "「你可能会问…？」自问自答不算")
+        self.assertFalse(H.asks_student_question("您也许好奇：栈和队列有何区别？其实差在存取顺序。"))
+        self.assertFalse(H.asks_student_question("栈是后进先出，对吧？其实就是这样。"), "反问后紧接自答不算")
+        # Codex R2-IAO：≤1天 里任何面向用户的非反问问句都算（不靠白名单 cue）——收尾问句 + 通用问句
+        for q in ("还有问题吗？", "接下来怎么安排？", "我先讲第1章，可以吗？", "我们开始吧，好吗？",
+                  "有没有什么问题？", "Any questions?"):
+            self.assertTrue(H.asks_student_question(q), "≤1天 通用面向用户问句必须被抓：%s" % q)
+        # 问号非行尾 / 跨软换行 / 英文问句 都能识别（False Negative 防护）
+        self.assertTrue(H.asks_student_question("你想先复习哪一章？ 告诉我。"), "问号后有尾巴也要识别")
+        self.assertTrue(H.asks_student_question("请问你复习到第几章了？请回复。"))
+        self.assertTrue(H.asks_student_question("你打算从哪\n章开始？"), "跨软换行的问句要识别")
+        self.assertTrue(H.asks_student_question("Which chapter do you want to start with?"))
+        self.assertTrue(H.asks_student_question("Do you remember big-O notation?"))
+        # 选择疑问 / 「需不需要我先…吗」/「Should I…」也要抓（Codex R1-XX）
+        self.assertTrue(H.asks_student_question("先讲栈还是队列？"))
+        self.assertTrue(H.asks_student_question("需要先讲栈吗？"))
+        self.assertTrue(H.asks_student_question("Should I start with stacks?"))
+        self.assertTrue(H.asks_student_question("用不用我先过一遍公式？"))
+        self.assertTrue(H.asks_student_question("先复习哪个？栈还是队列？"))
+        # 陈述句（无 ？）不误伤
+        self.assertFalse(H.asks_student_question("接下来我先讲栈，再讲队列。"))
+
+    def test_a6_knowledge_window_recheck_detector(self):
+        # 窗口外知识点：好例回问/实测；反例默认还会直接用必须被抓
+        self.assertTrue(H.window_out_rechecked(_read("mock/sample_outputs/window_recheck_good.txt")),
+                        "窗口外知识点做了回问/实测的好例应通过")
+        self.assertFalse(H.window_out_rechecked(_read("mock/sample_outputs/window_recheck_bad.txt")),
+                         "窗口外却默认还会、直接用必须被抓")
+        # 否定式提及复核线索（不出题实测 / 无需回问还记得吗）不算真的复核
+        self.assertFalse(H.window_out_rechecked("递归在窗口外了，我就不出题实测了，直接用。"))
+        self.assertFalse(H.window_out_rechecked("递归窗口外，无需回问你还记得吗，直接用。"))
+        # 反事实（本来该先确认却没做）不算复核
+        self.assertFalse(H.window_out_rechecked("窗口外的这块，本来该先确认的，但我就不这么干了，直接用。"))
+        # Codex R3-YIp：否定式安全声明「不会默认你会」不该压掉真正的复核（False Negative 防护）
+        self.assertTrue(H.window_out_rechecked("递归在窗口外了，不会默认你会，先确认你还记得递归出口吗？"),
+                        "「不会默认你会」是否定式安全声明，不该误伤真复核")
+        # Codex R3-YIs：否定式发问/实测（不问/不实测）算拒绝复核（False Positive 防护）
+        self.assertFalse(H.window_out_rechecked("递归在窗口外了，我不问你还记得吗，直接往下用。"),
+                         "「我不问你还记得吗」是跳过复核")
+        self.assertFalse(H.window_out_rechecked("递归窗口外了，我不实测你了，直接讲。", require_test=True))
+        # 描述性「不熟/没怎么练」在别的分句里，不该压掉真正的复核（False Negative 防护）
+        self.assertTrue(H.window_out_rechecked("窗口外知识点：树的遍历。这块你可能不熟，先确认你还记得前序遍历吗？"))
+        self.assertTrue(H.window_out_rechecked("递归在窗口外了，你之前没怎么练这块，来一道题看看还会不会。"),
+                        "「会不会」里的「不会」不是拒绝复核")
+        # 没有窗口外语境时，即使有「还记得」也不算本场景（返回 False）
+        self.assertFalse(H.window_out_rechecked("先确认你还记得递归吗？"))
+        self.assertTrue(H.window_out_rechecked("递归在窗口外了，先确认你还记得递归出口吗？"))
+        # Codex R1-Xb：光说「先确认一下」却不真的发问不算复核；末尾「我就当你会了」默认收口也不算
+        self.assertFalse(H.window_out_rechecked("递归在窗口外了，先确认一下。这里我就当你会了。"),
+                         "只说先确认、不发问、末尾默认还会必须被抓")
+        self.assertFalse(H.window_out_rechecked("递归窗口外，你还记得吗？算了我就当你会了，直接用。"),
+                         "问了又末尾默认收口，仍不算真复核")
+        # 真发问（还记得…吗）或真出题（来一道题实测）才算
+        self.assertTrue(H.window_out_rechecked("窗口外了，来一道题实测一下你还会不会。"))
+        # Codex R2-IAZ：>7天 档（require_test）必须出题实测——只口头问「还记得吗」不算
+        recall = "递归在窗口外了，先确认你还记得递归出口吗？"
+        test_out = "递归在窗口外了，来一道递归难题实测一下。"
+        self.assertTrue(H.window_out_rechecked(recall, require_test=False), "3-7天档口头回问算复核")
+        self.assertFalse(H.window_out_rechecked(recall, require_test=True), ">7天只口头回问、不出题必须被抓")
+        self.assertTrue(H.window_out_rechecked(test_out, require_test=True), ">7天出题实测算复核")
+        # >7天 mock 对照
+        self.assertTrue(H.window_out_rechecked(_read("mock/sample_outputs/window_recheck_test_good.txt"),
+                                               require_test=True))
+        self.assertFalse(H.window_out_rechecked(_read("mock/sample_outputs/window_recheck_recall_only_bad.txt"),
+                                                require_test=True), ">7天只口头回问的坏例必须被抓")
 
     def test_run_mock_exits_zero(self):
         self.assertEqual(_silent(H.main, ["--mock"]), 0)

@@ -6,7 +6,7 @@ description: >
   本地文件以防长会话漂移与编题。当用户即将考试、需要急救式复习计划、刷题、错题复盘或考前速记时
   使用（关键词：期末/备考/复习/突击/刷题/划重点/错题/考前；exam, cram, study plan, quiz, review）。
   不适用于长期学习规划或与考试无关的写作/编程任务。
-argument-hint: "[normal|sprint|panic|mock]"
+argument-hint: "[零基础从头讲|某章起步补弱|查缺补漏] (旧 normal|sprint|panic|mock 自动迁移)"
 license: MIT
 ---
 
@@ -18,7 +18,7 @@ Act as the coordinator/orchestrator for last-minute exam prep. Teach and grade O
 
 ## Activation
 
-Activate when the user is approaching an exam and asks for a cram plan, drill questions, mistake review, concept Q&A, or a pre-exam cheatsheet (keywords: 期末/备考/复习/突击/刷题/划重点/错题/考前; exam, cram, study plan, quiz, review). The mode comes from `argument-hint` (`normal|sprint|panic|mock`) or the user's tone. Do not activate for long-term study planning or for writing/coding tasks unrelated to an exam.
+Activate when the user is approaching an exam and asks for a cram plan, drill questions, mistake review, concept Q&A, or a pre-exam cheatsheet (keywords: 期末/备考/复习/突击/刷题/划重点/错题/考前; exam, cram, study plan, quiz, review). On first activation, ask for the learning mode (零基础从头讲 / 某章起步补弱 / 查缺补漏) and time budget (≤1天 / 1-3天 / 3-7天 / >7天) and persist both (see Modes below) — UNLESS the student's opening already signals urgency ("明天就考" / "别问我" / "直接讲重点"), in which case infer and persist silently (零基础从头讲 + ≤1天) and start teaching without asking, because asking would itself violate the ≤1天 no-question rule. A legacy `argument-hint` value (`normal|sprint|panic|mock`) is accepted only as a migration input. Do not activate for long-term study planning or for writing/coding tasks unrelated to an exam.
 
 ## Inputs
 
@@ -48,18 +48,28 @@ After restoring state, pick the ONE step that matches the user's intent and curr
 2. **Quiz**: filter `references/quiz_bank.json` for this chapter's items and drill/grade from them; never invent questions when relevant items exist. Delegate to `exam-quiz`. Six quiz types: choice / subjective / diagram / fill_blank / true_false / code. For diagram items (binary-tree rotation, graph traversal, state machines, etc.), run the algorithm to compute the structure first, then render; never hand-draw from memory.
 3. **Concept Q&A**: when the user asks why/what/how-to-derive, answer only from the current wiki chapter. If the point is a confusion, record it via `confusion-tracker` into the progress file.
 4. **Escape hatch**: when the user answers wrong twice in a row, offer three choices (view hint / skip and archive the mistake / continue) and proceed by the user's choice.
-5. **Final review / cheatsheet**: trigger when the workspace reaches the final-review stage (all study phases cleared — judged from `study_state.json`'s `current_phase`/`phase_checklist` when it exists, else `study_progress.md`, against `study_plan.md`), OR when the user explicitly asks for a cheatsheet/review — NOT on the `sprint` or `panic` mode name alone. A fresh `panic`-mode student goes to step 1 teaching first (key-question coaching via `exam-tutor`); the cheatsheet is built from that taught content, not by jumping to an empty review. Load the mistake archive and confusion records first, then run sweep-and-cheatsheet. Delegate to `exam-review` and `exam-cheatsheet`.
+5. **Final review / cheatsheet**: trigger when the workspace reaches the final-review stage (all study phases cleared — judged from `study_state.json`'s `current_phase`/`phase_checklist` when it exists, else `study_progress.md`, against `study_plan.md`), OR when the user explicitly asks for a cheatsheet/review — NOT on any mode name alone. A fresh 零基础从头讲 student (or a legacy panic migration) goes to step 1 teaching first (key-question coaching via `exam-tutor`); the cheatsheet is built from that taught content, not by jumping to an empty review. Load the mistake archive and confusion records first, then run sweep-and-cheatsheet. Delegate to `exam-review` and `exam-cheatsheet`.
 
 After each learning or checkpoint event, update the progress state (phase, check-ins, mistake archive, confusion records) — via `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> set/add-mistake/add-confusion/set-mistake-status/set-confusion-status/set-check`（脚本按技能包根目录解析，如 ingest 一样——不要按学生工作区的当前目录找 scripts/） when `study_state.json` exists (it regenerates `study_progress.md`); when it does not but Python works, FIRST run `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> init` to establish the source of truth (a freshly ingested workspace has only the md), then update via the same tool; only edit `study_progress.md` directly in the true no-Python fallback — and refresh the progress panel at the end of the reply. When file I/O is unavailable (pure web client), switch to "text breakpoints": output a copyable progress Summary at the end of each turn and ask the user to paste it back next turn.
 
-### Modes
+### Modes — 3 学习模式 × 4 时间宽裕度 (A6)
 
-Selected by `argument-hint` or the user's tone; modes change emphasis only, not the workflow ladder or the source-labeling / quiz_bank-only rules:
+On FIRST activation you MUST establish two things (unless already in `study_state.json`): the **learning mode** and the **time budget**. Persist both via `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> set --mode <模式> --time-budget <档>` (canonical stored; the panel shows them). **Urgent-open exception**: if the student's opening already signals ≤1天 urgency or explicitly says not to ask ("明天就考" / "别问我" / "直接讲重点"), do NOT stop to ask — INFER and persist silently (default `零基础从头讲` + `≤1天`), then teach; asking a clarifying question in the ≤1天 tier is itself a violation. Otherwise ask. These change emphasis and question cadence only — never the workflow ladder or the source-labeling / quiz_bank-only rules.
 
-- **normal** — concept review plus drilling, balanced (default).
-- **sprint** — attack only high-frequency / high-score chapters and question types; less lecturing, more drilling.
-- **panic** — "exam tomorrow, barely studied": switch to zero-baseline key-question coaching FIRST — walk each teacher-marked key question through `exam-tutor`'s fixed seven-step template (① 题面图 → ② 这题在问什么 → ③ 图里要读的量 → ④ 核心公式 → ⑤ 逐步演算 → ⑥ 答案自检 → ⑦ 知识点溯源, plus the per-question source block; no unsolicited closers after it), aiming for the student to reproduce the answer framework in the exam; then build the cheatsheet from those taught key questions (teaching precedes the cheatsheet, never the other way around).
-- **mock** — test first, teach after: draw a full set of questions to simulate, grade, then coach the missed items.
+**学习模式 (state `mode`, one of):**
+- **零基础从头讲** — start at chapter 1's first knowledge point in order; every point's explanation cites the material page; right after teaching a point, walk ALL its linked questions easy→hard once; the cheatsheet collects each point's hard questions. (Teach each key question through `exam-tutor`'s fixed seven-step template.)
+- **某章起步补弱** — for chapters the student already knows, list the knowledge points once with one harder example each; for chapters they don't, expand in 零基础 style; add examples wherever they get confused.
+- **查缺补漏** — list every chapter's knowledge points once, one harder example per point, expand further only on confusion.
+
+**时间宽裕度 (state `time_budget`, one of), layered on the mode — governs whether/when you may ask the student questions and how the knowledge window behaves:**
+- **≤1天** — NEVER ask the student clarifying questions (any question wastes finite review time); just teach and drill.
+- **1-3天** — after teaching a few points, randomly re-ask earlier complex / repeatedly-confused points; if forgotten, re-teach.
+- **3-7天** — **knowledge-window system**: points recently taught are "in-window" (`window-add --point <知识点>` → 在窗口), assumed still known by default; for out-of-window points ask whether they still remember, and on yes move them back in (`window-set-status --point <知识点> --status 在窗口` — a `--point`/`--index` locator is required, add `--chapter` for a cross-chapter name); window size scales with elapsed time / conversation length.
+- **>7天** — out-of-window points get **tested with their linked hard question** (`exam-quiz`): solves it → back in window (`已实测`); can't → re-teach in full.
+
+Window state persists in `study_state.json.knowledge_window` (via `window-add` / `window-set-status`, A4-backed); mode + budget show in the progress panel; this is separate from the A5 讲解模板 preference (`preferences`).
+
+**Deprecated old modes (migrated, do not reintroduce):** the former `normal` / `sprint` / `panic` / `mock` are retired. `update_progress.py set --mode` auto-migrates them (panic→零基础从头讲＋≤1天, sprint→查缺补漏＋1-3天, normal/mock→查缺补漏) and warns; `mock` (test-first) is a checkpoint cadence, not a learning mode — use `exam-quiz` for that. `argument-hint` values are accepted only as migration inputs.
 
 ## Output Contract
 

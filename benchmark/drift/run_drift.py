@@ -35,6 +35,22 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))                      # repo root (…/benchmark/drift → repo)
 
+# A6：复用 scripts/update_progress.py 的 canonical 时间宽裕度归一化——别在这里另建一份会漂的别名表
+# （否则「明天考/考前一天/今天」这些被 update_progress 认作 ≤1天 的别名会在 drift 侧被漏判为非紧迫）。
+sys.path.insert(0, os.path.join(ROOT, "scripts"))
+try:
+    from update_progress import _normalize_tier as _canon_tier, LEARNING_MODES as _LEARN_MODES
+except Exception:                                                 # 缺文件时退化为内置常量，不让 drift 崩
+    _canon_tier = None
+    _LEARN_MODES = ("零基础从头讲", "某章起步补弱", "查缺补漏")
+
+
+def _tier_is_urgent(time_budget):
+    tb = str(time_budget or "")
+    if _canon_tier is not None:
+        tb = _canon_tier(tb)[0]                                   # → canonical 档（≤1天/1-3天/…）
+    return tb in ("≤1天", "<=1天", "1天", "当天")
+
 # canonical provenance labels — mirror T2 / docs/language-policy.md (single source of truth)
 CANON_LABELS = ["🟢 来自资料", "🟡 AI补充，可能与你老师讲的不完全一致", "⚠️ AI生成答案，非老师/教材提供"]
 
@@ -597,6 +613,51 @@ def _snapshots(turns, key, base_text):
     return snaps
 
 
+# A6：面向学生的澄清/偏好问句线索（≤1天档严禁——每问一次都在浪费复习时间）。
+# 这是 benchmark/behavior_smoke/run_behavior_smoke.py 的 asks_student_question 的**逐字等价副本**
+# （两文件互不 import，各自独立、无网络/依赖）；tests/test_drift_harness 的 parity 测试锁二者一致，
+# 改一处必须同步改另一处。
+_STUDENT_ASK_CUE = re.compile(
+    r"你想|你要|你希望|你打算|你更|你觉得|你认为|你选|你决定|你来定|由你|你自己|你先|"
+    r"你(?:还)?记得|你会(?:不会)?|你能(?:不能)?|你有(?:没有)?|你是(?:不是|否)|你(?:比较)?熟|"
+    r"你复习到|你学到|要不要|想不想|请问|需要我|哪一?章|从哪|"
+    r"(?:先讲|先复习|先看|先做|先学|讲|复习|看|做|来)[^，。？?！!\n]{0,8}还是|"
+    r"需(?:不需)?要(?:我|先)|要(?:不要)?先|用不用(?:先|我)|该(?:先|不该)|哪个先|先哪|先(?:讲|复习|看|做|学|过)(?:什么|哪|谁)|"
+    r"还有(?:什么|没有)?问题|有没有(?:什么)?问题|有问题吗|还有(?:不懂|不会|疑问)|哪里不(?:懂|会|清楚)|"
+    r"可以吗|可不可以|行吗|行不行|好吗|好不好|方便吗|需要吗|要吗|"
+    r"接下来(?:怎么|怎样|如何|想|要|需要)|下一步(?:怎么|想|要)|怎么安排|如何安排|怎么(?:样)?进行|"
+    r"do you\b|would you\b|are you\b|have you\b|can you\b|which chapter\b|what.*\byou\b|"
+    r"should i\b|shall i\b|want me to\b|which.*first\b|any questions\b",
+    re.I)
+_RHETORICAL_PREFACE = re.compile(
+    r"[你您]可能(?:会)?问|[你您]也许(?:会)?问|[你您](?:有没有|是不是|会不会)想过|[你您]是不是(?:觉得|以为)|"
+    r"[你您]也许(?:会)?好奇|[你您]可能(?:会)?好奇|试想|想象一下|不妨想")
+_SELF_ANSWER = re.compile(
+    r"^(?:因为|答案|其实|这是因为|这(?:正)?是|正是|原因|答[:：]|because|the answer|it'?s because|"
+    r"here'?s why)", re.I)
+
+
+def _asks_student_question(txt):
+    t = re.sub(r"[ \t]*\n[ \t]*", " ", txt or "").strip()
+    sents = [s.strip() for s in re.split(r"(?<=[？?。！!；;])\s*", t) if s.strip()]
+    if not sents:
+        return False
+    last = sents[-1]
+    if (last.endswith("？") or last.endswith("?")) and not _RHETORICAL_PREFACE.search(last):
+        return True
+    for i, s in enumerate(sents):
+        if not (s.endswith("？") or s.endswith("?")):
+            continue
+        if _RHETORICAL_PREFACE.search(s):
+            continue
+        nxt = sents[i + 1] if i + 1 < len(sents) else ""
+        if _SELF_ANSWER.match(nxt):
+            continue
+        if _STUDENT_ASK_CUE.search(s):
+            return True
+    return False
+
+
 def compute_metrics(scenario, fixture_dir, turns):
     goal_markers = scenario.get("goal_markers", DEFAULT_GOAL_MARKERS)
     unrelated = scenario.get("unrelated_goal_phrases", DEFAULT_UNRELATED_PHRASES)
@@ -713,6 +774,27 @@ def compute_metrics(scenario, fixture_dir, turns):
     goal_retention = round(on_goal / len(assistant_turns), 4) if assistant_turns else 1.0
     markers_l = [g.lower() for g in goal_markers]                 # case-insensitive, like the drift blocklist
     goal_marker_seen = int(any(any(g in t.get("assistant", "").lower() for g in markers_l) for t in assistant_turns))
+
+    # A6 模式漂移：≤1天时间宽裕度下，任何向学生抛出的澄清/偏好问句都算漂移（浪费复习时间）。
+    # 时间宽裕度从 scenario.time_budget 读；非 ≤1天档本指标恒为 0（不适用）。
+    urgent = _tier_is_urgent(scenario.get("time_budget"))        # canonical 归一后判定，别名（明天考/今天…）也算
+    urgent_mode_questions = (sum(1 for t in assistant_turns if _asks_student_question(t.get("assistant", "")))
+                             if urgent else 0)
+    # A6：紧迫开场必须"推断并**持久化**模式/时间"——扫最后一个 study_state.json 快照，校验落盘了 canonical
+    # 学习模式 + 紧迫时间档（默认 零基础从头讲 + ≤1天）。非紧迫档本指标不适用，恒为 1（不施压）。
+    urgent_mode_persisted = 1
+    if urgent:
+        last_state = None
+        for t in turns:
+            sj = (t.get("files_after") or {}).get("study_state.json")
+            if isinstance(sj, str):
+                try:
+                    last_state = json.loads(sj)
+                except ValueError:
+                    last_state = None
+        urgent_mode_persisted = int(
+            isinstance(last_state, dict) and last_state.get("mode") in _LEARN_MODES
+            and _tier_is_urgent(last_state.get("time_budget")))
 
     # 2) plan adherence — walk study_plan.md snapshots; a phase delete/add/reorder is a mutation UNLESS
     #    the mutating turn (or the immediately preceding user turn) explicitly asked to change the plan.
@@ -892,6 +974,7 @@ def compute_metrics(scenario, fixture_dir, turns):
     return {
         "turns": len(turns), "assistant_turns": len(assistant_turns),
         "goal_retention": goal_retention, "goal_marker_seen": goal_marker_seen,
+        "urgent_mode_questions": urgent_mode_questions, "urgent_mode_persisted": urgent_mode_persisted,
         "plan_adherence": plan_adherence, "plan_mutations": plan_mutations,
         "quiz_items": quiz_items, "bank_backed": bank_backed, "invented": invented,
         "untagged_questions": untagged, "wrong_phase_quiz": wrong_phase, "invention_rate": invention_rate,
@@ -910,6 +993,8 @@ def compute_metrics(scenario, fixture_dir, turns):
 THRESHOLD_RULES = {
     "goal_retention_min": ("goal_retention", "min"),
     "goal_marker_min": ("goal_marker_seen", "min"),   # positive signal: exam goal referenced ≥ N times (0/1)
+    "urgent_mode_questions_max": ("urgent_mode_questions", "max"),  # A6：≤1天档向学生提问的次数上限
+    "urgent_mode_persisted_min": ("urgent_mode_persisted", "min"),  # A6：紧迫开场须把 mode/time 落盘（0/1）
     "plan_mutations_max": ("plan_mutations", "max"),
     "quiz_invention_rate_max": ("invention_rate", "max"),
     "untagged_questions_max": ("untagged_questions", "max"),

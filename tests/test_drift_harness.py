@@ -106,6 +106,79 @@ class DriftHarness(unittest.TestCase):
         self.assertGreater(r["metrics"]["explanation_turns"], 0)
         self.assertEqual(_fail_thresholds(r), {"provenance_fidelity_min"})
 
+    # 5b) A6 mode drift — ≤1天档向学生提问 = goal-drift 的具体化
+    def test_a6_urgent_mode_good_passes(self):
+        sc = os.path.join(DRIFT, "scenarios", "mode_urgent_no_questions.json")
+        r = D.evaluate(D.load_scenario(sc), _tr("good_session_urgent_1day.jsonl"))
+        self.assertTrue(r["passed"], r["failures"])
+        self.assertEqual(r["metrics"]["urgent_mode_questions"], 0)
+        # A6-YI0：好转写必须真的把推断出的 零基础从头讲+≤1天 持久化进 study_state.json 快照
+        self.assertEqual(r["metrics"]["urgent_mode_persisted"], 1)
+
+    def test_a6_urgent_persist_required(self):
+        # 只喊「按默认开讲」却没把 mode/time 落盘 → urgent_mode_persisted=0 → 挂在 persist 门槛上（Codex R3-YI0）
+        sc = D.load_scenario(os.path.join(DRIFT, "scenarios", "mode_urgent_no_questions.json"))
+        turns = D.load_jsonl(_tr("good_session_urgent_1day.jsonl"), "g")
+        for t in turns:                                          # 抹掉状态快照 = 没持久化
+            t.pop("files_after", None)
+            t["events"] = [e for e in t.get("events", []) if "study_state.json" not in e.get("path", "")]
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "no_persist.jsonl")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write("\n".join(json.dumps(t, ensure_ascii=False) for t in turns))
+        r = D.evaluate(sc, p)
+        self.assertEqual(r["metrics"]["urgent_mode_persisted"], 0)
+        self.assertIn("urgent_mode_persisted_min", _fail_thresholds(r))
+
+    def test_a6_urgent_alias_time_budget_counts(self):
+        # update_progress 认「明天考」为 ≤1天，drift 侧也必须（复用 canonical 归一），别名场景仍施加紧迫约束
+        self.assertTrue(D._tier_is_urgent("明天考"))
+        self.assertTrue(D._tier_is_urgent("考前一天"))
+        self.assertFalse(D._tier_is_urgent("3-7天"))
+        sc = D.load_scenario(os.path.join(DRIFT, "scenarios", "mode_urgent_no_questions.json"))
+        sc["time_budget"] = "明天考"
+        r = D.evaluate(sc, _tr("bad_urgent_1day_questions.jsonl"))
+        self.assertGreater(r["metrics"]["urgent_mode_questions"], 0)   # 别名档也照数提问，不再漏判为非紧迫
+        self.assertIn("urgent_mode_questions_max", _fail_thresholds(r))
+
+    def test_a6_urgent_mode_questions_fail(self):
+        sc = os.path.join(DRIFT, "scenarios", "mode_urgent_no_questions.json")
+        r = D.evaluate(D.load_scenario(sc), _tr("bad_urgent_1day_questions.jsonl"))
+        self.assertFalse(r["passed"])
+        self.assertIn("urgent_mode_questions_max", _fail_thresholds(r))
+        self.assertEqual(r["metrics"]["urgent_mode_questions"], 3)   # 每轮都在问学生偏好
+
+    def test_a6_urgent_metric_zero_when_budget_not_urgent(self):
+        # 非 ≤1天档：即使转写里有学生问句，urgent_mode_questions 也恒为 0（指标不适用）
+        sc = D.load_scenario(os.path.join(DRIFT, "scenarios", "mode_urgent_no_questions.json"))
+        sc["time_budget"] = "3-7天"
+        r = D.evaluate(sc, _tr("bad_urgent_1day_questions.jsonl"))
+        self.assertEqual(r["metrics"]["urgent_mode_questions"], 0)
+
+    def test_a6_detector_parity_drift_vs_behavior_smoke(self):
+        # drift 的 _asks_student_question 是 behavior_smoke.asks_student_question 的逐字等价副本——
+        # 用一组含反问/自答/中英/跨行/缺 cue 的样本锁二者一致，任一处漂了就红
+        bs_dir = os.path.join(ROOT, "benchmark", "behavior_smoke")
+        sys.path.insert(0, bs_dir)
+        import run_behavior_smoke as BS   # noqa: E402
+        cases = [
+            "你好？", "你想先复习哪一章？ 告诉我。", "请问你复习到第几章了？请回复。",
+            "Which chapter do you want to start with?", "Do you remember big-O notation?",
+            "你打算从哪\n章开始？", "从哪一章开始？", "开始吧。从哪里开始最有把握？",
+            "你可能会问：这道题为什么选 B？因为它满足性质。", "您也许好奇：栈和队列有何区别？其实差在存取顺序。",
+            "为什么顺序表随机访问更快？因为地址可直接算出。", "接下来我给你讲栈的三个操作。",
+            "要不要我先讲栈？", "纯讲解，无任何问句。",
+            # R1-XX 新增的选择疑问 / should-I 形态也要在两份副本里判定一致
+            "先讲栈还是队列？", "需要先讲栈吗？", "Should I start with stacks?",
+            "用不用我先过一遍公式？", "先复习哪个？栈还是队列？", "接下来我先讲栈，再讲队列。",
+            # R2-IAO 通用面向用户问句 + 收尾问句 + 反问自答，两份副本判定一致
+            "还有问题吗？", "接下来怎么安排？", "我先讲第1章，可以吗？", "我们开始吧，好吗？",
+            "Any questions?", "栈是后进先出，对吧？其实就是这样。", "你可能会问：为什么？因为如此。",
+        ]
+        for c in cases:
+            self.assertEqual(BS.asks_student_question(c), D._asks_student_question(c),
+                             "drift 与 behavior_smoke 的学生问句判定漂了：%r" % c)
+
     # 6) missing / malformed transcript exits 2
     def test_state_scenario_rejects_md_only_transcript(self):
         # requires_state 场景：从未写 study_state.json 的纯 md 转写必须挂在 md_write_after_state 上
@@ -447,7 +520,8 @@ class DriftHarness(unittest.TestCase):
             data = json.load(f)
         self.assertTrue(data["all_passed"])
         names = sorted(r["scenario"] for r in data["results"])
-        self.assertEqual(names, ["live_smoke_basic", "long_session_basic", "long_session_state"])   # every committed scenario ran
+        self.assertEqual(names, ["live_smoke_basic", "long_session_basic", "long_session_state",
+                                 "mode_urgent_no_questions"])   # every committed scenario ran
 
     # extra coverage: wrong-phase and untagged detection via small synthetic transcripts
     def test_wrong_phase_quiz_detected(self):
