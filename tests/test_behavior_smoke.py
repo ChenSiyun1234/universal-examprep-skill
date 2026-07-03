@@ -74,6 +74,25 @@ class BehaviorSmokeTest(unittest.TestCase):
             if "fallback_workspace" in sc:
                 self.assertTrue(os.path.isdir(_bs(sc["fallback_workspace"])), f"{sc['name']}.fallback_workspace 不存在")
 
+    def test_b1_every_scenario_documented(self):
+        # B1 覆盖矩阵收尾守卫——防止新增/改名场景后文档静默漂移、matrix 与实现脱节。
+        # 守卫**从 scenarios.json 派生**（遍历 names），而非硬编码子集：新增一个场景却漏更 README
+        # 或 coverage-matrix，下面任一断言都会红。
+        names = [sc["name"] for sc in H.load_scenarios()["scenarios"]]
+        readme = _read("README.md")
+        matrix = open(os.path.join(ROOT, "benchmark", "docs", "coverage-matrix.md"), encoding="utf-8").read()
+        for n in names:
+            # README 是逐场景注册表（每个 scenario 一行）；coverage-matrix 也逐个按名登记（能力行的
+            # mock 格里点名场景，或读者说明里点名 best-effort 场景）——两处都必须出现该场景名。
+            self.assertIn("`%s`" % n, readme, "behavior_smoke/README.md 未登记场景 %s（新增场景须同步文档）" % n)
+            self.assertIn("`%s`" % n, matrix, "coverage-matrix.md 未登记场景 %s（新增场景须同步 matrix）" % n)
+        # matrix 点名的 Tier 4 长会话场景在 drift/ 下（非 behavior smoke），也必须真实存在且被点名
+        drift_named = "mode_urgent_no_questions"
+        self.assertTrue(
+            os.path.isfile(os.path.join(ROOT, "benchmark", "drift", "scenarios", drift_named + ".json")),
+            "coverage-matrix 点名的 Tier4 drift 场景 %s 不存在" % drift_named)
+        self.assertIn("`%s`" % drift_named, matrix)
+
     # 4
     def test_quiz_output_only_uses_bank_ids(self):
         bank_ids = H.load_quiz_bank_ids(H.FIXTURE)
