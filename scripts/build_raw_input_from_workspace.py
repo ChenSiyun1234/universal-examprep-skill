@@ -465,10 +465,10 @@ def extract_lecture_items(pages):
                                        for j in ans_idx) if t).strip()
             if sol:
                 item["answer"] = sol + ("（解答可能依赖图，须看原页/asset）" if needs else "")
-                _apply_choice_answer(item)
+                _apply_typed_answer(item)
             else:
                 item["answer"] = ref + ("（依赖图，须看原页/asset）" if needs else "")
-                _apply_choice_answer(item)
+                _apply_typed_answer(item)
         else:
             item["answer_status"] = "unknown"   # honest: no solution page detected
         items.append(item)
@@ -1295,7 +1295,7 @@ def extract_homework_items(pages, root_name="", exclude=frozenset()):
             if ans:
                 sf, body, apages = ans
                 item["answer"] = body                     # 不静默截断
-                _apply_choice_answer(item)
+                _apply_typed_answer(item)
                 item["answer_source_file"] = sf
                 item["answer_source_pages"] = apages or None
                 if item["answer_source_pages"] is None:
@@ -1619,58 +1619,73 @@ def _fmt_pages(nums):
 
 # ---- D4: 保守题型启发——只认高置信形态，判不准保持 subjective（汇总警报交 AI 复核）----
 # 选项行只认【大写】A-D（(a)(b) 小写通常是小问不是选项，绝不猜）
-_OPTION_LINE_RE = re.compile(r"^[ \t]*[（(]?([A-E])[）)．.、:：][ \t]*(\S.*)$")
+_OPTION_LINE_RE = re.compile(r"^[ \t]*[（(]?([A-H])[）)．.、:：][ \t]*(\S.*)$")
 _BLANK_RUN_RE = re.compile(r"[_＿]{3,}")
 
 
-def _normalize_choice_answer(ans_text, options):
-    """把解答切片归一成选项字母（validator 只认 裸标签/选项全文/选项正文）：剥解答标题与
-    键前缀后剩单个 A-E（可带括号/句点）才认；整段恰是某选项全文/正文也认；否则 None。"""
+def _strip_answer_prefix(ans_text):
+    """剥解答标题（Quiz X.Y Solution / Answer: / 答案：）与键前缀（1. / 1(a). / 1a.）——
+    choice/fill_blank 的答案归一共用。"""
     t = " ".join(str(ans_text or "").split())
     t = re.sub(r"(?i)^(?:quiz|example)\s+\d+(?:\.\d+)*\s*(?:solutions?|answers?)\s*[:：.]?\s*", "", t)
     t = re.sub(r"(?i)^(?:problem|exercise|question)?\s*#?\d*(?:\.\d+)*\s*"
                r"(?:solutions?|answers?|解答|答案)\s*[:：.]?\s*", "", t)
-    t = re.sub(r"^\d+(?:\.\d+)*\s*[.)、]\s*", "", t).strip()
-    m = re.fullmatch(r"[（(]?([A-E])[）)．.。]?", t)
+    t = re.sub(r"^\d+(?:\.\d+)*(?:\s*\([A-Za-z]\)|[A-Za-z])?\s*[.)、]\s*", "", t)
+    return t.strip()
+
+
+def _normalize_choice_answer(ans_text, options):
+    """把解答切片归一成选项字母（validator 只认 裸标签/选项全文/选项正文）：剥前缀后剩
+    单个 A-H（可带括号/句点）才认；整段恰是某选项全文/正文也认；否则 None。"""
+    t = _strip_answer_prefix(ans_text)
+    m = re.fullmatch(r"[（(]?([A-H])[）)．.。]?", t)
     if m:
         return m.group(1).upper()
     for o in options or []:
-        if t == o or t == re.sub(r"^[A-E][.．、:：)]\s*", "", o).strip():
+        if t == o or t == re.sub(r"^[A-H][.．、:：)]\s*", "", o).strip():
             return str(o)[:1]
     return None
 
 
-def _apply_choice_answer(item):
-    """type=choice 且已带答案的题：答案归一成字母；归一不了（长解答/引用页）就降级主观——
-    宁可少标一个选择题，不发一个 validator 必拒的题。"""
-    if item.get("type") != "choice" or not item.get("answer"):
+def _apply_typed_answer(item):
+    """按启发式题型归一答案：choice 归一成字母（归一不了降级主观——宁少标不发 validator
+    必拒的题）；fill_blank 剥解答标题/键前缀（判分要对的是填的值，不是标题文本）。"""
+    if not item.get("answer"):
         return
-    na = _normalize_choice_answer(item["answer"], item.get("options"))
-    if na is not None:
-        item["answer"] = na
-    else:
-        item["type"] = "subjective"
-        item.pop("options", None)
-        item.setdefault("keywords", [])
+    if item.get("type") == "choice":
+        na = _normalize_choice_answer(item["answer"], item.get("options"))
+        if na is not None:
+            item["answer"] = na
+        else:
+            item["type"] = "subjective"
+            item.pop("options", None)
+            item.setdefault("keywords", [])
+    elif item.get("type") == "fill_blank":
+        stripped = _strip_answer_prefix(item["answer"])
+        if stripped:
+            item["answer"] = stripped
 
 
 def _classify_question_type(q_text):
     """(type, options)。≥2 个从 A 起按序排列的大写选项行 → choice + options（续行并入上一项）；
     题面带填空线 → fill_blank；其余一律 subjective——启发式判不准绝不硬猜别的型。"""
-    letters, opts = [], []
+    letters, opts, block_open = [], [], False
     for ln in (q_text or "").splitlines():
         m = _OPTION_LINE_RE.match(ln)
         if m:
             letters.append(m.group(1))
             opts.append("%s. %s" % (m.group(1), m.group(2).strip()))
-        elif opts and ln.strip():
+            block_open = True
+        elif not ln.strip():
+            block_open = False                         # 空行结束选项块——其后说明行不并入
+        elif opts and block_open:
             opts[-1] = opts[-1] + " " + ln.strip()     # 选项跨行——续行并入上一项
     if len(letters) >= 2 and letters == [chr(65 + i) for i in range(len(letters))]:
         return "choice", opts
     # 行内选项：讲义题面常被空白折叠成一行（… A. 对的 B. 错的）——只认 A．/A:/（A）
     # 这类点号冒号/全角括号形，不认英文半角 (A)（散文引用「见(A)节」会误判）
     t = q_text or ""
-    ms = list(re.finditer(r"(?:^|\s)(?:（([A-E])）|([A-E])[．.、:：])[ \t]*", t))
+    ms = list(re.finditer(r"(?:^|\s)(?:（([A-H])）|([A-H])[．.、:：])[ \t]*", t))
     seq = [(m.group(1) or m.group(2)) for m in ms]
     if len(seq) >= 2 and seq == [chr(65 + i) for i in range(len(seq))]:
         opts2 = []

@@ -2586,6 +2586,48 @@ class HomeworkIngest(unittest.TestCase):
         for q in hw:
             self.assertEqual(q["type"], "subjective")              # 答题栏空线不是题面挖空
 
+    def test_six_option_mcq_detected(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw104.pdf": ["Problem 1\n六选一：\nA. 甲\nB. 乙\nC. 丙\nD. 丁\nE. 戊\nF. 己"],
+                            "hw104_sol.pdf": ["1. F"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(hw[0]["type"], "choice")
+        self.assertEqual(len(hw[0]["options"]), 6)                 # F 选项不再被吞进 E
+        self.assertEqual(hw[0].get("answer"), "F")
+
+    def test_lettered_subproblem_mcq_key_normalized(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw105.pdf": ["Problem 1a\n小问选择：\nA. 甲\nB. 乙"],
+                            "hw105_sol.pdf": ["Answers\n1a. B"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(hw[0]["type"], "choice")                  # 字母小问键前缀可剥
+        self.assertEqual(hw[0].get("answer"), "B")
+
+    def test_trailing_instruction_not_folded_into_option(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw106.pdf": ["Problem 1\n选出正确项：\nA. 甲\nB. 乙\n\nExplain your choice."],
+                            "hw106_sol.pdf": ["1. 乙"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(hw[0]["type"], "choice")
+        self.assertEqual(hw[0]["options"][1], "B. 乙")             # 空行后说明不并入选项
+        self.assertEqual(hw[0].get("answer"), "B")                 # 按选项正文归一成字母
+
+    def test_fill_blank_answer_stripped_of_heading(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        with open(os.path.join(mat, "lec01.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+        be = FakeBackend({"lec01.pdf": ["Quiz 1.1 Problem\n栈的出入顺序是 ______ 。\n"
+                                        "Quiz 1.1 Solution\nLIFO"]})
+        code, payload, report = _run(mat, be)
+        lec = [q for q in payload["quiz_bank"] if q["id"].startswith("lecture_quiz")]
+        self.assertEqual(lec[0]["type"], "fill_blank")
+        self.assertEqual(lec[0].get("answer"), "LIFO")             # 判分对的是填的值，不是标题
+
     def test_no_network_or_llm(self):
 
 
