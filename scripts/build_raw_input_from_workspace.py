@@ -207,7 +207,7 @@ STRONG_CUES = [re.compile(p, re.I) for p in (
     r"venn", r"at right", r"to the right", r"shown (on the right|below|above)", r"as shown",
     r"\bshaded?\b",
     r"(figure|diagram|table|image|picture|chart|graph|tree|plot)s?\s+(below|above|at right|to the right)",
-    r"matrix\s+(below|above|shown)", r"(shown|given)\s+in\s+(figure|table|fig\.?)\s*\d*",
+    r"(shown|given)\s+in\s+(figure|table|fig\.?)\s*\d*",
     # 复合形才算「图已给出」——裸「区域/图示」会把 求定义域区域 这类纯文字题误封（审计实测），
     # 尤其 .txt 课程会被 fail-closed 卡死
     "文氏图", "如图", "阴影", "示意图",
@@ -221,8 +221,10 @@ WEAK_CUES = [re.compile(p, re.I) for p in (
     r"\bdiagram\b", r"\bfigure\b", r"\btable\b", r"\bgraph\b", r"\bplot\b", r"\btree\b", r"\bcircuit\b",
     r"\bdraw\b", r"\bdrawn\b", r"\baxes\b", r"\brectangle\b", r"\btriangle\b",
     r"\bhistograms?\b", r"\bflow\s*charts?\b", "流程图", "柱状图", "折线图", "饼图", "图示", "区域",
-    # 跨页指涉只对可渲染 PDF 生效——.txt 里的 see next page 是文字指引，fail-closed 会误封
+    # 跨页指涉只对可渲染 PDF 生效——.txt 里的 see next page 是文字指引，fail-closed 会误封；
+    # matrix below 同理：.txt 的矩阵常直接写在题面里
     r"[见如]\s*[上下]一?页", r"(?:see|on)\s+(?:the\s+)?(?:next|previous)\s+page",
+    r"matrix\s+(below|above|shown)",
 )]
 
 
@@ -2135,10 +2137,16 @@ def run(args, backend=None):
         # each from its OWN source file.
         _qtxt = (it.get("_prompt_text") or it.get("question") or "")   # needs 项的 question 是指引句
         _adj = []
-        if re.search(r"下一?页|next\s+page|following\s+page", _qtxt, re.I):
-            _adj += [(f, p + 1) for (f, p) in it.get("_question_pages", [])]
-        if re.search(r"上一?页|previous\s+page|preceding\s+page", _qtxt, re.I):
-            _adj += [(f, p - 1) for (f, p) in it.get("_question_pages", []) if p > 1]
+        if re.search(r"[上下]一?页|(?:next|previous|following|preceding)\s+page", _qtxt, re.I):
+            # 锚定到【含线索的那一页】：多页题在 p1 说「见下页」只该带上 p2，
+            # 不能给每个题面页都 +1 把下一题/答案页(p3)也卷进来
+            for (f, p) in it.get("_question_pages", []):
+                _pt = next((pg.get("text") or "" for pg in pages
+                            if pg["file"] == f and pg["page"] == p), "")
+                if re.search(r"下一?页|(?:next|following)\s+page", _pt, re.I):
+                    _adj.append((f, p + 1))
+                if p > 1 and re.search(r"上一?页|(?:previous|preceding)\s+page", _pt, re.I):
+                    _adj.append((f, p - 1))
         # 「见下页图」的图在相邻页——一并渲染。查全量页映射（图页常是无文本残渣页）。
         # 排除：已有题面页、_answer_pages、以及【页面文本带解答标记】的页——_answer_pages
         # 只在答案依赖图时才设，纯文本答案页得靠内容判；解答页当题面资产就是泄题，宁缺勿泄
@@ -2245,14 +2253,15 @@ def run(args, backend=None):
     # D5: wiki 配图——含图/表标题（Figure N / Table N / 图N / 表N）的讲义页渲染成 PNG，
     # 注入章节末尾「本章图示页」区；渲染不可用时警告降级（纯文字 wiki 照常完整）
     _WIKI_CAP_RE = re.compile(
-        r"(?m)^\s*(?:(?:Figure|Fig\.?|Table)\s*\d+|[图表]\s*[\d一二三四五六七八九十]+(?:[:：.、\s]|$))")
+        r"(?m)^\s*(?:(?:Figure|Fig\.?|Table)\s*\d+|[图表]\s*[\d一二三四五六七八九十]+)")
     wiki_fig_assets = {}
     _cap_pages = [(pg["file"], pg["page"]) for pg in wiki_pages
                   if pg.get("_pdf") and _WIKI_CAP_RE.search(pg.get("text") or "")]   # cap 只数可渲染页
     if _cap_pages and can_write:
         if len(_cap_pages) > 30:
-            report["warnings"].append("wiki_figures_capped: 图示页 %d 张只渲染前 30 张（控制体积；"
-                                      "其余可用 build_visual_index --apply 补）" % len(_cap_pages))
+            report["warnings"].append("wiki_figures_capped: 图示页 %d 张只渲染前 30 张（控制体积）——"
+                                      "未渲染页仍在原 PDF，可让 AI 用多模态直接查看对应页，"
+                                      "或按章节拆分材料分次重建" % len(_cap_pages))
             _cap_pages = _cap_pages[:30]
         for _f, _p in _cap_pages:
             _pdf = page_pdf.get((_f, _p))

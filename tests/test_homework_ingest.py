@@ -2830,9 +2830,10 @@ class HomeworkIngest(unittest.TestCase):
 
     def test_visual_cue_vocabulary_bidirectional(self):
         for good in ("如下图所示，求阴影面积。", "见下图的电路。", "as shown in Figure 3, compute x.",
-                     "The matrix below is singular.", "下表所示的数据分布。"):
+                     "下表所示的数据分布。"):
             self.assertTrue(B.requires_assets_heuristic(good, renderable=False), good)
-        for pdf_only in ("见上页图，求电流方向。", "见下页图。", "See next page for the formula."):
+        for pdf_only in ("见上页图，求电流方向。", "见下页图。", "See next page for the formula.",
+                         "The matrix below is singular."):
             self.assertTrue(B.requires_assets_heuristic(pdf_only, renderable=True), pdf_only)
             self.assertFalse(B.requires_assets_heuristic(pdf_only, renderable=False), pdf_only)
         for bad in ("求下列区域的定义域。", "draw a histogram of the data.",
@@ -3015,6 +3016,29 @@ class HomeworkIngest(unittest.TestCase):
         code, payload, report = _run(mat, be, ["--asset-root", asset_root])
         figs = [n for n in os.listdir(asset_root) if n.endswith("_fig.png")]
         self.assertEqual(len(figs), 1)                            # txt 标题不占渲染名额
+
+    def test_adjacent_render_anchored_to_cue_page(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw131.pdf": ["Problem 1\n见下页图，求值。", "题面续页，无线索。",
+                                          "Problem 2\n下一题的题面。"]})
+        asset_root = os.path.join(tmp, "ws", "references", "assets")
+        code, payload, report = _run(mat, be, ["--asset-root", asset_root])
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        q1 = next(q for q in hw if q["homework_number"] == 1)
+        paths = [a.get("path", "") for a in q1.get("assets", [])]
+        self.assertFalse(any("p003" in pth for pth in paths), paths)   # 无线索的续页不 +1 卷走下一题
+
+    def test_compact_cn_caption_detected(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        with open(os.path.join(mat, "lec01.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+        be = FakeBackend({"lec01.pdf": ["图1排序流程示例\n本章正文知识点。"]})
+        asset_root = os.path.join(tmp, "ws", "references", "assets")
+        code, payload, report = _run(mat, be, ["--asset-root", asset_root])
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertIn("本章图示页", wiki_all)                     # 紧凑中文标题也算
 
     def test_no_network_or_llm(self):
 
