@@ -295,5 +295,24 @@ class IngestEndToEndTest(unittest.TestCase):
                          "choice 题型不应受影响")
 
 
+
+class IngestReportPersistence(unittest.TestCase):
+    def test_missing_answers_persisted_to_workspace(self):
+        tmp = tempfile.mkdtemp()
+        data = {"course_name": "测试课", "phases": [
+            {"phase_num": 1, "phase_name": "第一章", "wiki_filename": "ch01.md",
+             "wiki_content": "# 第一章"}],
+            "quiz_bank": [{"id": "q1", "type": "subjective", "question": "无答案的题?",
+                           "source": "material", "ai_generated": False}]}
+        in_path = os.path.join(tmp, "raw.json")
+        with open(in_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        r = subprocess.run([sys.executable, INGEST, "-i", in_path, "-o", tmp],
+                           capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        rep = json.load(open(os.path.join(tmp, "ingest_report.json"), encoding="utf-8"))
+        self.assertIn("q1", rep["missing_answer_ids"])            # 缺答案清单持久化，后续会话可接手
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
