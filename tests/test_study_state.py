@@ -70,6 +70,19 @@ class Migration(unittest.TestCase):
         self.assertEqual(r2.returncode, 0, r2.stderr)
         self.assertEqual(_state(ws)["current_phase"], 2)
 
+    def test_short_confusion_table_migrates_note(self):
+        md = LEGACY_MD.replace(
+            "- 循环队列取模没搞懂",
+            "| 序号 | 疑难点 | 状态 |" + chr(10) + "| :- | :- | :- |" + chr(10)
+            + "| 1 | 短表疑难点内容 | 待回顾 |")
+        ws = _mk_ws(tempfile.mkdtemp(), md=md)
+        r = _up(ws, ["init"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        row = _state(ws)["confusion_log"][0]
+        self.assertIn("短表疑难点内容", row["note"])              # 无章节列时疑难点不再被当成章节
+        self.assertEqual(row["status"], "待回顾")
+        self.assertIsNone(row["chapter"])
+
     def test_init_adopts_legacy_md(self):
         ws = _mk_ws(tempfile.mkdtemp())
         r = _up(ws, ["init"])

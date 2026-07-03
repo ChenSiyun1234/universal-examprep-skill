@@ -87,21 +87,21 @@ def parse_md(text):
     prefs["preferences"] = preferences
     lm = re.search(r"语言偏好\**\s*：\s*(.+)", t)
     prefs["language"] = lm.group(1).strip() if lm else None
-    mistakes, confusions, checklist, cur, in_checklist = [], [], [], None, False
+    mistakes, confusions, checklist, cur, in_checklist, tbl_cols = [], [], [], None, False, None
     for ln in t.splitlines():
         h = ln.strip()
         is_heading = bool(re.match(r"^\s{0,3}(#{1,4}\s|\*\*)", ln))
         if is_heading and re.search(r"打卡|checklist", h, re.I):
-            cur, in_checklist = None, True                        # 模板的 📊 知识点打卡状态 区
+            cur, in_checklist, tbl_cols = None, True, None        # 模板的 📊 知识点打卡状态 区
             continue
         if is_heading and re.search(r"错题|mistake", h, re.I):
-            cur, in_checklist = mistakes, False
+            cur, in_checklist, tbl_cols = mistakes, False, None
             continue
         if is_heading and re.search(r"疑难|困惑|confusion", h, re.I):
-            cur, in_checklist = confusions, False
+            cur, in_checklist, tbl_cols = confusions, False, None
             continue
         if re.match(r"^\s{0,3}#{1,4}\s", ln):
-            cur, in_checklist = None, False
+            cur, in_checklist, tbl_cols = None, False, None
             continue
         cm = re.match(r"^\s*[-*]\s*\[([ xX])\]\s*(\S.*)$", ln)
         if in_checklist and cm:
@@ -122,6 +122,18 @@ def parse_md(text):
         elif h.startswith("|") and not _TABLE_SEP.match(ln):
             low = h.lower()
             if sum(1 for w in _HDR_WORDS if w in low) >= 2:
+                # 表头列名建立列角色映射——短表（| 序号 | 疑难点 | 状态 |）没有章节列，
+                # 纯位置映射会把疑难点当章节、状态当 note，迁移后学生的记录被吞
+                tbl_cols = []
+                for c in (c0.strip(" *`") for c0 in h.strip("|").split("|")):
+                    if "章节" in c:
+                        tbl_cols.append("chapter")
+                    elif "状态" in c:
+                        tbl_cols.append("status")
+                    elif "id" in c.lower() or "序号" in c:
+                        tbl_cols.append("id")
+                    else:
+                        tbl_cols.append("note")
                 continue
             cells = [c.strip(" *`") for c in h.strip("|").split("|")]
             if not any(c and c != "-" for c in cells):
@@ -131,6 +143,21 @@ def parse_md(text):
                     and all(c in ("", "-") for c in cells[1:]):
                 continue
             ids = re.findall(r"\[#([^\]\s]+)\]", h)
+            if tbl_cols and len(cells) == len(tbl_cols):
+                got, notes = {}, []
+                for c, role in zip(cells, tbl_cols):
+                    if not c or c == "-":
+                        continue
+                    if role == "note":
+                        notes.append(c)
+                    elif role not in got:
+                        got[role] = c
+                cur.append({"id": ids[0] if ids else got.get("id"),
+                            "chapter": got.get("chapter"),
+                            "note": " / ".join(notes) or got.get("id") or "",
+                            "status": got.get("status") or default_status})
+                continue
+            # 没见到表头或行宽与表头不符——退回位置映射（模板 5 列布局）
             tail = cells[2:]
             # 模板表最后一列是状态——迁移 note 时必须剔除，否则状态在 note 和状态列各出现一次；
             # 只有 3 列（无状态列）时整个尾部都是 note，状态回默认

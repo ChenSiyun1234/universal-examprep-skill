@@ -107,6 +107,12 @@ class DriftHarness(unittest.TestCase):
         self.assertEqual(_fail_thresholds(r), {"provenance_fidelity_min"})
 
     # 6) missing / malformed transcript exits 2
+    def test_state_scenario_rejects_md_only_transcript(self):
+        # requires_state 场景：从未写 study_state.json 的纯 md 转写必须挂在 md_write_after_state 上
+        sc = D.load_scenario(os.path.join(DRIFT, "scenarios", "long_session_state.json"))
+        r = D.evaluate(sc, _tr("good_session.jsonl"))
+        self.assertIn("md_write_after_state_max", _fail_thresholds(r))
+
     def test_missing_transcript_exits_2(self):
         r = _cli(["--scenario", SCEN, "--transcript", os.path.join(TR, "does_not_exist.jsonl")])
         self.assertEqual(r.returncode, 2)

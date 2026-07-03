@@ -536,7 +536,10 @@ def compute_metrics(scenario, fixture_dir, turns):
     # A4 source-of-truth aware per-turn snapshots — computed ONCE and shared by the checkpoint /
     # row-persistence sections so the md-only-after-state rejection can't diverge between them
     state_init = os.path.join(fixture_dir, "study_state.json")
-    snaps, md_after_state = _session_snapshots(turns, os.path.isfile(state_init), set(canon))
+    # requires_state 的 A4 场景即使 fixture 没带 state 文件也从「事实源已确立」起步——
+    # 纯 md 手改转写不能在 state 场景白拿 md_write_after_state=0（那正是要抓的回归）
+    require_state = bool(scenario.get("requires_state")) or os.path.isfile(state_init)
+    snaps, md_after_state = _session_snapshots(turns, require_state, set(canon))
     # 指标种子同理：fixture 自带 state 时，初始阶段/行都从 JSON 事实源来——
     # 生成视图 md 过期/不一致时不能拿它当会话起点
     try:
