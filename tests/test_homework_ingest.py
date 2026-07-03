@@ -1529,7 +1529,7 @@ class HomeworkIngest(unittest.TestCase):
         for bad in ("mat-ps4keyboard", "tmp_hw3ansible", "非作业资料", "tmp习题abc"):
             self.assertIsNone(B._HW_ROOT_RE.search("/" + bad), bad)   # 后缀/中文都要词元边界
         for good in ("HW3", "hw2solutions", "ps4", "problem set 2", "作业3", "线代作业", "习题册",
-                     "作业资料", "线代作业资料"):
+                     "作业资料", "线代作业资料", "hw3final", "hw3v2"):
             self.assertIsNotNone(B._HW_ROOT_RE.search("/" + good), good)
 
     def test_bare_key_file_kept_out_of_wiki(self):
@@ -1558,7 +1558,7 @@ class HomeworkIngest(unittest.TestCase):
                   if q.get("source_type") == "homework"}
         self.assertIn("注记答案一", by_num[1].get("answer", ""))    # 尾随注记不打碎键拆分
         self.assertIn("注记答案二", by_num[2].get("answer", ""))
-        self.assertNotIn("Grading note", by_num[2].get("answer", ""))   # 注记只当分段边界
+        self.assertIn("Grading note", by_num[2].get("answer", ""))   # 界外行随前一条答案保留，不截断
 
     def test_show_your_work_instruction_not_stored(self):
         tmp = tempfile.mkdtemp()
@@ -1605,6 +1605,25 @@ class HomeworkIngest(unittest.TestCase):
         hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
         self.assertEqual(len(hw), 1)
         self.assertFalse((hw[0].get("answer") or "").strip())     # 小数-空白空栏不是官方答案
+
+    def test_out_of_range_step_stays_in_previous_answer(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw94.pdf": ["Problem 1\n界外题面一。\n\nProblem 2\n界外题面二。"],
+                            "hw94_sol.pdf": ["Answers\n1. 界外答案一。\n2. 乙的前半段。\n3. 乙的第二步继续。"]})
+        code, payload, report = _run(mat, be)
+        by_num = {q["homework_number"]: q for q in payload["quiz_bank"]
+                  if q.get("source_type") == "homework"}
+        self.assertIn("乙的前半段", by_num[2].get("answer", ""))
+        self.assertIn("乙的第二步继续", by_num[2].get("answer", ""))   # 界外编号步骤不截断答案
+
+    def test_instruction_line_with_work_kept_as_answer(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw95.pdf": ["Problem 1\nSolution\nShow your work: 2+2=4."]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw), 1)
+        self.assertIn("2+2=4", hw[0].get("answer", ""))            # 带算式的行是真解答
+        self.assertNotIn("2+2=4", hw[0].get("question") or "")     # 不并回题面泄答案
 
     def test_no_network_or_llm(self):
 

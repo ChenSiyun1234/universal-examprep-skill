@@ -53,7 +53,9 @@ _HW_FILE_RE = re.compile(r"(?:^|[\\/_\-. ])(?:hw|homework|assignments?|problem[ 
 _HW_ROOT_RE = re.compile(
     r"(?:^|[\\/_\-. ])(?:(?:hw|homework|assignments?|problem[ _-]?sets?|psets?)[ _\-]?\d*"
     r"|ps[ _\-]?\d+)"
-    r"(?=$|[\\/_\-. ()]|(?:solutions?|answers?|sols?|ans|keys?|manuals?)(?:$|[\\/_\-. ()0-9]))"
+    r"(?=$|[\\/_\-. ()]|(?:solutions?|answers?|sols?|ans|keys?|manuals?)(?:$|[\\/_\-. ()0-9])"
+    r"|(?:v\d+|ver(?:sion)?|final|rev(?:ised)?|updated?|new|latest|copy|draft|fixed|corrected)"
+    r"(?:$|[\\/_\-. ()0-9]))"
     r"|(?<![非无免])(?:作业|习题)(?=$|[\\/_\-. ()0-9]|答案|解答|册|本|集|资料|材料)", re.I)
 # tokens that mark a SOLUTION companion file (hw1_sol.pdf / HW2_Answers.pdf / 作业3答案.pdf)。
 # solution/answer 需要词元边界：前面不能是字母（unanswered ≠ answers；hw1solution 的数字前缀合法），
@@ -824,11 +826,14 @@ def extract_homework_items(pages, root_name=""):
             # 尾随「3. Grading note」注记不打碎拆分）；只命中 1 个的编号解答步骤仍不拆
             if keyset0 and (keyset0 <= _hw_prob_nums(hf)
                             or len(keyset0 & _hw_prob_nums(hf)) >= 2):
+                # 分段边界只用题号条目——界外编号行（前一题解答里的编号步骤/注记）随前一条
+                # 答案保留，绝不当边界把官方解答截断
+                keyed_ms = [m2 for m2 in keyed_ms if _keyline_num(m2) in _hw_prob_nums(hf)]
                 for x, m2 in enumerate(keyed_ms):
                     seg_end = keyed_ms[x + 1].start() if x + 1 < len(keyed_ms) else len(stream)
                     numk = _keyline_num(m2)
-                    if numk not in _hw_prob_nums(hf) or (hf, numk) in sol_answers:
-                        continue               # 非题号条目（注记行）只当分段边界，不存为答案
+                    if (hf, numk) in sol_answers:
+                        continue
                     got0 = _hw_nonblank_slice(stream, bounds, sf, m2.start(), seg_end)
                     if got0:
                         sol_answers[(hf, numk)] = got0 + ("solution",)
@@ -846,12 +851,14 @@ def extract_homework_items(pages, root_name=""):
                                  or len(keyset0 & _hw_prob_nums(hf)) >= 2)):
                 continue
             m["_section"] = True       # 已按号拆分的节头——继承不得再把它归给上一题
+            # 分段边界只用题号条目——界外编号行随前一条答案保留，不截断官方解答
+            keyed_ms = [m2 for m2 in keyed_ms if _keyline_num(m2) in _hw_prob_nums(hf)]
             for x, m2 in enumerate(keyed_ms):
                 seg_end = keyed_ms[x + 1].start() if x + 1 < len(keyed_ms) else len(seg)
                 numk = _keyline_num(m2)
                 key = (hf, numk)
-                if numk not in _hw_prob_nums(hf) or key in sol_answers:
-                    continue               # 注记行只当分段边界
+                if key in sol_answers:
+                    continue
                 got0 = _hw_nonblank_slice(stream, bounds, sf, m["start"] + m2.start(),
                                           m["start"] + seg_end)
                 if got0:
@@ -982,11 +989,13 @@ def extract_homework_items(pages, root_name=""):
             # 只命中 1 个的编号步骤/普通列表不拆
             if not (keyset and (keyset <= prob_nums or len(keyset & prob_nums) >= 2)):
                 continue
+            # 分段边界只用题号条目——界外编号行随前一条答案保留
+            keyed_ms = [m2 for m2 in keyed_ms if _keyline_num(m2) in prob_nums]
             for x, m2 in enumerate(keyed_ms):
                 seg_end = keyed_ms[x + 1].start() if x + 1 < len(keyed_ms) else len(seg)
                 numk = _keyline_num(m2)
-                if numk not in prob_nums or numk in inline_keys:
-                    continue               # 注记行只当分段边界
+                if numk in inline_keys:
+                    continue
                 got2 = _hw_nonblank_slice(stream, bounds, hf,
                                           mk2["start"] + m2.start(), mk2["start"] + seg_end)
                 if got2:
@@ -1067,7 +1076,9 @@ def extract_homework_items(pages, root_name=""):
                                       and not rest_lines)
                                   or (bool(rest_lines)
                                       and all(_HW_ANSBOX_INSTR_RE.search(l)
+                                              and not re.search(r"[=＝<>×÷^√]|\d", l)
                                               for l in rest_lines)))
+                    # 指示语行带实际算式/数字（Show your work: 2+2=4）就是真解答不是标签
                 if marks[k]["num"] is None and no_pre and label_like:
                     ans = None         # 题面在答案标记前毫无内容且标记段是标签/空白栏——
                                        # 属题面指示语，不是官方答案
