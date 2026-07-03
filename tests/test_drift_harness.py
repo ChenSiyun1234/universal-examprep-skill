@@ -188,17 +188,24 @@ class DriftHarness(unittest.TestCase):
         self.assertEqual(r["metrics"]["window_rows_lost"], 0)
 
     def test_b3_chapter_backfill_not_a_loss(self):
-        # Codex R5LA：先无章节登记、后补章节（point@ → point@N）是同一行的回填，不算 丢+加
-        self.assertTrue(D._window_compat("红黑树@", "红黑树@7"))
-        self.assertTrue(D._window_compat("红黑树@7", "红黑树@"))
-        self.assertFalse(D._window_compat("模板@2", "模板@5"))     # 都标了章且不同 = 真不同的点
-        self.assertEqual(D._window_diff(["红黑树@"], ["红黑树@7"]), (0, 0))   # 回填：不 丢+加
+        # 补章节（point@ → point@N）是同一行的回填，不算 丢+加（Codex R5LA + 方向性 SGGq）
+        self.assertTrue(D._window_same_row("红黑树@", "红黑树@7"))
+        self.assertEqual(D._window_diff(["红黑树@"], ["红黑树@7"]), (0, 0))
 
-    def test_b3_window_diff_one_to_one(self):
-        # Codex R_Xa：两条同名不同章行塌成一条 unchaptered，不能被当成 0 丢失（一对一匹配）
-        self.assertEqual(D._window_diff(["模板@2", "模板@5"], ["模板@"]), (0, 1))
-        self.assertEqual(D._window_diff(["栈@1"], ["栈@1", "队列@1"]), (1, 0))   # 讲了新点 = added
-        self.assertEqual(D._window_diff(["栈@1"], ["栈@1"]), (0, 0))            # 状态迁移不改键
+    def test_b3_window_diff_one_to_one_and_directional(self):
+        # Codex R_Xa 一对一 + SGGq 方向性：抹章不是 backfill、是丢失
+        self.assertFalse(D._window_same_row("点@7", "点@"))        # 抹掉章节身份 ≠ 同一行
+        self.assertEqual(D._window_diff(["栈@1"], ["栈@"]), (1, 1))   # 栈@1 → 栈@ 抹章 = 丢一行 + 新一行
+        self.assertEqual(D._window_diff(["模板@2", "模板@5"], ["模板@"]), (1, 2))   # 两条塌成一条：真丢 2
+        self.assertEqual(D._window_diff(["栈@1"], ["栈@1", "队列@1"]), (1, 0))       # 讲了新点 = added
+        self.assertEqual(D._window_diff(["栈@1"], ["栈@1"]), (0, 0))                # 状态迁移不改键
+
+    def test_b3_omitted_window_status_defaults_in_window(self):
+        # Codex SGGn：省略 status 的合法窗口行归一到渲染默认「在窗口」，不误触 md/state 不一致
+        snap = D.parse_state_json(json.dumps(
+            {"current_phase": 1, "mistake_archive": [], "confusion_log": [],
+             "knowledge_window": [{"point": "栈", "chapter": "1"}]}), [1])
+        self.assertEqual(snap["window_status"], ["在窗口"])
 
     def test_b3_non_canonical_window_status_fails_loud(self):
         # Codex R_Xd：非 canonical 窗口状态（typo/任意串）是坏写入 → 畸形输入 exit 2，不让乱码状态骗过迁移门槛

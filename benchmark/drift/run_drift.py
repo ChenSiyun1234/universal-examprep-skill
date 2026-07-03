@@ -294,23 +294,27 @@ def _is_table_header(line):
     return sum(1 for w in _TABLE_HDR_WORDS if w in low) >= 2
 
 
-def _window_compat(a, b):
-    """窗口条目身份相容：同 point 且（任一方无章节，或章节相等）——与 update_progress 的补章节回填同口径。"""
-    pa, _, ca = a.partition("@")
-    pb, _, cb = b.partition("@")
-    return pa == pb and (ca == "" or cb == "" or ca == cb)
+def _window_same_row(prev, cur):
+    """prev 行与 cur 行是否同一逻辑窗口条目（**方向性**）：精确相等，或 prev 无章、cur 补了章（backfill）。
+    反向——prev 有章 point@N、cur 抹成 point@（擦掉章节身份）——是**丢失**，不算同一行（Codex SGGq）；
+    只有 update_progress 真会做的补章节回填算同一行。"""
+    if prev == cur:
+        return True
+    pp, _, pc = prev.partition("@")
+    cp, _, cc = cur.partition("@")
+    return pp == cp and pc == "" and cc != ""   # 仅允许 backfill：prev 无章 → cur 有章
 
 
 def _window_diff(prev, cur):
-    """一对一相容匹配统计窗口条目的 (added, lost)——一个 cur 行只能消费一个 prev 行，避免一条 unchaptered
-    行同时"抵消"两条不同章的 prev 行（那会掩盖真丢失，Codex R_Xa）。优先精确同章匹配，再退相容匹配，
-    让 specific 行不被 loose 行抢占。"""
+    """一对一方向性匹配统计窗口条目的 (added, lost)——一个 cur 行只能消费一个 prev 行（避免一条 unchaptered
+    行同时抵消多条 prev 行掩盖真丢失，Codex R_Xa），且只认精确/backfill 匹配（抹章=丢失，Codex SGGq）。
+    specific（有章）prev 先匹配，loose（point@）后，避免抢占。"""
     avail = list(cur)
     lost = 0
-    for a in sorted(prev, key=lambda k: k.endswith("@")):   # specific（有章）先匹配，loose（point@）后
-        idx = next((i for i, c in enumerate(avail) if c == a), None)      # 先精确
+    for a in sorted(prev, key=lambda k: k.endswith("@")):
+        idx = next((i for i, c in enumerate(avail) if c == a), None)                    # 先精确
         if idx is None:
-            idx = next((i for i, c in enumerate(avail) if _window_compat(a, c)), None)   # 再相容
+            idx = next((i for i, c in enumerate(avail) if _window_same_row(a, c)), None)  # 再 backfill
         if idx is None:
             lost += 1
         else:
@@ -524,7 +528,9 @@ def parse_state_json(text, plan_phases=None):
             raise DriftError("study_state.json 快照的 knowledge_window 行 status 必须是 %s 或省略: %r"
                              % ("/".join(_WIN_STATUSES), r))
         window_rows.append("%s@%s" % (r["point"].strip(), "" if ch in (None, "") else str(ch)))
-        window_status.append(stt if isinstance(stt, str) else None)
+        # 省略 status 归一到渲染默认「在窗口」——update_progress.render_md 也把缺省 status 渲成 在窗口，
+        # 否则 {point,chapter} 无 status 的合法行会让 state 图（None）与 md 图（在窗口）误判不一致（SGGn）
+        window_status.append(stt if isinstance(stt, str) else "在窗口")
 
     return {"phase": phase, "mistake_rows": m_rows, "confusion_rows": c_rows,
             "mistake_status": stat["mistake_archive"], "confusion_status": stat["confusion_log"],
@@ -1041,7 +1047,7 @@ def compute_metrics(scenario, fixture_dir, turns):
             if st is None:
                 continue
             for a, pst in pstat:
-                if _window_compat(a, c) and pst is not None and pst != st:
+                if _window_same_row(a, c) and pst is not None and pst != st:
                     window_status_migrations += 1
                     break
 
