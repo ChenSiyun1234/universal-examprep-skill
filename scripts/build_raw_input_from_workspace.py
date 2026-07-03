@@ -1635,7 +1635,8 @@ def _strip_answer_prefix(ans_text):
     # 「Solution set」这类正文短语绝不剥（过剥实测）
     t = re.sub(r"(?i)^(?:solutions?|answers?|解答|答案)"
                r"(?:\s*#?\s*\d+(?:\.\d+)*(?:\s*\([A-Za-z]\)|[A-Za-z])?\s*[:：.]?|\s*[:：.])\s*", "", t)
-    t = re.sub(r"^\d+(?:\.\d+)*(?:\s*\([A-Za-z]\)|[A-Za-z])?\s*[.)、]\s*", "", t)
+    # 键分隔符后紧跟数字的不是键是小数（Answer: 0.5 的 0. / 1.5 表示比例）——绝不剥
+    t = re.sub(r"^\d+(?:\.\d+)*(?:\s*\([A-Za-z]\)|[A-Za-z])?\s*[.)、]\s*(?!\d)", "", t)
     return t.strip()
 
 
@@ -1645,7 +1646,11 @@ def _normalize_choice_answer(ans_text, options):
     t = _strip_answer_prefix(ans_text)
     m = re.fullmatch(r"[（(]?([A-H])[）)．.。]?", t)
     if m:
-        return m.group(1).upper()
+        letter = m.group(1).upper()
+        labels = {str(o)[:1].upper() for o in options or []}
+        # 键字母不在已抽选项里（抽取漏了选项/键错位）——不归一，让调用方降级，
+        # 绝不发一个 answer 不在 options 里的 choice
+        return letter if letter in labels else None
     for o in options or []:
         if t == o or t == re.sub(r"^[A-H][.．、:：)]\s*", "", o).strip():
             return str(o)[:1]
@@ -1684,8 +1689,8 @@ def _classify_question_type(q_text):
         elif not ln.strip():
             block_open = False                         # 空行结束选项块——其后说明行不并入
         elif opts and block_open:
-            if re.match(r"(?i)^\s*(?:explain|show|justify|prove|describe|discuss|note|hints?|"
-                        r"circle|select|choose|mark|write|请|说明|解释|证明|注意|提示|选出|圈出|写出)\b",
+            if re.match(r"(?i)^\s*(?:(?:explain|show|justify|prove|describe|discuss|note|hints?|"
+                        r"circle|select|choose|mark|write)\b|请|说明|解释|证明|注意|提示|选出|圈出|写出)",
                         ln) or _HW_ANSBOX_INSTR_RE.search(ln):
                 block_open = False                     # 紧随选项的答题指令不是选项续行
             else:
@@ -1717,7 +1722,10 @@ def _classify_question_type(q_text):
                                      r"[处栏]?\s*[:：]?\s*[_＿]", ln)
             label_prev = re.search(r"(?i)(?:answers?|solutions?|答案|解答|作答|答题)"
                                    r"[处栏]?\s*[:：]?\s*$", prev)
-            if not (label_before or label_prev or _HW_ANSBOX_INSTR_RE.search(ln)):
+            residual = _BLANK_RUN_RE.sub("", ln).strip()
+            embedded = bool(re.search(r"[^\W_]", residual))
+            # 整行只有下划线（证明题末尾的书写区）不是题面挖空——空线必须嵌在文字里
+            if embedded and not (label_before or label_prev or _HW_ANSBOX_INSTR_RE.search(ln)):
                 return "fill_blank", None
         if ln.strip():
             prev = ln
