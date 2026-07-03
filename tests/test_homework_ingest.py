@@ -2154,6 +2154,104 @@ class HomeworkIngest(unittest.TestCase):
         wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
         self.assertNotIn("历年卷胶连答案", wiki_all)
 
+    # ---- D2: 页级零静默丢失 + AI 接管清单 regression guards ----
+
+    def test_page_number_residue_pdf_flagged_as_scanned(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {})
+        with open(os.path.join(tmp, "mat", "scan.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+        with open(os.path.join(tmp, "mat", "lec01.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+
+        class ScBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                if "scan" in pdf_path:
+                    return ["12", "13", "Page 14 of 20"]           # 每页只剩页码残渣
+                return ["讲义正文内容。"]
+        code, payload, report = _run(mat, ScBackend({}))
+        self.assertTrue(any(w.startswith("pdf_no_text") for w in report["warnings"]))
+        self.assertTrue(any(e["kind"] == "scanned_pdf" and "多模态" in e["action"]
+                            for e in report.get("ai_review", [])))  # 残渣骗不过 + 移交 AI
+
+    def test_partial_scanned_pages_flagged_with_page_numbers(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {})
+        with open(os.path.join(tmp, "mat", "mixed.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+
+        class MxBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                return ["第一页正文知识点。", "37", "", "第四页正文知识点。"]
+        code, payload, report = _run(mat, MxBackend({}))
+        w = [x for x in report["warnings"] if x.startswith("pdf_pages_no_text")]
+        self.assertTrue(w and "p2-3" in w[0])                     # 页级留痕（含页号区间）
+        ent = [e for e in report.get("ai_review", []) if e["kind"] == "pages_no_text"]
+        self.assertEqual(ent[0]["pages"], [2, 3])
+
+    def test_all_residue_materials_exit_4(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {})
+        with open(os.path.join(tmp, "mat", "scan.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+
+        class RsBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                return ["12", "13"]
+        code, payload, report = _run(mat, RsBackend({}))
+        self.assertEqual(code, 4)                                 # 全册残渣不产残渣 wiki
+
+    def test_unsupported_format_left_a_trace(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw1.pdf": ["Problem 1\n题面。"]})
+        with open(os.path.join(tmp, "mat", "slides.pptx"), "wb") as f:
+            f.write(b"PK-fake")
+        with open(os.path.join(tmp, "mat", "Thumbs.db"), "wb") as f:
+            f.write(b"junk")
+        code, payload, report = _run(mat, be)
+        self.assertTrue(any(w.startswith("unsupported_format") and "slides.pptx" in w
+                            for w in report["warnings"]))         # 不支持格式绝不零痕迹丢弃
+        ent = [e for e in report.get("ai_review", []) if e["kind"] == "unsupported_format"]
+        self.assertEqual(len(ent), 1)                             # junk（Thumbs.db）不入清单
+        self.assertIn("slides.pptx", ent[0]["file"])
+
+    def test_gbk_text_decoded_with_warning(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"lec01.pdf": ["讲义正文内容。"]})
+        with open(os.path.join(tmp, "mat", "notes.txt"), "wb") as f:
+            f.write("GBK 编码的讲义要点。".encode("gbk"))
+        code, payload, report = _run(mat, be)
+        self.assertTrue(any(w.startswith("encoding_fallback") for w in report["warnings"]))
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertIn("GBK 编码的讲义要点", wiki_all)             # 正确解码入库、不乱码
+
+    def test_undecodable_text_skipped_with_manifest(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"lec01.pdf": ["讲义正文内容。"]})
+        with open(os.path.join(tmp, "mat", "bad.txt"), "wb") as f:
+            f.write(b"\xff\xfe\xff\x00garbage\xff")
+        code, payload, report = _run(mat, be)
+        self.assertTrue(any(w.startswith("undecodable_text") for w in report["warnings"]))
+        self.assertTrue(any(e["kind"] == "undecodable_text"
+                            for e in report.get("ai_review", [])))   # 解不了码 → 移交不硬灌
+
+    def test_extract_exception_promoted_to_warning(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {})
+        for rel in ("broken.pdf", "lec01.pdf"):
+            with open(os.path.join(tmp, "mat", rel), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class BrBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                if "broken" in pdf_path:
+                    raise RuntimeError("模拟损坏")
+                return ["讲义正文内容。"]
+        code, payload, report = _run(mat, BrBackend({}))
+        self.assertTrue(any(w.startswith("pdf_extract_failed") for w in report["warnings"]))
+        self.assertTrue(any(e["kind"] == "extract_failed"
+                            for e in report.get("ai_review", [])))   # 异常不再只藏在 skipped
+
     def test_no_network_or_llm(self):
 
 

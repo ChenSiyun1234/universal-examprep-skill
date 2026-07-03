@@ -283,7 +283,7 @@ class CoreExtraction(unittest.TestCase):
             f.write("Quiz 9.9 leftover scratch")
         with open(os.path.join(d, "ch01.pdf"), "wb") as f:
             f.write(b"%PDF fake")
-        pdfs, texts, pruned = B._scan_materials(d)
+        pdfs, texts, pruned, _others = B._scan_materials(d)
         self.assertEqual([os.path.basename(p) for p in pdfs], ["ch01.pdf"])  # only the real PDF
         self.assertEqual(texts, [])                                          # leftover .md/.txt skipped
         self.assertIn("references", pruned)
@@ -349,7 +349,7 @@ class CoreExtraction(unittest.TestCase):
             f.write(b"%PDF fake")
         with open(os.path.join(d, "ch01.pdf"), "wb") as f:
             f.write(b"%PDF fake")
-        pdfs, texts, pruned = B._scan_materials(d)
+        pdfs, texts, pruned, _others = B._scan_materials(d)
         self.assertEqual(sorted(os.path.basename(p) for p in pdfs), ["ch01.pdf", "ch02.pdf"])
         self.assertEqual(pruned, [])
 
@@ -368,7 +368,7 @@ class CoreExtraction(unittest.TestCase):
         os.makedirs(os.path.join(d, "references", "assets"))
         with open(os.path.join(d, "references", "assets", "fig.pdf"), "wb") as f:
             f.write(b"%PDF fake")
-        pdfs, texts, pruned = B._scan_materials(d)
+        pdfs, texts, pruned, _others = B._scan_materials(d)
         self.assertIn("fig.pdf", [os.path.basename(p) for p in pdfs])
         self.assertEqual(pruned, [])
 
@@ -379,7 +379,7 @@ class CoreExtraction(unittest.TestCase):
         for fn in ("study_plan.md", "study_progress.md", "lecture_notes.md"):
             with open(os.path.join(d, fn), "w", encoding="utf-8") as f:
                 f.write("Quiz 1.1  x\nQuiz 1.1 Solution  y")
-        pdfs, texts, pruned = B._scan_materials(d)
+        pdfs, texts, pruned, _others = B._scan_materials(d)
         names = sorted(os.path.basename(p) for p in texts)
         self.assertEqual(names, ["lecture_notes.md"])   # real notes kept, generated files skipped
 
@@ -417,7 +417,7 @@ class CoreExtraction(unittest.TestCase):
             f.write("x")
         with open(os.path.join(d, "lectures", "study_plan.md"), "w", encoding="utf-8") as f:
             f.write("y")
-        pdfs, texts, pruned = B._scan_materials(d)
+        pdfs, texts, pruned, _others = B._scan_materials(d)
         rels = sorted(os.path.relpath(t, d).replace(os.sep, "/") for t in texts)
         self.assertEqual(rels, ["lectures/study_plan.md"])   # root skipped, subfolder kept
 
@@ -463,7 +463,7 @@ class CoreExtraction(unittest.TestCase):
                 f.write("Quiz 9.9  leftover")
         with open(os.path.join(d, "ch01.pdf"), "wb") as f:
             f.write(b"%PDF fake")
-        pdfs, texts, pruned = B._scan_materials(d)
+        pdfs, texts, pruned, _others = B._scan_materials(d)
         self.assertEqual(texts, [])                              # nothing from skill_workspace/
         self.assertEqual([os.path.basename(p) for p in pdfs], ["ch01.pdf"])
         self.assertIn("skill_workspace", pruned)

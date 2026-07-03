@@ -1488,7 +1488,8 @@ def _under(root, child):
 ALWAYS_PRUNE = {".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv", "env",
                 ".idea", ".vscode", ".pytest_cache", ".ipynb_checkpoints"}
 # generated skill-workspace files (not course material) → skipped even if they sit at the materials root.
-SKIP_FILES = {"study_plan.md", "study_progress.md", "walkthrough.md", "raw_input.json", "parse_report.json"}
+SKIP_FILES = {"study_plan.md", "study_progress.md", "walkthrough.md", "raw_input.json",
+              "parse_report.json", "ingest_report.json", "ai_review_manifest.json"}
 
 
 def _is_leftover_workspace(path, name):
@@ -1519,7 +1520,7 @@ def _scan_materials(materials_dir):
     workspace inside the course folder isn't re-ingested, but a real course `references/` of PDFs is kept.
     (Real case: D:\\EEC 160 held a previous ad-hoc workspace → without pruning every lecture marker was
     triplicated across the pdf + extracted .txt + wiki .md, blowing up the bank with broken items.)"""
-    pdfs, texts, pruned = [], [], []
+    pdfs, texts, pruned, others = [], [], [], []
     for dirpath, dirs, files in os.walk(materials_dir):
         keep = []
         for d in dirs:
@@ -1539,7 +1540,40 @@ def _scan_materials(materials_dir):
                 pdfs.append(full)
             elif low.endswith((".txt", ".md")):
                 texts.append(full)
-    return sorted(pdfs), sorted(texts), sorted(pruned)
+            elif not fn.startswith(".") and low not in ("thumbs.db", "desktop.ini") \
+                    and not low.endswith((".ini", ".db", ".lnk", ".tmp", ".log")):
+                others.append(full)                    # 不支持的格式也要留痕，绝不零痕迹丢弃
+    return sorted(pdfs), sorted(texts), sorted(pruned), sorted(others)
+
+
+# 页码/页眉残渣行（纯数字、Page N of M、第N页）——扫描件每页常只残留这一行，
+# 精确空判定会被骗过（审计实测）
+_PAGE_RESIDUE_RE = re.compile(
+    r"^(?:[-–—•·.\s]*\d{1,4}[-–—•·.\s]*|pages?\s*\d+(?:\s*(?:of|/)\s*\d+)?"
+    r"|第\s*\d+\s*页(?:\s*[/，,]?\s*共\s*\d+\s*页)?)$", re.I)
+
+
+def _page_has_content(text):
+    """页面是否有【有效】文本——剥掉页码/页眉残渣行后仍有实义字符（字母/CJK，或带运算符的
+    数字）才算。只用于检测/警报，不改变管线喂给 wiki/题库的原文。"""
+    t = (text or "").strip()
+    if not t:
+        return False
+    kept = [ln for ln in (l.strip() for l in t.splitlines()) if ln and not _PAGE_RESIDUE_RE.match(ln)]
+    joined = " ".join(kept)
+    return bool(re.search(r"[A-Za-z一-鿿]", joined) or re.search(r"\d\s*[+\-*/=^%<>]", joined))
+
+
+def _fmt_pages(nums):
+    """页号列表 → 紧凑区间串（1,3-5,9）。"""
+    out, i = [], 0
+    while i < len(nums):
+        j = i
+        while j + 1 < len(nums) and nums[j + 1] == nums[j] + 1:
+            j += 1
+        out.append(str(nums[i]) if i == j else "%d-%d" % (nums[i], nums[j]))
+        i = j + 1
+    return ",".join(out)
 
 
 def _rel(path, base):
@@ -1548,9 +1582,30 @@ def _rel(path, base):
     return os.path.relpath(path, base).replace(os.sep, "/")
 
 
-def _read_text_file_pages(path, rel):
-    with open(path, "r", encoding="utf-8", errors="replace") as f:
-        raw = f.read()
+def _read_text_file_pages(path, rel, report=None):
+    """UTF-8 严格解码；失败按 GBK/Big5 依次严格重试（带警告——这是有依据的回退不是猜）；
+    全失败则跳过 + 警告 + 接管清单，绝不 errors=replace 把乱码静默灌进 wiki/题库。"""
+    with open(path, "rb") as f:
+        raw_b = f.read()
+    raw = None
+    for enc in ("utf-8-sig", "gbk", "big5"):
+        try:
+            raw = raw_b.decode(enc)
+        except (UnicodeDecodeError, ValueError):
+            continue
+        if enc != "utf-8-sig" and report is not None:
+            report["warnings"].append(
+                "encoding_fallback: %s（不是 UTF-8，按 %s 解码成功——若内容乱码请转存 UTF-8 后重新构建）"
+                % (rel, enc.upper()))
+        break
+    if raw is None:
+        if report is not None:
+            report["skipped"].append({"file": rel, "why": "无法解码（UTF-8/GBK/Big5 都失败）"})
+            report["warnings"].append("undecodable_text: %s（跳过——请转存 UTF-8 后重新构建）" % rel)
+            report["ai_review"].append({
+                "kind": "undecodable_text", "file": rel,
+                "action": "该文本文件无法解码，内容未导入。请 AI 读取原文件判断编码、转存 UTF-8 后重新运行构建。"})
+        return []
     parts = raw.split("\f") if "\f" in raw else [raw]
     return [{"file": rel, "page": i + 1, "text": p} for i, p in enumerate(parts)]
 
@@ -1586,13 +1641,21 @@ def run(args, backend=None):
     report = {"materials": args.materials, "backend": getattr(backend, "name", "none"),
               "files_scanned": [], "pages_extracted": 0, "pages_rendered": 0,
               "examples_detected": 0, "quizzes_detected": 0, "pairs_detected": 0,
-              "skipped": [], "warnings": []}
+              "skipped": [], "warnings": [], "ai_review": []}
 
     materials = args.materials
     if not os.path.isdir(materials):
         return 2, {"error": "materials 目录不存在: %s" % materials}, None
 
-    pdfs, texts, pruned = _scan_materials(materials)
+    pdfs, texts, pruned, others = _scan_materials(materials)
+    for op in others:
+        rel_o = _rel(op, materials)
+        report["skipped"].append({"file": rel_o, "why": "不支持的格式（仅解析 PDF/.txt/.md）"})
+        report["warnings"].append("unsupported_format: %s（内容不会进 wiki/题库——请 AI 接管）" % rel_o)
+        report["ai_review"].append({
+            "kind": "unsupported_format", "file": rel_o,
+            "action": "该文件格式本工具不解析、内容未导入。请 AI 直接读取该文件（多模态可读 docx/pptx/图片），"
+                      "把知识点/题目手工补进工作区，或转成 PDF/.txt 后重新运行构建。"})
     report["files_scanned"] = [os.path.relpath(p, materials) for p in (texts + pdfs)]
     report["pruned_dirs"] = pruned
     if pruned:   # fail-loud: a prior workspace/tooling dir was skipped, so the user knows why it's ignored
@@ -1608,24 +1671,45 @@ def run(args, backend=None):
 
     pages = []
     for tp in texts:
-        pages.extend(_read_text_file_pages(tp, _rel(tp, materials)))
+        pages.extend(_read_text_file_pages(tp, _rel(tp, materials), report))
     for pdf in pdfs:
         rel = _rel(pdf, materials)   # subdir-qualified identifier, not bare basename (avoids collisions)
         try:
-            nonblank = 0
+            nonblank, no_content, total = 0, [], 0
             for i, txt in enumerate(backend.page_texts(pdf)):
                 pages.append({"file": rel, "page": i + 1, "text": txt, "_pdf": pdf})
-                if (txt or "").strip():
+                total += 1
+                # 残渣感知判定：每页只剩页码「12」的扫描件不能算有文本（审计实测骗过精确空判定）
+                if _page_has_content(txt):
                     nonblank += 1
+                else:
+                    no_content.append(i + 1)
             if nonblank == 0:   # image-only/scanned PDF: pypdf returns "" per page → no usable text
                 report["skipped"].append({"file": rel, "why": "PDF 文本为空（可能是扫描件/图片 PDF，需 OCR，本工具不做）"})
                 report["warnings"].append("pdf_no_text: %s" % rel)
+                report["ai_review"].append({
+                    "kind": "scanned_pdf", "file": rel, "pages": no_content,
+                    "action": "整本无有效文本（疑似扫描件/纯图 PDF），内容未导入。请 AI 用多模态直接"
+                              "阅读该 PDF，把知识点/题目手工补进工作区。"})
+            elif no_content:    # 混排文件里的扫描页：内容不会进 wiki/题库，必须留痕移交
+                report["warnings"].append(
+                    "pdf_pages_no_text: %s（%d/%d 页无有效文本：p%s——疑似扫描/纯图页，这些页的内容"
+                    "不会进 wiki/题库）" % (rel, len(no_content), total, _fmt_pages(no_content)))
+                report["ai_review"].append({
+                    "kind": "pages_no_text", "file": rel, "pages": no_content,
+                    "action": "这些页在 PDF 里无有效文本（疑似扫描/插图页）。请 AI 用多模态阅读该 PDF "
+                              "的第 %s 页，判断是否有知识点/题目需要手工补录。" % _fmt_pages(no_content)})
         except Exception as e:  # backend present but failed on this one file → skip it, keep going
             report["skipped"].append({"file": rel, "why": "PDF 文本提取失败: %s" % e})
+            report["warnings"].append("pdf_extract_failed: %s（%s——整本内容未导入）" % (rel, e))
+            report["ai_review"].append({
+                "kind": "extract_failed", "file": rel,
+                "action": "PDF 文本提取抛异常，整本内容未导入。请 AI 用多模态直接阅读该 PDF 补录，"
+                          "或检查文件是否损坏/加密。"})
 
     report["pages_extracted"] = len(pages)
     # require some ACTUAL text, not just blank pages from a scanned PDF (else we'd emit an empty wiki and exit 0)
-    if not any((p.get("text") or "").strip() for p in pages):
+    if not any(_page_has_content(p.get("text")) for p in pages):
         report["warnings"].append("no_text_extracted")
         return 4, {"error": "未从 --materials 提取到任何文本内容（页面为空或全是扫描件/图片）。请确认有可解析的 "
                             "PDF/.txt/.md（PDF 文本需 pypdf；图片/扫描件需 OCR，本工具不做）。"}, report
@@ -1823,11 +1907,26 @@ def main(argv=None, backend=None):
         if report is not None:
             with open(args.report, "w", encoding="utf-8") as f:
                 json.dump(report, f, ensure_ascii=False, indent=2)
+            if report.get("ai_review"):
+                # 失败退出同样要留接管清单——exit 4（全是扫描件）正是最需要 AI 接管的场景
+                mp = os.path.join(os.path.dirname(os.path.abspath(args.report)), "ai_review_manifest.json")
+                with open(mp, "w", encoding="utf-8") as f:
+                    json.dump({"note": "程序无法处理/不确定的材料清单——AI 必须逐条处理，绝不静默略过",
+                               "entries": report["ai_review"]}, f, ensure_ascii=False, indent=2)
+                print("[!] AI 接管清单：%d 条未能自动处理的材料 → %s（请逐条处理）"
+                      % (len(report["ai_review"]), mp))
         return code
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(raw_input, f, ensure_ascii=False, indent=2)
     with open(args.report, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
+    manifest_path = os.path.join(os.path.dirname(os.path.abspath(args.report)), "ai_review_manifest.json")
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump({"note": "程序无法处理/不确定的材料清单——AI 必须逐条处理，绝不静默略过",
+                   "entries": report.get("ai_review", [])}, f, ensure_ascii=False, indent=2)
+    if report.get("ai_review"):
+        print("[!] AI 接管清单：%d 条未能自动处理的材料 → %s（请逐条处理）"
+              % (len(report["ai_review"]), manifest_path))
     print("[+] raw_input: %s（%d 阶段 / %d 题，其中讲义题 %d）"
           % (args.out, len(raw_input["phases"]), len(raw_input["quiz_bank"]),
              report["examples_detected"] + report["quizzes_detected"]))
