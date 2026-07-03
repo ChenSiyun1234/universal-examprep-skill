@@ -1639,8 +1639,9 @@ def _strip_answer_prefix(ans_text):
     # 「Solution set」这类正文短语绝不剥（过剥实测）
     t = re.sub(r"(?i)^(?:solutions?|answers?|解答|答案)"
                r"(?:\s*#?\s*\d+(?:\.\d+)*(?:\s*\([A-Za-z]\)|[A-Za-z])?\s*[:：.]?|\s*[:：.])\s*", "", t)
-    # 键分隔符后紧跟数字的不是键是小数（Answer: 0.5 的 0. / 1.5 表示比例）——绝不剥
-    t = re.sub(r"^\d+(?:\.\d+)*(?:\s*\([A-Za-z]\)|[A-Za-z])?\s*[.)、]\s*(?!\d)", "", t)
+    # 句点分隔符后紧跟数字的不是键是小数（Answer: 0.5 / 1.5 表示比例）——绝不剥；
+    # )、 不是小数分隔符（1、0.5 / 1)0.5 的键照剥）
+    t = re.sub(r"^\d+(?:\.\d+)*(?:\s*\([A-Za-z]\)|[A-Za-z])?\s*(?:[)、]\s*|\.[ \t]*(?!\d))", "", t)
     return t.strip()
 
 
@@ -1660,6 +1661,12 @@ def _normalize_choice_answer(ans_text, options):
         body = re.sub(r"^[A-H][.．、:：)]\s*", "", str(o)).strip()
         if t == o or t_cmp == re.sub(r"[\s,，;；、.。]+$", "", body):
             return str(o)[:1]
+    # 头部字母 + 分隔符/理由词（B. Because… / B 因为…）——标签无歧义，理由只是附注
+    m2 = re.match(r"[（(]?([A-Ha-h])(?:[）)．.。:：]|\s+(?:because|since|因为|由于))", t)
+    if m2:
+        letter = m2.group(1).upper()
+        labels = {str(o)[:1].upper() for o in options or []}
+        return letter if letter in labels else None
     return None
 
 
@@ -1680,16 +1687,29 @@ def _apply_typed_answer(item):
         stripped = _strip_answer_prefix(item["answer"])
         if stripped:
             item["answer"] = stripped
+    elif item.get("type") == "subjective" and "options" not in item:
+        # 晋升通道：键归一出裸字母（1. B）说明这就是选择题——二次判型越过线索门，
+        # 字母还得落在再抽出的选项标签里才晋升（双保险，绝不硬猜）
+        t = _strip_answer_prefix(item["answer"])
+        m = re.fullmatch(r"[（(]?([A-Ha-h])[）)．.。]?", t)
+        if m:
+            qt2, opts2 = _classify_question_type(item.get("question") or "", assume_choice=True)
+            if qt2 == "choice" and opts2 \
+                    and m.group(1).upper() in {str(o)[:1].upper() for o in opts2}:
+                item["type"] = "choice"
+                item["options"] = opts2
+                item["answer"] = m.group(1).upper()
+                item.pop("keywords", None)
 
 
 # 选择题提示词——题干里得有「选/哪/下列/which/choose…」这类线索，大写小问
 # （A. Find f'(x). B. Compute…）才不会光凭字母序列被误判成选择题
 _CHOICE_CUE_RE = re.compile(
-    r"(?i)which|select|choose|circle|correct|incorrect|true|false|following|multiple\s*choice"
+    r"(?i)which|select|choose|circle|correct|incorrect|true|false|multiple\s*choice"
     r"|下列|以下|哪|选|正确|错误|属于|符合|判断")
 
 
-def _classify_question_type(q_text):
+def _classify_question_type(q_text, assume_choice=False):
     """(type, options)。≥2 个从 A 起按序排列的大写选项行 → choice + options（续行并入上一项）；
     题面带填空线 → fill_blank；其余一律 subjective——启发式判不准绝不硬猜别的型。"""
     letters, opts, block_open = [], [], False
@@ -1715,7 +1735,7 @@ def _classify_question_type(q_text):
             if _OPTION_LINE_RE.match(ln):
                 break
             stem_lines.append(ln)
-        if _CHOICE_CUE_RE.search(" ".join(stem_lines)):
+        if assume_choice or _CHOICE_CUE_RE.search(" ".join(stem_lines)):
             return "choice", opts
         return "subjective", None          # 无选择线索的字母清单是小问列表，不猜
     # 行内选项：讲义题面常被空白折叠成一行（… A. 对的 B. 错的）——只认 A．/A:/（A）
@@ -1725,7 +1745,7 @@ def _classify_question_type(q_text):
     ms = list(re.finditer(r"(?:^|[\s：:，,。；;、])(?:（([A-H])）|([A-H])[．.、:：])[ \t]*(?![a-z]\.)", t))
     seq = [(m.group(1) or m.group(2)) for m in ms]
     if len(seq) >= 2 and seq == [chr(65 + i) for i in range(len(seq))] \
-            and _CHOICE_CUE_RE.search(t[:ms[0].start()]):
+            and (assume_choice or _CHOICE_CUE_RE.search(t[:ms[0].start()])):
         opts2 = []
         for j, m in enumerate(ms):
             end = ms[j + 1].start() if j + 1 < len(ms) else len(t)
@@ -1756,7 +1776,8 @@ def _classify_question_type(q_text):
             label_prev = re.search(r"(?i)(?:answers?|solutions?|答案|解答|作答|答题)"
                                    r"[处栏]?\s*[:：]?\s*$", prev)
             residual = _BLANK_RUN_RE.sub("", ln)
-            residual = re.sub(r"[（(][^（）()]{0,24}[)）]", "", residual).strip()   # (5 pts) 类标注不算内容
+            residual = re.sub(r"[（(][^（）()]{0,24}[)）]", "", residual)          # (5 pts) 类标注不算内容
+            residual = re.sub(r"[/／]?\s*\d+\s*(?:(?:points?|pts?|marks?)\b|分)", "", residual).strip()
             embedded = bool(re.search(r"[^\W_]", residual))
             # 「Fill in the blank / 填空」是明说的正面信号——优先于答题栏抑制
             #（指示语词典的 in the blank 恰好会撞上它）

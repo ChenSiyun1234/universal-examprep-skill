@@ -2780,6 +2780,52 @@ class HomeworkIngest(unittest.TestCase):
         hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
         self.assertEqual(hw[0]["type"], "subjective")              # 得分标注不算挖空内容
 
+    def test_answer_the_following_subparts_not_choice(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw120.pdf": ["Problem 1\nAnswer the following questions.\n"
+                                          "A. Find the derivative.\nB. Compute the integral."]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(hw[0]["type"], "subjective")              # following 不再当选择线索
+
+    def test_cueless_mcq_promoted_by_letter_key(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw121.pdf": ["Problem 1\nWhat is 2+2?\nA. 3\nB. 4"],
+                            "hw121_sol.pdf": ["1. B"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(hw[0]["type"], "choice")                  # 裸字母键触发晋升
+        self.assertEqual(len(hw[0]["options"]), 2)
+        self.assertEqual(hw[0].get("answer"), "B")
+
+    def test_choice_key_with_rationale_kept(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw122.pdf": ["Problem 1\n下列哪个正确？\nA. 甲\nB. 乙"],
+                            "hw122_sol.pdf": ["1. B. Because it is even."]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(hw[0]["type"], "choice")                  # 带理由的键不降级
+        self.assertEqual(hw[0].get("answer"), "B")
+
+    def test_cn_delimiter_decimal_key_stripped(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw123.pdf": ["Problem 1\n概率是 ______ 。"],
+                            "hw123_sol.pdf": ["Problem 1 Solution\n1、0.5"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(hw[0]["type"], "fill_blank")
+        self.assertEqual(hw[0].get("answer"), "0.5")               # 顿号键剥掉、小数保全
+
+    def test_score_suffixed_writing_area_stays_subjective(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw124.pdf": ["Problem 1\nProve the identity.\n__________ / 5 points"],
+                            "hw125.pdf": ["Problem 1\n证明恒等式。\n__________ / 10分"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw), 2)
+        for q in hw:
+            self.assertEqual(q["type"], "subjective")              # 计分书写行不是挖空
+
     def test_no_network_or_llm(self):
 
 
