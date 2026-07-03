@@ -695,6 +695,13 @@ class BehaviorSmokeTest(unittest.TestCase):
         self.assertFalse(H.window_out_rechecked("递归窗口外，无需回问你还记得吗，直接用。"))
         # 反事实（本来该先确认却没做）不算复核
         self.assertFalse(H.window_out_rechecked("窗口外的这块，本来该先确认的，但我就不这么干了，直接用。"))
+        # Codex R3-YIp：否定式安全声明「不会默认你会」不该压掉真正的复核（False Negative 防护）
+        self.assertTrue(H.window_out_rechecked("递归在窗口外了，不会默认你会，先确认你还记得递归出口吗？"),
+                        "「不会默认你会」是否定式安全声明，不该误伤真复核")
+        # Codex R3-YIs：否定式发问/实测（不问/不实测）算拒绝复核（False Positive 防护）
+        self.assertFalse(H.window_out_rechecked("递归在窗口外了，我不问你还记得吗，直接往下用。"),
+                         "「我不问你还记得吗」是跳过复核")
+        self.assertFalse(H.window_out_rechecked("递归窗口外了，我不实测你了，直接讲。", require_test=True))
         # 描述性「不熟/没怎么练」在别的分句里，不该压掉真正的复核（False Negative 防护）
         self.assertTrue(H.window_out_rechecked("窗口外知识点：树的遍历。这块你可能不熟，先确认你还记得前序遍历吗？"))
         self.assertTrue(H.window_out_rechecked("递归在窗口外了，你之前没怎么练这块，来一道题看看还会不会。"),

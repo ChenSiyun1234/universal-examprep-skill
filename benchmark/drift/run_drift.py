@@ -35,6 +35,22 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))                      # repo root (…/benchmark/drift → repo)
 
+# A6：复用 scripts/update_progress.py 的 canonical 时间宽裕度归一化——别在这里另建一份会漂的别名表
+# （否则「明天考/考前一天/今天」这些被 update_progress 认作 ≤1天 的别名会在 drift 侧被漏判为非紧迫）。
+sys.path.insert(0, os.path.join(ROOT, "scripts"))
+try:
+    from update_progress import _normalize_tier as _canon_tier, LEARNING_MODES as _LEARN_MODES
+except Exception:                                                 # 缺文件时退化为内置常量，不让 drift 崩
+    _canon_tier = None
+    _LEARN_MODES = ("零基础从头讲", "某章起步补弱", "查缺补漏")
+
+
+def _tier_is_urgent(time_budget):
+    tb = str(time_budget or "")
+    if _canon_tier is not None:
+        tb = _canon_tier(tb)[0]                                   # → canonical 档（≤1天/1-3天/…）
+    return tb in ("≤1天", "<=1天", "1天", "当天")
+
 # canonical provenance labels — mirror T2 / docs/language-policy.md (single source of truth)
 CANON_LABELS = ["🟢 来自资料", "🟡 AI补充，可能与你老师讲的不完全一致", "⚠️ AI生成答案，非老师/教材提供"]
 
@@ -761,10 +777,24 @@ def compute_metrics(scenario, fixture_dir, turns):
 
     # A6 模式漂移：≤1天时间宽裕度下，任何向学生抛出的澄清/偏好问句都算漂移（浪费复习时间）。
     # 时间宽裕度从 scenario.time_budget 读；非 ≤1天档本指标恒为 0（不适用）。
-    time_budget = str(scenario.get("time_budget") or "")
-    urgent = time_budget in ("≤1天", "<=1天", "1天", "当天")
+    urgent = _tier_is_urgent(scenario.get("time_budget"))        # canonical 归一后判定，别名（明天考/今天…）也算
     urgent_mode_questions = (sum(1 for t in assistant_turns if _asks_student_question(t.get("assistant", "")))
                              if urgent else 0)
+    # A6：紧迫开场必须"推断并**持久化**模式/时间"——扫最后一个 study_state.json 快照，校验落盘了 canonical
+    # 学习模式 + 紧迫时间档（默认 零基础从头讲 + ≤1天）。非紧迫档本指标不适用，恒为 1（不施压）。
+    urgent_mode_persisted = 1
+    if urgent:
+        last_state = None
+        for t in turns:
+            sj = (t.get("files_after") or {}).get("study_state.json")
+            if isinstance(sj, str):
+                try:
+                    last_state = json.loads(sj)
+                except ValueError:
+                    last_state = None
+        urgent_mode_persisted = int(
+            isinstance(last_state, dict) and last_state.get("mode") in _LEARN_MODES
+            and _tier_is_urgent(last_state.get("time_budget")))
 
     # 2) plan adherence — walk study_plan.md snapshots; a phase delete/add/reorder is a mutation UNLESS
     #    the mutating turn (or the immediately preceding user turn) explicitly asked to change the plan.
@@ -944,7 +974,7 @@ def compute_metrics(scenario, fixture_dir, turns):
     return {
         "turns": len(turns), "assistant_turns": len(assistant_turns),
         "goal_retention": goal_retention, "goal_marker_seen": goal_marker_seen,
-        "urgent_mode_questions": urgent_mode_questions,
+        "urgent_mode_questions": urgent_mode_questions, "urgent_mode_persisted": urgent_mode_persisted,
         "plan_adherence": plan_adherence, "plan_mutations": plan_mutations,
         "quiz_items": quiz_items, "bank_backed": bank_backed, "invented": invented,
         "untagged_questions": untagged, "wrong_phase_quiz": wrong_phase, "invention_rate": invention_rate,
@@ -964,6 +994,7 @@ THRESHOLD_RULES = {
     "goal_retention_min": ("goal_retention", "min"),
     "goal_marker_min": ("goal_marker_seen", "min"),   # positive signal: exam goal referenced ≥ N times (0/1)
     "urgent_mode_questions_max": ("urgent_mode_questions", "max"),  # A6：≤1天档向学生提问的次数上限
+    "urgent_mode_persisted_min": ("urgent_mode_persisted", "min"),  # A6：紧迫开场须把 mode/time 落盘（0/1）
     "plan_mutations_max": ("plan_mutations", "max"),
     "quiz_invention_rate_max": ("invention_rate", "max"),
     "untagged_questions_max": ("untagged_questions", "max"),

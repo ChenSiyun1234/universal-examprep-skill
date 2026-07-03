@@ -112,6 +112,34 @@ class DriftHarness(unittest.TestCase):
         r = D.evaluate(D.load_scenario(sc), _tr("good_session_urgent_1day.jsonl"))
         self.assertTrue(r["passed"], r["failures"])
         self.assertEqual(r["metrics"]["urgent_mode_questions"], 0)
+        # A6-YI0：好转写必须真的把推断出的 零基础从头讲+≤1天 持久化进 study_state.json 快照
+        self.assertEqual(r["metrics"]["urgent_mode_persisted"], 1)
+
+    def test_a6_urgent_persist_required(self):
+        # 只喊「按默认开讲」却没把 mode/time 落盘 → urgent_mode_persisted=0 → 挂在 persist 门槛上（Codex R3-YI0）
+        sc = D.load_scenario(os.path.join(DRIFT, "scenarios", "mode_urgent_no_questions.json"))
+        turns = D.load_jsonl(_tr("good_session_urgent_1day.jsonl"), "g")
+        for t in turns:                                          # 抹掉状态快照 = 没持久化
+            t.pop("files_after", None)
+            t["events"] = [e for e in t.get("events", []) if "study_state.json" not in e.get("path", "")]
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "no_persist.jsonl")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write("\n".join(json.dumps(t, ensure_ascii=False) for t in turns))
+        r = D.evaluate(sc, p)
+        self.assertEqual(r["metrics"]["urgent_mode_persisted"], 0)
+        self.assertIn("urgent_mode_persisted_min", _fail_thresholds(r))
+
+    def test_a6_urgent_alias_time_budget_counts(self):
+        # update_progress 认「明天考」为 ≤1天，drift 侧也必须（复用 canonical 归一），别名场景仍施加紧迫约束
+        self.assertTrue(D._tier_is_urgent("明天考"))
+        self.assertTrue(D._tier_is_urgent("考前一天"))
+        self.assertFalse(D._tier_is_urgent("3-7天"))
+        sc = D.load_scenario(os.path.join(DRIFT, "scenarios", "mode_urgent_no_questions.json"))
+        sc["time_budget"] = "明天考"
+        r = D.evaluate(sc, _tr("bad_urgent_1day_questions.jsonl"))
+        self.assertGreater(r["metrics"]["urgent_mode_questions"], 0)   # 别名档也照数提问，不再漏判为非紧迫
+        self.assertIn("urgent_mode_questions_max", _fail_thresholds(r))
 
     def test_a6_urgent_mode_questions_fail(self):
         sc = os.path.join(DRIFT, "scenarios", "mode_urgent_no_questions.json")

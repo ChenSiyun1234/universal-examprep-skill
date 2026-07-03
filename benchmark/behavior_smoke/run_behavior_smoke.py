@@ -438,23 +438,35 @@ _TEST_CUE = re.compile(
     r"用.{0,8}(?:难?题|例题).{0,6}(?:实测|检验|验证|考|试)|出(?:一)?道(?:难?题|题)")
 _WINDOW_RECHECK_CUE = re.compile(_RECALL_CUE.pattern + "|" + _TEST_CUE.pattern)
 # 复核所在**分句**里若含拒绝/否定/反事实词，视为没真的复核。「会不会/行不行」里的「不会」不算拒绝
-# （那是复核问句本身），故 不会 用后视排除 会/还/行。
+# （那是复核问句本身），故 不会 用后视排除 会/还/行。此外把「否定式的发问/实测」（不问/不实测/不测…）
+# 也算拒绝——「我不问你还记得吗，直接用」不是复核。
 _WINDOW_REFUSAL = re.compile(
-    r"(?<![会还行])不(?:会|做|想|去|再|打算|出)|不用|无需|无须|不需要|没(?:有)?(?:先|去|怎么)|"
+    r"(?<![会还行])不(?:会|做|想|去|再|打算|出)|不(?:问|实测|测|考|检验|核对?)|"
+    r"不用|无需|无须|不需要|没(?:有)?(?:先|去|怎么)|"
     r"别(?:再|又|去)|懒得|就当你|默认你|不再|本来该|本应|原本(?:该|想)")
 # 整份回答最终"默认还会/直接当会了"的收口——无论前面问没问都算没真复核（先确认…但我就当你会了）。
 _WINDOW_DEFAULT_OUT = re.compile(r"(?:就当|默认|直接当|当)你(?:已经|都|应该)?(?:会|懂|记得|掌握|没问题|行|OK)")
+
+
+def _has_unconditional_default(t):
+    """整份回答里是否有**未被否定的**「默认还会」收口——「不会默认你会」这类否定式安全声明不算。"""
+    for m in _WINDOW_DEFAULT_OUT.finditer(t or ""):
+        pre = (t or "")[max(0, m.start() - 5):m.start()]
+        if not re.search(r"[不别没绝]|无需|无须", pre):
+            return True
+    return False
 
 
 def window_out_rechecked(text, require_test=False):
     """遇到「窗口外」的知识点必须真的复核，不能默认还会。检测：既点明窗口外语境，又在某个**未被否定
     的分句**里做了真实复核。`require_test=True`（>7天 档）时**只认出题实测**——只问「还记得吗」不算，
     契约要求用对应难题实测；`require_test=False`（3-7天 档）时回想发问或出题实测都算。
-    只说「先确认一下」不发问、或末尾「我就当你会了」默认收口，一律不算真复核。"""
+    只说「先确认一下」不发问、或末尾「我就当你会了」默认收口，一律不算真复核；但「不会默认你会」这类
+    否定式安全声明不误伤。"""
     t = text or ""
     if not re.search(r"窗口外|上次(?:讲过|学过)了?有?一?阵|好一?阵子没", t):
         return False
-    if _WINDOW_DEFAULT_OUT.search(t):                # 最终默认还会 → 前面问了也白问
+    if _has_unconditional_default(t):               # 最终（未被否定地）默认还会 → 前面问了也白问
         return False
     cue = _TEST_CUE if require_test else _WINDOW_RECHECK_CUE
     for c in re.split(r"[。！？!?；;，,、\n]", t):
