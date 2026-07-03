@@ -62,6 +62,9 @@ class BehaviorSmokeTest(unittest.TestCase):
             "mock_negative_prose", "mock_negative_after_prompt", "mock_negative_unsafe_path",
             "mock_negative_question_label_late", "mock_negative_missing_asset", "mock_negative_answer_text",
             "mock_negative_path", "progress_after", "transcript",
+            "mock_liberal", "mock_ai_answer", "mock_negative_skip_ask", "mock_negative_formula_first",
+            "mock_negative_no_source", "mock_negative_unlabeled_source", "mock_negative_missing_warn",
+            "mock_negative_warn_title",
         )
         for sc in spec["scenarios"]:
             for k in file_keys:
@@ -197,6 +200,9 @@ class BehaviorSmokeTest(unittest.TestCase):
         # four headings with NO body text under any of them must not pass
         self.assertFalse(H.has_zero_basic_sections("## 考点拆解\n## 标准答题步骤\n## 易错点\n## 3分钟速记"),
                          "只有空小节标题、无正文不应判通过")
+        # A5 起：七步模板输出（② 这题在问什么 / ⑤ 逐步演算 + 裸「易错点：」收尾块）也满足零基础结构要求
+        seven = _read("mock/sample_outputs/teaching_template_good.txt")
+        self.assertTrue(H.has_zero_basic_sections(seven), "A5 七步模板输出应满足零基础精讲的结构要求")
 
     def test_visual_first_asset_detector(self):
         self.assertTrue(H.visual_first_asset_display_ok(_read("mock/sample_outputs/visual_first_good.txt")))
@@ -417,6 +423,62 @@ class BehaviorSmokeTest(unittest.TestCase):
         self.assertTrue(ok, "无 Python 手写产出的工作区未能校验为完整工作区")
 
     # 13
+    def test_teaching_template_detector(self):
+        good = _read("mock/sample_outputs/teaching_template_good.txt")
+        self.assertTrue(H.teaching_template_ok(good), "七步齐全且按序的好例应通过")
+        self.assertTrue(H.teaching_template_ok(_read("mock/sample_outputs/teaching_template_liberal_good.txt")),
+                        "文科变体（材料关键句/核心概念/逐点展开论证）应通过")
+        self.assertTrue(H.teaching_template_ok(_read("mock/sample_outputs/teaching_template_ai_answer_good.txt")),
+                        "⑤ 标题带 ⚠️ 的 AI 答案好例应通过")
+        self.assertFalse(H.teaching_template_ok(_read("mock/sample_outputs/teaching_template_skip_ask.txt")),
+                         "跳过「② 这题在问什么」直接贴公式必须被抓")
+        self.assertFalse(H.teaching_template_ok(_read("mock/sample_outputs/teaching_template_formula_first.txt")),
+                         "七步齐全但 ④ 出现在 ② 之前（公式先行）必须被抓")
+        # 步骤名只被清单式提及（不在行首做标题）不算
+        checklist = ("请按 ① 题面图、② 这题在问什么、③ 图里要读的量、④ 核心公式、"
+                     "⑤ 逐步演算、⑥ 答案自检、⑦ 知识点溯源 的顺序输出。")
+        self.assertFalse(H.teaching_template_ok(checklist), "行内清单提及七步不算真的走了模板")
+        # 只有标题没有正文不算
+        empty = ("① 题面图：\n② 这题在问什么：\n③ 图里要读的量：\n④ 核心公式：\n"
+                 "⑤ 逐步演算：\n⑥ 答案自检：\n⑦ 知识点溯源：\n")
+        self.assertFalse(H.teaching_template_ok(empty), "空标题必须被抓")
+        # ⑦ 溯源必须真的落到章节或 wiki 路径，不许空口宣称
+        no_cite = good.replace(
+            "第 2 章《线性表》 · references/wiki/ch02_linear_list.md · "
+            "原文 [lecture03.pdf 第 12 页](../lecture03.pdf#page=12)",
+            "见课件。")
+        self.assertNotEqual(no_cite, good)
+        self.assertFalse(H.teaching_template_ok(no_cite), "⑦ 无章节/wiki 引用必须被抓")
+
+    def test_question_source_block_detector(self):
+        good = _read("mock/sample_outputs/teaching_template_good.txt")
+        self.assertTrue(H.question_source_block_ok(good))
+        ai = _read("mock/sample_outputs/teaching_template_ai_answer_good.txt")
+        self.assertTrue(H.question_source_block_ok(ai, ai_answer=True),
+                        "⚠️ 同时在来源行与 ⑤ 标题的 AI 答案好例应通过")
+        self.assertFalse(H.question_source_block_ok(_read("mock/sample_outputs/teaching_template_no_source.txt")),
+                         "整块来源块缺失必须被抓")
+        self.assertFalse(
+            H.question_source_block_ok(_read("mock/sample_outputs/teaching_template_unlabeled_source.txt")),
+            "来源行末尾没有 canonical 标签必须被抓")
+        self.assertFalse(
+            H.question_source_block_ok(_read("mock/sample_outputs/teaching_template_missing_warn.txt"),
+                                       ai_answer=True),
+            "AI 答案但来源行无 ⚠️ 必须被抓")
+        self.assertFalse(
+            H.question_source_block_ok(_read("mock/sample_outputs/teaching_template_warn_title.txt"),
+                                       ai_answer=True),
+            "AI 答案来源行有 ⚠️ 但答案块标题没带 ⚠️ 必须被抓")
+        # ASCII 竖线分隔也接受
+        self.assertTrue(H.question_source_block_ok(
+            "题目来源：a.pdf 第 1 页（homework）| 答案来源：a_sol.pdf 第 1 页｜🟢 来自资料"))
+        # 题目来源/答案来源拆在两行不算一个来源块
+        self.assertFalse(H.question_source_block_ok(
+            "题目来源：a.pdf 第 1 页\n答案来源：a_sol.pdf 第 1 页｜🟢 来自资料"))
+        # 非 AI 答案时 🟡 标签合法
+        self.assertTrue(H.question_source_block_ok(
+            "题目来源：lec1.pdf 第 2 页（lecture）｜答案来源：老师课堂口述，AI 整理｜🟡 AI补充，可能与你老师讲的不完全一致"))
+
     def test_run_mock_exits_zero(self):
         self.assertEqual(_silent(H.main, ["--mock"]), 0)
 

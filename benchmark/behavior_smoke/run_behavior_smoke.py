@@ -163,23 +163,28 @@ def _heading_present(text, name):
     (`1. 考点拆解`), OR the skill's documented bracket block (`【考点拆解】`) — not an inline mention."""
     n = re.escape(name)
     md = (rf"(?m)^\s{{0,3}}"
-          rf"(?:#{{1,4}}\s*|\*\*\s*|[0-9一二三四五六七八九十]+\s*[、.．)）]\s*){{1,3}}{n}")
+          rf"(?:#{{1,4}}\s*|\*\*\s*|[①②③④⑤⑥⑦⑧⑨⑩]\s*|[0-9一二三四五六七八九十]+\s*[、.．)）]\s*){{1,3}}{n}")
     # the bracket block must START a line (a heading), not be inline in a checklist like "请包含：【…】【…】"
     bracket = rf"(?m)^\s{{0,3}}[【〖]\s*{n}\s*[】〗]"
-    return bool(re.search(md, text or "")) or bool(re.search(bracket, text or ""))
+    # the documented student-facing closer format is a bare line-start `名字：`（如 易错点：/3分钟速记：）—
+    # a heading too; the colon must follow the name directly, so inline mentions don't count.
+    bare = rf"(?m)^\s{{0,3}}{n}\s*[:：]"
+    return (bool(re.search(md, text or "")) or bool(re.search(bracket, text or ""))
+            or bool(re.search(bare, text or "")))
 
 
 def _heading_has_body(text, name):
     """The section under `name`'s heading must have actual body content (not an empty heading)."""
     n = re.escape(name)
-    m = re.search(rf"(?:#{{1,4}}\s*|\*\*\s*|[0-9一二三四五六七八九十]+\s*[、.．)）]\s*|[【〖]\s*)+{n}\s*[】〗]?",
+    # line-anchored with OPTIONAL prefixes so the bare `名字：` heading form gets a body check too
+    m = re.search(rf"(?m)^\s{{0,3}}(?:#{{1,4}}\s*|\*\*\s*|[①②③④⑤⑥⑦⑧⑨⑩]\s*|[0-9一二三四五六七八九十]+\s*[、.．)）]\s*|[【〖]\s*)*{n}\s*[】〗]?",
                   text or "")
     if not m:
         return False
     rest = (text or "")[m.end():]
     # cut the body at the next markdown/bracket heading only — NOT at numbered lines, since a section
     # body legitimately contains ordered lists (e.g. "1. 判断结构类型 …").
-    nxt = re.search(r"(?m)^\s{0,3}(?:#{1,4}\s|\*\*|[【〖])", rest)
+    nxt = re.search(r"(?m)^\s{0,3}(?:#{1,4}\s|\*\*|[【〖]|[①②③④⑤⑥⑦⑧⑨⑩])", rest)
     body = rest[:nxt.start()] if nxt else rest
     return len(re.sub(r"\s+", "", body)) >= 2
 
@@ -189,12 +194,80 @@ def _zb(text, *variants):
 
 
 def has_zero_basic_sections(text):
-    # each of the four parts must be a real heading AND have actual body content under it
-    return (_zb(text, "考点拆解")
-            and _zb(text, "标准答题步骤", "标准答题模板")
+    # each of the four parts must be a real heading AND have actual body content under it.
+    # A5 起精讲走七步模板：② 这题在问什么 吸收了 考点拆解，④⑤ 核心公式/逐步演算 吸收了
+    # 标准答题步骤——新旧两种输出格式都满足零基础精讲的结构要求（易错点/3分钟速记 两块不变）。
+    return (_zb(text, "考点拆解", "这题在问什么", "这题考什么")
+            and _zb(text, "标准答题步骤", "标准答题模板", "逐步演算", "逐步代入", "逐点展开")
             and _zb(text, "易错点")
             and _zb(text, "3分钟速记", "三分钟速记"))
 
+
+
+# ---- A5：七步讲解模板 + 每题固定来源块 --------------------------------------------------------
+# 每步可接受的标题变体（含文科变体），元组顺序即 ①→⑦ 的强制顺序。
+TEACHING_TEMPLATE_STEPS = (
+    ("题面图",),
+    ("这题在问什么", "这题考什么"),
+    ("图里要读的量", "材料里要读的关键"),
+    ("核心公式", "核心概念"),
+    ("逐步演算", "逐步代入", "逐点展开"),
+    ("答案自检",),
+    ("知识点溯源",),
+)
+_TT_PREFIX = (r"(?m)^\s{0,3}(?:#{1,4}\s*|\*\*\s*|[①②③④⑤⑥⑦⑧⑨⑩]\s*"
+              r"|[0-9一二三四五六七八九十]+\s*[、.．)）]\s*|[【〖]\s*){1,3}")
+
+
+def _tt_step_pos(text, variants):
+    """Earliest heading position among `variants` that is present WITH body, else -1."""
+    best = -1
+    for v in variants:
+        if not _zb(text, v):
+            continue
+        m = re.search(_TT_PREFIX + re.escape(v), text or "")
+        if m and (best < 0 or m.start() < best):
+            best = m.start()
+    return best
+
+
+def teaching_template_ok(text):
+    """A5 七步讲解模板：①-⑦ 全部以真实标题+正文出现，且严格按顺序出现——抓「跳过②直接贴公式」
+    （② 缺失）与「公式先行」（④ 出现在 ② 之前）；⑦ 溯源之后必须真的落到章节或 wiki 路径。"""
+    pos = []
+    for variants in TEACHING_TEMPLATE_STEPS:
+        p = _tt_step_pos(text, variants)
+        if p < 0:
+            return False
+        pos.append(p)
+    if pos != sorted(pos):
+        return False
+    tail = (text or "")[pos[-1]:]
+    return bool(re.search(r"references/wiki/|第\s*[0-9一二三四五六七八九十]+\s*章", tail))
+
+
+# 来源块单行：题目来源：…｜答案来源：…（全角｜或 ASCII | 都接受），末尾还需 canonical 标签。
+SOURCE_BLOCK_RE = re.compile(r"(?m)^[^\n]*题目来源\s*[:：][^\n]*[｜|][^\n]*答案来源\s*[:：][^\n]*$")
+_ANSWER_TITLE_RE = re.compile(_TT_PREFIX + r"(?:逐步演算|逐步代入|逐点展开|标准答案|参考答案|解析)[^\n]*")
+
+
+def question_source_block_ok(text, ai_answer=False):
+    """A5 每题固定来源块：`题目来源：…｜答案来源：…｜<canonical 标签>` 单行齐全——抓「来源块缺失」
+    与「无 canonical 标签」；ai_answer=True（无教材答案）时来源行与答案块标题都必须带 ⚠️。
+    标签匹配用 ⚠ 基字符，带/不带变体选择符 (FE0F) 都算。"""
+    m = SOURCE_BLOCK_RE.search(text or "")
+    if not m:
+        return False
+    line = m.group(0)
+    if not any(lbl in line for lbl in ("🟢", "🟡", "⚠")):
+        return False
+    if ai_answer:
+        if "⚠" not in line:
+            return False
+        title = _ANSWER_TITLE_RE.search(text or "")
+        if not title or "⚠" not in title.group(0):
+            return False
+    return True
 
 def visual_first_asset_display_ok(text, fixture_path=FIXTURE):
     """Smoke-check a visual-required output contract.
@@ -578,6 +651,29 @@ def check_scenario_mock(name, sc, fixture_path=FIXTURE):
     if name == "zero_basic_key_question":
         ok = has_zero_basic_sections(_read(_p(sc["mock_output"])))
         return ok, f"required_sections_present={ok}"
+    if name == "teaching_template":
+        good_txt = _read(_p(sc["mock_output"]))
+        liberal_txt = _read(_p(sc["mock_liberal"]))
+        ai_txt = _read(_p(sc["mock_ai_answer"]))
+        no_source_txt = _read(_p(sc["mock_negative_no_source"]))
+        good = teaching_template_ok(good_txt) and question_source_block_ok(good_txt)
+        liberal = teaching_template_ok(liberal_txt) and question_source_block_ok(liberal_txt)
+        ai_good = teaching_template_ok(ai_txt) and question_source_block_ok(ai_txt, ai_answer=True)
+        skip_ask = teaching_template_ok(_read(_p(sc["mock_negative_skip_ask"])))
+        formula_first = teaching_template_ok(_read(_p(sc["mock_negative_formula_first"])))
+        # 来源块缺失的反例：七步模板本身合格（证明两只探测器职责正交），只有来源块探测器抓它
+        no_source_tpl = teaching_template_ok(no_source_txt)
+        no_source = question_source_block_ok(no_source_txt)
+        unlabeled = question_source_block_ok(_read(_p(sc["mock_negative_unlabeled_source"])))
+        warn_line = question_source_block_ok(_read(_p(sc["mock_negative_missing_warn"])), ai_answer=True)
+        warn_title = question_source_block_ok(_read(_p(sc["mock_negative_warn_title"])), ai_answer=True)
+        return (good and liberal and ai_good and not skip_ask and not formula_first
+                and no_source_tpl and not no_source and not unlabeled
+                and not warn_line and not warn_title), (
+            f"good={good} liberal={liberal} ai_good={ai_good} skip_ask_caught={not skip_ask} "
+            f"formula_first_caught={not formula_first} no_source_caught={not no_source} "
+            f"(tpl_still_ok={no_source_tpl}) unlabeled_caught={not unlabeled} "
+            f"warn_line_caught={not warn_line} warn_title_caught={not warn_title}")
     if name == "visual_first_assets":
         good = visual_first_asset_display_ok(_read(_p(sc["mock_output"])), fixture_path)
         answer_first = visual_first_asset_display_ok(_read(_p(sc["mock_negative"])), fixture_path)

@@ -41,7 +41,8 @@ class ControlPlaneLanguageTest(unittest.TestCase):
 
     def test_tutor_chinese_template_preserved(self):
         t = read("skills", "exam-tutor", "SKILL.md")
-        for label in ("当前阶段", "这题考什么", "标准答题步骤", "易错点", "3分钟速记"):
+        for label in ("当前阶段", "这题在问什么", "核心公式", "逐步演算", "答案自检",
+                      "知识点溯源", "易错点", "3分钟速记"):
             self.assertIn(label, t, f"exam-tutor 丢失中文教学模板标签: {label}")
 
     def test_quiz_chinese_feedback_preserved(self):

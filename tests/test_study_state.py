@@ -522,6 +522,22 @@ class Mutations(unittest.TestCase):
         self.assertIn("阶段 5", md)
         self.assertIn("homework-only", md)                        # 进度面板可见 scope/mode
 
+    def test_a5_teaching_template_pref_roundtrip(self):
+        # A5 文档口径：讲解模板变体作为偏好存 preferences（与 --mode 分离），进度面板 ⚙️ 偏好区可见
+        ws = self._ready()
+        r = _up(ws, ["set", "--pref", "讲解模板=七步精讲"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        st = _state(ws)
+        self.assertEqual(st["preferences"]["讲解模板"], "七步精讲")
+        self.assertNotEqual(st.get("mode"), "七步精讲")            # 偏好不污染模式
+        md = open(os.path.join(ws, "study_progress.md"), encoding="utf-8").read()
+        self.assertIn("偏好", md)
+        self.assertIn("讲解模板", md)
+        self.assertIn("七步精讲", md)                              # 面板显示当前讲解模板偏好
+        r2 = _up(ws, ["set", "--pref", "讲解模板=文科变体"])       # 随时可改
+        self.assertEqual(r2.returncode, 0, r2.stderr)
+        self.assertEqual(_state(ws)["preferences"]["讲解模板"], "文科变体")
+
     def test_add_rows_persist_and_render(self):
         ws = self._ready()
         _up(ws, ["add-mistake", "--id", "hw_hw1_3", "--chapter", "2", "--note", "Venn 阴影判断错"])

@@ -108,7 +108,8 @@ class LanguagePolicyTest(unittest.TestCase):
     # ---- concrete student-facing labels ----
     def test_concrete_chinese_labels_in_tutor(self):
         tutor = read("skills", "exam-tutor", "SKILL.md")
-        for label in ("当前阶段", "这题考什么", "标准答题步骤", "易错点", "3分钟速记", "现在轮到你"):
+        for label in ("当前阶段", "题面图", "这题在问什么", "图里要读的量", "核心公式", "逐步演算",
+                      "答案自检", "知识点溯源", "题目来源", "答案来源", "易错点", "3分钟速记", "现在轮到你"):
             self.assertIn(label, tutor, f"exam-tutor 缺少具体标签: {label}")
 
     def test_quiz_feedback_labels(self):
