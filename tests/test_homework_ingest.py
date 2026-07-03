@@ -2739,6 +2739,47 @@ class HomeworkIngest(unittest.TestCase):
         self.assertEqual(hw[0]["type"], "choice")
         self.assertEqual(len(hw[0]["options"]), 4)                 # E.g. 缩写不是第五个选项
 
+    def test_inline_option_separators_trimmed(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        with open(os.path.join(mat, "lec01.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+        be = FakeBackend({"lec01.pdf": ["Quiz 1.1 Problem\n选一个：A. foo, B. bar\n"
+                                        "Quiz 1.1 Solution\nfoo"]})
+        code, payload, report = _run(mat, be)
+        lec = [q for q in payload["quiz_bank"] if q["id"].startswith("lecture_quiz")]
+        self.assertEqual(lec[0]["type"], "choice")
+        self.assertEqual(lec[0]["options"][0], "A. foo")           # 尾随逗号剥掉
+        self.assertEqual(lec[0].get("answer"), "A")                # 正文比对不被分隔符卡住
+
+    def test_note_after_options_not_folded(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw117.pdf": ["Problem 1\n下列哪个正确？\nA. 甲\nB. 丁\n"
+                                          "E.g. circle exactly one answer"],
+                            "hw117_sol.pdf": ["1. 丁"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(hw[0]["type"], "choice")
+        self.assertEqual(hw[0]["options"][1], "B. 丁")             # E.g. 注记不卷进末选项
+        self.assertEqual(hw[0].get("answer"), "B")
+
+    def test_uppercase_subparts_without_cue_not_choice(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw118.pdf": ["Problem 1\nA. Find the derivative of f.\n"
+                                          "B. Compute the integral of f."]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(hw[0]["type"], "subjective")              # 无选择线索的大写小问不猜
+        self.assertNotIn("options", hw[0])
+
+    def test_scored_writing_area_stays_subjective(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw119.pdf": ["Problem 1\nProve the identity.\n__________ (5 pts)"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(hw[0]["type"], "subjective")              # 得分标注不算挖空内容
+
     def test_no_network_or_llm(self):
 
 

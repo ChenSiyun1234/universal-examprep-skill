@@ -1655,8 +1655,10 @@ def _normalize_choice_answer(ans_text, options):
         # 键字母不在已抽选项里（抽取漏了选项/键错位）——不归一，让调用方降级，
         # 绝不发一个 answer 不在 options 里的 choice
         return letter if letter in labels else None
+    t_cmp = re.sub(r"[\s,，;；、.。]+$", "", t)
     for o in options or []:
-        if t == o or t == re.sub(r"^[A-H][.．、:：)]\s*", "", o).strip():
+        body = re.sub(r"^[A-H][.．、:：)]\s*", "", str(o)).strip()
+        if t == o or t_cmp == re.sub(r"[\s,，;；、.。]+$", "", body):
             return str(o)[:1]
     return None
 
@@ -1680,6 +1682,13 @@ def _apply_typed_answer(item):
             item["answer"] = stripped
 
 
+# 选择题提示词——题干里得有「选/哪/下列/which/choose…」这类线索，大写小问
+# （A. Find f'(x). B. Compute…）才不会光凭字母序列被误判成选择题
+_CHOICE_CUE_RE = re.compile(
+    r"(?i)which|select|choose|circle|correct|incorrect|true|false|following|multiple\s*choice"
+    r"|下列|以下|哪|选|正确|错误|属于|符合|判断")
+
+
 def _classify_question_type(q_text):
     """(type, options)。≥2 个从 A 起按序排列的大写选项行 → choice + options（续行并入上一项）；
     题面带填空线 → fill_blank；其余一律 subjective——启发式判不准绝不硬猜别的型。"""
@@ -1694,20 +1703,29 @@ def _classify_question_type(q_text):
             block_open = False                         # 空行结束选项块——其后说明行不并入
         elif opts and block_open:
             if re.match(r"(?i)^\s*(?:(?:explain|show|justify|prove|describe|discuss|note|hints?|"
-                        r"circle|select|choose|mark|write)\b|请|说明|解释|证明|注意|提示|选出|圈出|写出)",
+                        r"circle|select|choose|mark|write)\b|(?:e\.?\s*g|i\.?\s*e|n\.?\s*b)\.?[.:：\s]"
+                        r"|请|说明|解释|证明|注意|提示|选出|圈出|写出)",
                         ln) or _HW_ANSBOX_INSTR_RE.search(ln):
                 block_open = False                     # 紧随选项的答题指令不是选项续行
             else:
                 opts[-1] = opts[-1] + " " + ln.strip()     # 选项跨行——续行并入上一项
     if len(letters) >= 2 and letters == [chr(65 + i) for i in range(len(letters))]:
-        return "choice", opts
+        stem_lines = []
+        for ln in (q_text or "").splitlines():
+            if _OPTION_LINE_RE.match(ln):
+                break
+            stem_lines.append(ln)
+        if _CHOICE_CUE_RE.search(" ".join(stem_lines)):
+            return "choice", opts
+        return "subjective", None          # 无选择线索的字母清单是小问列表，不猜
     # 行内选项：讲义题面常被空白折叠成一行（… A. 对的 B. 错的）——只认 A．/A:/（A）
     # 这类点号冒号/全角括号形，不认英文半角 (A)（散文引用「见(A)节」会误判）
     t = q_text or ""
     # 选项前可以是全角冒号/逗号/顿号（选一个：A. …）——不只空白
     ms = list(re.finditer(r"(?:^|[\s：:，,。；;、])(?:（([A-H])）|([A-H])[．.、:：])[ \t]*(?![a-z]\.)", t))
     seq = [(m.group(1) or m.group(2)) for m in ms]
-    if len(seq) >= 2 and seq == [chr(65 + i) for i in range(len(seq))]:
+    if len(seq) >= 2 and seq == [chr(65 + i) for i in range(len(seq))] \
+            and _CHOICE_CUE_RE.search(t[:ms[0].start()]):
         opts2 = []
         for j, m in enumerate(ms):
             end = ms[j + 1].start() if j + 1 < len(ms) else len(t)
@@ -1721,6 +1739,7 @@ def _classify_question_type(q_text):
                                 r"(?=请|说明|解释|证明|注意|提示|选出|圈出|写出)", body)
                 if cut:
                     body = body[:cut.start()].strip()
+            body = body.rstrip(",，;；、 ")             # 行内分隔符（A. foo, B. bar）不留在选项体
             if not body:
                 opts2 = []
                 break
@@ -1736,7 +1755,8 @@ def _classify_question_type(q_text):
                                      r"[处栏]?\s*[:：]?\s*[_＿]", ln)
             label_prev = re.search(r"(?i)(?:answers?|solutions?|答案|解答|作答|答题)"
                                    r"[处栏]?\s*[:：]?\s*$", prev)
-            residual = _BLANK_RUN_RE.sub("", ln).strip()
+            residual = _BLANK_RUN_RE.sub("", ln)
+            residual = re.sub(r"[（(][^（）()]{0,24}[)）]", "", residual).strip()   # (5 pts) 类标注不算内容
             embedded = bool(re.search(r"[^\W_]", residual))
             # 「Fill in the blank / 填空」是明说的正面信号——优先于答题栏抑制
             #（指示语词典的 in the blank 恰好会撞上它）
