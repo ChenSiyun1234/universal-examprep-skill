@@ -607,32 +607,38 @@ _STUDENT_ASK_CUE = re.compile(
     r"你复习到|你学到|要不要|想不想|请问|需要我|哪一?章|从哪|"
     r"(?:先讲|先复习|先看|先做|先学|讲|复习|看|做|来)[^，。？?！!\n]{0,8}还是|"
     r"需(?:不需)?要(?:我|先)|要(?:不要)?先|用不用(?:先|我)|该(?:先|不该)|哪个先|先哪|先(?:讲|复习|看|做|学|过)(?:什么|哪|谁)|"
+    r"还有(?:什么|没有)?问题|有没有(?:什么)?问题|有问题吗|还有(?:不懂|不会|疑问)|哪里不(?:懂|会|清楚)|"
+    r"可以吗|可不可以|行吗|行不行|好吗|好不好|方便吗|需要吗|要吗|"
+    r"接下来(?:怎么|怎样|如何|想|要|需要)|下一步(?:怎么|想|要)|怎么安排|如何安排|怎么(?:样)?进行|"
     r"do you\b|would you\b|are you\b|have you\b|can you\b|which chapter\b|what.*\byou\b|"
-    r"should i\b|shall i\b|want me to\b|which.*first\b",
+    r"should i\b|shall i\b|want me to\b|which.*first\b|any questions\b",
     re.I)
 _RHETORICAL_PREFACE = re.compile(
-    r"你可能(?:会)?问|你也许(?:会)?问|你(?:有没有|是不是|会不会)想过|你是不是(?:觉得|以为)|"
-    r"你也许(?:会)?好奇|你可能(?:会)?好奇|试想|想象一下|不妨想")
+    r"[你您]可能(?:会)?问|[你您]也许(?:会)?问|[你您](?:有没有|是不是|会不会)想过|[你您]是不是(?:觉得|以为)|"
+    r"[你您]也许(?:会)?好奇|[你您]可能(?:会)?好奇|试想|想象一下|不妨想")
 _SELF_ANSWER = re.compile(
     r"^(?:因为|答案|其实|这是因为|这(?:正)?是|正是|原因|答[:：]|because|the answer|it'?s because|"
     r"here'?s why)", re.I)
 
 
 def _asks_student_question(txt):
-    t = re.sub(r"[ \t]*\n[ \t]*", " ", txt or "")
-    sents = re.split(r"(?<=[？?。！!；;])\s*", t)
+    t = re.sub(r"[ \t]*\n[ \t]*", " ", txt or "").strip()
+    sents = [s.strip() for s in re.split(r"(?<=[？?。！!；;])\s*", t) if s.strip()]
+    if not sents:
+        return False
+    last = sents[-1]
+    if (last.endswith("？") or last.endswith("?")) and not _RHETORICAL_PREFACE.search(last):
+        return True
     for i, s in enumerate(sents):
-        s = s.strip()
         if not (s.endswith("？") or s.endswith("?")):
-            continue
-        if not _STUDENT_ASK_CUE.search(s):
             continue
         if _RHETORICAL_PREFACE.search(s):
             continue
-        nxt = sents[i + 1].strip() if i + 1 < len(sents) else ""
+        nxt = sents[i + 1] if i + 1 < len(sents) else ""
         if _SELF_ANSWER.match(nxt):
             continue
-        return True
+        if _STUDENT_ASK_CUE.search(s):
+            return True
     return False
 
 

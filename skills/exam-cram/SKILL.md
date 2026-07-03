@@ -64,7 +64,7 @@ On FIRST activation you MUST establish two things (unless already in `study_stat
 **时间宽裕度 (state `time_budget`, one of), layered on the mode — governs whether/when you may ask the student questions and how the knowledge window behaves:**
 - **≤1天** — NEVER ask the student clarifying questions (any question wastes finite review time); just teach and drill.
 - **1-3天** — after teaching a few points, randomly re-ask earlier complex / repeatedly-confused points; if forgotten, re-teach.
-- **3-7天** — **knowledge-window system**: points recently taught are "in-window" (`window-add` → 在窗口), assumed still known by default; for out-of-window points ask whether they still remember, and on yes move them back in (`window-set-status --status 在窗口`); window size scales with elapsed time / conversation length.
+- **3-7天** — **knowledge-window system**: points recently taught are "in-window" (`window-add --point <知识点>` → 在窗口), assumed still known by default; for out-of-window points ask whether they still remember, and on yes move them back in (`window-set-status --point <知识点> --status 在窗口` — a `--point`/`--index` locator is required, add `--chapter` for a cross-chapter name); window size scales with elapsed time / conversation length.
 - **>7天** — out-of-window points get **tested with their linked hard question** (`exam-quiz`): solves it → back in window (`已实测`); can't → re-teach in full.
 
 Window state persists in `study_state.json.knowledge_window` (via `window-add` / `window-set-status`, A4-backed); mode + budget show in the progress panel; this is separate from the A5 讲解模板 preference (`preferences`).

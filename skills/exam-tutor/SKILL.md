@@ -45,7 +45,7 @@ Teach exactly one current wiki chapter. Explain concepts with real-life metaphor
    - **≤1天** — NEVER ask the student clarifying questions (every question wastes finite review time); teach and drill only. Emitting a question to the user in this tier is a contract violation.
    - **1-3天** — after a few points, randomly re-ask earlier complex / repeatedly-confused points; if forgotten, re-teach.
    - **3-7天** — knowledge-window system: after teaching a point, mark it in-window (`window-add --point <知识点> --chapter <N>`); points recently taught are assumed still known; for an out-of-window point, ASK whether they still remember before moving on, and on yes move it back in (`window-set-status --point <知识点> --status 在窗口`).
-   - **>7天** — for an out-of-window point, do NOT re-teach blindly: hand its linked hard question to `exam-quiz` and test — solves it → `window-set-status --status 已实测`; can't → re-teach in full.
+   - **>7天** — for an out-of-window point, do NOT re-teach blindly: hand its linked hard question to `exam-quiz` and test — solves it → `window-set-status --point <知识点> --status 已实测` (a `--point` or `--index` locator is REQUIRED, add `--chapter` when the same point name spans chapters); can't → re-teach in full.
 
 ## Output Contract
 - Output a concise explanation plus the needed metaphor / formula dissection / memory hook, ending with a refreshed progress panel.

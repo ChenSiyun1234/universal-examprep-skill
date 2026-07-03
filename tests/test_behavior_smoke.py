@@ -65,7 +65,7 @@ class BehaviorSmokeTest(unittest.TestCase):
             "mock_liberal", "mock_ai_answer", "mock_negative_skip_ask", "mock_negative_formula_first",
             "mock_negative_no_source", "mock_negative_unlabeled_source", "mock_negative_missing_warn",
             "mock_negative_warn_title", "mock_negative_unsolicited_closers", "mock_optin_closers",
-            "mock_negative_legacy",
+            "mock_negative_legacy", "mock_test", "mock_negative_recall_only",
         )
         for sc in spec["scenarios"]:
             for k in file_keys:
@@ -661,10 +661,14 @@ class BehaviorSmokeTest(unittest.TestCase):
         # 陈述句里出现「你」但不是问句（不以 ？结尾）不算
         self.assertFalse(H.asks_student_question("接下来我给你讲栈的三个操作。"))
         # 自答式反问前缀 / 紧接自答 不算（False Positive 防护）
-        self.assertFalse(H.asks_student_question("你好？"), "「你好？」不含澄清线索，不算学生问句")
         self.assertFalse(H.asks_student_question("你可能会问：这道题为什么选 B？因为它满足性质。"),
                          "「你可能会问…？」自问自答不算")
         self.assertFalse(H.asks_student_question("您也许好奇：栈和队列有何区别？其实差在存取顺序。"))
+        self.assertFalse(H.asks_student_question("栈是后进先出，对吧？其实就是这样。"), "反问后紧接自答不算")
+        # Codex R2-IAO：≤1天 里任何面向用户的非反问问句都算（不靠白名单 cue）——收尾问句 + 通用问句
+        for q in ("还有问题吗？", "接下来怎么安排？", "我先讲第1章，可以吗？", "我们开始吧，好吗？",
+                  "有没有什么问题？", "Any questions?"):
+            self.assertTrue(H.asks_student_question(q), "≤1天 通用面向用户问句必须被抓：%s" % q)
         # 问号非行尾 / 跨软换行 / 英文问句 都能识别（False Negative 防护）
         self.assertTrue(H.asks_student_question("你想先复习哪一章？ 告诉我。"), "问号后有尾巴也要识别")
         self.assertTrue(H.asks_student_question("请问你复习到第几章了？请回复。"))
@@ -705,6 +709,17 @@ class BehaviorSmokeTest(unittest.TestCase):
                          "问了又末尾默认收口，仍不算真复核")
         # 真发问（还记得…吗）或真出题（来一道题实测）才算
         self.assertTrue(H.window_out_rechecked("窗口外了，来一道题实测一下你还会不会。"))
+        # Codex R2-IAZ：>7天 档（require_test）必须出题实测——只口头问「还记得吗」不算
+        recall = "递归在窗口外了，先确认你还记得递归出口吗？"
+        test_out = "递归在窗口外了，来一道递归难题实测一下。"
+        self.assertTrue(H.window_out_rechecked(recall, require_test=False), "3-7天档口头回问算复核")
+        self.assertFalse(H.window_out_rechecked(recall, require_test=True), ">7天只口头回问、不出题必须被抓")
+        self.assertTrue(H.window_out_rechecked(test_out, require_test=True), ">7天出题实测算复核")
+        # >7天 mock 对照
+        self.assertTrue(H.window_out_rechecked(_read("mock/sample_outputs/window_recheck_test_good.txt"),
+                                               require_test=True))
+        self.assertFalse(H.window_out_rechecked(_read("mock/sample_outputs/window_recheck_recall_only_bad.txt"),
+                                                require_test=True), ">7天只口头回问的坏例必须被抓")
 
     def test_run_mock_exits_zero(self):
         self.assertEqual(_silent(H.main, ["--mock"]), 0)

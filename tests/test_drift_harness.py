@@ -143,6 +143,9 @@ class DriftHarness(unittest.TestCase):
             # R1-XX 新增的选择疑问 / should-I 形态也要在两份副本里判定一致
             "先讲栈还是队列？", "需要先讲栈吗？", "Should I start with stacks?",
             "用不用我先过一遍公式？", "先复习哪个？栈还是队列？", "接下来我先讲栈，再讲队列。",
+            # R2-IAO 通用面向用户问句 + 收尾问句 + 反问自答，两份副本判定一致
+            "还有问题吗？", "接下来怎么安排？", "我先讲第1章，可以吗？", "我们开始吧，好吗？",
+            "Any questions?", "栈是后进先出，对吧？其实就是这样。", "你可能会问：为什么？因为如此。",
         ]
         for c in cases:
             self.assertEqual(BS.asks_student_question(c), D._asks_student_question(c),

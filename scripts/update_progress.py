@@ -603,20 +603,25 @@ def cmd_window_add(ws, args):
     # 同名知识点视为同一条：更新其状态/备注，不重复登记——窗口进出是状态迁移不是加行。
     # 章节相容即同一点：任一方未标章节、或两方章节相等 → 命中；先松登记再补章节的常见流程会
     # 回填章节而非产生 null-章节孤儿行（只有两方都标了且不同章，才是真正不同的同名点）。
-    for row in win:
-        if not (isinstance(row, dict) and row.get("point") == point):
-            continue
-        rc, ac = row.get("chapter"), args.chapter
-        if rc is None or ac is None or str(rc) == str(ac):
-            row["status"] = status
-            if args.note:
-                row["note"] = args.note.strip()
-            if ac is not None:                       # 后补的具体章节回填到该点（不新增行）
-                row["chapter"] = ac
-            save(ws, st, "window：更新「%s」→%s" % (point, status))
-            return 0
-    win.append({"point": point, "chapter": args.chapter,
-                "status": status, "note": (args.note or "").strip()})
+    ac = args.chapter
+    matches = [row for row in win
+               if isinstance(row, dict) and row.get("point") == point
+               and (row.get("chapter") is None or ac is None or str(row.get("chapter")) == str(ac))]
+    if len(matches) > 1:
+        # 同名点已分布在多章、本次又没带 --chapter：静默只改第一条会让其余章状态错位（与 window-set-status
+        # 同一守卫）——fail-loud 要求精确定位，别私自替用户挑一条改
+        chs = "、".join(sorted(str(r.get("chapter")) for r in matches))
+        _die("知识点「%s」在多个章节（%s）都有登记——请加 --chapter 精确定位，避免误改其他章的同名点" % (point, chs))
+    if matches:
+        row = matches[0]
+        row["status"] = status
+        if args.note:
+            row["note"] = args.note.strip()
+        if ac is not None:                           # 后补的具体章节回填到该点（不新增行）
+            row["chapter"] = ac
+        save(ws, st, "window：更新「%s」→%s" % (point, status))
+        return 0
+    win.append({"point": point, "chapter": ac, "status": status, "note": (args.note or "").strip()})
     save(ws, st, "window：登记「%s」（%s）" % (point, status))
     return 0
 

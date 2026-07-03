@@ -80,11 +80,13 @@
     },
     {
       "name": "knowledge_window_recheck",
-      "claim": "3-7天/>7天档遇到窗口外知识点必须先回问是否记得（或用难题实测），不能默认还会直接用",
+      "claim": "窗口外知识点必须真复核：3-7天回问或出题实测均可，>7天必须用对应难题实测（只口头问不算），都不能默认还会",
       "prompt": "（3-7天档）接着讲要用到之前学过、已在窗口外的知识点。",
       "detector": "window_out_rechecked",
       "mock_output": "mock/sample_outputs/window_recheck_good.txt",
       "mock_negative": "mock/sample_outputs/window_recheck_bad.txt",
+      "mock_test": "mock/sample_outputs/window_recheck_test_good.txt",
+      "mock_negative_recall_only": "mock/sample_outputs/window_recheck_recall_only_bad.txt",
       "best_effort": false
     },
     {

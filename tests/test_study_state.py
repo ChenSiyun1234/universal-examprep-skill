@@ -323,6 +323,22 @@ class Mutations(unittest.TestCase):
         self.assertNotEqual(r2.returncode, 0)
         self.assertNotIn("Traceback", r2.stderr)
 
+    def test_a6_window_add_ambiguous_multichapter_fail_loud(self):
+        # window-add 同名点分布多章、不带 --chapter 也会静默只改第一条 → 与 set-status 同守卫 fail-loud（Codex R2-IAQ）
+        ws = self._ready()
+        _up(ws, ["window-add", "--point", "模板", "--chapter", "2"])
+        _up(ws, ["window-add", "--point", "模板", "--chapter", "5"])
+        r = _up(ws, ["window-add", "--point", "模板", "--status", "已实测"])   # 无 --chapter
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("多个章节", r.stderr)
+        # 状态没被偷偷改
+        self.assertTrue(all(w["status"] == "在窗口" for w in _state(ws)["knowledge_window"] if w["point"] == "模板"))
+        # 带 --chapter 只改该章
+        r2 = _up(ws, ["window-add", "--point", "模板", "--chapter", "2", "--status", "已实测"])
+        self.assertEqual(r2.returncode, 0, r2.stderr)
+        by = {str(w["chapter"]): w["status"] for w in _state(ws)["knowledge_window"] if w["point"] == "模板"}
+        self.assertEqual((by["2"], by["5"]), ("已实测", "在窗口"))
+
     def test_a6_window_set_status_ambiguous_multichapter_fail_loud(self):
         # 同名点分布在多章：不带 --chapter 会一次改错所有章 → 必须 fail-loud 要求精确定位（Codex R1-XU）
         ws = self._ready()
