@@ -68,15 +68,26 @@ _EXAM_NEG_RE = re.compile(
 
 # 「像卷子」的文件名（1.pdf / 2020a.pdf / A卷.pdf / 2020-05.pdf）——目录/根的试卷上下文
 # 只覆盖这类名字；混合备考文件夹里的 sorting.pdf / ch01.pdf 是讲义，不被上下文吞掉
-_PAPERISH_RE = re.compile(r"^\d{1,4}(?:[-_ .]?\d{1,4})?\s*[abAB]?\s*卷?$|^[abAB]\s*卷?$|^卷[一二三四五12345]$")
+_PAPERISH_RE = re.compile(r"^\d{1,4}(?:[-_ .]?\d{1,4})?\s*[abAB]?\s*卷?$|^[abAB]\s*卷?$|^卷[一二三四五12345]$"
+                          r"|^finals?$|^papers?$", re.I)   # 裸 final/paper 单独太歧义，但在试卷
+                                                           # 目录/根的上下文里就是卷子本体
 
 
 def _deglue_exam(stem):
     """试卷词与解答/键词胶连（midtermsolutions / finalanswers / quizkey）——插分隔符让
     解答记号检测、配对键剥离与试卷记号边界照常工作。"""
-    return re.sub(r"(?i)(midterms?\d*|finals?\d*|exams?\d*|examinations?|quiz(?:zes)?\d*|prelims?\d*)"
+    return re.sub(r"(?i)(midterms?\d*|finals?\d*|exams?\d*|examinations?|quiz(?:zes)?\d*|prelims?\d*"
+                  r"|(?:past|question|specimen)?papers?\d*)"
                   r"((?:solutions?|answers?|soln?s?|ans)(?:keys?|manuals?)?|keys?)(?![a-z])",
                   lambda m: m.group(1) + "_" + m.group(2), stem)
+
+
+# 宽松试卷记号：裸 finals?/midterms? 等对【题面卷】分类太歧义（final_version），但一个
+# 已判为解答册的文件带这些词（final_solutions / final_key）就足以证明它是考试答案——
+# 只用于除名守卫，绝不用于题面卷分类
+_EXAMISH_LOOSE_RE = re.compile(
+    r"(?:^|[\\/_\-. ])(?:finals?|midterms?|exams?|quiz(?:zes)?|prelims?|(?:past|question|specimen)?papers?)"
+    r"(?![A-Za-z])|试卷|真题|期[中末]|考试", re.I)
 
 
 def _seg_exam(seg):
@@ -676,7 +687,8 @@ def classify_homework_files(files, root_name=""):
         sf_exam_ctx = (bool(root_name and _seg_exam(root_name))
                        or any(_seg_exam(sg) for sg in os.path.dirname(sf_rel).split("/") if sg))
         if not root_is_hw and not sf_exam_ctx and not _HW_FILE_RE.search(sf_rel) \
-                and not _EXAM_FILE_RE.search("/" + sf_stem):
+                and not _EXAM_FILE_RE.search("/" + sf_stem) \
+                and not _EXAMISH_LOOSE_RE.search("/" + sf_stem):
             del pairing[sf]
     return hw, pairing
 
