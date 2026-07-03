@@ -192,6 +192,44 @@ class DriftHarness(unittest.TestCase):
         self.assertTrue(D._window_compat("红黑树@", "红黑树@7"))
         self.assertTrue(D._window_compat("红黑树@7", "红黑树@"))
         self.assertFalse(D._window_compat("模板@2", "模板@5"))     # 都标了章且不同 = 真不同的点
+        self.assertEqual(D._window_diff(["红黑树@"], ["红黑树@7"]), (0, 0))   # 回填：不 丢+加
+
+    def test_b3_window_diff_one_to_one(self):
+        # Codex R_Xa：两条同名不同章行塌成一条 unchaptered，不能被当成 0 丢失（一对一匹配）
+        self.assertEqual(D._window_diff(["模板@2", "模板@5"], ["模板@"]), (0, 1))
+        self.assertEqual(D._window_diff(["栈@1"], ["栈@1", "队列@1"]), (1, 0))   # 讲了新点 = added
+        self.assertEqual(D._window_diff(["栈@1"], ["栈@1"]), (0, 0))            # 状态迁移不改键
+
+    def test_b3_non_canonical_window_status_fails_loud(self):
+        # Codex R_Xd：非 canonical 窗口状态（typo/任意串）是坏写入 → 畸形输入 exit 2，不让乱码状态骗过迁移门槛
+        bad = json.dumps({"current_phase": 1, "mistake_archive": [], "confusion_log": [],
+                          "knowledge_window": [{"point": "栈", "chapter": "1", "status": "在窗户"}]})
+        with self.assertRaises(D.DriftError):
+            D.parse_state_json(bad, [1])
+
+    def test_b3_md_window_status_stale_flagged(self):
+        # Codex R_XY：state 迁移了窗口状态、生成视图 md 保持旧状态（行数没变）→ 陈旧面板计入 md_write_after_state
+        sc = D.load_scenario(os.path.join(DRIFT, "scenarios", "window_persist.json"))
+        turns = D.load_jsonl(_tr("window_persist_session.jsonl"), "w")
+        for t in turns:
+            fa = t.get("files_after") or {}
+            if "study_progress.md" in fa:
+                fa["study_progress.md"] = re.sub(r"(\| 栈的LIFO \| 1 \| )(窗口外|已实测)", r"\1在窗口",
+                                                 fa["study_progress.md"])
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "stalestatus.jsonl")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write("\n".join(json.dumps(t, ensure_ascii=False) for t in turns))
+        r = D.evaluate(sc, p)
+        self.assertGreater(r["metrics"]["md_write_after_state"], 0)
+        self.assertFalse(r["passed"])
+
+    def test_b3_llm_requires_turns(self):
+        # Codex R_Xg：--llm 委托前必须显式 --turns，否则 live runner 会默认跑短 smoke 而非长会话漂移
+        r = _cli(["--llm", "--agent-cmd", "echo {prompt}", "--out-dir", tempfile.mkdtemp()],
+                 env={"RUN_SKILL_DRIFT_LLM": "1"})
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("必须显式", r.stderr)
 
     def test_b3_status_migration_required(self):
         # Codex R5LB：只保留窗口行、状态全程不迁移（在窗口→窗口外→已实测 没发生）应挂 migrations 门槛

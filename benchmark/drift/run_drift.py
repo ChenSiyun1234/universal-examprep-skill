@@ -42,10 +42,12 @@ ROOT = os.path.dirname(os.path.dirname(HERE))                      # repo root (
 # （否则「明天考/考前一天/今天」这些被 update_progress 认作 ≤1天 的别名会在 drift 侧被漏判为非紧迫）。
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 try:
-    from update_progress import _normalize_tier as _canon_tier, LEARNING_MODES as _LEARN_MODES
+    from update_progress import (_normalize_tier as _canon_tier, LEARNING_MODES as _LEARN_MODES,
+                                 _WINDOW_STATUSES as _WIN_STATUSES)
 except Exception:                                                 # 缺文件时退化为内置常量，不让 drift 崩
     _canon_tier = None
     _LEARN_MODES = ("零基础从头讲", "某章起步补弱", "查缺补漏")
+    _WIN_STATUSES = ("在窗口", "窗口外", "已实测")
 
 
 def _tier_is_urgent(time_budget):
@@ -299,6 +301,23 @@ def _window_compat(a, b):
     return pa == pb and (ca == "" or cb == "" or ca == cb)
 
 
+def _window_diff(prev, cur):
+    """一对一相容匹配统计窗口条目的 (added, lost)——一个 cur 行只能消费一个 prev 行，避免一条 unchaptered
+    行同时"抵消"两条不同章的 prev 行（那会掩盖真丢失，Codex R_Xa）。优先精确同章匹配，再退相容匹配，
+    让 specific 行不被 loose 行抢占。"""
+    avail = list(cur)
+    lost = 0
+    for a in sorted(prev, key=lambda k: k.endswith("@")):   # specific（有章）先匹配，loose（point@）后
+        idx = next((i for i, c in enumerate(avail) if c == a), None)      # 先精确
+        if idx is None:
+            idx = next((i for i, c in enumerate(avail) if _window_compat(a, c)), None)   # 再相容
+        if idx is None:
+            lost += 1
+        else:
+            avail.pop(idx)
+    return len(avail), lost                                  # 剩下没被消费的 cur 行 = 新增
+
+
 def parse_progress(text):
     """{'phase': int|None, 'mistake_rows': [...], 'confusion_rows': [...]} from a study_progress.md.
 
@@ -309,8 +328,10 @@ def parse_progress(text):
     t = text or ""
     pm = re.search(r"(?:当前进行阶段|当前阶段|current\s*phase)\D*?(\d+)", t, re.I)
     phase = int(pm.group(1)) if pm else None
-    mistake, confusion, window, cur = [], [], [], None
+    mistake, confusion, cur = [], [], None
     mistake_st, confusion_st, cur_st = [], [], None
+    window_keys, window_st = [], []          # A6 🪟 窗口区：结构化成 point@chapter 键 + 状态（可跨源比对）
+    in_window = False
     for ln in t.splitlines():
         h = ln.strip()
         is_heading = bool(re.match(r"^\s{0,3}(#{1,4}\s|\*\*)", ln))
@@ -321,10 +342,25 @@ def parse_progress(text):
             cur, cur_st = confusion, confusion_st
             continue
         if is_heading and re.search(r"🪟|知识点窗口", h):           # A6 知识点窗口区（生成视图）
-            cur, cur_st = window, None
+            cur, cur_st, in_window = None, None, True
             continue
+        if is_heading and re.search(r"错题|mistake|疑难|困惑|confusion", h):
+            in_window = False                                     # 上面两分支已 set cur；这里只清 in_window
         if re.match(r"^\s{0,3}#{1,4}\s", ln):                      # any OTHER heading ends the section
-            cur, cur_st = None, None
+            cur, cur_st, in_window = None, None, False
+            continue
+        if in_window:
+            # 🪟 表数据行：| 知识点 | 关联章节 | 状态 | 备注 |——结构化成 point@chapter 键 + 状态
+            if _TABLE_SEP.match(ln) or _is_table_header(ln) or not h.startswith("|"):
+                continue
+            cells = [c.strip() for c in h.strip("|").split("|")]
+            if not cells or not cells[0] or cells[0] == "-":
+                continue
+            pt = cells[0]
+            ch = cells[1] if len(cells) > 1 and cells[1] not in ("", "-") else ""
+            stt = cells[2] if len(cells) > 2 and cells[2] not in ("", "-") else None
+            window_keys.append("%s@%s" % (pt, ch))
+            window_st.append(stt)
             continue
         if cur is None:
             continue
@@ -350,7 +386,15 @@ def parse_progress(text):
                 cur_st.append(cells[-1] if len(cells) >= 4 and cells[-1] not in ("", "-") else None)
     return {"phase": phase, "mistake_rows": mistake, "confusion_rows": confusion,
             "mistake_status": mistake_st, "confusion_status": confusion_st,
-            "window_rows": window}
+            "window_rows": window_keys, "window_status": window_st}
+
+
+def _window_state_map(snap):
+    """{point@chapter: status} —— 用于跨源比对 state 与生成视图 md 的窗口面板是否一致（同一 key 空间，
+    可比；跟错题/疑难的自由文本 note 不同）。"""
+    keys = snap.get("window_rows", []) or []
+    sts = snap.get("window_status", []) or []
+    return {k: (sts[i] if i < len(sts) else None) for i, k in enumerate(keys)}
 
 
 # ---------------- provenance + quiz (mirror T2 semantics) ----------------
@@ -473,8 +517,14 @@ def parse_state_json(text, plan_phases=None):
         ch = r.get("chapter")
         if ch is not None and not isinstance(ch, (str, int)) or isinstance(ch, bool):
             raise DriftError("study_state.json 快照的 knowledge_window 行 chapter 必须是字符串/整数或省略: %r" % r)
+        stt = r.get("status")
+        if stt is not None and stt not in _WIN_STATUSES:
+            # update_progress 只接受 在窗口/窗口外/已实测——非 canonical（typo/任意串）是坏写入，
+            # 静默收下会让「状态迁移」指标把乱码变化也当成真窗口进出（Codex R_Xd）
+            raise DriftError("study_state.json 快照的 knowledge_window 行 status 必须是 %s 或省略: %r"
+                             % ("/".join(_WIN_STATUSES), r))
         window_rows.append("%s@%s" % (r["point"].strip(), "" if ch in (None, "") else str(ch)))
-        window_status.append(r["status"] if isinstance(r.get("status"), str) else None)
+        window_status.append(stt if isinstance(stt, str) else None)
 
     return {"phase": phase, "mistake_rows": m_rows, "confusion_rows": c_rows,
             "mistake_status": stat["mistake_archive"], "confusion_status": stat["confusion_log"],
@@ -570,9 +620,10 @@ def _session_snapshots(turns, state_established=False, plan_phases=None, init_du
                     # 双向都算：md 多行=手加，md 少行=state 进了新行而给学生看的生成视图没跟上
                     #（官方更新每次写 state 都重渲染 md，双快照行数必然一致）
                     stale_md += 1
-                elif len(md_snap.get("window_rows", [])) != len(snap.get("window_rows", [])):
-                    # A6：state 增改了知识点窗口条目，而生成视图的 🪟 区行数没跟上（漏渲染/陈旧面板）
-                    # ——官方更新每次写 state 都重渲染含 🪟 的 md，双快照窗口行数必然一致（Codex R5LE）
+                elif _window_state_map(md_snap) != _window_state_map(snap):
+                    # A6：生成视图的 🪟 区必须与事实源一致——不只行数，连每条 point@chapter 的状态都要匹配。
+                    # state 把某条从 在窗口 迁到 窗口外 而 md 面板还停在旧状态（漏渲染/陈旧面板）→ 计入
+                    # md_write_after_state（学生看到错的窗口状态，Codex R5LE + R_XY）
                     stale_md += 1
                 elif prev_dual is not None and md_keys != prev_dual[0] \
                         and st_keys == prev_dual[1]:
@@ -980,8 +1031,9 @@ def compute_metrics(scenario, fixture_dir, turns):
         # ——null-章节键 point@ 与 point@N 相容（工具补章节回填是同一行），补章节不算 丢+加（R5LA）。
         pw, cw = prev.get("window_rows", []), cur.get("window_rows", [])
         ps, cs = prev.get("window_status", []), cur.get("window_status", [])
-        window_added += sum(1 for c in cw if not any(_window_compat(c, a) for a in pw))
-        window_lost += sum(1 for a in pw if not any(_window_compat(a, c) for c in cw))
+        _add, _lost = _window_diff(pw, cw)
+        window_added += _add
+        window_lost += _lost
         # 状态迁移：同一（相容）条目状态变了（在窗口→窗口外→已实测）计一次——只保留行不迁移状态
         # 的转写不算真的窗口进出（R5LB）。
         pstat = list(zip(pw, ps))
@@ -1138,6 +1190,12 @@ def run_llm(argv):
         return 3
     # 透传 --llm 之外的所有参数给 live runner（--agent-cmd/--out-dir/--turns/--max-* 由它校验）
     passthrough = [a for a in (argv or []) if a != "--llm"]
+    # run_live_smoke 的 --turns 有默认值（短 smoke live_smoke_basic）——委托时不带 --turns 会静默跑成
+    # 短 smoke 而非调用者想要的长会话漂移探针。这里强制要求显式 --turns（Codex R_Xg）。
+    if "--turns" not in passthrough and not any(a.startswith("--turns=") for a in passthrough):
+        sys.stderr.write("run_drift: --llm 长会话漂移必须显式指定 --turns <回合脚本>（否则委托的 live "
+                         "runner 会默认跑短 smoke 而非长会话漂移）\n")
+        return 2
     return subprocess.run([sys.executable, live] + passthrough).returncode
 
 
