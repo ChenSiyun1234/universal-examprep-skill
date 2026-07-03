@@ -269,8 +269,10 @@ class DriftHarness(unittest.TestCase):
         sp = os.path.join(d, "t.json")
         with open(sp, "w", encoding="utf-8") as f:
             json.dump(spec, f, ensure_ascii=False)
-        r = _cli(["--llm", "--agent-cmd", "echo {prompt}", "--out-dir", os.path.join(d, "o"), "--turns", sp],
-                 env={"RUN_SKILL_DRIFT_LLM": "1"})
+        # --no-ledger：这是唯一会真委托进 run_live_smoke 的 --llm 用例，否则 live runner 会把默认账本
+        # 写进 repo 的 benchmark/runs/ledger.jsonl，污染本地/CI 工作区（Codex OSlMB）
+        r = _cli(["--llm", "--agent-cmd", "echo {prompt}", "--out-dir", os.path.join(d, "o"), "--turns", sp,
+                  "--no-ledger"], env={"RUN_SKILL_DRIFT_LLM": "1"})
         self.assertNotIn("暂不支持", r.stderr)                    # 未被 state 门挡下（应委托给 live runner）
 
     def test_b3_llm_bad_scenario_type_no_traceback(self):
@@ -289,6 +291,26 @@ class DriftHarness(unittest.TestCase):
             {"current_phase": 1, "mistake_archive": [], "confusion_log": [],
              "knowledge_window": [{"point": "DFS|BFS", "chapter": "1", "status": "在窗口"}]}), [1])
         self.assertEqual(snap["window_rows"], ["DFS/BFS@1"])
+
+    def test_b3_unknown_threshold_key_rejected_at_load(self):
+        # Codex OSlL7：thresholds 里的未知 key（typo）在 load_scenario 即报——确定性路径与 --llm 预检都能
+        # 在判分/付费之前拦下
+        d = tempfile.mkdtemp()
+        scj = os.path.join(d, "sc.json")
+        with open(scj, "w", encoding="utf-8") as f:
+            f.write('{"name":"x","fixture":"benchmark/drift/fixtures/mini_course_long",'
+                    '"thresholds":{"nonsense_max":0}}')
+        with self.assertRaises(D.DriftError):
+            D.load_scenario(scj)
+
+    def test_b3_window_before_archive_sections(self):
+        # Codex OSlL9：🪟 窗口区排在 错题/疑难 之前时，进归档区必须清 in_window，否则归档行被窗口解析器吞掉
+        md = ("# 进度\n## 🪟 知识点窗口\n| 知识点 | 关联章节 | 状态 | 备注 |\n| :--- | :--- | :--- | :--- |\n"
+              "| 栈 | 1 | 在窗口 | |\n## ❌ 错题档案记录\n| 错题ID | 关联章节 | 错误原因分析 | 状态 |\n"
+              "| :--- | :--- | :--- | :--- |\n| [#q1] | 1 | 记反了 | 待复盘 |\n")
+        r = D.parse_progress(md)
+        self.assertEqual(len(r["mistake_rows"]), 1)               # 归档行没被窗口解析器吞掉
+        self.assertEqual(len(r["window_rows"]), 1)
 
     def test_b3_window_point_with_at_sign(self):
         # Codex OSZRp：point 名含 @（C@语言）时用 rpartition 从右切，backfill 不被误判为 丢+加

@@ -133,6 +133,12 @@ def load_scenario(path):
             raise DriftError("scenario 缺必需字段 %r" % k)
     if not isinstance(sc["thresholds"], dict):
         raise DriftError("scenario.thresholds 必须是对象")
+    for tk in sc["thresholds"]:
+        # 未知阈值 key（typo，如 nonsense_max）是坏 scenario——在**加载**即报，让确定性路径与 --llm 预检
+        # 都能在判分/付费之前拦下，而不是烧完 token 才在 check_thresholds 炸（Codex OSlL7）
+        if tk not in THRESHOLD_RULES:
+            raise DriftError("scenario.thresholds 出现未知阈值 %r（可用：%s）"
+                             % (tk, ", ".join(sorted(THRESHOLD_RULES))))
     for k in ("fixture", "transcript"):                           # path fields must be strings before _resolve()
         if k in sc and not isinstance(sc[k], str):
             raise DriftError("scenario.%s 必须是字符串路径" % k)
@@ -346,16 +352,14 @@ def parse_progress(text):
         h = ln.strip()
         is_heading = bool(re.match(r"^\s{0,3}(#{1,4}\s|\*\*)", ln))
         if is_heading and re.search(r"错题|mistake", h):
-            cur, cur_st = mistake, mistake_st
+            cur, cur_st, in_window = mistake, mistake_st, False   # 进归档区必须清 in_window（窗口区可能在前，OSlL9）
             continue
         if is_heading and re.search(r"疑难|困惑|confusion", h):
-            cur, cur_st = confusion, confusion_st
+            cur, cur_st, in_window = confusion, confusion_st, False
             continue
         if is_heading and re.search(r"🪟|知识点窗口", h):           # A6 知识点窗口区（生成视图）
             cur, cur_st, in_window = None, None, True
             continue
-        if is_heading and re.search(r"错题|mistake|疑难|困惑|confusion", h):
-            in_window = False                                     # 上面两分支已 set cur；这里只清 in_window
         if re.match(r"^\s{0,3}#{1,4}\s", ln):                      # any OTHER heading ends the section
             cur, cur_st, in_window = None, None, False
             continue
