@@ -1220,41 +1220,71 @@ def run_llm(argv):
         return 3
     # 透传 --llm 之外的所有参数给 live runner（--agent-cmd/--out-dir/--turns/--max-* 由它校验）
     passthrough = [a for a in (argv or []) if a != "--llm"]
+
+    def _flag_val(flag):
+        for i, a in enumerate(passthrough):
+            if a == flag and i + 1 < len(passthrough):
+                return passthrough[i + 1]
+            if a.startswith(flag + "="):
+                return a.split("=", 1)[1]
+        return None
+
+    def _absolutize(flag):
+        # --turns/--out-dir 与 run_live_smoke 一样是 **CWD 相对**——在此绝对化并回写 passthrough，
+        # 让本处预检与委托的 live runner（及它内部再调本 harness 判分）用同一份绝对路径，
+        # 避免路径口径不一致导致预检漏判、或付费跑完才在判分处「找不到 transcript」（Codex OSfRR/OSfRS）。
+        for i, a in enumerate(passthrough):
+            if a == flag and i + 1 < len(passthrough):
+                passthrough[i + 1] = os.path.abspath(passthrough[i + 1])
+                return passthrough[i + 1]
+            if a.startswith(flag + "="):
+                v = os.path.abspath(a.split("=", 1)[1])
+                passthrough[i] = flag + "=" + v
+                return v
+        return None
+
     # run_live_smoke 的 --turns 有默认值（短 smoke live_smoke_basic）——委托时不带 --turns 会静默跑成
     # 短 smoke 而非调用者想要的长会话漂移探针。这里强制要求显式 --turns（Codex R_Xg）。
-    turns_path = None
-    for i, a in enumerate(passthrough):
-        if a == "--turns" and i + 1 < len(passthrough):
-            turns_path = passthrough[i + 1]
-        elif a.startswith("--turns="):
-            turns_path = a.split("=", 1)[1]
-    if not turns_path:
+    if not _flag_val("--turns"):
         sys.stderr.write("run_drift: --llm 长会话漂移必须显式指定 --turns <回合脚本>（否则委托的 live "
                          "runner 会默认跑短 smoke 而非长会话漂移）\n")
         return 2
-    # run_live_smoke 目前只录对话 + 阶段切换时的合成 study_progress.md 快照，**不录 agent 写的
-    # study_state.json**。因此 --turns 指向的 scenario 若依赖 state 快照（requires_state 或含 state/窗口
-    # 阈值），live 判分会因看不到 state 写入而恒 0、谎报成 agent 失败——显式拒绝、指明是管线限制（Codex OSL85）。
-    # 只有真正需要 agent 写的 study_state.json 的指标才拒：窗口行只来自 state，urgent_mode_persisted 读
-    # study_state.json。checkpoint/md_write_after/progress_rows_lost 由 live runner 的合成 study_progress.md
-    # 快照支持（不需 state），别把默认的 live_smoke_basic 也挡在门外（Codex OSTZM）。
+    turns_abs = _absolutize("--turns")
+    _absolutize("--out-dir")
+
+    # 预检：坏 turns / 坏 scenario / 依赖 state 的 scenario 都在**付费 agent 循环之前**拦下——
+    # run_live_smoke 只在进 agent 循环前查 scenario 文件是否存在、不校验其内容，坏阈值会烧完 token 才在
+    # 判分处炸（Codex OSfRP）。
+    try:
+        spec = json.loads(_read(turns_abs))
+    except (IOError, OSError, ValueError):
+        # turns 文件缺失/坏 JSON——交给 live runner 报（它在进 agent 循环前就会校验并 _die，不烧 token）
+        return subprocess.run([sys.executable, live] + passthrough).returncode
+    scen_ref = spec.get("scenario") if isinstance(spec, dict) else None
+    sc = None
+    if isinstance(scen_ref, str) and scen_ref:
+        try:
+            sc = load_scenario(_resolve(scen_ref))           # scenario ref 是 repo-root 相对（同 live runner）
+        except DriftError as e:
+            sys.stderr.write("run_drift: --llm 的 scenario 无法解析/校验（%s），拒绝在付费 agent 循环之前"
+                             "委托：%s\n" % (scen_ref, e))
+            return 2
+    # run_live_smoke 只录对话 + 阶段切换时的合成 study_progress.md 快照，**不录 agent 写的 study_state.json**。
+    # 因此依赖 state 快照的 scenario（requires_state / fixture 自带 study_state.json / state·窗口阈值）在 live
+    # 判分里会看不到 state 写入而恒 0、谎报成 agent 失败——付费前显式拒绝（Codex OSL85/OSTZM/OSZRj）。
+    # 只拒真正需 study_state.json 的：窗口行只来自 state、urgent_mode_persisted 读 state；checkpoint/
+    # md_write_after/progress_rows_lost 由合成 md 快照支持，不该把默认 live_smoke_basic 也挡下。
     _STATE_THRESH = {"window_rows_added_min", "window_rows_lost_max", "window_status_migrations_min",
                      "urgent_mode_persisted_min"}
-    try:
-        spec = json.loads(_read(_resolve(turns_path)))
-        scen_ref = spec.get("scenario") if isinstance(spec, dict) else None
-        sc = load_scenario(_resolve(scen_ref)) if isinstance(scen_ref, str) and scen_ref else None
-    except (IOError, OSError, ValueError, KeyError, TypeError, DriftError):
-        sc = None                                            # 坏 turns/scenario（含非字符串 scenario）交给 live runner 校验
-    fixture_has_state = False
-    if sc is not None and isinstance(sc.get("fixture"), str):
-        fixture_has_state = os.path.isfile(os.path.join(_resolve(sc["fixture"]), "study_state.json"))
+    fixture_has_state = (sc is not None and isinstance(sc.get("fixture"), str)
+                         and os.path.isfile(os.path.join(_resolve(sc["fixture"]), "study_state.json")))
     if sc is not None and (sc.get("requires_state") or fixture_has_state
                            or (set(sc.get("thresholds", {})) & _STATE_THRESH)):
-        sys.stderr.write("run_drift: --llm 暂不支持依赖 study_state.json 的 scenario（%s：requires_state/"
-                         "state·窗口阈值）——run_live_smoke 只录对话+合成 md、不录 agent 写的 state 快照，"
-                         "会看不到 state/窗口写入而误判。请用无 state 的 scenario 跑 live，或走确定性 replay "
-                         "（--scenario ... --transcript ...）。捕获真实 state 快照是后续工作。\n" % sc.get("name"))
+        sys.stderr.write("run_drift: --llm 暂不支持依赖 study_state.json 的 scenario（%s：requires_state / "
+                         "fixture 自带 study_state.json / state·窗口阈值）——run_live_smoke 只录对话+合成 md、"
+                         "不录 agent 写的 state 快照，会看不到 state/窗口写入而误判。请用无 state 的 scenario "
+                         "跑 live，或走确定性 replay（--scenario ... --transcript ...）。捕获真实 state 快照是"
+                         "后续工作。\n" % sc.get("name"))
         return 2
     return subprocess.run([sys.executable, live] + passthrough).returncode
 

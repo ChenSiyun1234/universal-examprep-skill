@@ -314,6 +314,37 @@ class DriftHarness(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertIn("暂不支持", r.stderr)
 
+    def test_b3_llm_cwd_relative_turns_still_rejected(self):
+        # Codex OSfRR：从别的 cwd 用相对 --turns 指向 state scenario，绝对化后预检仍能拒（不漏过付费跑）
+        d = tempfile.mkdtemp()
+        spec = {"fixture": "benchmark/drift/fixtures/mini_course_long_state",
+                "scenario": "benchmark/drift/scenarios/window_persist.json", "turns": [{"user": "hi"}]}
+        with open(os.path.join(d, "state_turns.json"), "w", encoding="utf-8") as f:
+            json.dump(spec, f, ensure_ascii=False)
+        e = dict(os.environ)
+        e["RUN_SKILL_DRIFT_LLM"] = "1"
+        r = subprocess.run([sys.executable, RUN, "--llm", "--agent-cmd", "echo {prompt}",
+                            "--out-dir", "out", "--turns", "state_turns.json"],
+                           cwd=d, capture_output=True, text=True, encoding="utf-8", env=e)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("暂不支持", r.stderr)
+
+    def test_b3_llm_malformed_scenario_rejected_preflight(self):
+        # Codex OSfRP：存在但畸形的 scenario（thresholds 非对象）在委托前就报错，不烧 token
+        d = tempfile.mkdtemp()
+        scj = os.path.join(d, "bad_sc.json")
+        with open(scj, "w", encoding="utf-8") as f:
+            f.write('{"name":"x","fixture":"benchmark/drift/fixtures/mini_course_long",'
+                    '"thresholds":"not-an-object"}')
+        sp = os.path.join(d, "t.json")
+        with open(sp, "w", encoding="utf-8") as f:
+            json.dump({"fixture": "benchmark/drift/fixtures/mini_course_long", "scenario": scj,
+                       "turns": [{"user": "hi"}]}, f)
+        r = _cli(["--llm", "--agent-cmd", "echo {prompt}", "--out-dir", os.path.join(d, "o"), "--turns", sp],
+                 env={"RUN_SKILL_DRIFT_LLM": "1"})
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("无法解析", r.stderr)
+
     def test_b3_window_note_only_stale_md_flagged(self):
         # Codex OSZRm：只改 note 的窗口更新，md 备注列没跟上（陈旧）也要抓——比对带上 note
         sc = D.load_scenario(os.path.join(DRIFT, "scenarios", "window_persist.json"))
