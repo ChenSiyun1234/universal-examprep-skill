@@ -440,6 +440,16 @@ def _snap_text(fa, name):
     return v
 
 
+def _state_note(row):
+    """state 行串去掉 [#id]/[ch:N] 前缀后的 note 本体。"""
+    return re.sub(r"^\[(?:#|ch:)[^\]]*\]\s*", "", row)
+
+
+def _contain_squash(txt):
+    """跨源包含比对的归一化：镜像 _md_cell 的 换行→空格、|→/，再压掉全部空白。"""
+    return re.sub(r"\s+", "", re.sub(r"\s+", " ", txt).replace("|", "/"))
+
+
 def _dual_key(row):
     """双写比对用的行键：idless 生成表行首列是占位 '-'，_row_key 会把所有此类行折叠成同一个
     cell:- 键、同数替换互相隐身——这里降级为【去状态列】的内容键（最后一列是状态，官方
@@ -519,6 +529,17 @@ def _session_snapshots(turns, state_established=False, plan_phases=None, init_du
                     # 带 id 的行键跨源可比（md 表格/bullet 的 [#id] ↔ state 行的 [#id]）——
                     # 同数但 id 序列不同（state 进了 q1、生成视图却显示 q9）也是手改/陈旧面板；
                     # 无 id 行仍只走同源比对，不误报
+                    stale_md += 1
+                elif any(
+                        _contain_squash(_state_note(r)) and all(
+                            _contain_squash(_state_note(r)) not in _contain_squash(m)
+                            for m in md_sec)
+                        for st_sec, md_sec in ((snap["mistake_rows"], md_snap["mistake_rows"]),
+                                               (snap["confusion_rows"], md_snap["confusion_rows"]))
+                        for r in st_sec):
+                    # 无 id 行同数同状态但 note 背离：事实源的 note 必须原文出现在同节的某条
+                    # 生成行里（官方渲染逐字写入 note，仅换行/竖线被 _md_cell 归一）——
+                    # add-confusion 这类无 id 路径的手改/陈旧面板由此现形
                     stale_md += 1
                 elif any(sm is not None and ss is not None and sm != ss for sm, ss in
                          list(zip(md_snap["mistake_status"], snap["mistake_status"]))
@@ -635,10 +656,24 @@ def compute_metrics(scenario, fixture_dir, turns):
     init_dual = None
     if os.path.isfile(state_init) and init_progress is not None:
         md0 = parse_progress(init_progress)
-        init_dual = (([_dual_key(r) for r in md0["mistake_rows"]],
-                      [_dual_key(r) for r in md0["confusion_rows"]]),
-                     ([_dual_key(r) for r in init_snap["mistake_rows"]],
-                      [_dual_key(r) for r in init_snap["confusion_rows"]]))
+        # 基线 md 必须与基线 state 一致（阶段/行数/id 序列）才可用作同源比对种子——
+        # fixture 自带的初始 md 若本就陈旧，首回合官方 render 修复会被误判成手改
+        consistent = (md0["phase"] in (None, init_snap["phase"])
+                      and len(md0["mistake_rows"]) + len(md0["confusion_rows"])
+                      == len(init_snap["mistake_rows"]) + len(init_snap["confusion_rows"])
+                      and [k for k in (_dual_key(r) for r in md0["mistake_rows"])
+                           if k.startswith("id:")]
+                      == [k for k in (_dual_key(r) for r in init_snap["mistake_rows"])
+                          if k.startswith("id:")]
+                      and [k for k in (_dual_key(r) for r in md0["confusion_rows"])
+                           if k.startswith("id:")]
+                      == [k for k in (_dual_key(r) for r in init_snap["confusion_rows"])
+                          if k.startswith("id:")])
+        if consistent:
+            init_dual = (([_dual_key(r) for r in md0["mistake_rows"]],
+                          [_dual_key(r) for r in md0["confusion_rows"]]),
+                         ([_dual_key(r) for r in init_snap["mistake_rows"]],
+                          [_dual_key(r) for r in init_snap["confusion_rows"]]))
     snaps, md_after_state = _session_snapshots(turns, require_state, set(canon), init_dual)
 
     # RUNNING PHASE CONTEXT — carried forward so the wrong-phase / over-read checks can't be silently

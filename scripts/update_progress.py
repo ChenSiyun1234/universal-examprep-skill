@@ -223,7 +223,10 @@ def render_md(state):
     ]
     if state.get("preferences"):
         lines += ["## ⚙️ 偏好（讲解风格等）",
-                  "\n".join("- %s: %s" % (k, v) for k, v in sorted(state["preferences"].items())), ""]
+                  # 键值同样过 _md_cell——带换行的偏好值会把假标题/假档案行注入生成视图，
+                  # 再被 init --force 当真行迁回 state
+                  "\n".join("- %s: %s" % (_md_cell(k, default=""), _md_cell(v, default=""))
+                            for k, v in sorted(state["preferences"].items())), ""]
     return "\n".join(lines)
 
 

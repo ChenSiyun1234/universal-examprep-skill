@@ -498,6 +498,12 @@ def _state_row_written(fixture_path, sc, key, field, expect):
         st = json.loads(_read(_p(rel)))
     except (OSError, ValueError):
         return False
+    try:
+        st0 = json.loads(_read(os.path.join(fixture_path, "study_state.json")))
+    except (OSError, ValueError):
+        return False
+    if st.get("current_phase") != st0.get("current_phase"):
+        return False        # 归档写入不许顺带毁断点——checkpoint 退位即失败
     rows = st.get(field) or []
     # add-mistake --id <qid> 把 qid 存在 id 字段、note 只写错因——按 id 或 note 任一匹配
     return any(isinstance(r, dict) and ((expect or "") in (r.get("note") or "")

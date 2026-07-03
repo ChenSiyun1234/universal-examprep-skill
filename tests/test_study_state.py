@@ -137,6 +137,37 @@ class Migration(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)                      # 外部计划不被信任
         self.assertIn("符号链接", r.stderr)
 
+    def test_newline_preference_cannot_inject_rows(self):
+        ws = _mk_ws(tempfile.mkdtemp())
+        r = _up(ws, ["init"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        st = _state(ws)
+        st["preferences"]["风格"] = "简洁" + chr(10) + "## ❌ 错题档案记录" + chr(10) + "- [#fake] 注入的假行"
+        json.dump(st, open(os.path.join(ws, "study_state.json"), "w", encoding="utf-8"),
+                  ensure_ascii=False)
+        r = _up(ws, ["render"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = _up(ws, ["init", "--force"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        st2 = _state(ws)
+        self.assertFalse(any((row.get("id") or "") == "fake"
+                             for row in st2["mistake_archive"]))   # 带换行的偏好值注不进档案
+
+    def test_smoke_state_check_rejects_checkpoint_regression(self):
+        sys.path.insert(0, os.path.join(ROOT, "benchmark", "behavior_smoke"))
+        import run_behavior_smoke as S
+        d = tempfile.mkdtemp()
+        fx = os.path.join(d, "fx")
+        os.makedirs(fx)
+        json.dump({"current_phase": 2, "mistake_archive": []},
+                  open(os.path.join(fx, "study_state.json"), "w", encoding="utf-8"))
+        bad = os.path.join(d, "bad.json")
+        json.dump({"current_phase": 1,
+                   "mistake_archive": [{"id": "q", "note": "x"}]},
+                  open(bad, "w", encoding="utf-8"))
+        sc = {"state_after": bad}
+        self.assertFalse(S._state_row_written(fx, sc, "state_after", "mistake_archive", "x"))
+
     def test_init_adopts_legacy_md(self):
         ws = _mk_ws(tempfile.mkdtemp())
         r = _up(ws, ["init"])
@@ -1030,7 +1061,8 @@ class DriftJsonSnapshots(unittest.TestCase):
         json.dump({"version": 1, "current_phase": 1}, open(os.path.join(fx, "study_state.json"),
                                                              "w", encoding="utf-8"))
         snap = os.path.join(d, "snap.json")
-        json.dump({"mistake_archive": [{"id": "mc_q2", "note": "只有错因没有题号"}]},
+        json.dump({"current_phase": 1,
+                   "mistake_archive": [{"id": "mc_q2", "note": "只有错因没有题号"}]},
                   open(snap, "w", encoding="utf-8"), ensure_ascii=False)
         import unittest.mock as mock
         with mock.patch.object(S, "_p", lambda rel: rel):
