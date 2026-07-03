@@ -242,6 +242,27 @@ class DriftHarness(unittest.TestCase):
         r = D.evaluate(sc, t)
         self.assertGreaterEqual(r["metrics"]["md_write_after_state"], 1)
 
+    def test_status_only_stale_md_flagged(self):
+        # set-mistake-status 后 state 状态已改、生成视图还挂旧状态——状态背离也计手改；
+        # 官方同步更新（turn3）不误报
+        st1 = json.dumps({"version": 1, "current_phase": 2,
+                          "mistake_archive": [{"id": "q1", "note": "误答", "status": "待复盘"}],
+                          "confusion_log": []}, ensure_ascii=False)
+        st2 = st1.replace("待复盘", "已订正")
+        hdr = ("| 错题ID | 关联章节 | 错误原因分析 | 状态 |" + chr(10)
+               + "| :--- | :--- | :--- | :--- |" + chr(10))
+        md1 = "当前阶段：2" + chr(10) + "## 错题档案记录" + chr(10) + hdr + "| [#q1] | 1 | 误答 | 待复盘 |" + chr(10)
+        md2 = md1.replace("待复盘", "已订正")
+        m = _eval_turns([
+            {"turn": 1, "assistant": "记录。", "phase_context": 2,
+             "files_after": {"study_state.json": st1, "study_progress.md": md1}},
+            {"turn": 2, "assistant": "改状态。", "phase_context": 2,
+             "files_after": {"study_state.json": st2, "study_progress.md": md1}},
+            {"turn": 3, "assistant": "官方同步。", "phase_context": 2,
+             "files_after": {"study_state.json": st2, "study_progress.md": md2}},
+        ])
+        self.assertEqual(m["md_write_after_state"], 1)            # 只有 turn2 的状态背离计违规
+
     def test_missing_transcript_exits_2(self):
         r = _cli(["--scenario", SCEN, "--transcript", os.path.join(TR, "does_not_exist.jsonl")])
         self.assertEqual(r.returncode, 2)

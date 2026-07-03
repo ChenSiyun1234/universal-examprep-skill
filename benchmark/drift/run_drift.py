@@ -284,17 +284,18 @@ def parse_progress(text):
     pm = re.search(r"(?:当前进行阶段|当前阶段|current\s*phase)\D*?(\d+)", t, re.I)
     phase = int(pm.group(1)) if pm else None
     mistake, confusion, cur = [], [], None
+    mistake_st, confusion_st, cur_st = [], [], None
     for ln in t.splitlines():
         h = ln.strip()
         is_heading = bool(re.match(r"^\s{0,3}(#{1,4}\s|\*\*)", ln))
         if is_heading and re.search(r"错题|mistake", h):
-            cur = mistake
+            cur, cur_st = mistake, mistake_st
             continue
         if is_heading and re.search(r"疑难|困惑|confusion", h):
-            cur = confusion
+            cur, cur_st = confusion, confusion_st
             continue
         if re.match(r"^\s{0,3}#{1,4}\s", ln):                      # any OTHER heading ends the section
-            cur = None
+            cur, cur_st = None, None
             continue
         if cur is None:
             continue
@@ -303,6 +304,7 @@ def parse_progress(text):
             # 占位判定按【整条】——真实笔记里含「（暂无）」字样（如问空集的行）不能被当占位丢掉
             if not _ROW_PLACEHOLDER.fullmatch(body):
                 cur.append(re.sub(r"\s+", " ", h))
+                cur_st.append(None)                                 # bullet 形没有状态列
         elif h.startswith("|") and not _TABLE_SEP.match(ln) and not _is_table_header(ln):
             cells = [c.strip() for c in h.strip("|").split("|")]
             if not any(c and c != "-" for c in cells):
@@ -312,7 +314,9 @@ def parse_progress(text):
                     and all(c in ("", "-") for c in cells[1:]):
                 continue
             cur.append(re.sub(r"\s+", " ", h))                     # a table DATA row with real content
-    return {"phase": phase, "mistake_rows": mistake, "confusion_rows": confusion}
+            cur_st.append(cells[-1] if cells and cells[-1] in _STATUS_WORDS else None)
+    return {"phase": phase, "mistake_rows": mistake, "confusion_rows": confusion,
+            "mistake_status": mistake_st, "confusion_status": confusion_st}
 
 
 # ---------------- provenance + quiz (mirror T2 semantics) ----------------
@@ -396,7 +400,7 @@ def parse_state_json(text, plan_phases=None):
         if not isinstance(v, list):   # 标量/对象直接迭代会 TypeError 崩溃——按畸形输入统一报 DriftError
             raise DriftError("files_after 里的 study_state.json 字段 %s 必须是数组，实际 %s"
                              % (field, type(v).__name__))
-        out = []
+        out, sts = [], []
         for r in v:
             # 与 validator/update 工具同一行 schema——字符串元素/缺 note 的行是坏写入，
             # 静默跳过会让坏 state 以「0 行」通过行持久化指标
@@ -414,9 +418,14 @@ def parse_state_json(text, plan_phases=None):
             else:
                 prefix = ""
             out.append((prefix + r["note"]).strip())
+            sts.append(r["status"] if isinstance(r.get("status"), str) else None)
+        stat[field] = sts
         return out
+    stat = {}
     return {"phase": phase, "mistake_rows": _rows("mistake_archive"),
-            "confusion_rows": _rows("confusion_log")}
+            "confusion_rows": _rows("confusion_log"),
+            "mistake_status": stat["mistake_archive"],
+            "confusion_status": stat["confusion_log"]}
 
 
 def _snap_text(fa, name):
@@ -427,6 +436,11 @@ def _snap_text(fa, name):
         raise DriftError("files_after 里的 %s 必须是文件内容字符串，实际是 %s"
                          % (name, type(v).__name__))
     return v
+
+
+# 生成视图状态列的已知词表——双写状态背离检查只在【两侧都有可比状态】时进行
+# （bullet 形没有状态列、自由文本不在词表里：都不比、不误报）
+_STATUS_WORDS = ("待复盘", "已订正", "待回顾", "已回顾", "未复习", "已复习", "未掌握", "已掌握")
 
 
 def _dual_key(row):
@@ -493,6 +507,12 @@ def _session_snapshots(turns, state_established=False, plan_phases=None, init_du
                     stale_md += 1
                 elif prev_dual is not None and md_keys != prev_dual[0] \
                         and st_keys == prev_dual[1]:
+                    stale_md += 1
+                elif any(sm is not None and ss is not None and sm != ss for sm, ss in
+                         list(zip(md_snap["mistake_status"], snap["mistake_status"]))
+                         + list(zip(md_snap["confusion_status"], snap["confusion_status"]))):
+                    # 状态-only 更新的陈旧面板：state 已改状态而生成视图还挂旧状态——
+                    # 官方 set-*-status 会重渲染 md，两侧状态必然一致；按节对位比对
                     stale_md += 1
                 prev_dual = (md_keys, st_keys)
         elif "study_state.json" in evs:
