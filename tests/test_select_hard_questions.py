@@ -1,0 +1,177 @@
+# -*- coding: utf-8 -*-
+"""A7 select_hard_questions.py 回归：难度 × 掌握状态 × A6 模式的确定性出题排序。"""
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SCRIPT = os.path.join(ROOT, "scripts", "select_hard_questions.py")
+sys.path.insert(0, os.path.join(ROOT, "scripts"))
+import select_hard_questions as shq  # noqa: E402
+
+
+def _q(qid, chapter=1, difficulty=3, **kw):
+    d = {"id": qid, "chapter": chapter, "type": "subjective",
+         "question": "q", "answer": "a", "difficulty": difficulty}
+    d.update(kw)
+    return d
+
+
+class ClassifyUnit(unittest.TestCase):
+    def test_mistake_id_is_weak(self):
+        idx = shq.build_mastery({"mistake_archive": [{"id": "q1", "chapter": 9}]})
+        self.assertEqual(shq.classify(_q("q1"), idx)[0], "weak")
+
+    def test_trouble_chapter_is_weak(self):
+        idx = shq.build_mastery({"mistake_archive": [{"id": None, "chapter": 2}]})
+        self.assertEqual(shq.classify(_q("qx", chapter=2), idx)[0], "weak")
+        idx2 = shq.build_mastery({"confusion_log": [{"id": None, "chapter": 3}]})
+        self.assertEqual(shq.classify(_q("qy", chapter=3), idx2)[0], "weak")
+
+    def test_window_out_is_weak_by_chapter_and_point(self):
+        idx = shq.build_mastery({"knowledge_window": [
+            {"point": "积分", "chapter": 5, "status": "窗口外"}]})
+        self.assertEqual(shq.classify(_q("a", chapter=5), idx)[0], "weak")            # 章命中
+        self.assertEqual(shq.classify(_q("b", chapter=99, knowledge_points=["定积分"]), idx)[0], "weak")  # 点子串命中
+
+    def test_in_window_is_mastered(self):
+        idx = shq.build_mastery({"knowledge_window": [
+            {"point": "极限", "chapter": 4, "status": "在窗口"},
+            {"point": "连续", "chapter": 6, "status": "已实测"}]})
+        self.assertEqual(shq.classify(_q("a", chapter=4), idx)[0], "mastered")
+        self.assertEqual(shq.classify(_q("b", chapter=6), idx)[0], "mastered")
+
+    def test_weak_beats_mastered_when_both(self):
+        # 同章既在窗口又有错题 → weak 优先（有错题就还没掌握）
+        idx = shq.build_mastery({"mistake_archive": [{"id": None, "chapter": 4}],
+                                 "knowledge_window": [{"point": "p", "chapter": 4, "status": "在窗口"}]})
+        self.assertEqual(shq.classify(_q("a", chapter=4), idx)[0], "weak")
+
+    def test_weak_matches_via_phase_not_only_chapter(self):
+        # 只带 phase 的题：trouble/窗口按 chapter-OR-phase 命中（与 A2 一致）
+        idx = shq.build_mastery({"mistake_archive": [{"id": None, "chapter": 2}]})
+        q = {"id": "p", "phase": 2, "type": "subjective", "question": "q", "answer": "a", "difficulty": 3}
+        self.assertEqual(shq.classify(q, idx)[0], "weak")
+
+    def test_neutral_default(self):
+        idx = shq.build_mastery({})
+        self.assertEqual(shq.classify(_q("a", chapter=1), idx)[0], "neutral")
+
+    def test_none_state_all_neutral(self):
+        idx = shq.build_mastery(None)
+        self.assertEqual(shq.classify(_q("a"), idx)[0], "neutral")
+
+
+class OrderUnit(unittest.TestCase):
+    def _mk(self, cls, diff, i):
+        return {"id": "i%d" % i, "difficulty": diff, "cls": cls, "trigger": "t",
+                "chapter": "1", "orig_idx": i}
+
+    def test_review_mode_weak_asc_then_neutral_mastered_desc(self):
+        items = [self._mk("weak", 4, 0), self._mk("weak", 1, 1),
+                 self._mk("neutral", 2, 2), self._mk("neutral", 5, 3),
+                 self._mk("mastered", 3, 4), self._mk("mastered", 5, 5)]
+        out = [it["id"] for it in shq.order_items(items, "查缺补漏")]
+        # weak 先易后难：i1(d1),i0(d4)；neutral 先难：i3(d5),i2(d2)；mastered 先难：i5(d5),i4(d3)
+        self.assertEqual(out, ["i1", "i0", "i3", "i2", "i5", "i4"])
+
+    def test_beginner_mode_global_ascending(self):
+        items = [self._mk("weak", 4, 0), self._mk("neutral", 2, 1),
+                 self._mk("mastered", 5, 2), self._mk("mastered", 1, 3)]
+        out = [it["id"] for it in shq.order_items(items, "零基础从头讲")]
+        # 全升序但 weak 先：weak(i0 d4) → neutral(i1 d2) → mastered 升序(i3 d1, i2 d5)
+        self.assertEqual(out, ["i0", "i1", "i3", "i2"])
+
+
+class CliIO(unittest.TestCase):
+    def setUp(self):
+        self.ws = tempfile.mkdtemp(prefix="a7sel_")
+        os.makedirs(os.path.join(self.ws, "references"))
+        self.bank = [
+            _q("easy", chapter=1, difficulty=1),
+            _q("mid", chapter=3, difficulty=3),
+            _q("hard", chapter=5, difficulty=5),
+        ]
+        with open(os.path.join(self.ws, "references", "quiz_bank.json"), "w", encoding="utf-8") as f:
+            json.dump(self.bank, f, ensure_ascii=False, indent=2)
+
+    def tearDown(self):
+        shutil.rmtree(self.ws, ignore_errors=True)
+
+    def _state(self, st):
+        with open(os.path.join(self.ws, "study_state.json"), "w", encoding="utf-8") as f:
+            json.dump(st, f, ensure_ascii=False, indent=2)
+
+    def _run(self, *args):
+        return subprocess.run([sys.executable, SCRIPT, "--workspace", self.ws, "--json", *args],
+                              capture_output=True, text=True, encoding="utf-8")
+
+    def test_json_shape_and_state_flag(self):
+        r = self._run()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        obj = json.loads(r.stdout)
+        self.assertEqual(obj["mode"], "查缺补漏")
+        self.assertFalse(obj["state_loaded"])
+        self.assertEqual({it["id"] for it in obj["items"]}, {"easy", "mid", "hard"})
+
+    def test_reads_mode_from_state(self):
+        self._state({"mode": "零基础从头讲"})
+        obj = json.loads(self._run().stdout)
+        self.assertEqual(obj["mode"], "零基础从头讲")
+
+    def test_unknown_state_mode_falls_back(self):
+        self._state({"mode": "sprint"})            # 旧模式串 → 回落默认，不炸
+        obj = json.loads(self._run().stdout)
+        self.assertEqual(obj["mode"], "查缺补漏")
+
+    def test_cli_mode_overrides_state(self):
+        self._state({"mode": "查缺补漏"})
+        obj = json.loads(self._run("--mode", "零基础从头讲").stdout)
+        self.assertEqual(obj["mode"], "零基础从头讲")
+
+    def test_mistake_makes_weak_first(self):
+        self._state({"mode": "查缺补漏", "mistake_archive": [{"id": "hard", "chapter": 5}]})
+        obj = json.loads(self._run().stdout)
+        self.assertEqual(obj["items"][0]["id"], "hard")     # 错题→weak→排最前
+        self.assertEqual(obj["items"][0]["class"], "weak")
+
+    def test_chapter_exact_filter(self):
+        obj = json.loads(self._run("--chapter", "3").stdout)
+        self.assertEqual([it["id"] for it in obj["items"]], ["mid"])
+
+    def test_chapter_filter_matches_phase(self):
+        # 追加一个只带 phase 的题，--chapter 应按 chapter-OR-phase 命中它
+        self.bank.append({"id": "ph2", "phase": 7, "type": "subjective",
+                          "question": "q", "answer": "a", "difficulty": 2})
+        with open(os.path.join(self.ws, "references", "quiz_bank.json"), "w", encoding="utf-8") as f:
+            json.dump(self.bank, f, ensure_ascii=False, indent=2)
+        obj = json.loads(self._run("--chapter", "7").stdout)
+        self.assertEqual([it["id"] for it in obj["items"]], ["ph2"])
+
+    def test_from_chapter_numeric(self):
+        obj = json.loads(self._run("--from-chapter", "3").stdout)
+        self.assertEqual({it["id"] for it in obj["items"]}, {"mid", "hard"})
+
+    def test_num_limit(self):
+        obj = json.loads(self._run("-n", "1").stdout)
+        self.assertEqual(obj["count"], 1)
+
+    def test_on_the_fly_difficulty_when_unscored(self):
+        # 题库无 difficulty 字段 → 即时补算，不落盘
+        for q in self.bank:
+            q.pop("difficulty", None)
+        with open(os.path.join(self.ws, "references", "quiz_bank.json"), "w", encoding="utf-8") as f:
+            json.dump(self.bank, f, ensure_ascii=False, indent=2)
+        obj = json.loads(self._run().stdout)
+        self.assertTrue(all(1 <= it["difficulty"] <= 5 for it in obj["items"]))
+        # 未落盘：原文件仍无 difficulty
+        with open(os.path.join(self.ws, "references", "quiz_bank.json"), encoding="utf-8") as f:
+            self.assertFalse(any("difficulty" in q for q in json.load(f)))
+
+
+if __name__ == "__main__":
+    unittest.main()
