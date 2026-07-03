@@ -554,10 +554,11 @@ def cmd_set(ws, args):
             changed.append("mode=%s" % cmode)
             if warn:
                 sys.stderr.write("update_progress[warn]: " + warn + "\n")
-            # 旧模式迁移带出的时间档：仅当本次未显式 --time-budget 且当前未设定时才落，绝不覆盖显式值
-            if mig_tier and args.time_budget is None and not st.get("time_budget"):
+            # 旧模式迁移带出的时间档：本次未显式 --time-budget 就落它——旧模式名自带紧迫度语义，
+            # panic 换到 sprint 必须把 ≤1天 刷成 1-3天，不能留旧迁移值让节奏判定错档（仅显式 --time-budget 才不覆盖）
+            if mig_tier and args.time_budget is None:
                 st["time_budget"] = mig_tier
-                changed.append("time_budget=%s（迁移带出）" % mig_tier)
+                changed.append("time_budget=%s（旧模式迁移带出）" % mig_tier)
     # A6：time_budget 归一化到 4 个 canonical 档
     if args.time_budget is not None:
         if not args.time_budget:
@@ -632,9 +633,18 @@ def cmd_window_set_status(ws, args):
             _die("--index 越界：窗口共 %d 条，index=%d" % (len(win), args.index))
         hits = [win[args.index - 1]]
     elif args.point:
-        hits = [r for r in win if isinstance(r, dict) and r.get("point") == args.point.strip()]
+        pt = args.point.strip()
+        hits = [r for r in win if isinstance(r, dict) and r.get("point") == pt]
+        if args.chapter is not None:                 # 指定章节时只命中该章的那条
+            hits = [r for r in hits if str(r.get("chapter")) == str(args.chapter)]
         if not hits:
-            _die("找不到知识点「%s」——先用 window-add 登记" % args.point)
+            _die("找不到知识点「%s」%s——先用 window-add 登记"
+                 % (pt, ("（第%s章）" % args.chapter) if args.chapter is not None else ""))
+        if len(hits) > 1:
+            # 同名点分布在多章：不带 --chapter 定位会一次改错所有章的状态（把第5章点也标成已实测）
+            chs = "、".join(sorted(str(r.get("chapter")) for r in hits))
+            _die("知识点「%s」在多个章节（%s）都有登记——请加 --chapter 精确定位，避免误改其他章的同名点"
+                 % (pt, chs))
     else:
         _die("window-set-status 需要 --point 或 --index 定位")
     for r in hits:
@@ -731,6 +741,7 @@ def run(argv=None):
     p_wa.add_argument("--note", default=None)
     p_ws = sub.add_parser("window-set-status")
     p_ws.add_argument("--point", default=None, help="按知识点名定位")
+    p_ws.add_argument("--chapter", default=None, help="同名点分布多章时用它精确定位")
     p_ws.add_argument("--index", type=int, default=None, help="按 1 起序号定位")
     p_ws.add_argument("--status", required=True, help="在窗口/窗口外/已实测")
     for name in ("add-mistake", "add-confusion"):

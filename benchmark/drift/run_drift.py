@@ -605,7 +605,10 @@ _STUDENT_ASK_CUE = re.compile(
     r"你想|你要|你希望|你打算|你更|你觉得|你认为|你选|你决定|你来定|由你|你自己|你先|"
     r"你(?:还)?记得|你会(?:不会)?|你能(?:不能)?|你有(?:没有)?|你是(?:不是|否)|你(?:比较)?熟|"
     r"你复习到|你学到|要不要|想不想|请问|需要我|哪一?章|从哪|"
-    r"do you\b|would you\b|are you\b|have you\b|can you\b|which chapter\b|what.*\byou\b",
+    r"(?:先讲|先复习|先看|先做|先学|讲|复习|看|做|来)[^，。？?！!\n]{0,8}还是|"
+    r"需(?:不需)?要(?:我|先)|要(?:不要)?先|用不用(?:先|我)|该(?:先|不该)|哪个先|先哪|先(?:讲|复习|看|做|学|过)(?:什么|哪|谁)|"
+    r"do you\b|would you\b|are you\b|have you\b|can you\b|which chapter\b|what.*\byou\b|"
+    r"should i\b|shall i\b|want me to\b|which.*first\b",
     re.I)
 _RHETORICAL_PREFACE = re.compile(
     r"你可能(?:会)?问|你也许(?:会)?问|你(?:有没有|是不是|会不会)想过|你是不是(?:觉得|以为)|"

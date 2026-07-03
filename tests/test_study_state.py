@@ -266,9 +266,12 @@ class Mutations(unittest.TestCase):
         st = _state(ws)
         self.assertEqual(st["mode"], "零基础从头讲")
         self.assertEqual(st["time_budget"], "≤1天")               # panic 迁移带出当天档
-        # sprint → 查缺补漏 + 1-3天
+        # sprint → 查缺补漏 + 1-3天：换旧模式必须把上一次迁移带出的 ≤1天 刷成 1-3天（Codex R1-XN），
+        # 否则节奏判定会卡在错误的紧迫档
         _up(ws, ["set", "--mode", "sprint"])
-        self.assertEqual(_state(ws)["mode"], "查缺补漏")
+        st2 = _state(ws)
+        self.assertEqual(st2["mode"], "查缺补漏")
+        self.assertEqual(st2["time_budget"], "1-3天")
 
     def test_a6_migration_does_not_override_explicit_time_budget(self):
         ws = self._ready()
@@ -319,6 +322,21 @@ class Mutations(unittest.TestCase):
         r2 = _up(ws, ["window-set-status", "--point", "不存在", "--status", "在窗口"])
         self.assertNotEqual(r2.returncode, 0)
         self.assertNotIn("Traceback", r2.stderr)
+
+    def test_a6_window_set_status_ambiguous_multichapter_fail_loud(self):
+        # 同名点分布在多章：不带 --chapter 会一次改错所有章 → 必须 fail-loud 要求精确定位（Codex R1-XU）
+        ws = self._ready()
+        _up(ws, ["window-add", "--point", "模板", "--chapter", "2"])
+        _up(ws, ["window-add", "--point", "模板", "--chapter", "5"])
+        r = _up(ws, ["window-set-status", "--point", "模板", "--status", "已实测"])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("多个章节", r.stderr)
+        # 带 --chapter 只改该章那条
+        r2 = _up(ws, ["window-set-status", "--point", "模板", "--chapter", "2", "--status", "已实测"])
+        self.assertEqual(r2.returncode, 0, r2.stderr)
+        by = {str(w["chapter"]): w["status"] for w in _state(ws)["knowledge_window"] if w["point"] == "模板"}
+        self.assertEqual(by["2"], "已实测")
+        self.assertEqual(by["5"], "在窗口")                        # 第5章的同名点不受影响
 
     def test_a6_window_survives_init_force_roundtrip(self):
         # init --force 从 md 重新迁移时，知识点窗口必须无损带回——否则窗口/已实测追踪被静默丢

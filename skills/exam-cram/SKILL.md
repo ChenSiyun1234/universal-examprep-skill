@@ -18,7 +18,7 @@ Act as the coordinator/orchestrator for last-minute exam prep. Teach and grade O
 
 ## Activation
 
-Activate when the user is approaching an exam and asks for a cram plan, drill questions, mistake review, concept Q&A, or a pre-exam cheatsheet (keywords: 期末/备考/复习/突击/刷题/划重点/错题/考前; exam, cram, study plan, quiz, review). On first activation, ask for the learning mode (零基础从头讲 / 某章起步补弱 / 查缺补漏) and time budget (≤1天 / 1-3天 / 3-7天 / >7天) and persist both (see Modes below); a legacy `argument-hint` value (`normal|sprint|panic|mock`) is accepted only as a migration input. Do not activate for long-term study planning or for writing/coding tasks unrelated to an exam.
+Activate when the user is approaching an exam and asks for a cram plan, drill questions, mistake review, concept Q&A, or a pre-exam cheatsheet (keywords: 期末/备考/复习/突击/刷题/划重点/错题/考前; exam, cram, study plan, quiz, review). On first activation, ask for the learning mode (零基础从头讲 / 某章起步补弱 / 查缺补漏) and time budget (≤1天 / 1-3天 / 3-7天 / >7天) and persist both (see Modes below) — UNLESS the student's opening already signals urgency ("明天就考" / "别问我" / "直接讲重点"), in which case infer and persist silently (零基础从头讲 + ≤1天) and start teaching without asking, because asking would itself violate the ≤1天 no-question rule. A legacy `argument-hint` value (`normal|sprint|panic|mock`) is accepted only as a migration input. Do not activate for long-term study planning or for writing/coding tasks unrelated to an exam.
 
 ## Inputs
 
@@ -54,7 +54,7 @@ After each learning or checkpoint event, update the progress state (phase, check
 
 ### Modes — 3 学习模式 × 4 时间宽裕度 (A6)
 
-On FIRST activation you MUST ask two things (unless already in `study_state.json`): the **learning mode** and the **time budget**. Persist both via `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> set --mode <模式> --time-budget <档>` (canonical stored; the panel shows them). These change emphasis and question cadence only — never the workflow ladder or the source-labeling / quiz_bank-only rules.
+On FIRST activation you MUST establish two things (unless already in `study_state.json`): the **learning mode** and the **time budget**. Persist both via `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> set --mode <模式> --time-budget <档>` (canonical stored; the panel shows them). **Urgent-open exception**: if the student's opening already signals ≤1天 urgency or explicitly says not to ask ("明天就考" / "别问我" / "直接讲重点"), do NOT stop to ask — INFER and persist silently (default `零基础从头讲` + `≤1天`), then teach; asking a clarifying question in the ≤1天 tier is itself a violation. Otherwise ask. These change emphasis and question cadence only — never the workflow ladder or the source-labeling / quiz_bank-only rules.
 
 **学习模式 (state `mode`, one of):**
 - **零基础从头讲** — start at chapter 1's first knowledge point in order; every point's explanation cites the material page; right after teaching a point, walk ALL its linked questions easy→hard once; the cheatsheet collects each point's hard questions. (Teach each key question through `exam-tutor`'s fixed seven-step template.)

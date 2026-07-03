@@ -140,6 +140,9 @@ class DriftHarness(unittest.TestCase):
             "你可能会问：这道题为什么选 B？因为它满足性质。", "您也许好奇：栈和队列有何区别？其实差在存取顺序。",
             "为什么顺序表随机访问更快？因为地址可直接算出。", "接下来我给你讲栈的三个操作。",
             "要不要我先讲栈？", "纯讲解，无任何问句。",
+            # R1-XX 新增的选择疑问 / should-I 形态也要在两份副本里判定一致
+            "先讲栈还是队列？", "需要先讲栈吗？", "Should I start with stacks?",
+            "用不用我先过一遍公式？", "先复习哪个？栈还是队列？", "接下来我先讲栈，再讲队列。",
         ]
         for c in cases:
             self.assertEqual(BS.asks_student_question(c), D._asks_student_question(c),

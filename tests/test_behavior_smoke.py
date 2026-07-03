@@ -671,6 +671,14 @@ class BehaviorSmokeTest(unittest.TestCase):
         self.assertTrue(H.asks_student_question("你打算从哪\n章开始？"), "跨软换行的问句要识别")
         self.assertTrue(H.asks_student_question("Which chapter do you want to start with?"))
         self.assertTrue(H.asks_student_question("Do you remember big-O notation?"))
+        # 选择疑问 / 「需不需要我先…吗」/「Should I…」也要抓（Codex R1-XX）
+        self.assertTrue(H.asks_student_question("先讲栈还是队列？"))
+        self.assertTrue(H.asks_student_question("需要先讲栈吗？"))
+        self.assertTrue(H.asks_student_question("Should I start with stacks?"))
+        self.assertTrue(H.asks_student_question("用不用我先过一遍公式？"))
+        self.assertTrue(H.asks_student_question("先复习哪个？栈还是队列？"))
+        # 陈述句（无 ？）不误伤
+        self.assertFalse(H.asks_student_question("接下来我先讲栈，再讲队列。"))
 
     def test_a6_knowledge_window_recheck_detector(self):
         # 窗口外知识点：好例回问/实测；反例默认还会直接用必须被抓
@@ -690,6 +698,13 @@ class BehaviorSmokeTest(unittest.TestCase):
         # 没有窗口外语境时，即使有「还记得」也不算本场景（返回 False）
         self.assertFalse(H.window_out_rechecked("先确认你还记得递归吗？"))
         self.assertTrue(H.window_out_rechecked("递归在窗口外了，先确认你还记得递归出口吗？"))
+        # Codex R1-Xb：光说「先确认一下」却不真的发问不算复核；末尾「我就当你会了」默认收口也不算
+        self.assertFalse(H.window_out_rechecked("递归在窗口外了，先确认一下。这里我就当你会了。"),
+                         "只说先确认、不发问、末尾默认还会必须被抓")
+        self.assertFalse(H.window_out_rechecked("递归窗口外，你还记得吗？算了我就当你会了，直接用。"),
+                         "问了又末尾默认收口，仍不算真复核")
+        # 真发问（还记得…吗）或真出题（来一道题实测）才算
+        self.assertTrue(H.window_out_rechecked("窗口外了，来一道题实测一下你还会不会。"))
 
     def test_run_mock_exits_zero(self):
         self.assertEqual(_silent(H.main, ["--mock"]), 0)
