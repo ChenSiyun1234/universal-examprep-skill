@@ -260,6 +260,54 @@ class DriftHarness(unittest.TestCase):
         with self.assertRaises(D.DriftError):
             D.parse_state_json(bad, [1])
 
+    def test_b3_llm_allows_textonly_scenario(self):
+        # Codex OSTZM：只有 checkpoint/md 阈值（无 requires_state/窗口/urgent）的 live_smoke_basic 不该被拒——
+        # 这些指标由 live runner 的合成 md 快照支持，默认 live 路径必须能跑
+        d = tempfile.mkdtemp()
+        spec = {"fixture": "benchmark/drift/fixtures/mini_course_long",
+                "scenario": "benchmark/drift/scenarios/live_smoke_basic.json", "turns": [{"user": "hi"}]}
+        sp = os.path.join(d, "t.json")
+        with open(sp, "w", encoding="utf-8") as f:
+            json.dump(spec, f, ensure_ascii=False)
+        r = _cli(["--llm", "--agent-cmd", "echo {prompt}", "--out-dir", os.path.join(d, "o"), "--turns", sp],
+                 env={"RUN_SKILL_DRIFT_LLM": "1"})
+        self.assertNotIn("暂不支持", r.stderr)                    # 未被 state 门挡下（应委托给 live runner）
+
+    def test_b3_llm_bad_scenario_type_no_traceback(self):
+        # Codex OSTZR：--turns 里 scenario 是非字符串（123）→ 别抛 TypeError traceback，交给 live runner 校验
+        d = tempfile.mkdtemp()
+        sp = os.path.join(d, "bad.json")
+        with open(sp, "w", encoding="utf-8") as f:
+            json.dump({"fixture": "x", "scenario": 123, "turns": [{"user": "hi"}]}, f)
+        r = _cli(["--llm", "--agent-cmd", "echo {prompt}", "--out-dir", os.path.join(d, "o"), "--turns", sp],
+                 env={"RUN_SKILL_DRIFT_LLM": "1"})
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_b3_window_key_normalized_like_renderer(self):
+        # Codex OSTZP：含 | 的 point 名，state 键按 _md_cell 归一（| → /），与 render_md 写的 md 单元格一致
+        snap = D.parse_state_json(json.dumps(
+            {"current_phase": 1, "mistake_archive": [], "confusion_log": [],
+             "knowledge_window": [{"point": "DFS|BFS", "chapter": "1", "status": "在窗口"}]}), [1])
+        self.assertEqual(snap["window_rows"], ["DFS/BFS@1"])
+
+    def test_b3_md_duplicate_window_row_flagged(self):
+        # Codex OSTZO：md 里同一窗口行重复（陈旧/手改）不能被 dict 折叠——保留重数，md 与 state 不一致要抓
+        sc = D.load_scenario(os.path.join(DRIFT, "scenarios", "window_persist.json"))
+        turns = D.load_jsonl(_tr("window_persist_session.jsonl"), "w")
+        for t in turns:
+            fa = t.get("files_after") or {}
+            md = fa.get("study_progress.md")
+            if md and "栈的LIFO" in md:
+                fa["study_progress.md"] = re.sub(r"(\| 栈的LIFO \| 1 \| \S+ \|[^\n]*\n)", r"\1\1", md, count=1)
+                break
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "dupmd.jsonl")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write("\n".join(json.dumps(t, ensure_ascii=False) for t in turns))
+        r = D.evaluate(sc, p)
+        self.assertGreater(r["metrics"]["md_write_after_state"], 0)
+        self.assertFalse(r["passed"])
+
     def test_b3_status_migration_required(self):
         # Codex R5LB：只保留窗口行、状态全程不迁移（在窗口→窗口外→已实测 没发生）应挂 migrations 门槛
         sc = D.load_scenario(os.path.join(DRIFT, "scenarios", "window_persist.json"))

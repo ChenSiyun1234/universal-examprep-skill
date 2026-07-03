@@ -43,11 +43,15 @@ ROOT = os.path.dirname(os.path.dirname(HERE))                      # repo root (
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 try:
     from update_progress import (_normalize_tier as _canon_tier, LEARNING_MODES as _LEARN_MODES,
-                                 _WINDOW_STATUSES as _WIN_STATUSES)
+                                 _WINDOW_STATUSES as _WIN_STATUSES, _md_cell as _md_cell)
 except Exception:                                                 # 缺文件时退化为内置常量，不让 drift 崩
     _canon_tier = None
     _LEARN_MODES = ("零基础从头讲", "某章起步补弱", "查缺补漏")
     _WIN_STATUSES = ("在窗口", "窗口外", "已实测")
+
+    def _md_cell(v, default="-"):                                # 缺 update_progress 时的等价兜底
+        s = str(v) if v not in (None, "") else default
+        return re.sub(r"\s*[\r\n]+\s*", " ", s).replace("|", "/").strip()
 
 
 def _tier_is_urgent(time_budget):
@@ -394,11 +398,12 @@ def parse_progress(text):
 
 
 def _window_state_map(snap):
-    """{point@chapter: status} —— 用于跨源比对 state 与生成视图 md 的窗口面板是否一致（同一 key 空间，
-    可比；跟错题/疑难的自由文本 note 不同）。"""
+    """有序的 [(point@chapter, status)] 列表 —— 用于跨源比对 state 与生成视图 md 的窗口面板是否一致。
+    用**保留重数**的排序列表而非 dict：md 里同一窗口行出现两次（陈旧/手改）不能被 dict 折叠掉而漏判
+    （Codex OSTZO）。省略 status 归一到渲染默认 在窗口。"""
     keys = snap.get("window_rows", []) or []
     sts = snap.get("window_status", []) or []
-    return {k: (sts[i] if i < len(sts) else None) for i, k in enumerate(keys)}
+    return sorted((k, (sts[i] if i < len(sts) and sts[i] else "在窗口")) for i, k in enumerate(keys))
 
 
 # ---------------- provenance + quiz (mirror T2 semantics) ----------------
@@ -527,7 +532,9 @@ def parse_state_json(text, plan_phases=None):
             # 静默收下会让「状态迁移」指标把乱码变化也当成真窗口进出（Codex R_Xd）
             raise DriftError("study_state.json 快照的 knowledge_window 行 status 必须是 %s 或省略: %r"
                              % ("/".join(_WIN_STATUSES), r))
-        window_rows.append("%s@%s" % (r["point"].strip(), "" if ch in (None, "") else str(ch)))
+        # 键按 _md_cell 归一（| → /、换行折叠），与 render_md 写进生成视图的单元格一致——否则含 | 的
+        # point 名（DFS|BFS → DFS/BFS）会让正确重渲染的 md 被误判为陈旧面板（Codex OSTZP）
+        window_rows.append("%s@%s" % (_md_cell(r["point"]), "" if ch in (None, "") else _md_cell(ch)))
         # 省略 status 归一到渲染默认「在窗口」——update_progress.render_md 也把缺省 status 渲成 在窗口，
         # 否则 {point,chapter} 无 status 的合法行会让 state 图（None）与 md 图（在窗口）误判不一致（SGGn）
         window_status.append(stt if isinstance(stt, str) else "在窗口")
@@ -1218,14 +1225,17 @@ def run_llm(argv):
     # run_live_smoke 目前只录对话 + 阶段切换时的合成 study_progress.md 快照，**不录 agent 写的
     # study_state.json**。因此 --turns 指向的 scenario 若依赖 state 快照（requires_state 或含 state/窗口
     # 阈值），live 判分会因看不到 state 写入而恒 0、谎报成 agent 失败——显式拒绝、指明是管线限制（Codex OSL85）。
-    _STATE_THRESH = {"progress_rows_lost_max", "checkpoint_reset_max", "md_write_after_state_max",
-                     "window_rows_added_min", "window_rows_lost_max", "window_status_migrations_min",
+    # 只有真正需要 agent 写的 study_state.json 的指标才拒：窗口行只来自 state，urgent_mode_persisted 读
+    # study_state.json。checkpoint/md_write_after/progress_rows_lost 由 live runner 的合成 study_progress.md
+    # 快照支持（不需 state），别把默认的 live_smoke_basic 也挡在门外（Codex OSTZM）。
+    _STATE_THRESH = {"window_rows_added_min", "window_rows_lost_max", "window_status_migrations_min",
                      "urgent_mode_persisted_min"}
     try:
         spec = json.loads(_read(_resolve(turns_path)))
-        sc = load_scenario(_resolve(spec["scenario"])) if isinstance(spec, dict) and spec.get("scenario") else None
-    except (IOError, OSError, ValueError, KeyError, DriftError):
-        sc = None                                            # 让 live runner 自己去校验坏 turns/scenario
+        scen_ref = spec.get("scenario") if isinstance(spec, dict) else None
+        sc = load_scenario(_resolve(scen_ref)) if isinstance(scen_ref, str) and scen_ref else None
+    except (IOError, OSError, ValueError, KeyError, TypeError, DriftError):
+        sc = None                                            # 坏 turns/scenario（含非字符串 scenario）交给 live runner 校验
     if sc is not None and (sc.get("requires_state") or (set(sc.get("thresholds", {})) & _STATE_THRESH)):
         sys.stderr.write("run_drift: --llm 暂不支持依赖 study_state.json 的 scenario（%s：requires_state/"
                          "state·窗口阈值）——run_live_smoke 只录对话+合成 md、不录 agent 写的 state 快照，"
