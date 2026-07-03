@@ -2504,6 +2504,57 @@ class HomeworkIngest(unittest.TestCase):
         self.assertFalse(any(w.startswith("chapter_unassigned")
                              for w in report["warnings"]))
 
+    # ---- D4: 题型识别 + 未知题型警报 regression guards ----
+
+    def test_mcq_detected_with_options(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw96.pdf": ["Problem 1\n下列哪个说法正确？\nA. 甲选项\nB. 乙选项\n"
+                                         "C. 丙选项继续\n换行的丙。\nD. 丁选项"],
+                            "hw96_sol.pdf": ["1. B"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw), 1)
+        self.assertEqual(hw[0]["type"], "choice")                  # 大写连续选项行 → 选择题
+        self.assertEqual(len(hw[0]["options"]), 4)
+        self.assertIn("换行的丙", hw[0]["options"][2])             # 选项续行并入
+        self.assertIn("B", hw[0].get("answer", ""))
+
+    def test_lowercase_subparts_not_choice(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw97.pdf": ["Problem 1\n(a) 求导数。\n(b) 求积分。"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(hw[0]["type"], "subjective")              # 小写小问不是选项，绝不猜
+
+    def test_blank_prompt_is_fill_blank(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw98.pdf": ["Problem 1\n函数 f(x) 的导数是 ______ 。"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(hw[0]["type"], "fill_blank")              # 题面填空线 → 填空题
+
+    def test_lecture_quiz_mcq_detected(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        with open(os.path.join(mat, "lec01.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+        be = FakeBackend({"lec01.pdf": ["Quiz 1.1 Problem\n选出正确项：\nA. 对的\nB. 错的\n"
+                                        "Quiz 1.1 Solution\nA"]})
+        code, payload, report = _run(mat, be)
+        lec = [q for q in payload["quiz_bank"] if q["id"].startswith("lecture_quiz")]
+        self.assertTrue(lec)
+        self.assertEqual(lec[0]["type"], "choice")                 # 讲义测验同样识别
+        self.assertEqual(len(lec[0]["options"]), 2)
+
+    def test_type_heuristic_warning_and_review_entry(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw99.pdf": ["Problem 1\n普通主观题面。"]})
+        code, payload, report = _run(mat, be)
+        self.assertTrue(any(w.startswith("type_heuristic") for w in report["warnings"]))
+        self.assertTrue(any(e["kind"] == "type_defaulted"
+                            for e in report.get("ai_review", [])))  # 默认定型必须交 AI 复核
+
     def test_no_network_or_llm(self):
 
 

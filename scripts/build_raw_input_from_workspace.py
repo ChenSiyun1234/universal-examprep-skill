@@ -433,10 +433,11 @@ def extract_lecture_items(pages):
         item_id = "lecture_%s_%d_%d" % (kind, key[1], key[2])
         if key in ambiguous:   # readable stem + injective index (so a/b.pdf vs a_b.pdf don't collide)
             item_id += "__%s_%d" % (re.sub(r"[^\w]", "_", os.path.splitext(pf)[0]), file_idx[(key, pf)])
+        _qt, _opts = _classify_question_type(question)
         item = {
             "id": item_id,
             "chapter": key[1],
-            "type": "diagram" if needs else "subjective",
+            "type": "diagram" if needs else _qt,
             "question": question,
             "source": "material",
             "source_file": pf,
@@ -446,6 +447,8 @@ def extract_lecture_items(pages):
             "requires_assets": bool(needs),
             "question_text_status": qts,
         }
+        if not needs and _qt == "choice" and _opts:
+            item["options"] = _opts
         if not needs:
             item["keywords"] = []  # subjective recommended field; left for the tutor/teacher to fill
         if ans_idx:
@@ -1275,13 +1278,16 @@ def extract_homework_items(pages, root_name="", exclude=frozenset()):
             chm = (re.search(r"(?:第\s*(\d+)\s*章|Chapter\s+(\d+))", q_text, re.I)
                    or re.search(r"(?:^|[\/_\-. ])ch\s*0*(\d+)", hf, re.I))
             _src = "exam" if hf in exam_files else "homework"
+            _qt, _opts = _classify_question_type(q_text)
             item = {"id": "%s_%s_%s" % (_src if _src == "exam" else "hw", stem,
                                         str(mk["num"]).replace(".", "_")),   # 1.1 → _1_1，id 保持安全字符
-                    "type": "subjective",
+                    "type": _qt,
                     "question": q_text, "source": "material", "ai_generated": False,   # 不静默截断（长题保完整）
                     "source_type": _src, "homework_number": mk["num"],
                     "question_text_status": "page_reference" if marker_only else "full",
                     "source_file": hf, "source_pages": q_pages or [bounds[0][1] if bounds else 1]}
+            if _qt == "choice" and _opts:
+                item["options"] = _opts
             if chm:
                 item["chapter"] = int(next(g for g in chm.groups() if g))
             if ans:
@@ -1606,6 +1612,46 @@ def _fmt_pages(nums):
         out.append(str(nums[i]) if i == j else "%d-%d" % (nums[i], nums[j]))
         i = j + 1
     return ",".join(out)
+
+
+# ---- D4: 保守题型启发——只认高置信形态，判不准保持 subjective（汇总警报交 AI 复核）----
+# 选项行只认【大写】A-D（(a)(b) 小写通常是小问不是选项，绝不猜）
+_OPTION_LINE_RE = re.compile(r"^[ \t]*[（(]?([A-D])[）)．.、:：][ \t]*(\S.*)$")
+_BLANK_RUN_RE = re.compile(r"[_＿]{3,}")
+
+
+def _classify_question_type(q_text):
+    """(type, options)。≥2 个从 A 起按序排列的大写选项行 → choice + options（续行并入上一项）；
+    题面带填空线 → fill_blank；其余一律 subjective——启发式判不准绝不硬猜别的型。"""
+    letters, opts = [], []
+    for ln in (q_text or "").splitlines():
+        m = _OPTION_LINE_RE.match(ln)
+        if m:
+            letters.append(m.group(1))
+            opts.append("%s. %s" % (m.group(1), m.group(2).strip()))
+        elif opts and ln.strip():
+            opts[-1] = opts[-1] + " " + ln.strip()     # 选项跨行——续行并入上一项
+    if len(letters) >= 2 and letters == [chr(65 + i) for i in range(len(letters))]:
+        return "choice", opts
+    # 行内选项：讲义题面常被空白折叠成一行（… A. 对的 B. 错的）——只认 A．/A:/（A）
+    # 这类点号冒号/全角括号形，不认英文半角 (A)（散文引用「见(A)节」会误判）
+    t = q_text or ""
+    ms = list(re.finditer(r"(?:^|\s)(?:（([A-D])）|([A-D])[．.、:：])[ \t]*", t))
+    seq = [(m.group(1) or m.group(2)) for m in ms]
+    if len(seq) >= 2 and seq == [chr(65 + i) for i in range(len(seq))]:
+        opts2 = []
+        for j, m in enumerate(ms):
+            end = ms[j + 1].start() if j + 1 < len(ms) else len(t)
+            body = t[m.end():end].strip()
+            if not body:
+                opts2 = []
+                break
+            opts2.append("%s. %s" % (seq[j], body))
+        if opts2:
+            return "choice", opts2
+    if _BLANK_RUN_RE.search(q_text or ""):
+        return "fill_blank", None
+    return "subjective", None
 
 
 def _rel(path, base):
@@ -2000,6 +2046,20 @@ def run(args, backend=None):
     wiki_pages = [pg for pg in pages if pg["file"] not in sol_files
                   and pg["file"] not in sol_dir_files
                   and (pg["file"], pg["page"]) not in residue_page_keys]   # 残渣页不进 wiki
+    _typed = {}
+    for _it in (lecture_items + homework_items):
+        _typed[_it.get("type", "subjective")] = _typed.get(_it.get("type", "subjective"), 0) + 1
+    if _typed:
+        report["warnings"].append(
+            "type_heuristic: 题型由保守启发式判定——%s；启发式只认选择题/填空题两种形态，"
+            "判断/编程等其他题型会落在主观题里，请 AI 复核 quiz_bank 的 type 字段"
+            % "、".join("%s %d" % (k, v) for k, v in sorted(_typed.items())))
+        if _typed.get("subjective"):
+            report["ai_review"].append({
+                "kind": "type_defaulted", "file": "references/quiz_bank.json",
+                "action": "有 %d 道题按主观题默认定型（启发式判不准绝不硬猜）。请 AI 抽查这些题：若"
+                          "实为判断/编程/选择题（选项在图里）等，改写 type（合法值 choice/subjective/"
+                          "diagram/fill_blank/true_false/code）并补 options。" % _typed["subjective"]})
     _ch_notes = []
     sections = group_sections(wiki_pages, _ch_notes)
     for _f in _ch_notes:
