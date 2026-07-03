@@ -2690,6 +2690,55 @@ class HomeworkIngest(unittest.TestCase):
         hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
         self.assertEqual(hw[0]["type"], "subjective")              # 书写区不是挖空
 
+    def test_lowercase_choice_key_accepted(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw113.pdf": ["Problem 1\n二选一：\nA. 甲\nB. 乙"],
+                            "hw113_sol.pdf": ["1. b"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(hw[0]["type"], "choice")
+        self.assertEqual(hw[0].get("answer"), "B")                 # 小写键归一成大写标签
+
+    def test_fill_in_the_blank_phrase_wins(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw114.pdf": ["Problem 1\nFill in the blank: ______"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(hw[0]["type"], "fill_blank")              # 明说填空不被指示语词典抑制
+
+    def test_inline_options_truncated_at_instruction(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        with open(os.path.join(mat, "lec01.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+        be = FakeBackend({"lec01.pdf": ["Quiz 1.1 Problem\n选一个：A. foo B. bar Explain your choice.\n"
+                                        "Quiz 1.1 Solution\nbar"]})
+        code, payload, report = _run(mat, be)
+        lec = [q for q in payload["quiz_bank"] if q["id"].startswith("lecture_quiz")]
+        self.assertEqual(lec[0]["type"], "choice")
+        self.assertEqual(lec[0]["options"][1], "B. bar")           # 行内末选项在指令处截尾
+        self.assertEqual(lec[0].get("answer"), "B")                # 按正文 bar 归一
+
+    def test_bare_problem_label_key_normalized(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw115.pdf": ["Problem 1\n二选一：\nA. 甲\nB. 乙"],
+                            "hw115_sol.pdf": ["Question 1: B"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(hw[0]["type"], "choice")
+        self.assertEqual(hw[0].get("answer"), "B")                 # 裸题号标签键可剥
+
+    def test_eg_abbreviation_not_an_option(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw116.pdf": ["Problem 1\n四选一：\nA. 甲\nB. 乙\nC. 丙\nD. 丁\n"
+                                          "E.g. circle exactly one answer"],
+                            "hw116_sol.pdf": ["1. D"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(hw[0]["type"], "choice")
+        self.assertEqual(len(hw[0]["options"]), 4)                 # E.g. 缩写不是第五个选项
+
     def test_no_network_or_llm(self):
 
 

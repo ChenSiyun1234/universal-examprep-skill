@@ -1619,7 +1619,7 @@ def _fmt_pages(nums):
 
 # ---- D4: 保守题型启发——只认高置信形态，判不准保持 subjective（汇总警报交 AI 复核）----
 # 选项行只认【大写】A-D（(a)(b) 小写通常是小问不是选项，绝不猜）
-_OPTION_LINE_RE = re.compile(r"^[ \t]*[（(]?([A-H])[）)．.、:：][ \t]*(\S.*)$")
+_OPTION_LINE_RE = re.compile(r"^[ \t]*[（(]?([A-H])[）)．.、:：][ \t]*(?![a-z]\.)(\S.*)$")
 _BLANK_RUN_RE = re.compile(r"[_＿]{3,}")
 
 
@@ -1631,6 +1631,10 @@ def _strip_answer_prefix(ans_text):
     t = re.sub(r"(?i)^(?:quiz|example)\s+\d+(?:\.\d+)*\s*(?:solutions?|answers?)\s*[:：.]?\s*", "", t)
     t = re.sub(r"(?i)^(?:problem|exercise|question)\s*#?\s*\d+(?:\.\d+)*"
                r"(?:\s*\([A-Za-z]\)|[A-Za-z])?\s*(?:solutions?|answers?|解答|答案)\s*[:：.]?\s*", "", t)
+    # 裸题号标签键（Question 1: B / Problem 2. / 第1题：）——分隔符必带，防误剥正文
+    t = re.sub(r"(?i)^(?:problem|exercise|question)\s*#?\s*\d+(?:\.\d+)*"
+               r"(?:\s*\([A-Za-z]\)|[A-Za-z])?\s*[:：.]\s*", "", t)
+    t = re.sub(r"^第?\s*\d+\s*题\s*[:：.]\s*", "", t)
     # 裸解答词必须带编号或分隔符才剥——「Answer 1: B」「Answer: LIFO」剥，
     # 「Solution set」这类正文短语绝不剥（过剥实测）
     t = re.sub(r"(?i)^(?:solutions?|answers?|解答|答案)"
@@ -1644,7 +1648,7 @@ def _normalize_choice_answer(ans_text, options):
     """把解答切片归一成选项字母（validator 只认 裸标签/选项全文/选项正文）：剥前缀后剩
     单个 A-H（可带括号/句点）才认；整段恰是某选项全文/正文也认；否则 None。"""
     t = _strip_answer_prefix(ans_text)
-    m = re.fullmatch(r"[（(]?([A-H])[）)．.。]?", t)
+    m = re.fullmatch(r"[（(]?([A-Ha-h])[）)．.。]?", t)
     if m:
         letter = m.group(1).upper()
         labels = {str(o)[:1].upper() for o in options or []}
@@ -1700,13 +1704,23 @@ def _classify_question_type(q_text):
     # 行内选项：讲义题面常被空白折叠成一行（… A. 对的 B. 错的）——只认 A．/A:/（A）
     # 这类点号冒号/全角括号形，不认英文半角 (A)（散文引用「见(A)节」会误判）
     t = q_text or ""
-    ms = list(re.finditer(r"(?:^|\s)(?:（([A-H])）|([A-H])[．.、:：])[ \t]*", t))
+    # 选项前可以是全角冒号/逗号/顿号（选一个：A. …）——不只空白
+    ms = list(re.finditer(r"(?:^|[\s：:，,。；;、])(?:（([A-H])）|([A-H])[．.、:：])[ \t]*(?![a-z]\.)", t))
     seq = [(m.group(1) or m.group(2)) for m in ms]
     if len(seq) >= 2 and seq == [chr(65 + i) for i in range(len(seq))]:
         opts2 = []
         for j, m in enumerate(ms):
             end = ms[j + 1].start() if j + 1 < len(ms) else len(t)
             body = t[m.end():end].strip()
+            if j == len(ms) - 1 and body:
+                # 折叠成单行的题面里，末选项后常粘答题指令——在「小写/CJK 后接大写指令动词
+                # 或中文指令词」的句界截断；write-back 这类小写正文不受影响
+                cut = re.search(r"(?<=[a-z0-9）)\u4e00-\u9fff])\s+(?=(?:Explain|Show|Justify|"
+                                r"Prove|Describe|Discuss|Note|Hints?|Circle|Select|Choose|Mark|"
+                                r"Write)\b)|(?<=[a-z0-9）)\u4e00-\u9fff])\s*"
+                                r"(?=请|说明|解释|证明|注意|提示|选出|圈出|写出)", body)
+                if cut:
+                    body = body[:cut.start()].strip()
             if not body:
                 opts2 = []
                 break
@@ -1724,6 +1738,10 @@ def _classify_question_type(q_text):
                                    r"[处栏]?\s*[:：]?\s*$", prev)
             residual = _BLANK_RUN_RE.sub("", ln).strip()
             embedded = bool(re.search(r"[^\W_]", residual))
+            # 「Fill in the blank / 填空」是明说的正面信号——优先于答题栏抑制
+            #（指示语词典的 in the blank 恰好会撞上它）
+            if re.search(r"(?i)fill\s+in\s+the\s+blanks?|填空", ln + " " + prev):
+                return "fill_blank", None
             # 整行只有下划线（证明题末尾的书写区）不是题面挖空——空线必须嵌在文字里
             if embedded and not (label_before or label_prev or _HW_ANSBOX_INSTR_RE.search(ln)):
                 return "fill_blank", None
