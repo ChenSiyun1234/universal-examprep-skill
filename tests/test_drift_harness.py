@@ -107,6 +107,267 @@ class DriftHarness(unittest.TestCase):
         self.assertEqual(_fail_thresholds(r), {"provenance_fidelity_min"})
 
     # 6) missing / malformed transcript exits 2
+    def test_state_scenario_rejects_md_only_transcript(self):
+        # requires_state 场景：从未写 study_state.json 的纯 md 转写必须挂在 md_write_after_state 上
+        sc = D.load_scenario(os.path.join(DRIFT, "scenarios", "long_session_state.json"))
+        r = D.evaluate(sc, _tr("good_session.jsonl"))
+        self.assertIn("md_write_after_state_max", _fail_thresholds(r))
+
+    def test_md_rows_beyond_state_counted_as_hand_edit(self):
+        # 双写但只有生成视图多了行、state 空转——手改 md 不能靠捎带 no-op state 写洗白
+        st1 = json.dumps({"version": 1, "current_phase": 2,
+                          "mistake_archive": [{"id": "q1", "note": "误答"}],
+                          "confusion_log": []}, ensure_ascii=False)
+        md1 = "当前阶段：2\n## 错题本\n- [#q1] 误答\n"
+        md2 = "当前阶段：2\n## 错题本\n- [#q1] 误答\n- [#q2] 手改新增的行\n"
+        m = _eval_turns([
+            {"turn": 1, "assistant": "记录。", "phase_context": 2,
+             "files_after": {"study_state.json": st1, "study_progress.md": md1}},
+            {"turn": 2, "assistant": "再记录。", "phase_context": 2,
+             "files_after": {"study_state.json": st1, "study_progress.md": md2}},
+        ])
+        self.assertEqual(m["md_write_after_state"], 1)            # 只有 turn2 的行数背离计违规
+
+    def test_non_utf8_state_fixture_raises_drifterror(self):
+        import shutil
+        sc = dict(D.load_scenario(os.path.join(DRIFT, "scenarios", "long_session_state.json")))
+        d = tempfile.mkdtemp()
+        fx = os.path.join(d, "fx")
+        shutil.copytree(os.path.join(DRIFT, "fixtures", "mini_course_long"), fx)
+        with open(os.path.join(fx, "study_state.json"), "wb") as f:
+            f.write('{"current_phase": 2}'.encode("utf-16"))      # 带 BOM 的非 UTF-8 字节
+        sc["fixture"] = fx
+        with self.assertRaises(D.DriftError):                     # 坏编码走畸形输入路径，
+            D.evaluate(sc, _tr("good_session_state.jsonl"))       # 不是 UnicodeDecodeError 崩栈
+
+    def test_md_row_replacement_with_noop_state_flagged(self):
+        # 双写但 md 同数替换了行、state 空转——行数不变也要计手改
+        st1 = json.dumps({"version": 1, "current_phase": 2,
+                          "mistake_archive": [{"id": "q1", "note": "误答"}],
+                          "confusion_log": []}, ensure_ascii=False)
+        md1 = "当前阶段：2\n## 错题本\n- [#q1] 误答\n"
+        md2 = "当前阶段：2\n## 错题本\n- [#q9] 手改替换的行\n"
+        m = _eval_turns([
+            {"turn": 1, "assistant": "记录。", "phase_context": 2,
+             "files_after": {"study_state.json": st1, "study_progress.md": md1}},
+            {"turn": 2, "assistant": "替换。", "phase_context": 2,
+             "files_after": {"study_state.json": st1, "study_progress.md": md2}},
+        ])
+        self.assertEqual(m["md_write_after_state"], 1)
+
+    def test_state_event_without_snapshot_beside_md_rejected(self):
+        # md 快照 + 只有 state 写事件——证据缺失不许豁免手改计数，按畸形输入拒收
+        md2 = "当前阶段：2\n## 错题本\n- [#q9] 手改的行\n"
+        with self.assertRaises(D.DriftError):
+            _eval_turns([{"turn": 1, "assistant": "x", "phase_context": 2,
+                          "files_after": {"study_progress.md": md2},
+                          "events": [{"type": "write_file", "path": "study_state.json"}]}])
+
+    def test_stale_md_missing_new_state_row_flagged(self):
+        # 双写但 state 进了新行、生成视图没跟上——反向背离同样计违规
+        st1 = json.dumps({"version": 1, "current_phase": 2,
+                          "mistake_archive": [{"id": "q1", "note": "误答"}],
+                          "confusion_log": []}, ensure_ascii=False)
+        st2 = json.dumps({"version": 1, "current_phase": 2,
+                          "mistake_archive": [{"id": "q1", "note": "误答"},
+                                              {"id": "q2", "note": "新错题"}],
+                          "confusion_log": []}, ensure_ascii=False)
+        md1 = "当前阶段：2\n## 错题本\n- [#q1] 误答\n"
+        m = _eval_turns([
+            {"turn": 1, "assistant": "记录。", "phase_context": 2,
+             "files_after": {"study_state.json": st1, "study_progress.md": md1}},
+            {"turn": 2, "assistant": "再记录。", "phase_context": 2,
+             "files_after": {"study_state.json": st2, "study_progress.md": md1}},
+        ])
+        self.assertEqual(m["md_write_after_state"], 1)
+
+    def test_stale_md_phase_in_dual_write_flagged(self):
+        # 双写但生成视图的断点还停在旧阶段——面板陈旧同样计违规
+        st2 = json.dumps({"version": 1, "current_phase": 2,
+                          "mistake_archive": [{"id": "q1", "note": "误答"}],
+                          "confusion_log": []}, ensure_ascii=False)
+        md_ok = "当前阶段：2\n## 错题本\n- [#q1] 误答\n"
+        md_stale = "当前阶段：1\n## 错题本\n- [#q1] 误答\n"
+        m = _eval_turns([
+            {"turn": 1, "assistant": "推进。", "phase_context": 2,
+             "files_after": {"study_state.json": st2, "study_progress.md": md_ok}},
+            {"turn": 2, "assistant": "又写。", "phase_context": 2,
+             "files_after": {"study_state.json": st2, "study_progress.md": md_stale}},
+        ])
+        self.assertEqual(m["md_write_after_state"], 1)
+
+    def test_idless_generated_row_hand_edit_flagged(self):
+        # idless 生成表行（首列 '-'）的同数手改也要抓；官方 set-*-status 只改状态列不误报
+        st1 = json.dumps({"version": 1, "current_phase": 2,
+                          "mistake_archive": [{"chapter": "1", "note": "无id笔记一"}],
+                          "confusion_log": []}, ensure_ascii=False)
+        hdr = ("| 错题ID | 关联章节 | 错误原因分析 | 状态 |" + chr(10)
+               + "| :--- | :--- | :--- | :--- |" + chr(10))
+        md1 = "当前阶段：2" + chr(10) + "## 错题档案记录" + chr(10) + hdr + "| - | 1 | 无id笔记一 | 待复盘 |" + chr(10)
+        md2 = "当前阶段：2" + chr(10) + "## 错题档案记录" + chr(10) + hdr + "| - | 1 | 手改替换的内容 | 待复盘 |" + chr(10)
+        md3 = "当前阶段：2" + chr(10) + "## 错题档案记录" + chr(10) + hdr + "| - | 1 | 手改替换的内容 | 已订正 |" + chr(10)
+        m = _eval_turns([
+            {"turn": 1, "assistant": "记录。", "phase_context": 2,
+             "files_after": {"study_state.json": st1, "study_progress.md": md1}},
+            {"turn": 2, "assistant": "替换。", "phase_context": 2,
+             "files_after": {"study_state.json": st1, "study_progress.md": md2}},
+            {"turn": 3, "assistant": "只改状态。", "phase_context": 2,
+             "files_after": {"study_state.json": st1, "study_progress.md": md3}},
+        ])
+        # turn2 手改现形；turn3 的 note 仍与事实源背离（跨源包含检查）——持续陈旧每回合都计
+        self.assertEqual(m["md_write_after_state"], 2)
+
+    def test_first_turn_same_count_md_hand_edit_flagged(self):
+        # fixture 给了 state+初始 md 双基线：首个双写快照的同数手改（state 与基线一致、
+        # md 行被替换）也要计违规
+        import shutil
+        sc = dict(D.load_scenario(os.path.join(DRIFT, "scenarios", "long_session_state.json")))
+        d = tempfile.mkdtemp()
+        fx = os.path.join(d, "fx")
+        shutil.copytree(os.path.join(DRIFT, "fixtures", "mini_course_long_state"), fx)
+        st0 = json.dumps({"version": 1, "current_phase": 1,
+                          "mistake_archive": [{"id": "q1", "note": "误答"}],
+                          "confusion_log": []}, ensure_ascii=False)
+        with open(os.path.join(fx, "study_state.json"), "w", encoding="utf-8") as f:
+            f.write(st0)
+        with open(os.path.join(fx, "study_progress.initial.md"), "w", encoding="utf-8") as f:
+            f.write("当前阶段：1" + chr(10) + "## 错题本" + chr(10) + "- [#q1] 误答" + chr(10))
+        sc["fixture"] = fx
+        t = os.path.join(d, "t.jsonl")
+        md_edit = "当前阶段：1" + chr(10) + "## 错题本" + chr(10) + "- [#q9] 首回合手改的行" + chr(10)
+        with open(t, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"turn": 1, "assistant": "首回合。", "phase_context": 1,
+                                "files_after": {"study_state.json": st0,
+                                                "study_progress.md": md_edit}},
+                               ensure_ascii=False) + chr(10))
+        r = D.evaluate(sc, t)
+        self.assertGreaterEqual(r["metrics"]["md_write_after_state"], 1)
+
+    def test_status_only_stale_md_flagged(self):
+        # set-mistake-status 后 state 状态已改、生成视图还挂旧状态——状态背离也计手改；
+        # 官方同步更新（turn3）不误报
+        st1 = json.dumps({"version": 1, "current_phase": 2,
+                          "mistake_archive": [{"id": "q1", "note": "误答", "status": "待复盘"}],
+                          "confusion_log": []}, ensure_ascii=False)
+        st2 = st1.replace("待复盘", "已订正")
+        hdr = ("| 错题ID | 关联章节 | 错误原因分析 | 状态 |" + chr(10)
+               + "| :--- | :--- | :--- | :--- |" + chr(10))
+        md1 = "当前阶段：2" + chr(10) + "## 错题档案记录" + chr(10) + hdr + "| [#q1] | 1 | 误答 | 待复盘 |" + chr(10)
+        md2 = md1.replace("待复盘", "已订正")
+        m = _eval_turns([
+            {"turn": 1, "assistant": "记录。", "phase_context": 2,
+             "files_after": {"study_state.json": st1, "study_progress.md": md1}},
+            {"turn": 2, "assistant": "改状态。", "phase_context": 2,
+             "files_after": {"study_state.json": st2, "study_progress.md": md1}},
+            {"turn": 3, "assistant": "官方同步。", "phase_context": 2,
+             "files_after": {"study_state.json": st2, "study_progress.md": md2}},
+        ])
+        self.assertEqual(m["md_write_after_state"], 1)            # 只有 turn2 的状态背离计违规
+
+    def test_same_count_id_divergence_in_dual_write_flagged(self):
+        # 同数双写、state 与 md 都在变但 id 序列不同（state 进 q1、面板显示 q9）——id 键跨源可比
+        st1 = json.dumps({"version": 1, "current_phase": 2,
+                          "mistake_archive": [{"id": "q1", "note": "误答"}],
+                          "confusion_log": []}, ensure_ascii=False)
+        md_wrong = "当前阶段：2\n## 错题本\n- [#q9] 面板上是别的行\n"
+        m = _eval_turns([
+            {"turn": 1, "assistant": "记录。", "phase_context": 2,
+             "files_after": {"study_state.json": st1, "study_progress.md": md_wrong}},
+        ])
+        self.assertGreaterEqual(m["md_write_after_state"], 1)
+
+    def test_md_event_without_snapshot_beside_state_rejected(self):
+        # state 快照 + md 裸写事件（无 md 快照）——生成视图无从核对，按畸形输入拒收
+        st1 = json.dumps({"version": 1, "current_phase": 2,
+                          "mistake_archive": [], "confusion_log": []}, ensure_ascii=False)
+        with self.assertRaises(D.DriftError):
+            _eval_turns([{"turn": 1, "assistant": "x", "phase_context": 2,
+                          "files_after": {"study_state.json": st1},
+                          "events": [{"type": "write_file", "path": "study_progress.md"}]}])
+
+    def test_nonwhitelist_status_divergence_flagged(self):
+        # 手改状态列为词表外的合法词（已解决）——状态列取最后一格，不再靠白名单
+        st1 = json.dumps({"version": 1, "current_phase": 2,
+                          "mistake_archive": [{"id": "q1", "note": "误答", "status": "待复盘"}],
+                          "confusion_log": []}, ensure_ascii=False)
+        hdr = ("| 错题ID | 关联章节 | 错误原因分析 | 状态 |" + chr(10)
+               + "| :--- | :--- | :--- | :--- |" + chr(10))
+        md1 = "当前阶段：2" + chr(10) + "## 错题档案记录" + chr(10) + hdr + "| [#q1] | 1 | 误答 | 待复盘 |" + chr(10)
+        md2 = md1.replace("待复盘", "已解决")
+        m = _eval_turns([
+            {"turn": 1, "assistant": "记录。", "phase_context": 2,
+             "files_after": {"study_state.json": st1, "study_progress.md": md1}},
+            {"turn": 2, "assistant": "手改状态。", "phase_context": 2,
+             "files_after": {"study_state.json": st1, "study_progress.md": md2}},
+        ])
+        self.assertEqual(m["md_write_after_state"], 1)
+
+    def test_official_render_repair_of_stale_baseline_not_flagged(self):
+        # fixture 初始 md 本就陈旧（与 fixture state 不一致）——首回合官方 render 修复
+        # （md 追平 state、state 不动）不许被误判成手改
+        import shutil
+        sc = dict(D.load_scenario(os.path.join(DRIFT, "scenarios", "long_session_state.json")))
+        d = tempfile.mkdtemp()
+        fx = os.path.join(d, "fx")
+        shutil.copytree(os.path.join(DRIFT, "fixtures", "mini_course_long_state"), fx)
+        st0 = json.dumps({"version": 1, "current_phase": 1,
+                          "mistake_archive": [{"id": "q1", "note": "误答"}],
+                          "confusion_log": []}, ensure_ascii=False)
+        with open(os.path.join(fx, "study_state.json"), "w", encoding="utf-8") as f:
+            f.write(st0)
+        with open(os.path.join(fx, "study_progress.initial.md"), "w", encoding="utf-8") as f:
+            f.write("当前阶段：1" + chr(10) + "## 错题本" + chr(10) + "- [#q0] 陈旧的旧行" + chr(10))
+        sc["fixture"] = fx
+        t = os.path.join(d, "t.jsonl")
+        md_fixed = "当前阶段：1" + chr(10) + "## 错题本" + chr(10) + "- [#q1] 误答" + chr(10)
+        with open(t, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"turn": 1, "assistant": "render 修复。", "phase_context": 1,
+                                "files_after": {"study_state.json": st0,
+                                                "study_progress.md": md_fixed}},
+                               ensure_ascii=False) + chr(10))
+        r = D.evaluate(sc, t)
+        self.assertEqual(r["metrics"]["md_write_after_state"], 0)
+
+    def test_idless_note_divergence_in_dual_write_flagged(self):
+        # 无 id 行同数同状态但 note 背离——state 的 note 必须原文出现在同节的生成行里
+        st1 = json.dumps({"version": 1, "current_phase": 2,
+                          "confusion_log": [{"chapter": "1", "note": "原始疑难笔记"}],
+                          "mistake_archive": []}, ensure_ascii=False)
+        hdr = ("| 疑难ID | 关联章节 | 疑难点 | 状态 |" + chr(10)
+               + "| :--- | :--- | :--- | :--- |" + chr(10))
+        md_wrong = ("当前阶段：2" + chr(10) + "## 💡 概念疑难点记录" + chr(10) + hdr
+                    + "| - | 1 | 手改过的疑难 | 待回顾 |" + chr(10))
+        m = _eval_turns([
+            {"turn": 1, "assistant": "记录。", "phase_context": 2,
+             "files_after": {"study_state.json": st1, "study_progress.md": md_wrong}},
+        ])
+        self.assertGreaterEqual(m["md_write_after_state"], 1)
+
+    def test_stale_idless_baseline_not_seeded(self):
+        # 基线行数/id 序列一致但无 id 行的 note 背离——不做种子，首回合官方 render 修复不误判
+        import shutil
+        sc = dict(D.load_scenario(os.path.join(DRIFT, "scenarios", "long_session_state.json")))
+        d = tempfile.mkdtemp()
+        fx = os.path.join(d, "fx")
+        shutil.copytree(os.path.join(DRIFT, "fixtures", "mini_course_long_state"), fx)
+        st0 = json.dumps({"version": 1, "current_phase": 1, "mistake_archive": [],
+                          "confusion_log": [{"chapter": "1", "note": "事实源里的疑难"}]},
+                         ensure_ascii=False)
+        with open(os.path.join(fx, "study_state.json"), "w", encoding="utf-8") as f:
+            f.write(st0)
+        with open(os.path.join(fx, "study_progress.initial.md"), "w", encoding="utf-8") as f:
+            f.write("当前阶段：1" + chr(10) + "## 疑难点" + chr(10) + "- 陈旧基线里的旧疑难" + chr(10))
+        sc["fixture"] = fx
+        t = os.path.join(d, "t.jsonl")
+        md_fixed = "当前阶段：1" + chr(10) + "## 疑难点" + chr(10) + "- 事实源里的疑难" + chr(10)
+        with open(t, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"turn": 1, "assistant": "render 修复。", "phase_context": 1,
+                                "files_after": {"study_state.json": st0,
+                                                "study_progress.md": md_fixed}},
+                               ensure_ascii=False) + chr(10))
+        r = D.evaluate(sc, t)
+        self.assertEqual(r["metrics"]["md_write_after_state"], 0)
+
     def test_missing_transcript_exits_2(self):
         r = _cli(["--scenario", SCEN, "--transcript", os.path.join(TR, "does_not_exist.jsonl")])
         self.assertEqual(r.returncode, 2)
@@ -186,7 +447,7 @@ class DriftHarness(unittest.TestCase):
             data = json.load(f)
         self.assertTrue(data["all_passed"])
         names = sorted(r["scenario"] for r in data["results"])
-        self.assertEqual(names, ["live_smoke_basic", "long_session_basic"])   # every committed scenario ran
+        self.assertEqual(names, ["live_smoke_basic", "long_session_basic", "long_session_state"])   # every committed scenario ran
 
     # extra coverage: wrong-phase and untagged detection via small synthetic transcripts
     def test_wrong_phase_quiz_detected(self):

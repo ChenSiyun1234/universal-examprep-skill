@@ -485,6 +485,32 @@ def count_wiki_reads(transcript_text):
     return n
 
 
+
+def _state_row_written(fixture_path, sc, key, field, expect):
+    """A4：fixture 是 state-backed 时，错题/疑难写入还必须落在 study_state.json（经官方工具）——
+    只改生成视图 md 的回归不能再混绿。fixture 无 state（md-only 降级）则不作此断言。"""
+    if not os.path.isfile(os.path.join(fixture_path, "study_state.json")):
+        return True
+    rel = sc.get(key)
+    if not rel:
+        return False                                   # state-backed 场景缺 state_after 快照即失败
+    try:
+        st = json.loads(_read(_p(rel)))
+    except (OSError, ValueError):
+        return False
+    try:
+        st0 = json.loads(_read(os.path.join(fixture_path, "study_state.json")))
+    except (OSError, ValueError):
+        return False
+    if st.get("current_phase") != st0.get("current_phase"):
+        return False        # 归档写入不许顺带毁断点——checkpoint 退位即失败
+    rows = st.get(field) or []
+    # add-mistake --id <qid> 把 qid 存在 id 字段、note 只写错因——按 id 或 note 任一匹配
+    return any(isinstance(r, dict) and ((expect or "") in (r.get("note") or "")
+                                        or (expect or "") == (r.get("id") or ""))
+               for r in rows)
+
+
 def validate_fixture_workspace(path):
     """Run the Tier-1 validator on a workspace. Returns (ok, errors, warnings, stats)."""
     spath = os.path.join(ROOT, "scripts")
@@ -528,12 +554,21 @@ def check_scenario_mock(name, sc, fixture_path=FIXTURE):
     if name == "hint_skip_mistake_archive":
         offer = has_hint_skip_offer(_read(_p(sc["mock_output"])))
         arch = progress_has_mistake_archive(_read(_p(sc["progress_after"])), sc.get("expect_archive"))
-        return (offer and arch), f"hint_skip_offer={offer} mistake_archived={arch}"
+        state_ok = _state_row_written(fixture_path, sc, "state_after", "mistake_archive",
+                                      sc.get("expect_archive"))
+        return (offer and arch and state_ok), (f"hint_skip_offer={offer} mistake_archived={arch} "
+                                               f"state_row={state_ok}")
     if name == "confusion_tracking":
         ok = progress_has_confusion_row(_read(_p(sc["mock_output"])), sc.get("expect_confusion"))
-        return ok, f"confusion_row_written={ok}"
+        state_ok = _state_row_written(fixture_path, sc, "state_after", "confusion_log",
+                                      sc.get("expect_confusion"))
+        return (ok and state_ok), f"confusion_row_written={ok} state_row={state_ok}"
     if name == "checkpoint_recovery":
-        ph = progress_current_phase(_read(os.path.join(fixture_path, "study_progress.md")))
+        state_p = os.path.join(fixture_path, "study_state.json")
+        if os.path.isfile(state_p):                    # A4: 结构化状态是唯一事实源，断点从 JSON 读
+            ph = json.loads(_read(state_p)).get("current_phase")
+        else:
+            ph = progress_current_phase(_read(os.path.join(fixture_path, "study_progress.md")))
         resume = _read(_p(sc["mock_output"]))
         refers = resume_refers_to_phase(resume, sc["expected_phase"])
         return (ph == sc["expected_phase"] and refers), f"current_phase={ph} resume_refers_current={refers}"

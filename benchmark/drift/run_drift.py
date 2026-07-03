@@ -149,7 +149,8 @@ def _all_phase_nums(s):
 
 
 def _is_structural(line):
-    return line.startswith("#") or line.startswith("|") or bool(re.match(r"[-*]\s", line))
+    return (line.startswith("#") or line.startswith("|") or bool(re.match(r"[-*]\s", line))
+            or bool(re.match(r"\d+\s*[.)、）]", line)))   # 有序列表（1. 阶段…）也是计划条目
 
 
 def parse_plan_phases(text):
@@ -283,27 +284,41 @@ def parse_progress(text):
     pm = re.search(r"(?:当前进行阶段|当前阶段|current\s*phase)\D*?(\d+)", t, re.I)
     phase = int(pm.group(1)) if pm else None
     mistake, confusion, cur = [], [], None
+    mistake_st, confusion_st, cur_st = [], [], None
     for ln in t.splitlines():
         h = ln.strip()
         is_heading = bool(re.match(r"^\s{0,3}(#{1,4}\s|\*\*)", ln))
         if is_heading and re.search(r"错题|mistake", h):
-            cur = mistake
+            cur, cur_st = mistake, mistake_st
             continue
         if is_heading and re.search(r"疑难|困惑|confusion", h):
-            cur = confusion
+            cur, cur_st = confusion, confusion_st
             continue
         if re.match(r"^\s{0,3}#{1,4}\s", ln):                      # any OTHER heading ends the section
-            cur = None
+            cur, cur_st = None, None
             continue
         if cur is None:
             continue
-        if re.match(r"^\s*[-*]\s+\S", ln) and not _ROW_PLACEHOLDER.search(h):
-            cur.append(re.sub(r"\s+", " ", h))
+        if re.match(r"^\s*[-*]\s+\S", ln):
+            body = re.sub(r"^\s*[-*]\s+", "", h).strip()
+            # 占位判定按【整条】——真实笔记里含「（暂无）」字样（如问空集的行）不能被当占位丢掉
+            if not _ROW_PLACEHOLDER.fullmatch(body):
+                cur.append(re.sub(r"\s+", " ", h))
+                cur_st.append(None)                                 # bullet 形没有状态列
         elif h.startswith("|") and not _TABLE_SEP.match(ln) and not _is_table_header(ln):
             cells = [c.strip() for c in h.strip("|").split("|")]
-            if any(c and c != "-" for c in cells):                 # a table DATA row with real content
-                cur.append(re.sub(r"\s+", " ", h))
-    return {"phase": phase, "mistake_rows": mistake, "confusion_rows": confusion}
+            if not any(c and c != "-" for c in cells):
+                continue
+            # 生成视图的占位行 = 首格是占位词且其余全 '-'（cell 级判定，与迁移解析同口径）
+            if cells and _ROW_PLACEHOLDER.fullmatch(cells[0] or "") \
+                    and all(c in ("", "-") for c in cells[1:]):
+                continue
+            cur.append(re.sub(r"\s+", " ", h))                     # a table DATA row with real content
+            # 生成表的状态列固定在最后一格（≥4 列才有状态列）——状态是自由文本
+            # （已订正/已复盘/已解决…），词表白名单会漏掉合法值让陈旧状态钻空子
+            cur_st.append(cells[-1] if len(cells) >= 4 and cells[-1] not in ("", "-") else None)
+    return {"phase": phase, "mistake_rows": mistake, "confusion_rows": confusion,
+            "mistake_status": mistake_st, "confusion_status": confusion_st}
 
 
 # ---------------- provenance + quiz (mirror T2 semantics) ----------------
@@ -354,6 +369,197 @@ def looks_like_question(line):
 
 # ---------------- metrics ----------------
 
+def parse_state_json(text, plan_phases=None):
+    """A4: parse a study_state.json snapshot into the same shape parse_progress returns. Rows are
+    rendered to "[#id] note" strings so persistence tracking (_row_key) works identically.
+    传入 plan_phases 时阶段还必须落在计划内——validator/update 工具拒收的 99 号断点，
+    T4 也不能让它把 expected_phase 带进沟里。"""
+    if text is not None and not isinstance(text, str):
+        # 手写 JSONL 把快照写成 JSON 对象而不是文件内容字符串——按畸形输入 fail-loud，
+        # 不能让 json.loads 的 TypeError 炸成未处理堆栈
+        raise DriftError("files_after 里的 study_state.json 必须是文件内容字符串，实际是 %s"
+                         % type(text).__name__)
+    try:
+        st = json.loads(text or "")
+    except ValueError as e:
+        raise DriftError("files_after 里的 study_state.json 不是合法 JSON: %s" % e)
+    if not isinstance(st, dict):
+        raise DriftError("files_after 里的 study_state.json 顶层必须是对象")
+    cp = st.get("current_phase")
+    # 与 validator/update 工具同一 schema——坏 phase（"2"/0/缺失）是坏输入要 fail-loud，
+    # 静默当 None/照单全收会让断点与阶段限定指标从错误阶段继续算，掩盖坏写入
+    if not (isinstance(cp, int) and not isinstance(cp, bool) and cp >= 1):
+        raise DriftError("study_state.json 快照的 current_phase 必须是 ≥1 的整数，当前 %r" % cp)
+    if plan_phases and cp not in plan_phases:
+        raise DriftError("study_state.json 快照的 current_phase=%d 不在计划阶段 %s 中（断点不可恢复）"
+                         % (cp, sorted(plan_phases)))
+    phase = cp
+
+    def _rows(field):
+        v = st.get(field)
+        if v is None:
+            v = []
+        if not isinstance(v, list):   # 标量/对象直接迭代会 TypeError 崩溃——按畸形输入统一报 DriftError
+            raise DriftError("files_after 里的 study_state.json 字段 %s 必须是数组，实际 %s"
+                             % (field, type(v).__name__))
+        out, sts = [], []
+        for r in v:
+            # 与 validator/update 工具同一行 schema——字符串元素/缺 note 的行是坏写入，
+            # 静默跳过会让坏 state 以「0 行」通过行持久化指标
+            if not isinstance(r, dict) or not isinstance(r.get("note"), str) or not r["note"].strip():
+                raise DriftError("study_state.json 快照的 %s 行必须是含非空 note 的对象: %r" % (field, r))
+            for k in ("id", "status"):
+                if r.get(k) is not None and not isinstance(r[k], str):
+                    # 非字符串 id 被 str() 硬转会让行持久化在伪键下计算——坏写入必须 fail-loud
+                    raise DriftError("study_state.json 快照的 %s 行 %s 必须是字符串或省略: %r"
+                                     % (field, k, r))
+            if r.get("id"):
+                prefix = "[#%s] " % r["id"]
+            elif r.get("chapter") not in (None, ""):
+                prefix = "[ch:%s] " % r["chapter"]     # 无 id 的行拿章节当判别符——同 note 不同章不折叠
+            else:
+                prefix = ""
+            out.append((prefix + r["note"]).strip())
+            sts.append(r["status"] if isinstance(r.get("status"), str) else None)
+        stat[field] = sts
+        return out
+    stat = {}
+    return {"phase": phase, "mistake_rows": _rows("mistake_archive"),
+            "confusion_rows": _rows("confusion_log"),
+            "mistake_status": stat["mistake_archive"],
+            "confusion_status": stat["confusion_log"]}
+
+
+def _snap_text(fa, name):
+    """files_after 快照值必须是文件内容字符串——对象/数组直接喂给 json.loads/正则会 TypeError
+    崩栈，按畸形输入统一 DriftError（文档承诺的 exit-2 路径）。"""
+    v = fa[name]
+    if not isinstance(v, str):
+        raise DriftError("files_after 里的 %s 必须是文件内容字符串，实际是 %s"
+                         % (name, type(v).__name__))
+    return v
+
+
+def _state_note(row):
+    """state 行串去掉 [#id]/[ch:N] 前缀后的 note 本体。"""
+    return re.sub(r"^\[(?:#|ch:)[^\]]*\]\s*", "", row)
+
+
+def _contain_squash(txt):
+    """跨源包含比对的归一化：镜像 _md_cell 的 换行→空格、|→/，再压掉全部空白。"""
+    return re.sub(r"\s+", "", re.sub(r"\s+", " ", txt).replace("|", "/"))
+
+
+def _dual_key(row):
+    """双写比对用的行键：idless 生成表行首列是占位 '-'，_row_key 会把所有此类行折叠成同一个
+    cell:- 键、同数替换互相隐身——这里降级为【去状态列】的内容键（最后一列是状态，官方
+    set-*-status 只改它、state 行串不含状态，不能因此误报）。其余行沿用 _row_key。"""
+    k = _row_key(row)
+    if k != "cell:-":
+        return k
+    cells = row.strip().strip("|").split("|")
+    return "tx:" + re.sub(r"\s+", "", "|".join(cells[:-1] if len(cells) > 1 else cells))
+
+
+def _session_snapshots(turns, state_established=False, plan_phases=None, init_dual=None):
+    """Per-turn parsed progress snapshot (None = no usable snapshot that turn), honoring the A4
+    source-of-truth contract: within a turn study_state.json wins; and once state has appeared
+    (fixture or any turn), a LATER md-only write is a hand-edit of the generated view — it must
+    NOT advance checkpoint/row metrics（那正是 A4 要抓的漂移）. md fallback is for legacy sessions."""
+    out, stale_md, prev_dual = [], 0, init_dual
+    plan_phases = set(plan_phases) if plan_phases else None
+    for t in turns:
+        fa = t.get("files_after") or {}
+        if "study_plan.md" in fa:
+            # 会话内获授权改计划后，state 的新阶段要对照【最新】计划快照——拿初始计划卡会把
+            # 合法改计划的转写误判成坏输入
+            newp = set(parse_plan_phases(_snap_text(fa, "study_plan.md")))
+            if newp:
+                plan_phases = newp
+        # 违规判定连事件一起看：直接手写 JSONL 可以只给 write_file 事件、不带快照——
+        # 光看 files_after 会漏掉正是要抓的 A4 手改
+        evs = {str(e.get("path", "")).replace(chr(92), "/").rsplit("/", 1)[-1]
+               for e in (t.get("events") or []) if e.get("type") == "write_file"}
+        md_touch = "study_progress.md" in fa or "study_progress.md" in evs
+        state_touch = "study_state.json" in fa or "study_state.json" in evs
+        if "study_progress.md" in fa and "study_state.json" in evs \
+                and "study_state.json" not in fa:
+            # 带 md 快照却只给 state 的 write_file 事件、不给 state 快照——生成视图是否手改
+            # 无从核对，光靠事件豁免 md_write_after_state 正好放走要抓的回归；按畸形输入拒收
+            raise DriftError("转写第 %s 回合有 study_progress.md 快照但 study_state.json 只有 "
+                             "write_file 事件没有快照——无法核对 A4 事实源，请补 state 快照"
+                             % t.get("turn", "?"))
+        if "study_state.json" in fa and "study_progress.md" in evs \
+                and "study_progress.md" not in fa:
+            # 反向同理：写了生成视图（write_file 事件）却不给 md 快照——手改无从核对，
+            # 光靠 state_touch 豁免计数正好放走要抓的回归
+            raise DriftError("转写第 %s 回合写了 study_progress.md（write_file 事件）但没给 md 快照，"
+                             "而同回合有 state 快照——生成视图无从核对，请补 md 快照"
+                             % t.get("turn", "?"))
+        if "study_state.json" in fa:
+            state_established = True
+            snap = parse_state_json(_snap_text(fa, "study_state.json"), plan_phases)
+            out.append(snap)
+            if "study_progress.md" in fa:
+                # 双写却手改生成视图的两种形态都要抓：① md 归档行数超过事实源（新增行）；
+                # ② md 行相对上一次双写发生变化而 state 纹丝不动（同数替换/改写）。
+                # 不直接比 md↔state 行键——跨源无 id 行键格式不可比会误报；
+                # 同源对比（md↔md、state↔state）没有这个问题
+                md_snap = parse_progress(_snap_text(fa, "study_progress.md"))
+                md_keys = ([_dual_key(r) for r in md_snap["mistake_rows"]],
+                           [_dual_key(r) for r in md_snap["confusion_rows"]])
+                st_keys = ([_dual_key(r) for r in snap["mistake_rows"]],
+                           [_dual_key(r) for r in snap["confusion_rows"]])
+                if md_snap["phase"] is not None and md_snap["phase"] != snap["phase"]:
+                    # 断点面板陈旧：state 已到新阶段而生成视图还停在旧阶段——官方更新每次写
+                    # state 都重渲染 md，双快照阶段必然一致
+                    stale_md += 1
+                elif (len(md_snap["mistake_rows"]) + len(md_snap["confusion_rows"])
+                        != len(snap["mistake_rows"]) + len(snap["confusion_rows"])):
+                    # 双向都算：md 多行=手加，md 少行=state 进了新行而给学生看的生成视图没跟上
+                    #（官方更新每次写 state 都重渲染 md，双快照行数必然一致）
+                    stale_md += 1
+                elif prev_dual is not None and md_keys != prev_dual[0] \
+                        and st_keys == prev_dual[1]:
+                    stale_md += 1
+                elif ([k for k in md_keys[0] if k.startswith("id:")],
+                      [k for k in md_keys[1] if k.startswith("id:")]) != \
+                        ([k for k in st_keys[0] if k.startswith("id:")],
+                         [k for k in st_keys[1] if k.startswith("id:")]):
+                    # 带 id 的行键跨源可比（md 表格/bullet 的 [#id] ↔ state 行的 [#id]）——
+                    # 同数但 id 序列不同（state 进了 q1、生成视图却显示 q9）也是手改/陈旧面板；
+                    # 无 id 行仍只走同源比对，不误报
+                    stale_md += 1
+                elif any(
+                        _contain_squash(_state_note(r)) and all(
+                            _contain_squash(_state_note(r)) not in _contain_squash(m)
+                            for m in md_sec)
+                        for st_sec, md_sec in ((snap["mistake_rows"], md_snap["mistake_rows"]),
+                                               (snap["confusion_rows"], md_snap["confusion_rows"]))
+                        for r in st_sec):
+                    # 无 id 行同数同状态但 note 背离：事实源的 note 必须原文出现在同节的某条
+                    # 生成行里（官方渲染逐字写入 note，仅换行/竖线被 _md_cell 归一）——
+                    # add-confusion 这类无 id 路径的手改/陈旧面板由此现形
+                    stale_md += 1
+                elif any(sm is not None and ss is not None and sm != ss for sm, ss in
+                         list(zip(md_snap["mistake_status"], snap["mistake_status"]))
+                         + list(zip(md_snap["confusion_status"], snap["confusion_status"]))):
+                    # 状态-only 更新的陈旧面板：state 已改状态而生成视图还挂旧状态——
+                    # 官方 set-*-status 会重渲染 md，两侧状态必然一致；按节对位比对
+                    stale_md += 1
+                prev_dual = (md_keys, st_keys)
+        elif "study_state.json" in evs:
+            state_established = True   # 只有 write_file 事件、没带快照——事实源同样已确立，
+            out.append(None)           # 后续 md-only 不能再当 legacy 来源
+        elif "study_progress.md" in fa and not state_established:
+            out.append(parse_progress(_snap_text(fa, "study_progress.md")))
+        else:
+            out.append(None)
+        if state_established and md_touch and not state_touch:
+            stale_md += 1            # A4 违规：state 确立后只动生成视图 md（官方更新会两个都写）
+    return out, stale_md
+
+
 def _phase_of_turn(turn):
     pc = _as_phase(turn.get("phase_context"))                     # accept int OR numeric string "2"
     if pc is not None:
@@ -398,7 +604,8 @@ def compute_metrics(scenario, fixture_dir, turns):
 
     try:                                                          # a bad FIXTURE is malformed input (exit 2),
         plan_text = _read(os.path.join(fixture_dir, "study_plan.md"))   # not a harness crash
-        init_progress = _read(os.path.join(fixture_dir, "study_progress.initial.md"))
+        init_md_path = os.path.join(fixture_dir, "study_progress.initial.md")
+        init_progress = _read(init_md_path) if os.path.isfile(init_md_path) else None
         bank = json.loads(_read(os.path.join(fixture_dir, "references", "quiz_bank.json")))
     except (IOError, OSError) as e:
         raise DriftError("fixture 文件读取失败: %s" % e)
@@ -422,20 +629,77 @@ def compute_metrics(scenario, fixture_dir, turns):
 
     assistant_turns = [t for t in turns if t.get("assistant")]
 
+    # A4 source-of-truth aware per-turn snapshots — computed ONCE and shared by the checkpoint /
+    # row-persistence sections so the md-only-after-state rejection can't diverge between them
+    state_init = os.path.join(fixture_dir, "study_state.json")
+    # requires_state 的 A4 场景即使 fixture 没带 state 文件也从「事实源已确立」起步——
+    # 纯 md 手改转写不能在 state 场景白拿 md_write_after_state=0（那正是要抓的回归）
+    require_state = bool(scenario.get("requires_state")) or os.path.isfile(state_init)
+    # 指标种子：fixture 自带 state 时，初始阶段/行都从 JSON 事实源来——
+    # 生成视图 md 过期/不一致时不能拿它当会话起点
+    try:
+        if os.path.isfile(state_init):
+            init_snap = parse_state_json(_read(state_init), set(canon))
+        elif init_progress is not None:
+            init_snap = parse_progress(init_progress)
+        else:
+            raise DriftError("fixture 需要 study_state.json 或 study_progress.initial.md 之一作为初始断点")
+    except UnicodeDecodeError as e:
+        # UnicodeDecodeError 是 ValueError 不是 OSError——单列，坏编码同样走畸形输入 exit-2
+        raise DriftError("fixture 的 study_state.json 不是 UTF-8: %s" % e)
+    except (IOError, OSError) as e:
+        raise DriftError("fixture 的 study_state.json 读取失败: %s" % e)
+
+    # 首个双写快照的同数手改也要有比对基线：fixture 同时给了 state 与初始 md 时，用它们
+    # 做 prev_dual 种子（同源比对——md 基线配 md、state 基线配 state；只有一侧就没有基线，
+    # 首回合仍靠行数/阶段背离兜底）
+    init_dual = None
+    if os.path.isfile(state_init) and init_progress is not None:
+        md0 = parse_progress(init_progress)
+        # 基线 md 必须与基线 state 一致（阶段/行数/id 序列）才可用作同源比对种子——
+        # fixture 自带的初始 md 若本就陈旧，首回合官方 render 修复会被误判成手改
+        consistent = (md0["phase"] in (None, init_snap["phase"])
+                      and len(md0["mistake_rows"]) + len(md0["confusion_rows"])
+                      == len(init_snap["mistake_rows"]) + len(init_snap["confusion_rows"])
+                      and [k for k in (_dual_key(r) for r in md0["mistake_rows"])
+                           if k.startswith("id:")]
+                      == [k for k in (_dual_key(r) for r in init_snap["mistake_rows"])
+                          if k.startswith("id:")]
+                      and [k for k in (_dual_key(r) for r in md0["confusion_rows"])
+                           if k.startswith("id:")]
+                      == [k for k in (_dual_key(r) for r in init_snap["confusion_rows"])
+                          if k.startswith("id:")]
+                      # 无 id 行同样要证明一致：state 每条 note 都能在基线 md 同节找到——
+                      # 行数/id 序列都对但 idless note 背离的陈旧基线不做种子，
+                      # 否则首回合官方 render 修复会被误判成手改
+                      and all(not _contain_squash(_state_note(r))
+                              or any(_contain_squash(_state_note(r)) in _contain_squash(m)
+                                     for m in md_sec)
+                              for st_sec, md_sec in
+                              ((init_snap["mistake_rows"], md0["mistake_rows"]),
+                               (init_snap["confusion_rows"], md0["confusion_rows"]))
+                              for r in st_sec))
+        if consistent:
+            init_dual = (([_dual_key(r) for r in md0["mistake_rows"]],
+                          [_dual_key(r) for r in md0["confusion_rows"]]),
+                         ([_dual_key(r) for r in init_snap["mistake_rows"]],
+                          [_dual_key(r) for r in init_snap["confusion_rows"]]))
+    snaps, md_after_state = _session_snapshots(turns, require_state, set(canon), init_dual)
+
     # RUNNING PHASE CONTEXT — carried forward so the wrong-phase / over-read checks can't be silently
     # disabled by omitting `phase_context`: a turn without an explicit phase inherits the session's
     # current phase (initial checkpoint → prior explicit phases / progress snapshots).
-    running = parse_progress(init_progress)["phase"] or (canon[0] if canon else None)
+    running = init_snap["phase"] or (canon[0] if canon else None)
     turn_phase = []
-    for t in turns:
+    for i, t in enumerate(turns):
         explicit = _phase_of_turn(t)
         eff = explicit if explicit is not None else running
         turn_phase.append(eff)
         if eff is not None:
             running = eff
-        pr = (t.get("files_after") or {}).get("study_progress.md")
-        if pr is not None and parse_progress(pr)["phase"] is not None:
-            running = parse_progress(pr)["phase"]
+        snap = snaps[i]
+        if snap is not None and snap["phase"] is not None:
+            running = snap["phase"]
 
     # 1) goal retention — an assistant turn is off-goal if it wanders off / refuses to continue. This is a
     #    COARSE KEYWORD heuristic (blocklist) — it can't catch every paraphrase; full semantic goal-drift
@@ -536,8 +800,8 @@ def compute_metrics(scenario, fixture_dir, turns):
 
     # 4) checkpoint recovery — EVERY resume turn must continue from the current phase, not restart earlier.
     reset_count, resumed_phase, expected_phase = 0, None, None
-    run_ck = parse_progress(init_progress)["phase"] or (canon[0] if canon else None)
-    for t in turns:
+    run_ck = init_snap["phase"] or (canon[0] if canon else None)
+    for i, t in enumerate(turns):
         is_resume = t.get("kind") == "resume" or RESUME_TRIGGERS.search(t.get("user", ""))
         if is_resume:
             exp, a = run_ck, t.get("assistant", "")
@@ -561,9 +825,9 @@ def compute_metrics(scenario, fixture_dir, turns):
             if expected_phase is None:                            # report the FIRST resume's phases
                 expected_phase = exp
                 resumed_phase = min(targets) if targets else (1 if generic_restart else None)
-        pr = (t.get("files_after") or {}).get("study_progress.md")
-        if pr is not None and parse_progress(pr)["phase"] is not None:
-            run_ck = parse_progress(pr)["phase"]
+        snap = snaps[i]
+        if snap is not None and snap["phase"] is not None:
+            run_ck = snap["phase"]
     reset_detected = reset_count
 
     # 5) provenance fidelity — a turn is an EXPLANATION turn whenever the USER asked to explain (or it is
@@ -575,9 +839,11 @@ def compute_metrics(scenario, fixture_dir, turns):
 
     # 6) mistake / confusion persistence — track rows by their [#id] when present (so rewording an existing
     #    row isn't a false 'loss'); rows without an id fall back to normalized text.
-    prog_snaps = _snapshots(turns, "study_progress.md", init_progress)
+    parsed = [init_snap]
+    for snap in snaps:
+        if snap is not None:
+            parsed.append(snap)
     mistake_added = confusion_added = rows_lost = 0
-    parsed = [parse_progress(s) for s in prog_snaps]
     for prev, cur in zip(parsed, parsed[1:]):
         for field, is_m in (("mistake_rows", True), ("confusion_rows", False)):
             pset = {_row_key(r) for r in prev[field]}
@@ -632,7 +898,7 @@ def compute_metrics(scenario, fixture_dir, turns):
         "resumed_phase": resumed_phase, "expected_phase": expected_phase, "reset_detected": reset_detected,
         "explanation_turns": len(expl), "provenance_fidelity": provenance_fidelity,
         "mistake_rows_added": mistake_added, "confusion_rows_added": confusion_added,
-        "progress_rows_lost": rows_lost,
+        "progress_rows_lost": rows_lost, "md_write_after_state": md_after_state,
         "wiki_reads": wiki_reads, "unique_wiki_files": wiki_files, "overread_flag": overread,
         "cost": cost,
     }
@@ -651,6 +917,7 @@ THRESHOLD_RULES = {
     "checkpoint_reset_max": ("reset_detected", "max"),
     "provenance_fidelity_min": ("provenance_fidelity", "min"),
     "progress_rows_lost_max": ("progress_rows_lost", "max"),
+    "md_write_after_state_max": ("md_write_after_state", "max"),   # A4: state 确立后手改生成视图的次数
     "wiki_unique_files_max": ("unique_wiki_files", "max"),
     "overread_max": ("overread_flag", "max"),
 }

@@ -42,6 +42,7 @@ metadata:
 1. **标准抽题**：从 `references/quiz_bank.json` 中过滤并提取属于当前章节的题目。**禁止**现场随机编造不符合大纲的题目。
    * **依赖图的题 visual-first + fail-closed**：题项可带 `requires_assets` / `maybe_requires_assets` / `assets` / `question_text_status`（见 [`docs/file-format.md`](docs/file-format.md) §4）。出 `requires_assets=true` 或 `maybe_requires_assets=true` 的题前，必须先**把所有题面侧图片（`question_context`/`figure`/`diagram`/`table`）真正渲染/显示出来给学生看**，并标成「题面图 / question-side asset」；只打印路径不算。**不得先显示答案侧图片（`answer_context`/`worked_solution`）**，答案侧图片只能在解答/复盘阶段、题面图已显示之后再展示，并标成「答案图 / answer-side asset」。**图缺失/不可读、Markdown 链接不渲染、Windows 路径写成 slash-prefixed drive-letter 这类无法显示格式、或网页端无法显示图时，绝不出这道题**，改从题库另选 `full` 全文题；不得假装图片已经展示。`stub`/`page_reference` 题须先呈现原页/资源上下文，无法呈现则跳过。
 - 范围过滤契约（A2）：默认混合题池；学生限定范围（如只做作业题）后即为已记录的 scope 过滤器，越范围出题前必须先输出「⚠️ 临时覆盖你的 <范围> 范围偏好」，未标 source_type 的题在限定范围内一律排除并报告数量（官方选题工具 scripts/select_questions.py）。
+- 结构化进度契约（A4）：存在 study_state.json 时它是唯一事实源——一律经 scripts/update_progress.py 更新（set/add-mistake/add-confusion/render），study_progress.md 是生成视图、严禁手改（下次渲染即丢）；状态写入失败必须告知用户，绝不当作已保存继续。state 文件缺失时先分辨两种情况：Python 可用（新建工作区尚未初始化）→ 先跑 `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> init` 建立事实源再更新（脚本按技能包根解析——学生工作区里没有 scripts/），别停在 md 手改路径；真无法运行 Python 才降级为手写 md（照常有效）。
 2. **主观题语义判分**：若为计算或简答题，执行**“要点检索制”**。核对学生作答是否覆盖了该题的 `keywords` 和解题步骤，只要意思对即判定通过，给出相似度反馈。
 3. **画图题：先跑算法再画 (`type: "diagram"`)**：若题目类型为画图题（如二叉树/AVL 旋转、红黑树、B 树、图遍历、哈夫曼树、状态机等），智能体**禁止凭记忆手绘或用文字脑补最终图形**，必须遵循以下流程，让图的正确性由确定性程序保证：
    * **先跑算法再画图**：写一段实现标准算法的 Python 代码（用 `matplotlib` / `graphviz` 等），真实运行得到结构，再渲染成图片供学生查看。绝不直接「想象」最终形态。
@@ -52,7 +53,7 @@ metadata:
    * 若学生**连续答错 2 次**，智能体必须主动提供选项：“*是否跳过此题并将该题自动归档至错题本？*” 如果用户选择跳过，立即在进度文件中记录并放行。
 
 ### 第四步：易错扫雷与冲刺 (Diagnostic & Review)
-1. **错题本重温**：进入最后一阶段，智能体必须读取 `study_progress.md` 中的错题记录，重新调取 `references/quiz_bank.json` 中的原题，进行扫雷测试。**重做错题时同样遵守第三步的「依赖图的题 visual-first + fail-closed」门禁**：`requires_assets=true` / `maybe_requires_assets=true` / `stub` / `page_reference` 的错题，须先把题面侧图/原页上下文真正显示出来；显示不了就跳过，不让学生重做一道看不到题面的题。
+1. **错题本重温**：进入最后一阶段，智能体必须读取错题记录——存在 `study_state.json` 时从其 `mistake_archive`/`confusion_log` 读取（事实源；`study_progress.md` 是可能过期的生成视图），否则读 `study_progress.md`——再重新调取 `references/quiz_bank.json` 中的原题，进行扫雷测试。**重做错题时同样遵守第三步的「依赖图的题 visual-first + fail-closed」门禁**：`requires_assets=true` / `maybe_requires_assets=true` / `stub` / `page_reference` 的错题，须先把题面侧图/原页上下文真正显示出来；显示不了就跳过，不让学生重做一道看不到题面的题。
 2. **生成 Cheat Sheet**：全员通关后，在工作区为用户生成复习总结报告 `walkthrough.md`，内含该科目的**考前极简速记小抄（Cheat Sheet）**。
 
 ---
@@ -65,8 +66,8 @@ metadata:
    * 教学以该目录下被 Lazy Load 的章节 MD 文件为唯一知识边界，不准发散讨论非当前章节的知识点。
 2. **答案与解析锁定 (`references/quiz_bank.json`)**：
    * 测验时的标准答案和解题步骤必须从 JSON 题库中读取，绝不现场进行复杂的符号或代数推导，以此实现 100% 的计算结果防幻觉。
-3. **断点状态锁定 (`study_progress.md`)**：
-   * 智能体在每次交互（授课完成、答对题、归档错题）后，必须更新当前工作区根目录下的 `study_progress.md`。每次会话重启时，第一步必须读取此进度文件，以此重置 AI 的记忆位置。
+3. **断点状态锁定 (`study_state.json` / `study_progress.md`)**：
+   * 智能体在每次交互（授课完成、答对题、归档错题）后，必须更新进度：存在 `study_state.json`（A4 结构化状态）时它是唯一事实源——一律经 `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py"`（set / add-mistake / add-confusion / set-*-status / set-check）更新，`study_progress.md` 会自动重渲染、严禁手改；无 state 文件时：Python 可用就先跑 `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> init` 建立事实源再更新（ingest 新建的工作区只有 md、没有 state，正是这一步补上），真无法运行 Python 才直接更新 `study_progress.md`。每次会话重启时，第一步先读 `study_state.json`（存在时），否则读 `study_progress.md`，以此重置 AI 的记忆位置。
 
 ---
 
