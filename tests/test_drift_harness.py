@@ -7,6 +7,7 @@ transcript fails for its intended reason; malformed input exits 2; token/cost ac
 row-loss detection; the --llm skeleton never returns success; and the fixture is self-authored text."""
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -185,6 +186,48 @@ class DriftHarness(unittest.TestCase):
         sc = D.load_scenario(os.path.join(DRIFT, "scenarios", "window_persist.json"))
         r = D.evaluate(sc, _tr("window_persist_session.jsonl"))
         self.assertEqual(r["metrics"]["window_rows_lost"], 0)
+
+    def test_b3_chapter_backfill_not_a_loss(self):
+        # Codex R5LA：先无章节登记、后补章节（point@ → point@N）是同一行的回填，不算 丢+加
+        self.assertTrue(D._window_compat("红黑树@", "红黑树@7"))
+        self.assertTrue(D._window_compat("红黑树@7", "红黑树@"))
+        self.assertFalse(D._window_compat("模板@2", "模板@5"))     # 都标了章且不同 = 真不同的点
+
+    def test_b3_status_migration_required(self):
+        # Codex R5LB：只保留窗口行、状态全程不迁移（在窗口→窗口外→已实测 没发生）应挂 migrations 门槛
+        sc = D.load_scenario(os.path.join(DRIFT, "scenarios", "window_persist.json"))
+        turns = D.load_jsonl(_tr("window_persist_session.jsonl"), "w")
+        for t in turns:
+            fa = t.get("files_after") or {}
+            if "study_state.json" in fa:
+                st = json.loads(fa["study_state.json"])
+                for w in st["knowledge_window"]:
+                    w["status"] = "在窗口"                          # 冻结状态，从不迁移
+                fa["study_state.json"] = json.dumps(st, ensure_ascii=False)
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "nomig.jsonl")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write("\n".join(json.dumps(t, ensure_ascii=False) for t in turns))
+        r = D.evaluate(sc, p)
+        self.assertEqual(r["metrics"]["window_status_migrations"], 0)
+        self.assertFalse(r["passed"])
+        self.assertIn("window_status_migrations_min", _fail_thresholds(r))
+
+    def test_b3_md_missing_window_section_flagged(self):
+        # Codex R5LE：state 有窗口条目、生成视图 md 漏了 🪟 区 → 双写不一致 md_write_after_state>0
+        sc = D.load_scenario(os.path.join(DRIFT, "scenarios", "window_persist.json"))
+        turns = D.load_jsonl(_tr("window_persist_session.jsonl"), "w")
+        for t in turns:
+            fa = t.get("files_after") or {}
+            if "study_progress.md" in fa:
+                fa["study_progress.md"] = re.sub(r"## 🪟[\s\S]*$", "", fa["study_progress.md"])
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "stalemd.jsonl")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write("\n".join(json.dumps(t, ensure_ascii=False) for t in turns))
+        r = D.evaluate(sc, p)
+        self.assertGreater(r["metrics"]["md_write_after_state"], 0)
+        self.assertFalse(r["passed"])
 
     def test_b3_bad_window_row_fails_loud(self):
         # knowledge_window 里出现缺 point 的坏行 → 畸形输入 fail-loud（exit 2），不静默当 0 行通过
@@ -1020,15 +1063,18 @@ class DriftHarness(unittest.TestCase):
                        "urllib.request", "http.client", "import socket", "claude -p"):
             self.assertNotIn(banned, src)
         # B3：subprocess 现在合法用于 opt-in 的 --llm 委托（转正给 run_live_smoke），但确定性 replay
-        # 路径必须仍纯净——所有 subprocess.run/Popen/call 调用都只能落在 run_llm 函数体内。
+        # 路径必须仍纯净——所有 subprocess.run/Popen/call 调用的**位置**都只能落在 run_llm 函数体内。
+        # 用 span（字符偏移区间）比对而非字面量：字面量 "subprocess.run" 到处都一样，比它没意义（Codex R5LD）。
         import re as _re
         m = _re.search(r"\ndef run_llm\(.*?(?=\ndef )", src, _re.S)
-        run_llm_body = m.group(0) if m else ""
-        calls = _re.findall(r"subprocess\.(?:run|Popen|call)\b", src)
+        self.assertIsNotNone(m, "找不到 run_llm 函数体")
+        lo, hi = m.start(), m.end()
+        calls = list(_re.finditer(r"subprocess\.(?:run|Popen|call)\b", src))
         self.assertTrue(calls, "预期 run_llm 里有 subprocess 委托调用")
-        for c in _re.finditer(r"subprocess\.(?:run|Popen|call)\b", src):
-            self.assertIn(c.group(0), run_llm_body,
-                          "subprocess 调用逃出了 opt-in 的 run_llm 委托路径（确定性 replay 必须无子进程）")
+        for c in calls:
+            self.assertTrue(lo <= c.start() < hi,
+                            "subprocess 调用在偏移 %d 逃出了 run_llm 体 [%d,%d)（确定性 replay 必须无子进程）"
+                            % (c.start(), lo, hi))
 
     def test_llm_opt_in_delegates_never_succeeds_without_agent(self):
         # B3：--llm 转正——委托给 run_live_smoke 真管线，但仍绝不无 agent 就报成功

@@ -292,6 +292,13 @@ def _is_table_header(line):
     return sum(1 for w in _TABLE_HDR_WORDS if w in low) >= 2
 
 
+def _window_compat(a, b):
+    """窗口条目身份相容：同 point 且（任一方无章节，或章节相等）——与 update_progress 的补章节回填同口径。"""
+    pa, _, ca = a.partition("@")
+    pb, _, cb = b.partition("@")
+    return pa == pb and (ca == "" or cb == "" or ca == cb)
+
+
 def parse_progress(text):
     """{'phase': int|None, 'mistake_rows': [...], 'confusion_rows': [...]} from a study_progress.md.
 
@@ -302,7 +309,7 @@ def parse_progress(text):
     t = text or ""
     pm = re.search(r"(?:当前进行阶段|当前阶段|current\s*phase)\D*?(\d+)", t, re.I)
     phase = int(pm.group(1)) if pm else None
-    mistake, confusion, cur = [], [], None
+    mistake, confusion, window, cur = [], [], [], None
     mistake_st, confusion_st, cur_st = [], [], None
     for ln in t.splitlines():
         h = ln.strip()
@@ -312,6 +319,9 @@ def parse_progress(text):
             continue
         if is_heading and re.search(r"疑难|困惑|confusion", h):
             cur, cur_st = confusion, confusion_st
+            continue
+        if is_heading and re.search(r"🪟|知识点窗口", h):           # A6 知识点窗口区（生成视图）
+            cur, cur_st = window, None
             continue
         if re.match(r"^\s{0,3}#{1,4}\s", ln):                      # any OTHER heading ends the section
             cur, cur_st = None, None
@@ -323,7 +333,8 @@ def parse_progress(text):
             # 占位判定按【整条】——真实笔记里含「（暂无）」字样（如问空集的行）不能被当占位丢掉
             if not _ROW_PLACEHOLDER.fullmatch(body):
                 cur.append(re.sub(r"\s+", " ", h))
-                cur_st.append(None)                                 # bullet 形没有状态列
+                if cur_st is not None:
+                    cur_st.append(None)                             # bullet 形没有状态列
         elif h.startswith("|") and not _TABLE_SEP.match(ln) and not _is_table_header(ln):
             cells = [c.strip() for c in h.strip("|").split("|")]
             if not any(c and c != "-" for c in cells):
@@ -335,9 +346,11 @@ def parse_progress(text):
             cur.append(re.sub(r"\s+", " ", h))                     # a table DATA row with real content
             # 生成表的状态列固定在最后一格（≥4 列才有状态列）——状态是自由文本
             # （已订正/已复盘/已解决…），词表白名单会漏掉合法值让陈旧状态钻空子
-            cur_st.append(cells[-1] if len(cells) >= 4 and cells[-1] not in ("", "-") else None)
+            if cur_st is not None:
+                cur_st.append(cells[-1] if len(cells) >= 4 and cells[-1] not in ("", "-") else None)
     return {"phase": phase, "mistake_rows": mistake, "confusion_rows": confusion,
-            "mistake_status": mistake_st, "confusion_status": confusion_st}
+            "mistake_status": mistake_st, "confusion_status": confusion_st,
+            "window_rows": window}
 
 
 # ---------------- provenance + quiz (mirror T2 semantics) ----------------
@@ -556,6 +569,10 @@ def _session_snapshots(turns, state_established=False, plan_phases=None, init_du
                         != len(snap["mistake_rows"]) + len(snap["confusion_rows"])):
                     # 双向都算：md 多行=手加，md 少行=state 进了新行而给学生看的生成视图没跟上
                     #（官方更新每次写 state 都重渲染 md，双快照行数必然一致）
+                    stale_md += 1
+                elif len(md_snap.get("window_rows", [])) != len(snap.get("window_rows", [])):
+                    # A6：state 增改了知识点窗口条目，而生成视图的 🪟 区行数没跟上（漏渲染/陈旧面板）
+                    # ——官方更新每次写 state 都重渲染含 🪟 的 md，双快照窗口行数必然一致（Codex R5LE）
                     stale_md += 1
                 elif prev_dual is not None and md_keys != prev_dual[0] \
                         and st_keys == prev_dual[1]:
@@ -948,7 +965,7 @@ def compute_metrics(scenario, fixture_dir, turns):
         if snap is not None:
             parsed.append(snap)
     mistake_added = confusion_added = rows_lost = 0
-    window_added = window_lost = 0
+    window_added = window_lost = window_status_migrations = 0
     for prev, cur in zip(parsed, parsed[1:]):
         for field, is_m in (("mistake_rows", True), ("confusion_rows", False)):
             pset = {_row_key(r) for r in prev[field]}
@@ -959,12 +976,22 @@ def compute_metrics(scenario, fixture_dir, turns):
             else:
                 confusion_added += gained
             rows_lost += lost
-        # A6 知识点窗口持久化：窗口条目跨轮新增可以（讲了新点），但**丢失**（静默掉行）不行——
-        # 窗口进出是 status 迁移不是删行；键 point@chapter 不因状态改变（在窗口→已实测）而算丢失。
-        pw = set(prev.get("window_rows", []))
-        cw = set(cur.get("window_rows", []))
-        window_added += len(cw - pw)
-        window_lost += len(pw - cw)
+        # A6 知识点窗口持久化：新增可以（讲了新点），但**丢失**（静默掉行）不行。身份用 compat 判定
+        # ——null-章节键 point@ 与 point@N 相容（工具补章节回填是同一行），补章节不算 丢+加（R5LA）。
+        pw, cw = prev.get("window_rows", []), cur.get("window_rows", [])
+        ps, cs = prev.get("window_status", []), cur.get("window_status", [])
+        window_added += sum(1 for c in cw if not any(_window_compat(c, a) for a in pw))
+        window_lost += sum(1 for a in pw if not any(_window_compat(a, c) for c in cw))
+        # 状态迁移：同一（相容）条目状态变了（在窗口→窗口外→已实测）计一次——只保留行不迁移状态
+        # 的转写不算真的窗口进出（R5LB）。
+        pstat = list(zip(pw, ps))
+        for c, st in zip(cw, cs):
+            if st is None:
+                continue
+            for a, pst in pstat:
+                if _window_compat(a, c) and pst is not None and pst != st:
+                    window_status_migrations += 1
+                    break
 
     # 7) wiki lazy-load / overread — read events checked against the RUNNING phase (see turn_phase)
     wiki_reads = 0
@@ -1012,6 +1039,7 @@ def compute_metrics(scenario, fixture_dir, turns):
         "mistake_rows_added": mistake_added, "confusion_rows_added": confusion_added,
         "progress_rows_lost": rows_lost, "md_write_after_state": md_after_state,
         "window_rows_added": window_added, "window_rows_lost": window_lost,
+        "window_status_migrations": window_status_migrations,
         "wiki_reads": wiki_reads, "unique_wiki_files": wiki_files, "overread_flag": overread,
         "cost": cost,
     }
@@ -1034,6 +1062,7 @@ THRESHOLD_RULES = {
     "progress_rows_lost_max": ("progress_rows_lost", "max"),
     "window_rows_added_min": ("window_rows_added", "min"),   # A6：长会话里至少登记过 N 个窗口条目
     "window_rows_lost_max": ("window_rows_lost", "max"),     # A6：窗口条目不得静默丢失（进出是状态迁移）
+    "window_status_migrations_min": ("window_status_migrations", "min"),  # A6：窗口条目须真的迁移状态
     "md_write_after_state_max": ("md_write_after_state", "max"),   # A4: state 确立后手改生成视图的次数
     "wiki_unique_files_max": ("unique_wiki_files", "max"),
     "overread_max": ("overread_flag", "max"),
