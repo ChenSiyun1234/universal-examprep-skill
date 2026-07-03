@@ -425,6 +425,10 @@ def validate(ws):
     elif os.path.isfile(state_path):
         try:
             st = json.loads(_read(state_path))
+        except OSError as e:
+            # isfile 通过后仍可能读失败（权限变更/竞态删除）——Tier-1 要给结构化报错，不许崩栈
+            err(f"study_state.json 存在但无法读取（{e}）——请检查文件权限")
+            st = None
         except UnicodeDecodeError:
             err("study_state.json 不是 UTF-8——状态文件损坏（应由 update_progress.py 以 UTF-8 原子写入）")
             st = None

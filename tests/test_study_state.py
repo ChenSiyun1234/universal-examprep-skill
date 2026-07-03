@@ -538,6 +538,18 @@ class ValidatorSchema(unittest.TestCase):
         self.assertEqual(r.returncode, 1)                         # 英文计划也要挡住 99 号断点
         self.assertIn("不在 study_plan.md", r.stdout)
 
+    @unittest.skipUnless(os.name == "posix", "chmod 0o000 只在 POSIX 生效")
+    def test_unreadable_state_reports_not_crashes(self):
+        ws = self._full_ws({"current_phase": 1})
+        os.chmod(os.path.join(ws, "study_state.json"), 0o000)
+        try:
+            r = self._validate(ws)
+        finally:
+            os.chmod(os.path.join(ws, "study_state.json"), 0o644)
+        self.assertEqual(r.returncode, 1)                         # 结构化报错而不是崩栈
+        self.assertIn("无法读取", r.stdout)
+        self.assertNotIn("Traceback", r.stderr)
+
     def test_good_state_passes(self):
         ws = self._full_ws({"mistake_archive": [{"id": "q1", "chapter": "1", "note": "x", "status": "待复盘"}]})
         r = self._validate(ws)

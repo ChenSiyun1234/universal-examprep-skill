@@ -451,7 +451,15 @@ def _session_snapshots(turns, state_established=False, plan_phases=None):
         state_touch = "study_state.json" in fa or "study_state.json" in evs
         if "study_state.json" in fa:
             state_established = True
-            out.append(parse_state_json(_snap_text(fa, "study_state.json"), plan_phases))
+            snap = parse_state_json(_snap_text(fa, "study_state.json"), plan_phases)
+            out.append(snap)
+            if "study_progress.md" in fa:
+                # 双写但生成视图里的归档行数超过事实源——手改 md + 空转 state 写不能洗白
+                # （行指标只认 state，行数对比跨 md/state 源无 id 格式歧义，状态改写不误伤）
+                md_snap = parse_progress(_snap_text(fa, "study_progress.md"))
+                if (len(md_snap["mistake_rows"]) + len(md_snap["confusion_rows"])
+                        > len(snap["mistake_rows"]) + len(snap["confusion_rows"])):
+                    stale_md += 1
         elif "study_state.json" in evs:
             state_established = True   # 只有 write_file 事件、没带快照——事实源同样已确立，
             out.append(None)           # 后续 md-only 不能再当 legacy 来源

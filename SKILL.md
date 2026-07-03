@@ -67,7 +67,7 @@ metadata:
 2. **答案与解析锁定 (`references/quiz_bank.json`)**：
    * 测验时的标准答案和解题步骤必须从 JSON 题库中读取，绝不现场进行复杂的符号或代数推导，以此实现 100% 的计算结果防幻觉。
 3. **断点状态锁定 (`study_state.json` / `study_progress.md`)**：
-   * 智能体在每次交互（授课完成、答对题、归档错题）后，必须更新进度：存在 `study_state.json`（A4 结构化状态）时它是唯一事实源——一律经 `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py"`（set / add-mistake / add-confusion / set-*-status / set-check）更新，`study_progress.md` 会自动重渲染、严禁手改；无 state 文件时才直接更新 `study_progress.md`。每次会话重启时，第一步先读 `study_state.json`（存在时），否则读 `study_progress.md`，以此重置 AI 的记忆位置。
+   * 智能体在每次交互（授课完成、答对题、归档错题）后，必须更新进度：存在 `study_state.json`（A4 结构化状态）时它是唯一事实源——一律经 `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py"`（set / add-mistake / add-confusion / set-*-status / set-check）更新，`study_progress.md` 会自动重渲染、严禁手改；无 state 文件时：Python 可用就先跑 `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> init` 建立事实源再更新（ingest 新建的工作区只有 md、没有 state，正是这一步补上），真无法运行 Python 才直接更新 `study_progress.md`。每次会话重启时，第一步先读 `study_state.json`（存在时），否则读 `study_progress.md`，以此重置 AI 的记忆位置。
 
 ---
 

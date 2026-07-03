@@ -113,6 +113,21 @@ class DriftHarness(unittest.TestCase):
         r = D.evaluate(sc, _tr("good_session.jsonl"))
         self.assertIn("md_write_after_state_max", _fail_thresholds(r))
 
+    def test_md_rows_beyond_state_counted_as_hand_edit(self):
+        # 双写但只有生成视图多了行、state 空转——手改 md 不能靠捎带 no-op state 写洗白
+        st1 = json.dumps({"version": 1, "current_phase": 2,
+                          "mistake_archive": [{"id": "q1", "note": "误答"}],
+                          "confusion_log": []}, ensure_ascii=False)
+        md1 = "当前阶段：2\n## 错题本\n- [#q1] 误答\n"
+        md2 = "当前阶段：2\n## 错题本\n- [#q1] 误答\n- [#q2] 手改新增的行\n"
+        m = _eval_turns([
+            {"turn": 1, "assistant": "记录。", "phase_context": 2,
+             "files_after": {"study_state.json": st1, "study_progress.md": md1}},
+            {"turn": 2, "assistant": "再记录。", "phase_context": 2,
+             "files_after": {"study_state.json": st1, "study_progress.md": md2}},
+        ])
+        self.assertEqual(m["md_write_after_state"], 1)            # 只有 turn2 的行数背离计违规
+
     def test_missing_transcript_exits_2(self):
         r = _cli(["--scenario", SCEN, "--transcript", os.path.join(TR, "does_not_exist.jsonl")])
         self.assertEqual(r.returncode, 2)

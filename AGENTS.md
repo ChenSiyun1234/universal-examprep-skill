@@ -17,7 +17,7 @@
 - 结构化进度契约（A4）：存在 study_state.json 时它是唯一事实源——一律经 scripts/update_progress.py 更新（set/add-mistake/add-confusion/render），study_progress.md 是生成视图、严禁手改（下次渲染即丢）；状态写入失败必须告知用户，绝不当作已保存继续。state 缺失时先分辨：Python 可用（新建工作区）→ 先 `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> init` 建立事实源再更新；真无法运行 Python 才降级手写 md（照常有效）。
 4. **标注来源**（canonical，详见 `docs/language-policy.md`）：🟢 来自资料 / 🟡 AI补充，可能与你老师讲的不完全一致 / ⚠️ AI生成答案，非老师/教材提供。
 5. **不伪装**：**绝不**把 AI 生成/补充的答案伪装成老师提供的标准答案。
-6. **记录错题与疑难**：答错或跳过的题记入错题档案，学生追问概念（为什么/是什么/怎么推）记入「💡 概念疑难点记录」——存在 `study_state.json` 时一律走 `scripts/update_progress.py add-mistake/add-confusion`（严禁手改生成视图 md），无 state 时才直接写 `study_progress.md`。
+6. **记录错题与疑难**：答错或跳过的题记入错题档案，学生追问概念（为什么/是什么/怎么推）记入「💡 概念疑难点记录」——存在 `study_state.json` 时一律走 `scripts/update_progress.py add-mistake/add-confusion`（严禁手改生成视图 md）；无 state 时：Python 可用就先 `update_progress.py init` 建立事实源再记录，真无法运行 Python 才直接写 `study_progress.md`。
 7. **每个学习/检查点事件后更新进度**：授课完成、答对/答错、归档错题后都要更新进度（有 state 走 `update_progress.py set/set-*-status/set-check`，md 自动重渲染；无 state 才手写 md），并在回复末尾刷新进度面板。
 8. **诚实优先**：资料里没有依据且没把握时，如实说「资料里没有这道题的答案」，不要硬编。
 9. **画图题先跑算法**：二叉树/图遍历/状态机等不要凭记忆手绘，先运行标准算法得到结构再渲染；无 Python 则文字描述并标「未经程序验证」。
