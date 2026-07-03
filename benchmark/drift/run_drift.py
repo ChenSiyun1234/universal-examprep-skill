@@ -668,7 +668,17 @@ def compute_metrics(scenario, fixture_dir, turns):
                       and [k for k in (_dual_key(r) for r in md0["confusion_rows"])
                            if k.startswith("id:")]
                       == [k for k in (_dual_key(r) for r in init_snap["confusion_rows"])
-                          if k.startswith("id:")])
+                          if k.startswith("id:")]
+                      # 无 id 行同样要证明一致：state 每条 note 都能在基线 md 同节找到——
+                      # 行数/id 序列都对但 idless note 背离的陈旧基线不做种子，
+                      # 否则首回合官方 render 修复会被误判成手改
+                      and all(not _contain_squash(_state_note(r))
+                              or any(_contain_squash(_state_note(r)) in _contain_squash(m)
+                                     for m in md_sec)
+                              for st_sec, md_sec in
+                              ((init_snap["mistake_rows"], md0["mistake_rows"]),
+                               (init_snap["confusion_rows"], md0["confusion_rows"]))
+                              for r in st_sec))
         if consistent:
             init_dual = (([_dual_key(r) for r in md0["mistake_rows"]],
                           [_dual_key(r) for r in md0["confusion_rows"]]),

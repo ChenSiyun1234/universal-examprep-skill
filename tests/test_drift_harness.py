@@ -343,6 +343,31 @@ class DriftHarness(unittest.TestCase):
         ])
         self.assertGreaterEqual(m["md_write_after_state"], 1)
 
+    def test_stale_idless_baseline_not_seeded(self):
+        # 基线行数/id 序列一致但无 id 行的 note 背离——不做种子，首回合官方 render 修复不误判
+        import shutil
+        sc = dict(D.load_scenario(os.path.join(DRIFT, "scenarios", "long_session_state.json")))
+        d = tempfile.mkdtemp()
+        fx = os.path.join(d, "fx")
+        shutil.copytree(os.path.join(DRIFT, "fixtures", "mini_course_long_state"), fx)
+        st0 = json.dumps({"version": 1, "current_phase": 1, "mistake_archive": [],
+                          "confusion_log": [{"chapter": "1", "note": "事实源里的疑难"}]},
+                         ensure_ascii=False)
+        with open(os.path.join(fx, "study_state.json"), "w", encoding="utf-8") as f:
+            f.write(st0)
+        with open(os.path.join(fx, "study_progress.initial.md"), "w", encoding="utf-8") as f:
+            f.write("当前阶段：1" + chr(10) + "## 疑难点" + chr(10) + "- 陈旧基线里的旧疑难" + chr(10))
+        sc["fixture"] = fx
+        t = os.path.join(d, "t.jsonl")
+        md_fixed = "当前阶段：1" + chr(10) + "## 疑难点" + chr(10) + "- 事实源里的疑难" + chr(10)
+        with open(t, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"turn": 1, "assistant": "render 修复。", "phase_context": 1,
+                                "files_after": {"study_state.json": st0,
+                                                "study_progress.md": md_fixed}},
+                               ensure_ascii=False) + chr(10))
+        r = D.evaluate(sc, t)
+        self.assertEqual(r["metrics"]["md_write_after_state"], 0)
+
     def test_missing_transcript_exits_2(self):
         r = _cli(["--scenario", SCEN, "--transcript", os.path.join(TR, "does_not_exist.jsonl")])
         self.assertEqual(r.returncode, 2)
