@@ -65,6 +65,7 @@ class BehaviorSmokeTest(unittest.TestCase):
             "mock_liberal", "mock_ai_answer", "mock_negative_skip_ask", "mock_negative_formula_first",
             "mock_negative_no_source", "mock_negative_unlabeled_source", "mock_negative_missing_warn",
             "mock_negative_warn_title", "mock_negative_unsolicited_closers", "mock_optin_closers",
+            "mock_negative_legacy",
         )
         for sc in spec["scenarios"]:
             for k in file_keys:
@@ -606,6 +607,46 @@ class BehaviorSmokeTest(unittest.TestCase):
         self.assertTrue(H.question_source_block_ok(optin))
         # 行内提及「易错点」不算标题、不误伤
         self.assertTrue(H.no_unsolicited_closing_blocks("② 这题在问什么：\n考你能不能避开常见易错点。"))
+        # Codex R3-QR_5：带方括号的 markdown 收尾块标题也要抓（## 【易错点】 / **【3分钟速记】**）
+        self.assertFalse(H.no_unsolicited_closing_blocks("正文\n## 【易错点】\n注意 LIFO。"),
+                         "## 【易错点】 形态的收尾块必须被抓")
+        self.assertFalse(H.no_unsolicited_closing_blocks("正文\n**【3分钟速记】**\n口诀。"),
+                         "**【3分钟速记】** 形态的收尾块必须被抓")
+        self.assertFalse(H.no_unsolicited_closing_blocks("正文\n## 现在轮到你\n试试看。"))
+
+    def test_teaching_template_r3_rigor(self):
+        # Codex R3：逐题按 ① 题面图 切段 + 诚实来源未知 + 来源块紧跟 ⑦ + 零基础走 A5
+        good = _read("mock/sample_outputs/teaching_template_good.txt")
+        # QR_v：未标号的第二题（有自己的 ① 但缺 ②/④）必须被抓
+        q2_untagged = good + ("\n\n另一道题：\n① 题面图：\n本题无图。\n③ 图里要读的量：\nx。\n"
+                              "⑤ 逐步演算：\n算。\n⑥ 答案自检：\n对。\n⑦ 知识点溯源：\n"
+                              "references/wiki/ch03.md [p](../c.pdf#page=2)\n"
+                              "题目来源：h.pdf｜答案来源：s.pdf｜🟢 来自资料\n")
+        self.assertFalse(H.teaching_template_ok(q2_untagged), "未标号的缺步第二题必须被抓（不能只按 [#id] 切）")
+        # QR_v：带标签的第二题没有自己的 ① 块（标签数 > ① 块数）必须被抓
+        q2_tag_no_block = good + ("\n\n【第二题】[#mc_q2] 另一题\n随便写点没有七步。\n"
+                                  "题目来源：h.pdf｜答案来源：s.pdf｜🟢 来自资料\n")
+        self.assertFalse(H.teaching_template_ok(q2_tag_no_block), "带标签却无 ① 整块的题必须被抓")
+        # QR_0：来源确实不明时如实写「来源未知」（⑦ 无 wiki 路径）也算合规——不惩罚诚实
+        honest = good.replace(
+            "第 2 章《线性表》 · references/wiki/ch02_linear_list.md · "
+            "原文 [lecture03.pdf 第 12 页](../lecture03.pdf#page=12)",
+            "这题的原始出处在我手上的资料里找不到，来源未知。")
+        self.assertNotEqual(honest, good)
+        self.assertTrue(H.teaching_template_ok(honest), "如实「来源未知」（无 wiki）应通过，不惩罚诚实弃答")
+        # QR_2：opt-in 收尾块夹在 ⑦ 与来源块之间（顺序错）必须被抓
+        closer_before_src = good.replace(
+            "题目来源：hw02.pdf 第 3 页（homework）｜答案来源：hw02_sol.pdf 第 1 页｜🟢 来自资料",
+            "易错点：\n别记反。\n\n题目来源：hw02.pdf 第 3 页（homework）｜答案来源：hw02_sol.pdf 第 1 页｜🟢 来自资料")
+        self.assertNotEqual(closer_before_src, good)
+        self.assertFalse(H.teaching_template_ok(closer_before_src), "收尾块夹在 ⑦ 与来源块之间必须被抓")
+        # QR_8：零基础旧两段式（考点拆解 + 标准答题步骤、无 ①-⑦）必须被 A5 七步判不合格
+        legacy = _read("mock/sample_outputs/zero_basic_legacy_only.txt")
+        self.assertFalse(H.teaching_template_ok(legacy), "零基础只给旧两段式、无 ①-⑦ 必须被抓")
+        # 零基础好例（七步 + 来源块）三项全过
+        zb = _read("mock/sample_outputs/zero_basic_explain.txt")
+        self.assertTrue(H.teaching_template_ok(zb) and H.question_source_block_ok(zb)
+                        and H.has_zero_basic_sections(zb), "零基础七步好例应三项全过")
 
     def test_run_mock_exits_zero(self):
         self.assertEqual(_silent(H.main, ["--mock"]), 0)

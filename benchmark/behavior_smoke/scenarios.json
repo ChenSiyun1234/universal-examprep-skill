@@ -62,10 +62,11 @@
     },
     {
       "name": "zero_basic_key_question",
-      "claim": "0 基础重点题精讲包含结构化小节（旧版 考点拆解/标准答题步骤 或 A5 七步模板的 这题在问什么/逐步演算 都算；易错点/3分钟速记 为可选收尾块，不再要求）",
+      "claim": "0 基础/panic 模式对每道重点题都走 A5 七步模板（①-⑦ + 每题来源块）；旧版只给 考点拆解+标准答题步骤 两段式（无 ①-⑦）现在判不合格",
       "prompt": "我 0 基础，请把这道重点题彻底讲透。",
-      "detector": "has_zero_basic_sections",
+      "detector": "teaching_template_ok + question_source_block_ok + has_zero_basic_sections",
       "mock_output": "mock/sample_outputs/zero_basic_explain.txt",
+      "mock_negative_legacy": "mock/sample_outputs/zero_basic_legacy_only.txt",
       "best_effort": false
     },
     {

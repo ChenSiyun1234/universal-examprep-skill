@@ -173,8 +173,11 @@ def _heading_present(text, name):
     """True if `name` is a section HEADING — markdown (## / **bold**), an ordered-list heading
     (`1. 考点拆解`), OR the skill's documented bracket block (`【考点拆解】`) — not an inline mention."""
     n = re.escape(name)
+    # 名字外可选包一层【】：这样 `## 【易错点】` / `**【3分钟速记】**` 这类"markdown 前缀 + 方括号名"
+    # 也算标题（QR_5）——否则 no_unsolicited_closing_blocks 会漏掉这些收尾块形态。
     md = (rf"(?m)^\s{{0,3}}"
-          rf"(?:#{{1,4}}\s*|\*\*\s*|[①②③④⑤⑥⑦⑧⑨⑩]\s*|[0-9一二三四五六七八九十]+\s*[、.．)）]\s*){{1,3}}{n}")
+          rf"(?:#{{1,4}}\s*|\*\*\s*|[①②③④⑤⑥⑦⑧⑨⑩]\s*|[0-9一二三四五六七八九十]+\s*[、.．)）]\s*){{1,3}}"
+          rf"[【〖]?\s*{n}\s*[】〗]?")
     # the bracket block must START a line (a heading), not be inline in a checklist like "请包含：【…】【…】"
     bracket = rf"(?m)^\s{{0,3}}[【〖]\s*{n}\s*[】〗]"
     # the documented student-facing closer format is a bare line-start `名字：`（如 易错点：/3分钟速记：）—
@@ -235,14 +238,28 @@ _TT_PREFIX = (r"(?m)^\s{0,3}(?:#{1,4}\s*|\*\*\s*|[①②③④⑤⑥⑦⑧⑨⑩
               r"|[0-9一二三四五六七八九十]+\s*[、.．)）]\s*|[【〖]\s*){1,3}")
 
 
+# 每道题都以 ① 题面图 起头——这才是真正的逐题边界（比 [#id] 标签更可靠，未标号的额外题也切得开）。
+_STEP1_HEADING_RE = r"(?m)^\s{0,3}①\s*题面图" + _STEP_DELIM
+
+
 def _split_questions(text):
-    """按 [#id] 把响应切成逐题片段；≤1 个 id 视为单题整体。多题时每个 [#id] 起一段（HKO）。"""
+    """按 ① 题面图 步骤标题切逐题片段（QR_v）；没有 ① 时退回 [#id]；都没有则整体一段。"""
     text = text or ""
-    idxs = [m.start() for m in re.finditer(r"\[#[^\]\n]+\]", text)]
-    if len(idxs) <= 1:
+    bounds = [m.start() for m in re.finditer(_STEP1_HEADING_RE, text)]
+    if not bounds:
+        bounds = [m.start() for m in re.finditer(r"\[#[^\]\n]+\]", text)]
+    if len(bounds) <= 1:
         return [text]
-    return [text[idxs[i]:(idxs[i + 1] if i + 1 < len(idxs) else len(text))]
-            for i in range(len(idxs))]
+    return [text[bounds[i]:(bounds[i + 1] if i + 1 < len(bounds) else len(text))]
+            for i in range(len(bounds))]
+
+
+def _question_tag_step1_consistent(text):
+    """每个带 [#id] 标签的题都必须有自己的 ① 题面图块；标签数 > ① 块数 = 有题整块缺失（QR_v）。"""
+    text = text or ""
+    tags = len(re.findall(r"\[#[^\]\n]+\]", text))
+    step1s = len(re.findall(_STEP1_HEADING_RE, text))
+    return tags <= step1s
 
 
 def _seven_step_heads(text):
@@ -272,21 +289,30 @@ def _one_question_template_ok(seg):
         nxt = min([p for p in starts if p > s] + [len(seg)])
         if len(re.sub(r"\s+", "", seg[e:nxt])) < 2:
             return False
-    # ⑦ 溯源：wiki 路径 + 原文页链接（或如实「来源未知」）必须落在 ⑦ 自己的正文里（切到来源块行为止），
-    # 不能靠必然相邻的来源块行或 opt-in 收尾块里的 wiki/链接蒙混（Codex R1-F3）。
+    # ⑦ 溯源检查限定在 ⑦ 自己的正文（切到其后的来源块行为止）——不能靠必然相邻的来源块行或
+    # opt-in 收尾块里的 wiki/链接蒙混（Codex R1-F3）。
     tail = seg[heads[-1][1]:]
     sb = SOURCE_BLOCK_RE.search(tail)
     seven_body = tail[:sb.start()] if sb else tail
+    # QR_2：来源块必须紧跟 ⑦（opt-in 收尾块只能在来源块之后）——⑦ 与来源块之间不得夹收尾块标题。
+    if sb and any(_heading_present(seven_body, nm) for nm in OPTIONAL_CLOSER_NAMES):
+        return False
+    # QR_0：来源信息确实不明时，如实写「来源未知/来源页未知」即合规——诚实弃答不因缺 wiki 被判失败。
+    if "来源未知" in seven_body or "来源页未知" in seven_body:
+        return True
+    # 否则（声称有出处）必须给出 wiki 路径 + 可点击原文页链接；裸「第 N 章」不算。
     if "references/wiki/" not in seven_body:
         return False
-    return bool(re.search(r"\[[^\]]+\]\([^)]+\)", seven_body)
-                or "来源未知" in seven_body or "来源页未知" in seven_body)
+    return bool(re.search(r"\[[^\]]+\]\([^)]+\)", seven_body))
 
 
 def teaching_template_ok(text):
     """A5 七步讲解模板：①-⑦ 按期望圆圈序号做真实标题、严格顺序、各带正文；⑦ 落到 wiki 路径 + 页链接
-    （或如实来源未知）。多题响应（零基础/panic 逐题精讲）里**每一道** [#id] 都必须各自满足——抓
-    「首题齐全、后续题省略 ②/④/⑦」（Codex R2-HKO）。"""
+    （或如实来源未知）。多题响应（零基础/panic 逐题精讲）里**每一道题**（按 ① 题面图 切段，且带
+    标签的题都要有自己的 ① 块）都必须各自满足——抓「首题齐全、后续题省略 ②/④/⑦」与未标号的额外
+    坏题（Codex R2-HKO / R3-QR_v）。"""
+    if not _question_tag_step1_consistent(text or ""):
+        return False
     return all(_one_question_template_ok(s) for s in _split_questions(text or ""))
 
 
@@ -723,8 +749,13 @@ def check_scenario_mock(name, sc, fixture_path=FIXTURE):
         ok = validate_fixture_workspace(_p(sc["fallback_workspace"]))[0]
         return ok, f"hand_authored_workspace_valid={ok}"
     if name == "zero_basic_key_question":
-        ok = has_zero_basic_sections(_read(_p(sc["mock_output"])))
-        return ok, f"required_sections_present={ok}"
+        # A5 起零基础/panic 模式对每道重点题都走七步模板——好例须过 seven-step + 来源块 + 结构小节；
+        # 旧的「考点拆解 + 标准答题步骤」两段式（无 ①-⑦）现在必须被判不合格（QR_8）。
+        good_txt = _read(_p(sc["mock_output"]))
+        good = (teaching_template_ok(good_txt) and question_source_block_ok(good_txt)
+                and has_zero_basic_sections(good_txt))
+        legacy_bad = teaching_template_ok(_read(_p(sc["mock_negative_legacy"])))
+        return (good and not legacy_bad), f"seven_step_good={good} legacy_two_section_caught={not legacy_bad}"
     if name == "teaching_template":
         good_txt = _read(_p(sc["mock_output"]))
         liberal_txt = _read(_p(sc["mock_liberal"]))
