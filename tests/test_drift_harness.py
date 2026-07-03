@@ -128,6 +128,18 @@ class DriftHarness(unittest.TestCase):
         ])
         self.assertEqual(m["md_write_after_state"], 1)            # 只有 turn2 的行数背离计违规
 
+    def test_non_utf8_state_fixture_raises_drifterror(self):
+        import shutil
+        sc = dict(D.load_scenario(os.path.join(DRIFT, "scenarios", "long_session_state.json")))
+        d = tempfile.mkdtemp()
+        fx = os.path.join(d, "fx")
+        shutil.copytree(os.path.join(DRIFT, "fixtures", "mini_course_long"), fx)
+        with open(os.path.join(fx, "study_state.json"), "wb") as f:
+            f.write('{"current_phase": 2}'.encode("utf-16"))      # 带 BOM 的非 UTF-8 字节
+        sc["fixture"] = fx
+        with self.assertRaises(D.DriftError):                     # 坏编码走畸形输入路径，
+            D.evaluate(sc, _tr("good_session_state.jsonl"))       # 不是 UnicodeDecodeError 崩栈
+
     def test_missing_transcript_exits_2(self):
         r = _cli(["--scenario", SCEN, "--transcript", os.path.join(TR, "does_not_exist.jsonl")])
         self.assertEqual(r.returncode, 2)

@@ -557,6 +557,9 @@ def compute_metrics(scenario, fixture_dir, turns):
             init_snap = parse_progress(init_progress)
         else:
             raise DriftError("fixture 需要 study_state.json 或 study_progress.initial.md 之一作为初始断点")
+    except UnicodeDecodeError as e:
+        # UnicodeDecodeError 是 ValueError 不是 OSError——单列，坏编码同样走畸形输入 exit-2
+        raise DriftError("fixture 的 study_state.json 不是 UTF-8: %s" % e)
     except (IOError, OSError) as e:
         raise DriftError("fixture 的 study_state.json 读取失败: %s" % e)
 

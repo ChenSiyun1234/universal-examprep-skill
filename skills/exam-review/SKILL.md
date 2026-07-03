@@ -44,4 +44,4 @@ Run when the student enters the final review stage, or asks to 复盘错题 / �
 - **Scope filter & override (A2)**: default question pool is mixed; a student-restricted range (e.g. homework-only) is a recorded scope filter — serving items outside it requires the verbatim announcement 「⚠️ 临时覆盖你的 <scope> 范围偏好」 first, and untagged (`source_type` missing) items are excluded from restricted scopes with their count reported. Official selector: `scripts/select_questions.py`.
 
 - Replay only recorded items. Never add a question that is not already in the records or the quiz bank.
-- Share `study_progress.md` with `confusion-tracker`: append confusion entries and update status in place; never overwrite another skill's writes.
+- Share the progress record with `confusion-tracker`: in state-backed workspaces both skills go through `update_progress.py` (append via `add-confusion`, status via `set-confusion-status`); only in md-only workspaces append/update `study_progress.md` rows in place. Never overwrite another skill's writes.

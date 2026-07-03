@@ -538,7 +538,8 @@ class ValidatorSchema(unittest.TestCase):
         self.assertEqual(r.returncode, 1)                         # 英文计划也要挡住 99 号断点
         self.assertIn("不在 study_plan.md", r.stdout)
 
-    @unittest.skipUnless(os.name == "posix", "chmod 0o000 只在 POSIX 生效")
+    @unittest.skipUnless(os.name == "posix" and getattr(os, "geteuid", lambda: 0)() != 0,
+                         "chmod 0o000 只对非 root 的 POSIX 进程生效（root/容器 uid0 仍可读）")
     def test_unreadable_state_reports_not_crashes(self):
         ws = self._full_ws({"current_phase": 1})
         os.chmod(os.path.join(ws, "study_state.json"), 0o000)
