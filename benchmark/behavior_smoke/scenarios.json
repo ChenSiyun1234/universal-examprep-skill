@@ -70,6 +70,24 @@
       "best_effort": false
     },
     {
+      "name": "time_budget_no_questions",
+      "claim": "≤1天时间宽裕度下严禁向学生提任何澄清/偏好问句（任何问题都在浪费复习时间）——纯讲解直出",
+      "prompt": "我明天就考了（≤1天），别问我问题，直接讲重点。",
+      "detector": "urgent_no_student_questions_ok",
+      "mock_output": "mock/sample_outputs/time_budget_1day_good.txt",
+      "mock_negative": "mock/sample_outputs/time_budget_1day_bad.txt",
+      "best_effort": false
+    },
+    {
+      "name": "knowledge_window_recheck",
+      "claim": "3-7天/>7天档遇到窗口外知识点必须先回问是否记得（或用难题实测），不能默认还会直接用",
+      "prompt": "（3-7天档）接着讲要用到之前学过、已在窗口外的知识点。",
+      "detector": "window_out_rechecked",
+      "mock_output": "mock/sample_outputs/window_recheck_good.txt",
+      "mock_negative": "mock/sample_outputs/window_recheck_bad.txt",
+      "best_effort": false
+    },
+    {
       "name": "teaching_template",
       "claim": "重点题精讲走固定七步模板（①题面图→②这题在问什么→③图里要读的量→④核心公式→⑤逐步演算→⑥答案自检→⑦知识点溯源，②必须在④前）且每题带一行来源块 题目来源｜答案来源｜canonical 标签，默认输出到来源块为止（易错点/3分钟速记/现在轮到你 仅学生要求才输出）；AI 生成答案时 ⚠️ 必须同时出现在来源行与答案块标题",
       "prompt": "请精讲这道重点题（走七步讲解模板，标清来源）。",

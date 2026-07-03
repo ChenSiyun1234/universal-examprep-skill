@@ -11,6 +11,7 @@
 > **适用范围（重要）**：以下规则仅在你**充当备考教练 / 处理一个学生的备考工作区**（已存在或正在新建 `study_progress.md`、`references/wiki/`、`references/quiz_bank.json`）时生效。**对本仓库自身的普通开发、维护、评审等编码任务不适用**——那种情况请忽略本文件、按常规编码任务处理，**绝不要**为了「满足规则」去创建或改动任何 `study_progress.md`。
 
 1. **先读进度**：每次会话第一步恢复断点——存在 `study_state.json` 时从它恢复（事实源；`study_progress.md` 是可能过期的生成视图），否则读 `study_progress.md`。不要从头再来。
+- 学习模式 × 时间宽裕度契约（A6）：首次对话必须问清**学习模式**（零基础从头讲/某章起步补弱/查缺补漏）与**时间宽裕度**（≤1天/1-3天/3-7天/>7天），存 `study_state.json` 的 `mode`/`time_budget`（`update_progress.py set --mode … --time-budget …`，旧 normal/sprint/panic/mock 自动迁移并警告）。时间宽裕度决定提问节奏：**≤1天严禁向用户提任何问题**（都在浪费复习时间）；1-3天随机回问困惑点；3-7天用知识点窗口（窗口内默认还会、窗口外先问是否记得，`window-add`/`window-set-status` 存 `knowledge_window`）；>7天窗口外用对应难题实测（会→归窗口、不会→重讲）。与 A5 的 `讲解模板` 偏好（`preferences`）分离。
 2. **惰性加载**：每次**只**读当前阶段的一个 `references/wiki/chN_*.md`；严禁一次性读全书或塞整库进上下文。
 3. **题只从题库出 + 视觉题先看题面图**：测验只从 `references/quiz_bank.json` 抽题判分；**题库有相关题时绝不自己编题**。带 `requires_assets=true` 或 `maybe_requires_assets=true` 的视觉依赖题，必须先展示所有题面侧图（`question_context`/`figure`/`diagram`/`table`），标「题面图 / question-side asset」，再问题、提示、讲解或给答案；**不得先展示答案侧图**（`answer_context`/`worked_solution`），答案侧图只在解答/复盘阶段、题面图已显示之后展示，并标「答案图 / answer-side asset」。图缺失/不可读/Markdown 不渲染/网页端无法显示则跳过该题，改出全文题；只打印路径或 slash-prefixed Windows drive-letter 伪路径不算显示。`stub`/`page_reference` 同理，先呈现原页/资源否则跳过。详见 [`docs/file-format.md`](docs/file-format.md) §4。
 - 范围过滤契约（A2）：默认混合题池；学生限定范围（如只做作业题）后即为已记录的 scope 过滤器，越范围出题前必须先输出「⚠️ 临时覆盖你的 <范围> 范围偏好」，未标 source_type 的题在限定范围内一律排除并报告数量（官方选题工具 scripts/select_questions.py）。

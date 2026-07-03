@@ -597,6 +597,42 @@ def _snapshots(turns, key, base_text):
     return snaps
 
 
+# A6：面向学生的澄清/偏好问句线索（≤1天档严禁——每问一次都在浪费复习时间）。
+# 这是 benchmark/behavior_smoke/run_behavior_smoke.py 的 asks_student_question 的**逐字等价副本**
+# （两文件互不 import，各自独立、无网络/依赖）；tests/test_drift_harness 的 parity 测试锁二者一致，
+# 改一处必须同步改另一处。
+_STUDENT_ASK_CUE = re.compile(
+    r"你想|你要|你希望|你打算|你更|你觉得|你认为|你选|你决定|你来定|由你|你自己|你先|"
+    r"你(?:还)?记得|你会(?:不会)?|你能(?:不能)?|你有(?:没有)?|你是(?:不是|否)|你(?:比较)?熟|"
+    r"你复习到|你学到|要不要|想不想|请问|需要我|哪一?章|从哪|"
+    r"do you\b|would you\b|are you\b|have you\b|can you\b|which chapter\b|what.*\byou\b",
+    re.I)
+_RHETORICAL_PREFACE = re.compile(
+    r"你可能(?:会)?问|你也许(?:会)?问|你(?:有没有|是不是|会不会)想过|你是不是(?:觉得|以为)|"
+    r"你也许(?:会)?好奇|你可能(?:会)?好奇|试想|想象一下|不妨想")
+_SELF_ANSWER = re.compile(
+    r"^(?:因为|答案|其实|这是因为|这(?:正)?是|正是|原因|答[:：]|because|the answer|it'?s because|"
+    r"here'?s why)", re.I)
+
+
+def _asks_student_question(txt):
+    t = re.sub(r"[ \t]*\n[ \t]*", " ", txt or "")
+    sents = re.split(r"(?<=[？?。！!；;])\s*", t)
+    for i, s in enumerate(sents):
+        s = s.strip()
+        if not (s.endswith("？") or s.endswith("?")):
+            continue
+        if not _STUDENT_ASK_CUE.search(s):
+            continue
+        if _RHETORICAL_PREFACE.search(s):
+            continue
+        nxt = sents[i + 1].strip() if i + 1 < len(sents) else ""
+        if _SELF_ANSWER.match(nxt):
+            continue
+        return True
+    return False
+
+
 def compute_metrics(scenario, fixture_dir, turns):
     goal_markers = scenario.get("goal_markers", DEFAULT_GOAL_MARKERS)
     unrelated = scenario.get("unrelated_goal_phrases", DEFAULT_UNRELATED_PHRASES)
@@ -713,6 +749,13 @@ def compute_metrics(scenario, fixture_dir, turns):
     goal_retention = round(on_goal / len(assistant_turns), 4) if assistant_turns else 1.0
     markers_l = [g.lower() for g in goal_markers]                 # case-insensitive, like the drift blocklist
     goal_marker_seen = int(any(any(g in t.get("assistant", "").lower() for g in markers_l) for t in assistant_turns))
+
+    # A6 模式漂移：≤1天时间宽裕度下，任何向学生抛出的澄清/偏好问句都算漂移（浪费复习时间）。
+    # 时间宽裕度从 scenario.time_budget 读；非 ≤1天档本指标恒为 0（不适用）。
+    time_budget = str(scenario.get("time_budget") or "")
+    urgent = time_budget in ("≤1天", "<=1天", "1天", "当天")
+    urgent_mode_questions = (sum(1 for t in assistant_turns if _asks_student_question(t.get("assistant", "")))
+                             if urgent else 0)
 
     # 2) plan adherence — walk study_plan.md snapshots; a phase delete/add/reorder is a mutation UNLESS
     #    the mutating turn (or the immediately preceding user turn) explicitly asked to change the plan.
@@ -892,6 +935,7 @@ def compute_metrics(scenario, fixture_dir, turns):
     return {
         "turns": len(turns), "assistant_turns": len(assistant_turns),
         "goal_retention": goal_retention, "goal_marker_seen": goal_marker_seen,
+        "urgent_mode_questions": urgent_mode_questions,
         "plan_adherence": plan_adherence, "plan_mutations": plan_mutations,
         "quiz_items": quiz_items, "bank_backed": bank_backed, "invented": invented,
         "untagged_questions": untagged, "wrong_phase_quiz": wrong_phase, "invention_rate": invention_rate,
@@ -910,6 +954,7 @@ def compute_metrics(scenario, fixture_dir, turns):
 THRESHOLD_RULES = {
     "goal_retention_min": ("goal_retention", "min"),
     "goal_marker_min": ("goal_marker_seen", "min"),   # positive signal: exam goal referenced ≥ N times (0/1)
+    "urgent_mode_questions_max": ("urgent_mode_questions", "max"),  # A6：≤1天档向学生提问的次数上限
     "plan_mutations_max": ("plan_mutations", "max"),
     "quiz_invention_rate_max": ("invention_rate", "max"),
     "untagged_questions_max": ("untagged_questions", "max"),

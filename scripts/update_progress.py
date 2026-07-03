@@ -38,6 +38,55 @@ STATE_NAME = "study_state.json"
 MD_NAME = "study_progress.md"
 SCHEMA_VERSION = 1
 
+# ---- A6：3 学习模式 × 4 时间宽裕度（canonical 词表 + 旧四模式迁移废弃）----
+# 学习模式（首次对话必须问清，存 state.mode）：
+LEARNING_MODES = ("零基础从头讲", "某章起步补弱", "查缺补漏")
+# 时间宽裕度（叠加在模式上，存 state.time_budget）：
+TIME_TIERS = ("≤1天", "1-3天", "3-7天", ">7天")
+# 旧四模式（normal/sprint/panic/mock）已废弃 → 迁移为 (新模式, 时间宽裕度提示或 None)。
+# 依据计划：panic→零基础+当天、sprint→查缺补漏+短时限、normal/mock→查缺补漏。
+_MODE_MIGRATION = {
+    "panic": ("零基础从头讲", "≤1天"),
+    "sprint": ("查缺补漏", "1-3天"),
+    "normal": ("查缺补漏", None),
+    "mock": ("查缺补漏", None),
+}
+# 时间宽裕度的宽松别名 → canonical 档。
+_TIER_ALIASES = {
+    "≤1天": "≤1天", "<=1天": "≤1天", "1天": "≤1天", "当天": "≤1天", "今天": "≤1天",
+    "一天": "≤1天", "考前一天": "≤1天", "明天考": "≤1天",
+    "1-3天": "1-3天", "1—3天": "1-3天", "1~3天": "1-3天", "2-3天": "1-3天", "几天": "1-3天",
+    "3-7天": "3-7天", "3—7天": "3-7天", "3~7天": "3-7天", "一周": "3-7天", "一周内": "3-7天",
+    ">7天": ">7天", "＞7天": ">7天", "7天以上": ">7天", "一周以上": ">7天", "还早": ">7天",
+    "时间充裕": ">7天",
+}
+
+
+def _normalize_mode(v):
+    """→ (canonical_mode 或原值, migrated_tier 或 None, warning 或 None)。
+    新模式原样；旧四模式迁移 + 警告；未知值保留但警告（AI 侧再决定，不静默改写）。"""
+    v = (v or "").strip()
+    if v in LEARNING_MODES:
+        return v, None, None
+    if v in _MODE_MIGRATION:
+        new_mode, tier = _MODE_MIGRATION[v]
+        return new_mode, tier, ("旧模式「%s」已废弃，迁移为「%s」%s（新模式仅 %s）"
+                                % (v, new_mode, ("＋时间宽裕度「%s」" % tier) if tier else "",
+                                   "/".join(LEARNING_MODES)))
+    return v, None, ("非标准学习模式「%s」——canonical 仅 %s；已按原值保留，请确认是否规范化"
+                     % (v, "/".join(LEARNING_MODES)))
+
+
+def _normalize_tier(v):
+    """→ (canonical_tier 或原值, warning 或 None)。"""
+    v = (v or "").strip()
+    if v in TIME_TIERS:
+        return v, None
+    if v in _TIER_ALIASES:
+        return _TIER_ALIASES[v], None
+    return v, ("非标准时间宽裕度「%s」——canonical 仅 %s；已按原值保留，请确认是否规范化"
+               % (v, "/".join(TIME_TIERS)))
+
 
 def _die(msg, code=2):
     sys.stderr.write("update_progress: " + msg + "\n")
@@ -87,28 +136,65 @@ def parse_md(text):
     prefs["preferences"] = preferences
     lm = re.search(r"语言偏好\**\s*：\s*(.+)", t)
     prefs["language"] = lm.group(1).strip() if lm else None
-    mistakes, confusions, checklist, cur, in_checklist, tbl_cols = [], [], [], None, False, None
+    mistakes, confusions, checklist, window = [], [], [], []
+    cur, in_checklist, in_window, tbl_cols, window_cols = None, False, False, None, None
     for ln in t.splitlines():
         h = ln.strip()
         is_heading = bool(re.match(r"^\s{0,3}(#{1,4}\s|\*\*)", ln))
         if is_heading and re.search(r"打卡|checklist", h, re.I):
-            cur, in_checklist, tbl_cols = None, True, None        # 模板的 📊 知识点打卡状态 区
+            cur, in_checklist, in_window, tbl_cols = None, True, False, None   # 📊 知识点打卡状态 区
             continue
         if is_heading and re.search(r"错题|mistake", h, re.I):
-            cur, in_checklist, tbl_cols = mistakes, False, None
+            cur, in_checklist, in_window, tbl_cols = mistakes, False, False, None
             continue
         if is_heading and re.search(r"疑难|困惑|confusion", h, re.I):
-            cur, in_checklist, tbl_cols = confusions, False, None
+            cur, in_checklist, in_window, tbl_cols = confusions, False, False, None
+            continue
+        if is_heading and re.search(r"知识点窗口|窗口|🪟", h):
+            # A6：知识点窗口区——init 恢复路径必须把窗口行迁回 state，否则窗口/已实测追踪不可逆丢
+            cur, in_checklist, in_window, window_cols = None, False, True, None
             continue
         if is_heading:
             # 非已知区的任何标题（含 **加粗** 形式）都终结当前节——否则「**下一步**」之后的
             # 普通列表会被误并进上一个档案区
-            cur, in_checklist, tbl_cols = None, False, None
+            cur, in_checklist, in_window, tbl_cols = None, False, False, None
             continue
         cm = re.match(r"^\s*[-*]\s*\[([ xX])\]\s*(\S.*)$", ln)
         if in_checklist and cm:
             # 每阶段完成/掌握状态必须随迁移进 state——渲染丢掉打卡区就是不可逆丢 per-phase 进度
             checklist.append({"text": cm.group(2).strip(), "done": cm.group(1).lower() == "x"})
+            continue
+        if in_window:
+            # 窗口表：| 知识点 | 关联章节 | 状态 | 备注 |——按表头列角色映射，缺表头退位置映射
+            if _TABLE_SEP.match(ln) or not h.startswith("|"):
+                continue
+            cells = [c.strip(" *`") for c in h.strip("|").split("|")]
+            low = h.lower()
+            if "知识点" in low and "状态" in low:
+                window_cols = []
+                for c in cells:
+                    if "知识点" in c:
+                        window_cols.append("point")
+                    elif "章节" in c:
+                        window_cols.append("chapter")
+                    elif "状态" in c:
+                        window_cols.append("status")
+                    else:
+                        window_cols.append("note")
+                continue
+            if not any(c and c != "-" for c in cells):
+                continue
+            got, wnotes = {}, []
+            for c, role in zip(cells, window_cols or ["point", "chapter", "status", "note"]):
+                if not c or c == "-":
+                    continue
+                if role == "note":
+                    wnotes.append(c)
+                elif role not in got:
+                    got[role] = c
+            if got.get("point"):
+                window.append({"point": got["point"], "chapter": got.get("chapter"),
+                               "status": got.get("status") or "在窗口", "note": " / ".join(wnotes)})
             continue
         if cur is None:
             continue
@@ -169,7 +255,7 @@ def parse_md(text):
             cur.append({"id": ids[0] if ids else first_cell, "chapter": cells[1] if len(cells) > 1 else None,
                         "note": " / ".join(c for c in note_cells if c) or (cells[0] if cells else ""),
                         "status": status})
-    return phase, mistakes, confusions, checklist, prefs
+    return phase, mistakes, confusions, checklist, window, prefs
 
 
 # ---------------- state → md (generated view; keeps validator/T4-parseable shape) ----------------
@@ -221,6 +307,14 @@ def render_md(state):
         _tbl(state["confusion_log"], ("疑难ID", "关联章节", "疑难点", "状态"), "待回顾"),
         "",
     ]
+    # A6：知识点窗口（3-7 天/>7 天档的窗口系统落点）——窗口内默认还会、窗口外需回问或实测
+    if state.get("knowledge_window"):
+        rows = ["| 知识点 | 关联章节 | 状态 | 备注 |", "| --- | --- | --- | --- |"]
+        for r in state["knowledge_window"]:
+            rows.append("| %s | %s | %s | %s |" % (
+                _md_cell(r.get("point"), default=""), _md_cell(r.get("chapter"), default="-"),
+                _md_cell(r.get("status"), default="在窗口"), _md_cell(r.get("note"), default="")))
+        lines += ["## 🪟 知识点窗口（近期掌握追踪）", "\n".join(rows), ""]
     if state.get("preferences"):
         lines += ["## ⚙️ 偏好（讲解风格等）",
                   # 键值同样过 _md_cell——带换行的偏好值会把假标题/假档案行注入生成视图，
@@ -316,7 +410,7 @@ def cmd_init(ws, args):
         except UnicodeDecodeError as e:
             _die("study_progress.md 不是 UTF-8（%s）——这正是结构化状态要根治的乱码；"
                  "请先把 md 转存为 UTF-8 再 init（不要猜编码静默迁移）" % e, 1)
-        phase, mistakes, confusions, checklist, prefs = parse_md(text)
+        phase, mistakes, confusions, checklist, window, prefs = parse_md(text)
         if phase < 1:
             # 写入 0/负数会让下一次官方更新在 _require_state 处拒跑——迁移绝不产出损坏 state
             _die("study_progress.md 的当前阶段 %d 非法（须 ≥1）——请先修正 md 再 init" % phase, 1)
@@ -326,13 +420,25 @@ def cmd_init(ws, args):
             _die("study_progress.md 的当前阶段 %d 不在 study_plan.md 的阶段列表 %s 中——"
                  "请先修正 md/计划再 init" % (phase, sorted(plan)), 1)
     else:
-        checklist, prefs = [], {}
+        checklist, window, prefs = [], [], {}
         plan0 = _plan_phases(ws)
         if plan0 and phase not in plan0:
             phase = min(plan0)      # 空白初始化也要落在计划内——默认 1 可能不在阶段列表里
     st = default_state()
     st.update({"current_phase": phase, "mistake_archive": mistakes, "confusion_log": confusions,
-               "phase_checklist": checklist})
+               "phase_checklist": checklist, "knowledge_window": window})
+    # A6：迁移时把旧四模式归一到新模式（panic/sprint/…）、时间宽裕度归一到 4 档；未知值保留
+    if prefs.get("mode"):
+        cmode, mig_tier, _w = _normalize_mode(prefs["mode"])
+        prefs["mode"] = cmode
+        if _w:
+            sys.stderr.write("update_progress[warn]: " + _w + "\n")
+        if mig_tier and not prefs.get("time_budget"):
+            prefs["time_budget"] = mig_tier
+    if prefs.get("time_budget"):
+        prefs["time_budget"], _tw = _normalize_tier(prefs["time_budget"])
+        if _tw:
+            sys.stderr.write("update_progress[warn]: " + _tw + "\n")
     for k in ("scope", "mode", "time_budget", "language"):   # A2 范围/模式/语言偏好随迁移带走
         if prefs.get(k):
             st[k] = prefs[k]
@@ -437,7 +543,33 @@ def cmd_set(ws, args):
                  % (args.phase, sorted(plan)))
         st["current_phase"] = args.phase
         changed.append("phase=%d" % args.phase)
-    for k in ("scope", "mode", "time_budget", "language"):
+    # A6：mode 走 canonical 归一化（旧四模式迁移 + 未知值保留并警告，绝不静默改写）
+    if args.mode is not None:
+        if not args.mode:
+            st["mode"] = None
+            changed.append("mode=（清除）")
+        else:
+            cmode, mig_tier, warn = _normalize_mode(args.mode)
+            st["mode"] = cmode
+            changed.append("mode=%s" % cmode)
+            if warn:
+                sys.stderr.write("update_progress[warn]: " + warn + "\n")
+            # 旧模式迁移带出的时间档：仅当本次未显式 --time-budget 且当前未设定时才落，绝不覆盖显式值
+            if mig_tier and args.time_budget is None and not st.get("time_budget"):
+                st["time_budget"] = mig_tier
+                changed.append("time_budget=%s（迁移带出）" % mig_tier)
+    # A6：time_budget 归一化到 4 个 canonical 档
+    if args.time_budget is not None:
+        if not args.time_budget:
+            st["time_budget"] = None
+            changed.append("time_budget=（清除）")
+        else:
+            ctier, twarn = _normalize_tier(args.time_budget)
+            st["time_budget"] = ctier
+            changed.append("time_budget=%s" % ctier)
+            if twarn:
+                sys.stderr.write("update_progress[warn]: " + twarn + "\n")
+    for k in ("scope", "language"):
         v = getattr(args, k)
         if v is not None:
             st[k] = v or None
@@ -451,6 +583,63 @@ def cmd_set(ws, args):
     if not changed:
         _die("set 没有任何改动参数（--phase/--scope/--mode/--time-budget/--language/--pref）")
     save(ws, st, "set：" + "、".join(changed))
+    return 0
+
+
+# A6：知识点窗口状态词——窗口内（近期讲过、默认还会）/ 窗口外（需回问或实测）/ 已实测（做题验证过）。
+_WINDOW_STATUSES = ("在窗口", "窗口外", "已实测")
+
+
+def cmd_window_add(ws, args):
+    st = _require_state(ws)
+    point = (args.point or "").strip()
+    if not point:
+        _die("--point 不能为空")
+    status = (args.status or "在窗口").strip()
+    if status not in _WINDOW_STATUSES:
+        _die("--status 必须是 %s，当前 %r" % ("/".join(_WINDOW_STATUSES), status))
+    win = st.setdefault("knowledge_window", [])
+    # 同名知识点视为同一条：更新其状态/备注，不重复登记——窗口进出是状态迁移不是加行。
+    # 章节相容即同一点：任一方未标章节、或两方章节相等 → 命中；先松登记再补章节的常见流程会
+    # 回填章节而非产生 null-章节孤儿行（只有两方都标了且不同章，才是真正不同的同名点）。
+    for row in win:
+        if not (isinstance(row, dict) and row.get("point") == point):
+            continue
+        rc, ac = row.get("chapter"), args.chapter
+        if rc is None or ac is None or str(rc) == str(ac):
+            row["status"] = status
+            if args.note:
+                row["note"] = args.note.strip()
+            if ac is not None:                       # 后补的具体章节回填到该点（不新增行）
+                row["chapter"] = ac
+            save(ws, st, "window：更新「%s」→%s" % (point, status))
+            return 0
+    win.append({"point": point, "chapter": args.chapter,
+                "status": status, "note": (args.note or "").strip()})
+    save(ws, st, "window：登记「%s」（%s）" % (point, status))
+    return 0
+
+
+def cmd_window_set_status(ws, args):
+    st = _require_state(ws)
+    status = (args.status or "").strip()
+    if status not in _WINDOW_STATUSES:
+        _die("--status 必须是 %s，当前 %r" % ("/".join(_WINDOW_STATUSES), status))
+    win = st.get("knowledge_window") or []
+    hits = []
+    if args.index is not None:
+        if not (1 <= args.index <= len(win)):
+            _die("--index 越界：窗口共 %d 条，index=%d" % (len(win), args.index))
+        hits = [win[args.index - 1]]
+    elif args.point:
+        hits = [r for r in win if isinstance(r, dict) and r.get("point") == args.point.strip()]
+        if not hits:
+            _die("找不到知识点「%s」——先用 window-add 登记" % args.point)
+    else:
+        _die("window-set-status 需要 --point 或 --index 定位")
+    for r in hits:
+        r["status"] = status
+    save(ws, st, "window：%d 条 →%s" % (len(hits), status))
     return 0
 
 
@@ -534,6 +723,16 @@ def run(argv=None):
     p_set.add_argument("--time-budget", dest="time_budget", default=None)
     p_set.add_argument("--language", default=None)
     p_set.add_argument("--pref", action="append", default=None, help="key=value，可重复")
+    # A6：window 子命令——知识点窗口进出（3-7 天/>7 天档的窗口系统落点）
+    p_wa = sub.add_parser("window-add")
+    p_wa.add_argument("--point", required=True, help="知识点名")
+    p_wa.add_argument("--chapter", default=None)
+    p_wa.add_argument("--status", default="在窗口", help="在窗口/窗口外/已实测（默认在窗口）")
+    p_wa.add_argument("--note", default=None)
+    p_ws = sub.add_parser("window-set-status")
+    p_ws.add_argument("--point", default=None, help="按知识点名定位")
+    p_ws.add_argument("--index", type=int, default=None, help="按 1 起序号定位")
+    p_ws.add_argument("--status", required=True, help="在窗口/窗口外/已实测")
     for name in ("add-mistake", "add-confusion"):
         p = sub.add_parser(name)
         p.add_argument("--id", default=None)
@@ -566,6 +765,10 @@ def run(argv=None):
         return cmd_set_status(ws, args, "mistake_archive", "错题")
     if args.cmd == "set-confusion-status":
         return cmd_set_status(ws, args, "confusion_log", "疑难")
+    if args.cmd == "window-add":
+        return cmd_window_add(ws, args)
+    if args.cmd == "window-set-status":
+        return cmd_window_set_status(ws, args)
     if args.cmd == "set-check":
         return cmd_set_check(ws, args)
     if args.cmd == "render":

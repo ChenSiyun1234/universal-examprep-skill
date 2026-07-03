@@ -648,6 +648,49 @@ class BehaviorSmokeTest(unittest.TestCase):
         self.assertTrue(H.teaching_template_ok(zb) and H.question_source_block_ok(zb)
                         and H.has_zero_basic_sections(zb), "零基础七步好例应三项全过")
 
+    def test_a6_time_budget_no_questions_detector(self):
+        # ≤1天档：好例纯讲解无学生问句；反例向学生抛澄清/偏好问句必须被抓
+        self.assertTrue(H.urgent_no_student_questions_ok(_read("mock/sample_outputs/time_budget_1day_good.txt")),
+                        "≤1天纯讲解好例不应有学生问句")
+        self.assertFalse(H.urgent_no_student_questions_ok(_read("mock/sample_outputs/time_budget_1day_bad.txt")),
+                         "≤1天向学生提问必须被抓")
+        # 讲解里的自答式反问（不含学生澄清线索）不算学生问句、不误伤
+        self.assertFalse(H.asks_student_question("为什么顺序表随机访问更快？因为地址可直接算出。"))
+        self.assertTrue(H.asks_student_question("你想先从哪一章开始？"))
+        self.assertTrue(H.asks_student_question("要不要我先讲栈？"))
+        # 陈述句里出现「你」但不是问句（不以 ？结尾）不算
+        self.assertFalse(H.asks_student_question("接下来我给你讲栈的三个操作。"))
+        # 自答式反问前缀 / 紧接自答 不算（False Positive 防护）
+        self.assertFalse(H.asks_student_question("你好？"), "「你好？」不含澄清线索，不算学生问句")
+        self.assertFalse(H.asks_student_question("你可能会问：这道题为什么选 B？因为它满足性质。"),
+                         "「你可能会问…？」自问自答不算")
+        self.assertFalse(H.asks_student_question("您也许好奇：栈和队列有何区别？其实差在存取顺序。"))
+        # 问号非行尾 / 跨软换行 / 英文问句 都能识别（False Negative 防护）
+        self.assertTrue(H.asks_student_question("你想先复习哪一章？ 告诉我。"), "问号后有尾巴也要识别")
+        self.assertTrue(H.asks_student_question("请问你复习到第几章了？请回复。"))
+        self.assertTrue(H.asks_student_question("你打算从哪\n章开始？"), "跨软换行的问句要识别")
+        self.assertTrue(H.asks_student_question("Which chapter do you want to start with?"))
+        self.assertTrue(H.asks_student_question("Do you remember big-O notation?"))
+
+    def test_a6_knowledge_window_recheck_detector(self):
+        # 窗口外知识点：好例回问/实测；反例默认还会直接用必须被抓
+        self.assertTrue(H.window_out_rechecked(_read("mock/sample_outputs/window_recheck_good.txt")),
+                        "窗口外知识点做了回问/实测的好例应通过")
+        self.assertFalse(H.window_out_rechecked(_read("mock/sample_outputs/window_recheck_bad.txt")),
+                         "窗口外却默认还会、直接用必须被抓")
+        # 否定式提及复核线索（不出题实测 / 无需回问还记得吗）不算真的复核
+        self.assertFalse(H.window_out_rechecked("递归在窗口外了，我就不出题实测了，直接用。"))
+        self.assertFalse(H.window_out_rechecked("递归窗口外，无需回问你还记得吗，直接用。"))
+        # 反事实（本来该先确认却没做）不算复核
+        self.assertFalse(H.window_out_rechecked("窗口外的这块，本来该先确认的，但我就不这么干了，直接用。"))
+        # 描述性「不熟/没怎么练」在别的分句里，不该压掉真正的复核（False Negative 防护）
+        self.assertTrue(H.window_out_rechecked("窗口外知识点：树的遍历。这块你可能不熟，先确认你还记得前序遍历吗？"))
+        self.assertTrue(H.window_out_rechecked("递归在窗口外了，你之前没怎么练这块，来一道题看看还会不会。"),
+                        "「会不会」里的「不会」不是拒绝复核")
+        # 没有窗口外语境时，即使有「还记得」也不算本场景（返回 False）
+        self.assertFalse(H.window_out_rechecked("先确认你还记得递归吗？"))
+        self.assertTrue(H.window_out_rechecked("递归在窗口外了，先确认你还记得递归出口吗？"))
+
     def test_run_mock_exits_zero(self):
         self.assertEqual(_silent(H.main, ["--mock"]), 0)
 

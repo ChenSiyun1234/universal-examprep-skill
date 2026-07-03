@@ -369,6 +369,74 @@ def no_unsolicited_closing_blocks(text):
     本探测器不看上下文；学生真的要求了的场景在 dispatch 层豁免（不跑本检查）。"""
     return not any(_heading_present(text, name) for name in OPTIONAL_CLOSER_NAMES)
 
+
+# ---- A6：时间宽裕度行为（≤1天严禁提问 / 窗口外知识点回问或实测）------------------------------
+# 学生澄清/偏好/状态问句线索（中英）——问学生拿主意、报进度、是否记得。刻意不含裸「你/您」，
+# 避免「你好？」这类误伤；反问前缀与自答句另行排除。DRIFT 侧 run_drift.py 有一份等价副本，
+# 二者由 tests/test_a6_detector_parity 锁一致。
+_STUDENT_ASK_CUE = re.compile(
+    r"你想|你要|你希望|你打算|你更|你觉得|你认为|你选|你决定|你来定|由你|你自己|你先|"
+    r"你(?:还)?记得|你会(?:不会)?|你能(?:不能)?|你有(?:没有)?|你是(?:不是|否)|你(?:比较)?熟|"
+    r"你复习到|你学到|要不要|想不想|请问|需要我|哪一?章|从哪|"
+    r"do you\b|would you\b|are you\b|have you\b|can you\b|which chapter\b|what.*\byou\b",
+    re.I)
+# 自答式反问前缀（你可能会问…？——自问自答，不停下等学生）
+_RHETORICAL_PREFACE = re.compile(
+    r"你可能(?:会)?问|你也许(?:会)?问|你(?:有没有|是不是|会不会)想过|你是不是(?:觉得|以为)|"
+    r"你也许(?:会)?好奇|你可能(?:会)?好奇|试想|想象一下|不妨想")
+# 紧接着的自答句（问完自己立刻给答案）
+_SELF_ANSWER = re.compile(
+    r"^(?:因为|答案|其实|这是因为|这(?:正)?是|正是|原因|答[:：]|because|the answer|it'?s because|"
+    r"here'?s why)", re.I)
+
+
+def asks_student_question(text):
+    """是否向学生抛出了需其回答的澄清/偏好/状态问句（会停下来等学生回复）。自答式反问
+    （你可能会问…？/紧接着给出答案）与纯陈述句不算。跨软换行、行内非行尾问号、中英问句都能识别。"""
+    t = re.sub(r"[ \t]*\n[ \t]*", " ", text or "")          # 软换行并为空格：跨行问句也能识别
+    sents = re.split(r"(?<=[？?。！!；;])\s*", t)
+    for i, s in enumerate(sents):
+        s = s.strip()
+        if not (s.endswith("？") or s.endswith("?")):
+            continue
+        if not _STUDENT_ASK_CUE.search(s):
+            continue
+        if _RHETORICAL_PREFACE.search(s):                   # 你可能会问…？这类反问
+            continue
+        nxt = sents[i + 1].strip() if i + 1 < len(sents) else ""
+        if _SELF_ANSWER.match(nxt):                         # 问完自己就答了
+            continue
+        return True
+    return False
+
+
+def urgent_no_student_questions_ok(text):
+    """≤1天档：严禁向用户提问（任何问题都在浪费复习时间）——纯讲解陈述句，没有学生问句。"""
+    return not asks_student_question(text)
+
+
+_WINDOW_RECHECK_CUE = re.compile(r"还记得|是否记得|先确认|复述一[遍下]|先做一道题|来一道题|"
+                                 r"测一下|实测一?下?|做题验证|考考你|考考自己")
+# 复核所在**分句**里若含拒绝/否定/反事实词，视为没真的复核。「会不会/行不行」里的「不会」不算拒绝
+# （那是复核问句本身），故 不会 用后视排除 会/还/行。
+_WINDOW_REFUSAL = re.compile(
+    r"(?<![会还行])不(?:会|做|想|去|再|打算|出)|不用|无需|无须|不需要|没(?:有)?(?:先|去|怎么)|"
+    r"别(?:再|又|去)|懒得|就当你|默认你|不再|本来该|本应|原本(?:该|想)")
+
+
+def window_out_rechecked(text):
+    """3-7天/>7天档：遇到「窗口外」的知识点必须先回问是否记得（3-7天）或用难题实测（>7天），
+    不能默认还会。检测：既点明窗口外语境，又在某个**未被否定的分句**里做了回问或出题实测。
+    否定/拒绝式提及（我不会实测 / 本来该先确认却没做）与「会不会」里的「不会」都不算真复核。"""
+    t = text or ""
+    if not re.search(r"窗口外|上次(?:讲过|学过)了?有?一?阵|好一?阵子没", t):
+        return False
+    for c in re.split(r"[。！？!?；;，,、\n]", t):
+        if _WINDOW_RECHECK_CUE.search(c) and not _WINDOW_REFUSAL.search(c):
+            return True
+    return False
+
+
 def visual_first_asset_display_ok(text, fixture_path=FIXTURE):
     """Smoke-check a visual-required output contract.
 
@@ -756,6 +824,16 @@ def check_scenario_mock(name, sc, fixture_path=FIXTURE):
                 and has_zero_basic_sections(good_txt))
         legacy_bad = teaching_template_ok(_read(_p(sc["mock_negative_legacy"])))
         return (good and not legacy_bad), f"seven_step_good={good} legacy_two_section_caught={not legacy_bad}"
+    if name == "time_budget_no_questions":
+        # ≤1天档：好例纯讲解无学生问句；反例向学生抛澄清/偏好问句 → 被抓
+        good = urgent_no_student_questions_ok(_read(_p(sc["mock_output"])))
+        bad = urgent_no_student_questions_ok(_read(_p(sc["mock_negative"])))
+        return (good and not bad), f"urgent_no_questions_good={good} question_in_1day_caught={not bad}"
+    if name == "knowledge_window_recheck":
+        # 窗口外知识点：好例回问/实测；反例默认还会、直接用 → 被抓
+        good = window_out_rechecked(_read(_p(sc["mock_output"])))
+        bad = window_out_rechecked(_read(_p(sc["mock_negative"])))
+        return (good and not bad), f"window_out_rechecked_good={good} assumed_known_caught={not bad}"
     if name == "teaching_template":
         good_txt = _read(_p(sc["mock_output"]))
         liberal_txt = _read(_p(sc["mock_liberal"]))

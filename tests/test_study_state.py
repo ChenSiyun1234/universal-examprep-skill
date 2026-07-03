@@ -257,6 +257,107 @@ class Mutations(unittest.TestCase):
         self.assertNotIn("Traceback", r.stderr)                   # fail-loud _die，不是 Python 崩栈
         self.assertIn("损坏", r.stderr)
 
+    # ---- A6：3 学习模式 × 4 时间宽裕度 + 知识点窗口 ----
+    def test_a6_old_mode_migration_on_set(self):
+        ws = self._ready()
+        r = _up(ws, ["set", "--mode", "panic"])                    # 旧模式 → 迁移 + 警告
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("已废弃", r.stderr)                          # fail-loud 警告，不静默改写
+        st = _state(ws)
+        self.assertEqual(st["mode"], "零基础从头讲")
+        self.assertEqual(st["time_budget"], "≤1天")               # panic 迁移带出当天档
+        # sprint → 查缺补漏 + 1-3天
+        _up(ws, ["set", "--mode", "sprint"])
+        self.assertEqual(_state(ws)["mode"], "查缺补漏")
+
+    def test_a6_migration_does_not_override_explicit_time_budget(self):
+        ws = self._ready()
+        r = _up(ws, ["set", "--mode", "panic", "--time-budget", "3-7天"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        st = _state(ws)
+        self.assertEqual(st["mode"], "零基础从头讲")
+        self.assertEqual(st["time_budget"], "3-7天")              # 显式 --time-budget 不被迁移带出值覆盖
+
+    def test_a6_time_budget_alias_normalized(self):
+        ws = self._ready()
+        _up(ws, ["set", "--mode", "查缺补漏", "--time-budget", "一周内"])
+        self.assertEqual(_state(ws)["time_budget"], "3-7天")      # 宽松别名归一到 canonical 档
+
+    def test_a6_unknown_mode_kept_with_warning(self):
+        ws = self._ready()
+        r = _up(ws, ["set", "--mode", "随便讲讲"])                 # 非标准值：保留原值 + 警告，绝不静默改写
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("非标准", r.stderr)
+        self.assertEqual(_state(ws)["mode"], "随便讲讲")
+
+    def test_a6_knowledge_window_add_and_status(self):
+        ws = self._ready()
+        _up(ws, ["set", "--mode", "查缺补漏", "--time-budget", "3-7天"])
+        self.assertEqual(_up(ws, ["window-add", "--point", "栈的LIFO", "--chapter", "1"]).returncode, 0)
+        self.assertEqual(_up(ws, ["window-add", "--point", "队列FIFO", "--chapter", "1",
+                                  "--status", "窗口外"]).returncode, 0)
+        # 同名点再 add 是状态迁移、不重复加行
+        _up(ws, ["window-add", "--point", "栈的LIFO", "--status", "已实测"])
+        win = _state(ws)["knowledge_window"]
+        self.assertEqual(len(win), 2)
+        by = {w["point"]: w["status"] for w in win}
+        self.assertEqual(by["栈的LIFO"], "已实测")
+        self.assertEqual(by["队列FIFO"], "窗口外")
+        # set-status 按名定位
+        _up(ws, ["window-set-status", "--point", "队列FIFO", "--status", "在窗口"])
+        self.assertEqual({w["point"]: w["status"] for w in _state(ws)["knowledge_window"]}["队列FIFO"], "在窗口")
+        # 进度面板渲染出窗口区
+        md = open(os.path.join(ws, "study_progress.md"), encoding="utf-8").read()
+        self.assertIn("知识点窗口", md)
+        self.assertIn("栈的LIFO", md)
+
+    def test_a6_window_bad_status_and_missing_point_fail_loud(self):
+        ws = self._ready()
+        r = _up(ws, ["window-add", "--point", "x", "--status", "乱写"])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertNotIn("Traceback", r.stderr)
+        r2 = _up(ws, ["window-set-status", "--point", "不存在", "--status", "在窗口"])
+        self.assertNotEqual(r2.returncode, 0)
+        self.assertNotIn("Traceback", r2.stderr)
+
+    def test_a6_window_survives_init_force_roundtrip(self):
+        # init --force 从 md 重新迁移时，知识点窗口必须无损带回——否则窗口/已实测追踪被静默丢
+        ws = self._ready()
+        _up(ws, ["set", "--mode", "查缺补漏", "--time-budget", "3-7天"])
+        _up(ws, ["window-add", "--point", "栈的LIFO", "--chapter", "1"])
+        _up(ws, ["window-add", "--point", "队列FIFO", "--chapter", "1", "--status", "窗口外"])
+        _up(ws, ["window-set-status", "--point", "栈的LIFO", "--status", "已实测"])
+        before = [(w["point"], str(w.get("chapter")), w["status"]) for w in _state(ws)["knowledge_window"]]
+        r = _up(ws, ["init", "--force"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        after = [(w["point"], str(w.get("chapter")), w["status"]) for w in _state(ws)["knowledge_window"]]
+        self.assertEqual(before, after, "init --force 丢了知识点窗口行")
+
+    def test_a6_window_add_idempotent_backfill(self):
+        # 先松登记（无章节）再补章节 → 回填到同一条，不产生 null-章节孤儿重复行
+        ws = self._ready()
+        _up(ws, ["window-add", "--point", "红黑树"])
+        _up(ws, ["window-add", "--point", "红黑树", "--chapter", "7"])
+        rows = [w for w in _state(ws)["knowledge_window"] if w["point"] == "红黑树"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(str(rows[0]["chapter"]), "7")
+        # 同名但不同章 = 真正不同的点，保留两行
+        _up(ws, ["window-add", "--point", "模板", "--chapter", "2"])
+        _up(ws, ["window-add", "--point", "模板", "--chapter", "5"])
+        self.assertEqual(len([w for w in _state(ws)["knowledge_window"] if w["point"] == "模板"]), 2)
+
+    def test_a6_init_surfaces_normalization_warning(self):
+        # 迁移进来的非标准模式：值保留 + 走 stderr 警告（与 cmd_set 一致，不静默）
+        md = ("# 进度\n\n## ⏱️ 当前复习断点\n* **当前进行阶段**：阶段 1\n"
+              "* **范围/模式**：混合题池 ｜ panic ｜ 时间预算 未设定\n\n## ❌ 错题档案记录\n（暂无）\n")
+        ws = _mk_ws(tempfile.mkdtemp(), md=md)
+        r = _up(ws, ["init"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("已废弃", r.stderr)                          # panic 迁移警告在 init 也冒出来
+        st = _state(ws)
+        self.assertEqual(st["mode"], "零基础从头讲")
+        self.assertEqual(st["time_budget"], "≤1天")
+
     def test_missing_optional_fields_tolerated(self):
         ws = self._ready()
         st = _state(ws)
