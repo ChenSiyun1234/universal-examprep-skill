@@ -2317,6 +2317,55 @@ class HomeworkIngest(unittest.TestCase):
         self.assertFalse(any(e.get("file") == "hw71_sol.pdf"
                              for e in report.get("ai_review", [])))
 
+    def test_scanned_homework_pdf_handed_to_ai(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {})
+        for rel in ("hw1.pdf", "lec01.pdf"):
+            with open(os.path.join(tmp, "mat", rel), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class ShBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                if "hw1" in pdf_path:
+                    return ["12", ""]                              # 扫描的作业题面册
+                return ["讲义正文内容。"]
+        code, payload, report = _run(mat, ShBackend({}))
+        self.assertTrue(any(e["kind"] == "scanned_pdf" and e["file"] == "hw1.pdf"
+                            for e in report.get("ai_review", [])))  # 题面册产不出题必须移交
+
+    def test_low_confidence_gbk_still_ingested_with_review(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"lec01.pdf": ["讲义正文内容。"]})
+        with open(os.path.join(tmp, "mat", "short.txt"), "wb") as f:
+            f.write("概率论资料".encode("gbk"))                    # 短文本常用字占比低
+        code, payload, report = _run(mat, be)
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertIn("概率论资料", wiki_all)                     # 严格解码成功的数据绝不丢
+        self.assertFalse(any(w.startswith("undecodable_text") for w in report["warnings"]))
+
+    def test_mixed_pdf_residue_pages_kept_out_of_wiki(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {})
+        with open(os.path.join(tmp, "mat", "mixed2.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+
+        class MpBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                return ["第一页正文知识点。", "37", "第三页正文知识点。"]
+        code, payload, report = _run(mat, MpBackend({}))
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertIn("第一页正文知识点", wiki_all)
+        self.assertNotIn("mixed2.pdf p.2", wiki_all)              # 残渣页不进 wiki
+
+    def test_log_file_is_not_silently_junked(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw1.pdf": ["Problem 1\n题面。"]})
+        with open(os.path.join(tmp, "mat", "server.log"), "wb") as f:
+            f.write(b"real material maybe")
+        code, payload, report = _run(mat, be)
+        self.assertTrue(any(w.startswith("unsupported_format") and "server.log" in w
+                            for w in report["warnings"]))         # 只豁免已知垃圾名，不按扩展名猜
+
     def test_no_network_or_llm(self):
 
 

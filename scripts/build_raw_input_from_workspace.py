@@ -1540,9 +1540,9 @@ def _scan_materials(materials_dir):
                 pdfs.append(full)
             elif low.endswith((".txt", ".md")):
                 texts.append(full)
-            elif not fn.startswith(".") and low not in ("thumbs.db", "desktop.ini") \
-                    and not low.endswith((".ini", ".db", ".lnk", ".tmp", ".log")):
+            elif not fn.startswith((".", "~$")) and low not in ("thumbs.db", "desktop.ini"):
                 others.append(full)                    # 不支持的格式也要留痕，绝不零痕迹丢弃
+                                                       #（只豁免已知 OS 垃圾名，不按扩展名类猜）
     return sorted(pdfs), sorted(texts), sorted(pruned), sorted(others)
 
 
@@ -1622,11 +1622,19 @@ def _read_text_file_pages(path, rel, report=None):
         if len(cands) == 1:
             enc, raw = cands[0]
         elif len(cands) == 2:
-            scored = sorted(((_han_score(t), enc, t) for enc, t in cands), reverse=True)
-            if scored[0][0] >= 0.25:
-                _, enc, raw = scored[0]
-            else:
-                enc, raw = None, None      # 两边都像乱码——按编码不确定移交
+            # 相对胜者入库（严格解码成功的数据绝不丢）；平局偏 GBK（简体为主要受众，已文档化）。
+            # 置信度低（常用字占比 <0.25）时额外进核对清单——入库但大声标注，不静默也不丢
+            scored = sorted(((_han_score(t), i, enc, t) for i, (enc, t) in enumerate(cands)),
+                            key=lambda x: (-x[0], x[1]))
+            _sc, _, enc, raw = scored[0]
+            if _sc < 0.25 and report is not None:
+                report["warnings"].append(
+                    "encoding_uncertain: %s（GBK/Big5 均可解且常用字占比低——已按 %s 入库，请核对是否乱码）"
+                    % (rel, enc.upper()))
+                report["ai_review"].append({
+                    "kind": "encoding_uncertain", "file": rel,
+                    "action": "该文本非 UTF-8 且 GBK/Big5 都能解码、置信度低。已按 %s 解码入库——"
+                              "请 AI 检查工作区里该文件内容是否乱码，乱码则转存 UTF-8 后重新构建。" % enc.upper()})
         if raw is not None and report is not None:
             report["warnings"].append(
                 "encoding_fallback: %s（不是 UTF-8，按 %s 解码（常用字占比裁决）——"
@@ -1704,6 +1712,7 @@ def run(args, backend=None):
 
     pages = []
     residue_files = {}
+    residue_page_keys = set()
     for tp in texts:
         pages.extend(_read_text_file_pages(tp, _rel(tp, materials), report))
     for pdf in pdfs:
@@ -1723,6 +1732,7 @@ def run(args, backend=None):
                 # 分类后未被认领的才从管线剔除并移交 AI
                 residue_files[rel] = no_content
             elif no_content:    # 混排文件里的扫描页：内容不会进 wiki/题库，必须留痕移交
+                residue_page_keys.update((rel, n) for n in no_content)
                 report["warnings"].append(
                     "pdf_pages_no_text: %s（%d/%d 页无有效文本：p%s——疑似扫描/纯图页，这些页的内容"
                     "不会进 wiki/题库）" % (rel, len(no_content), total, _fmt_pages(no_content)))
@@ -1806,7 +1816,11 @@ def run(args, backend=None):
                 report["warnings"].append(
                     "exam_lecture_style: %s（试卷解答册且内容以讲义式标记为主——随卷归还"
                     "讲义管线配对官方解答，正文不进 wiki）" % _sf)
-    _flush_residue(hw_related)
+    # 认领 = 真被当答案消费的配对解答册（裸答案「4」）；扫描的作业/试卷【题面册】什么都
+    # 产不出，必须照常移交 AI（光一条 hw_no_markers 不够——那不带多模态行动指引）
+    _claimed_sols = {sf for sf, hf in (_pairing or {}).items() if hf} \
+        if getattr(args, "extract_homework", "auto") != "never" else set()
+    _flush_residue(_claimed_sols)
     lecture_pages = [pg for pg in pages if pg["file"] not in hw_related]
     lecture_items = []
     if args.extract_lecture_questions != "never":
@@ -1935,7 +1949,8 @@ def run(args, backend=None):
         sol_dir_files |= {pg["file"] for pg in pages
                           if _pure_sol_stem(os.path.splitext(os.path.basename(pg["file"]))[0])}
     wiki_pages = [pg for pg in pages if pg["file"] not in sol_files
-                  and pg["file"] not in sol_dir_files]
+                  and pg["file"] not in sol_dir_files
+                  and (pg["file"], pg["page"]) not in residue_page_keys]   # 残渣页不进 wiki
     raw_input = build_raw_input(course, group_sections(wiki_pages), lecture_items, homework_items)
     return 0, raw_input, report
 
