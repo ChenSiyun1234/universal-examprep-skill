@@ -158,6 +158,17 @@ def scope_override_declared(text):
     return m.start() < pos
 
 
+# A5 七步模板的块名（含文科变体）——正文切割时，圆圈数字行只有后接这些块名才算新节，
+# 这样 ⑤ 正文里的 ①② 子步骤（如「① 先算地址增量」）不会把所在节的正文误切成空。
+# 长名在前，保证正则交替优先匹配更长的文科变体（如「材料里要读的关键句」先于「材料里要读的关键」）。
+_TT_SECTION_NAMES = ("材料里要读的关键句/概念", "材料里要读的关键概念", "材料里要读的关键句",
+                     "材料里要读的关键", "这题在问什么", "这题考什么", "知识点溯源", "图里要读的量",
+                     "逐步演算", "逐步代入", "逐点展开", "核心概念", "核心公式", "答案自检", "题面图")
+# 0 容差边界：块名后必须紧跟分隔符（冒号/空白/行尾）才算「新节标题」；否则是正文里的子步骤
+# （如「① 核心公式代入得地址。」——名字后是「代」不是分隔符，不切）。
+_CIRCLED_SECTION = (r"[①②③④⑤⑥⑦⑧⑨⑩]\s*(?:" + "|".join(_TT_SECTION_NAMES) + r")(?=[：:\s]|$)")
+
+
 def _heading_present(text, name):
     """True if `name` is a section HEADING — markdown (## / **bold**), an ordered-list heading
     (`1. 考点拆解`), OR the skill's documented bracket block (`【考点拆解】`) — not an inline mention."""
@@ -184,7 +195,7 @@ def _heading_has_body(text, name):
     rest = (text or "")[m.end():]
     # cut the body at the next markdown/bracket heading only — NOT at numbered lines, since a section
     # body legitimately contains ordered lists (e.g. "1. 判断结构类型 …").
-    nxt = re.search(r"(?m)^\s{0,3}(?:#{1,4}\s|\*\*|[【〖]|[①②③④⑤⑥⑦⑧⑨⑩])", rest)
+    nxt = re.search(r"(?m)^\s{0,3}(?:#{1,4}\s|\*\*|[【〖]|" + _CIRCLED_SECTION + r")", rest)
     body = rest[:nxt.start()] if nxt else rest
     return len(re.sub(r"\s+", "", body)) >= 2
 
@@ -194,13 +205,12 @@ def _zb(text, *variants):
 
 
 def has_zero_basic_sections(text):
-    # each of the four parts must be a real heading AND have actual body content under it.
+    # each required part must be a real heading AND have actual body content under it.
     # A5 起精讲走七步模板：② 这题在问什么 吸收了 考点拆解，④⑤ 核心公式/逐步演算 吸收了
-    # 标准答题步骤——新旧两种输出格式都满足零基础精讲的结构要求（易错点/3分钟速记 两块不变）。
+    # 标准答题步骤——新旧两种输出格式都满足零基础精讲的结构要求。
+    # 易错点/3分钟速记/现在轮到你 是可选收尾块（仅学生要求才输出），不再是结构要求。
     return (_zb(text, "考点拆解", "这题在问什么", "这题考什么")
-            and _zb(text, "标准答题步骤", "标准答题模板", "逐步演算", "逐步代入", "逐点展开")
-            and _zb(text, "易错点")
-            and _zb(text, "3分钟速记", "三分钟速记"))
+            and _zb(text, "标准答题步骤", "标准答题模板", "逐步演算", "逐步代入", "逐点展开"))
 
 
 
@@ -233,7 +243,8 @@ def _tt_step_pos(text, variants):
 
 def teaching_template_ok(text):
     """A5 七步讲解模板：①-⑦ 全部以真实标题+正文出现，且严格按顺序出现——抓「跳过②直接贴公式」
-    （② 缺失）与「公式先行」（④ 出现在 ② 之前）；⑦ 溯源之后必须真的落到章节或 wiki 路径。"""
+    （② 缺失）与「公式先行」（④ 出现在 ② 之前）；⑦ 必须给出 wiki 路径 + 原文页链接（或如实
+    写「来源未知」），裸章节号不算溯源。"""
     pos = []
     for variants in TEACHING_TEMPLATE_STEPS:
         p = _tt_step_pos(text, variants)
@@ -242,8 +253,17 @@ def teaching_template_ok(text):
         pos.append(p)
     if pos != sorted(pos):
         return False
+    # ⑦ 必须给出真实溯源：wiki 路径是硬要求；原文页要么给可点击 Markdown 链接、
+    # 要么如实写「来源未知/来源页未知」。裸「第 N 章」不算溯源。
+    # 检查范围限定在 ⑦ 自己的正文（切到其后的来源块行为止）——不能靠必然相邻的来源块行或
+    # opt-in 收尾块里的 wiki 路径/链接蒙混（Codex R1-F3 残留）。
     tail = (text or "")[pos[-1]:]
-    return bool(re.search(r"references/wiki/|第\s*[0-9一二三四五六七八九十]+\s*章", tail))
+    sb = SOURCE_BLOCK_RE.search(tail)
+    seven_body = tail[:sb.start()] if sb else tail
+    if "references/wiki/" not in seven_body:
+        return False
+    return bool(re.search(r"\[[^\]]+\]\([^)]+\)", seven_body)
+                or "来源未知" in seven_body or "来源页未知" in seven_body)
 
 
 # 来源块单行：题目来源：…｜答案来源：…（全角｜或 ASCII | 都接受），末尾还需 canonical 标签。
@@ -251,23 +271,47 @@ SOURCE_BLOCK_RE = re.compile(r"(?m)^[^\n]*题目来源\s*[:：][^\n]*[｜|][^\n]
 _ANSWER_TITLE_RE = re.compile(_TT_PREFIX + r"(?:逐步演算|逐步代入|逐点展开|标准答案|参考答案|解析)[^\n]*")
 
 
+# canonical 溯源标签（docs/language-policy.md 单一来源）；⚠ 归一化掉变体选择符 FE0F 再比对。
+_CANONICAL_SOURCE_LABELS = ("🟢 来自资料",
+                            "🟡 AI补充，可能与你老师讲的不完全一致",
+                            "⚠️ AI生成答案，非老师/教材提供")
+
+
+def _norm_warn(s):
+    return (s or "").replace("\ufe0f", "")
+
+
 def question_source_block_ok(text, ai_answer=False):
-    """A5 每题固定来源块：`题目来源：…｜答案来源：…｜<canonical 标签>` 单行齐全——抓「来源块缺失」
-    与「无 canonical 标签」；ai_answer=True（无教材答案）时来源行与答案块标题都必须带 ⚠️。
-    标签匹配用 ⚠ 基字符，带/不带变体选择符 (FE0F) 都算。"""
+    """A5 每题固定来源块：`题目来源：…｜答案来源：…｜<canonical 标签>` 单行齐全，且**最后一段必须
+    逐字以 canonical 标签开头**——抓「来源块缺失」「无/伪标签」（行内别处塞个图标骗不过）；
+    ai_answer=True（无教材答案）时尾标签必须是 ⚠️ AI生成答案 canonical 文本，且答案块标题也带 ⚠️。"""
     m = SOURCE_BLOCK_RE.search(text or "")
     if not m:
         return False
-    line = m.group(0)
-    if not any(lbl in line for lbl in ("🟢", "🟡", "⚠")):
+    label = _norm_warn(re.split(r"[｜|]", m.group(0))[-1].strip())
+    canon = tuple(_norm_warn(c) for c in _CANONICAL_SOURCE_LABELS)
+    # 允许 canonical 标签后带一个括号补充（🟢 来自资料（讲义 ch2）），但不允许任意自由文本尾巴
+    # （🟢 来自资料 但这句我瞎编的）——去掉尾部括注后必须逐字等于某个 canonical 标签。
+    core = re.sub(r"\s*[（(【\[].*$", "", label).strip()
+    if core not in canon:
         return False
     if ai_answer:
-        if "⚠" not in line:
+        if core != canon[2]:
             return False
         title = _ANSWER_TITLE_RE.search(text or "")
         if not title or "⚠" not in title.group(0):
             return False
     return True
+
+
+# 可选收尾块（易错点/3分钟速记/现在轮到你）——默认不许出现，仅学生要求/已存偏好时才输出。
+OPTIONAL_CLOSER_NAMES = ("易错点", "3分钟速记", "三分钟速记", "现在轮到你")
+
+
+def no_unsolicited_closing_blocks(text):
+    """A5：默认输出到来源块为止——任何收尾块标题的出现都算「未经要求擅自附加」。
+    本探测器不看上下文；学生真的要求了的场景在 dispatch 层豁免（不跑本检查）。"""
+    return not any(_heading_present(text, name) for name in OPTIONAL_CLOSER_NAMES)
 
 def visual_first_asset_display_ok(text, fixture_path=FIXTURE):
     """Smoke-check a visual-required output contract.
@@ -667,13 +711,24 @@ def check_scenario_mock(name, sc, fixture_path=FIXTURE):
         unlabeled = question_source_block_ok(_read(_p(sc["mock_negative_unlabeled_source"])))
         warn_line = question_source_block_ok(_read(_p(sc["mock_negative_missing_warn"])), ai_answer=True)
         warn_title = question_source_block_ok(_read(_p(sc["mock_negative_warn_title"])), ai_answer=True)
+        # 收尾块契约：好例默认不带收尾块；未经要求擅自附加的反例要被抓；
+        # 学生明确要求的 opt-in 例外只查七步+来源块（收尾块检查豁免）。
+        good_closer_free = (no_unsolicited_closing_blocks(good_txt)
+                            and no_unsolicited_closing_blocks(liberal_txt)
+                            and no_unsolicited_closing_blocks(ai_txt))
+        unsolicited = no_unsolicited_closing_blocks(_read(_p(sc["mock_negative_unsolicited_closers"])))
+        optin_txt = _read(_p(sc["mock_optin_closers"]))
+        optin_ok = teaching_template_ok(optin_txt) and question_source_block_ok(optin_txt)
         return (good and liberal and ai_good and not skip_ask and not formula_first
                 and no_source_tpl and not no_source and not unlabeled
-                and not warn_line and not warn_title), (
+                and not warn_line and not warn_title
+                and good_closer_free and not unsolicited and optin_ok), (
             f"good={good} liberal={liberal} ai_good={ai_good} skip_ask_caught={not skip_ask} "
             f"formula_first_caught={not formula_first} no_source_caught={not no_source} "
             f"(tpl_still_ok={no_source_tpl}) unlabeled_caught={not unlabeled} "
-            f"warn_line_caught={not warn_line} warn_title_caught={not warn_title}")
+            f"warn_line_caught={not warn_line} warn_title_caught={not warn_title} "
+            f"good_closer_free={good_closer_free} unsolicited_closers_caught={not unsolicited} "
+            f"optin_closers_ok={optin_ok}")
     if name == "visual_first_assets":
         good = visual_first_asset_display_ok(_read(_p(sc["mock_output"])), fixture_path)
         answer_first = visual_first_asset_display_ok(_read(_p(sc["mock_negative"])), fixture_path)

@@ -33,7 +33,7 @@ Teach exactly one current wiki chapter. Explain concepts with real-life metaphor
    - **⑤ 逐步演算** — substitute values step by step to the final answer, no skipped algebra. 文科变体：「逐点展开论证」（得分要点逐条展开）. **When the answer is NOT provided by the teacher/material, this block's title MUST carry ⚠️**, e.g. `⑤ 逐步演算（⚠️ AI生成答案，非老师/教材提供）`.
    - **⑥ 答案自检** — one line on why the answer holds: plug back / units / order of magnitude / boundary case（文科：检查是否覆盖了题目的每一问）.
    - **⑦ 知识点溯源** — where this knowledge lives: chapter + wiki file + a clickable original-page link built from the item's source fields (A2 mapping), e.g. `第 2 章《线性表》 · references/wiki/ch02_linear_list.md · 原文 [lecture03.pdf 第 12 页](../lecture03.pdf#page=12)`. Unknown source page → say 「来源页未知」 honestly; never invent a filename or page number. 文科变体可在本步后追加一行「可能考点：…」罗列同源可能出题点.
-   Close each question with 易错点 + 3分钟速记 + 现在轮到你 (the legacy 【考点拆解】/【标准答题模板/步骤】 blocks are subsumed by ② and ④⑤ — do not duplicate them). Aim for an answer framework the student can reproduce from memory in the exam.
+   The explanation ends at the per-question source block below — ①-⑦ + 来源块 is the COMPLETE default output. The legacy closers 易错点 / 3分钟速记 / 现在轮到你 are NOT emitted by default: output them only when the student explicitly asks (e.g. 「给我个口诀」「有什么易错点」「考考我」), or when a stored preference requests them (`set --pref 收尾块=易错点+3分钟速记`, any combination the student named). The legacy 【考点拆解】/【标准答题模板/步骤】 blocks are subsumed by ② and ④⑤ — do not duplicate them. Aim for an answer framework the student can reproduce from memory in the exam.
    - **每题固定来源块** — immediately after ⑦, one single line in this verbatim shape: `题目来源：<文件名> 第<N>页（<source_type>）｜答案来源：<文件名 第<N>页 / 老师·教材提供 / AI 推导（无教材答案）>｜<canonical 溯源标签>`, where the trailing label is exactly one of 🟢 来自资料 / 🟡 AI补充，可能与你老师讲的不完全一致 / ⚠️ AI生成答案，非老师/教材提供 (see [`docs/language-policy.md`](../../docs/language-policy.md)). No 教材/老师 answer → the label MUST be ⚠️ and ⑤'s title carries ⚠️ as above. Missing source metadata → write 「来源未知」, never fabricate.
    - **讲解模板偏好（A4 preferences）** — on FIRST entering key-question mode in a workspace, ask which template variant the student wants（七步精讲·理科默认 / 文科变体）and persist it: `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> set --pref 讲解模板=<七步精讲|文科变体>`. This is a PREFERENCE, separate from `--mode`; the progress panel shows it under ⚙️ 偏好. Honor the stored value in later sessions without re-asking; change it whenever the student asks (same command). Neither variant may drop any of ①-⑦ or the source block. Without `study_state.json` (no-Python fallback), record it in the md 偏好 section.
 4. **Visual-first key questions.** Before explaining, hinting, or solving any stored/key question with `requires_assets=true` or `maybe_requires_assets=true`, apply [`docs/file-format.md`](../../docs/file-format.md) §4: render/show every question-side asset (`question_context` / `figure` / `diagram` / `table`) first, label it `题面图 / question-side asset`, and use only those prompt assets before the explanation. Do not show `answer_context` / `worked_solution` assets until solution/review, after the prompt image has already been shown, and label them `答案图 / answer-side asset`. If the file is missing/unreadable, the UI cannot render it, or the output would only print a non-rendering path (including malformed slash-prefixed Windows drive-letter Markdown), do not teach that item as if the prompt were complete; say the prompt asset is unavailable and move on. Prefer the official tool over hand-writing the Markdown: `python <package-root>/scripts/show_question_assets.py --workspace <ws> --id <qid>` emits the prompt-side image lines (POSIX relative paths) and exits 1 when the contract can't be met — treat exit 1 as "skip this item".
@@ -44,7 +44,7 @@ Teach exactly one current wiki chapter. Explain concepts with real-life metaphor
 
 ## Output Contract
 - Output a concise explanation plus the needed metaphor / formula dissection / memory hook, ending with a refreshed progress panel.
-- Every key-question explanation contains all seven template blocks ①-⑦ in order plus the one-line per-question source block (题目来源｜答案来源｜canonical label). Skipping ② and pasting formulas directly, omitting the source block, or presenting an AI-derived answer without ⚠️ in both ⑤'s title and the source label are contract violations (behavior smoke: `teaching_template`).
+- Every key-question explanation contains all seven template blocks ①-⑦ in order plus the one-line per-question source block (题目来源｜答案来源｜canonical label) — and by default NOTHING after the source block. Skipping ② and pasting formulas directly, omitting the source block, presenting an AI-derived answer without ⚠️ in both ⑤'s title and the source label, or appending unsolicited 易错点/3分钟速记/现在轮到你 closers are contract violations (behavior smoke: `teaching_template`).
 - After each learning or checkpoint event, update the chapter checkpoint status (state-backed: `update_progress.py set`/`set-check`; fallback: `study_progress.md`).
 - Do not quiz or score; for practice questions, delegate to `exam-quiz` (which draws only from `references/quiz_bank.json`).
 - Limit wiki reads to the single current `references/wiki/chN_*.md` chapter (not other chapters, not the whole book); validate that path. Reading and updating `study_progress.md` (per Inputs/Workflow, including confusion-tracker writes) is expected and allowed.
@@ -81,17 +81,9 @@ Teach exactly one current wiki chapter. Explain concepts with real-life metaphor
 第 2 章《线性表》 · references/wiki/ch02_linear_list.md · 原文 [lecture03.pdf 第 12 页](../lecture03.pdf#page=12)
 
 题目来源：hw02.pdf 第 3 页（homework）｜答案来源：hw02_sol.pdf 第 1 页｜🟢 来自资料
-
-易错点：
-不要只背"链表方便插入删除"，要说清楚随机访问为什么慢。
-
-3分钟速记：
-顺序表=连续存储、随机访问快；链表=指针串联、增删快。
-
-现在轮到你：
-用一句话解释：为什么顺序表随机访问更快？
 ```
 
+- **默认输出到来源块为止**。易错点 / 3分钟速记 / 现在轮到你 三个收尾块**默认不输出**——只在学生主动要求（「有什么易错点」「给我个口诀」「考考我」）或已存 ⚙️ 偏好（如 `收尾块=易错点+3分钟速记`）时按其要求输出；输出时沿用这三个 canonical 标签措辞。
 - **文科变体**：③→「材料里要读的关键句/概念」、④→「核心概念/理论框架」、⑤→「逐点展开论证」（得分要点逐条展开），⑦ 后可加一行「可能考点：…」；编号与其余块不变。
 - **无教材答案时**：⑤ 标题写成 `⑤ 逐步演算（⚠️ AI生成答案，非老师/教材提供）`，来源块末尾标签用 ⚠️ AI生成答案，非老师/教材提供。
 - 零基础重点题精讲对每道重点题都走同一份七步模板（旧版「考点拆解/标准答题步骤」已并入 ②/④⑤，不再单列）。

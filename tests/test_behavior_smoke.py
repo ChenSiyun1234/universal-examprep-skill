@@ -64,7 +64,7 @@ class BehaviorSmokeTest(unittest.TestCase):
             "mock_negative_path", "progress_after", "transcript",
             "mock_liberal", "mock_ai_answer", "mock_negative_skip_ask", "mock_negative_formula_first",
             "mock_negative_no_source", "mock_negative_unlabeled_source", "mock_negative_missing_warn",
-            "mock_negative_warn_title",
+            "mock_negative_warn_title", "mock_negative_unsolicited_closers", "mock_optin_closers",
         )
         for sc in spec["scenarios"]:
             for k in file_keys:
@@ -200,9 +200,12 @@ class BehaviorSmokeTest(unittest.TestCase):
         # four headings with NO body text under any of them must not pass
         self.assertFalse(H.has_zero_basic_sections("## 考点拆解\n## 标准答题步骤\n## 易错点\n## 3分钟速记"),
                          "只有空小节标题、无正文不应判通过")
-        # A5 起：七步模板输出（② 这题在问什么 / ⑤ 逐步演算 + 裸「易错点：」收尾块）也满足零基础结构要求
+        # A5 起：七步模板输出（② 这题在问什么 / ⑤ 逐步演算）也满足零基础结构要求；
+        # 易错点/3分钟速记 是可选收尾块，缺席不影响判定
         seven = _read("mock/sample_outputs/teaching_template_good.txt")
         self.assertTrue(H.has_zero_basic_sections(seven), "A5 七步模板输出应满足零基础精讲的结构要求")
+        two_core = "## 考点拆解\n讲解\n## 标准答题步骤\n步骤"
+        self.assertTrue(H.has_zero_basic_sections(two_core), "只有两大核心小节（无收尾块）也应判通过")
 
     def test_visual_first_asset_detector(self):
         self.assertTrue(H.visual_first_asset_display_ok(_read("mock/sample_outputs/visual_first_good.txt")))
@@ -449,6 +452,48 @@ class BehaviorSmokeTest(unittest.TestCase):
             "见课件。")
         self.assertNotEqual(no_cite, good)
         self.assertFalse(H.teaching_template_ok(no_cite), "⑦ 无章节/wiki 引用必须被抓")
+        # 裸「第 N 章」不算溯源——必须有 wiki 路径（Codex R1-F3）
+        bare_ch = good.replace(
+            "references/wiki/ch02_linear_list.md · 原文 [lecture03.pdf 第 12 页](../lecture03.pdf#page=12)",
+            "见第 2 章课件")
+        self.assertNotEqual(bare_ch, good)
+        self.assertFalse(H.teaching_template_ok(bare_ch), "⑦ 只写章节号、无 wiki 路径必须被抓")
+        # 原文页不明时如实写「来源页未知」仍通过（诚实弃答不惩罚）
+        honest = good.replace("原文 [lecture03.pdf 第 12 页](../lecture03.pdf#page=12)", "原文来源页未知")
+        self.assertNotEqual(honest, good)
+        self.assertTrue(H.teaching_template_ok(honest), "wiki 路径 + 如实来源页未知 应通过")
+        # ⑤ 正文里的圆圈子步骤不是新节，不得把正文切空（Codex R1-F4）
+        substeps = good.replace(
+            "⑤ 逐步演算：\n1. 顺序表：一次乘加直接算出地址，1 步到位。\n2. 链表：i=5 时要做 5 次 next 跳转。\n3. 结论：顺序表随机访问 O(1)，链表 O(n)，顺序表快。",
+            "⑤ 逐步演算：\n① 先算顺序表：一次乘加直接算出地址。\n② 再算链表：i=5 时要做 5 次 next 跳转，顺序表快。")
+        self.assertNotEqual(substeps, good)
+        self.assertTrue(H.teaching_template_ok(substeps), "⑤ 正文用 ①② 圆圈子步骤的合规输出不应被误杀")
+        # 子步骤文字恰好以块名开头（① 核心公式代入…）仍不算新节——0 容差边界（Codex R1-F4 残留）
+        name_prefixed = good.replace(
+            "⑤ 逐步演算：\n1. 顺序表：一次乘加直接算出地址，1 步到位。\n2. 链表：i=5 时要做 5 次 next 跳转。\n3. 结论：顺序表随机访问 O(1)，链表 O(n)，顺序表快。",
+            "⑤ 逐步演算：\n① 核心公式代入得地址：一次乘加到位。\n② 链表要跳 5 次，顺序表快。")
+        self.assertNotEqual(name_prefixed, good)
+        self.assertTrue(H.teaching_template_ok(name_prefixed),
+                        "子步骤以「核心公式」等块名开头但非分隔符结尾，不应被当成新节切空 ⑤")
+        # ⑦ 的 wiki/链接要求只看 ⑦ 自己的正文，不能靠相邻来源块行满足（Codex R1-F3 残留）
+        wiki_in_source = good.replace(
+            "第 2 章《线性表》 · references/wiki/ch02_linear_list.md · "
+            "原文 [lecture03.pdf 第 12 页](../lecture03.pdf#page=12)",
+            "见第 2 章课件（原文页未详）").replace(
+            "题目来源：hw02.pdf 第 3 页（homework）｜答案来源：hw02_sol.pdf 第 1 页｜🟢 来自资料",
+            "题目来源：references/wiki/ch02_linear_list.md｜答案来源：hw02_sol.pdf｜🟢 来自资料")
+        self.assertNotEqual(wiki_in_source, good)
+        self.assertFalse(H.teaching_template_ok(wiki_in_source),
+                         "⑦ 自身无 wiki、仅来源块行有 wiki 路径必须被抓")
+        # ⑦ 有 wiki 但只写裸页码，链接只在 opt-in 收尾块里——也必须被抓（Codex R1-F3 残留）
+        link_in_closer = good.replace(
+            "第 2 章《线性表》 · references/wiki/ch02_linear_list.md · "
+            "原文 [lecture03.pdf 第 12 页](../lecture03.pdf#page=12)",
+            "第 2 章 · references/wiki/ch02_linear_list.md · 原文 lecture03.pdf 第 12 页"
+        ) + "\n易错点：\n参考 [这里](../x.pdf#page=1)。\n"
+        self.assertNotEqual(link_in_closer, good)
+        self.assertFalse(H.teaching_template_ok(link_in_closer),
+                         "⑦ 无链接、链接只在收尾块里必须被抓")
 
     def test_question_source_block_detector(self):
         good = _read("mock/sample_outputs/teaching_template_good.txt")
@@ -478,6 +523,46 @@ class BehaviorSmokeTest(unittest.TestCase):
         # 非 AI 答案时 🟡 标签合法
         self.assertTrue(H.question_source_block_ok(
             "题目来源：lec1.pdf 第 2 页（lecture）｜答案来源：老师课堂口述，AI 整理｜🟡 AI补充，可能与你老师讲的不完全一致"))
+        # 尾标签必须逐字 canonical——行内前段塞图标、末段贴错标签骗不过（Codex R1-F1）
+        forged = ("题目来源：⚠️ hw04.pdf 第 1 页（homework）｜答案来源：AI 推导（无教材答案）｜🟢 来自资料")
+        self.assertFalse(H.question_source_block_ok(forged, ai_answer=True),
+                         "AI 答案被尾标签标成 🟢 来自资料、⚠️ 只在行首伪装，必须被抓")
+        self.assertFalse(H.question_source_block_ok("题目来源：a.pdf｜答案来源：b.pdf｜🟢 资料"),
+                         "非 canonical 文本的尾标签（🟢 资料）必须被抓")
+        # ⚠ 不带变体选择符 (FE0F) 的 canonical 尾标签也接受（归一化比对；非 AI 场景只查行级）
+        self.assertTrue(H.question_source_block_ok(
+            "题目来源：hw04.pdf 第 1 页（homework）｜答案来源：AI 推导（无教材答案）｜⚠ AI生成答案，非老师/教材提供"))
+        # canonical 标签后带一个括号补充（源出处细节）合法（Codex R1-F1）
+        self.assertTrue(H.question_source_block_ok(
+            "题目来源：a.pdf｜答案来源：b.pdf｜🟢 来自资料（讲义 ch2 第 3 页）"),
+            "canonical 标签后跟括号出处补充应通过")
+        # 但 canonical 标签后接任意自由文本尾巴（非括注）必须被抓——防「贴对标签再瞎编」
+        self.assertFalse(H.question_source_block_ok(
+            "题目来源：a.pdf｜答案来源：b.pdf｜🟢 来自资料 但这句其实我瞎编的"),
+            "canonical 标签后接自由文本尾巴必须被抓")
+
+    def test_no_unsolicited_closing_blocks_detector(self):
+        # 好例默认不带收尾块
+        self.assertTrue(H.no_unsolicited_closing_blocks(
+            _read("mock/sample_outputs/teaching_template_good.txt")))
+        self.assertTrue(H.no_unsolicited_closing_blocks(
+            _read("mock/sample_outputs/teaching_template_liberal_good.txt")))
+        self.assertTrue(H.no_unsolicited_closing_blocks(
+            _read("mock/sample_outputs/teaching_template_ai_answer_good.txt")))
+        # 未经要求擅自附加收尾块必须被抓
+        self.assertFalse(H.no_unsolicited_closing_blocks(
+            _read("mock/sample_outputs/teaching_template_unsolicited_closers.txt")),
+            "学生没要求却输出 易错点/3分钟速记/现在轮到你 必须被抓")
+        # 探测器本身不看上下文——opt-in mock 也含收尾块标题，一样返回 False；
+        # 「学生要求了则允许」的豁免在场景 dispatch 层（不跑本检查），不是探测器放水
+        self.assertFalse(H.no_unsolicited_closing_blocks(
+            _read("mock/sample_outputs/teaching_template_optin_closers.txt")))
+        # opt-in mock 的七步与来源块仍然合格（dispatch 层实际断言的内容）
+        optin = _read("mock/sample_outputs/teaching_template_optin_closers.txt")
+        self.assertTrue(H.teaching_template_ok(optin))
+        self.assertTrue(H.question_source_block_ok(optin))
+        # 行内提及「易错点」不算标题、不误伤
+        self.assertTrue(H.no_unsolicited_closing_blocks("② 这题在问什么：\n考你能不能避开常见易错点。"))
 
     def test_run_mock_exits_zero(self):
         self.assertEqual(_silent(H.main, ["--mock"]), 0)
