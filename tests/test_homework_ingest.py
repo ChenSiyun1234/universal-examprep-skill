@@ -2395,6 +2395,42 @@ class HomeworkIngest(unittest.TestCase):
         self.assertTrue(any(w.startswith("pdf_no_text") for w in report["warnings"]))
         self.assertTrue(any(e["kind"] == "scanned_pdf" for e in report.get("ai_review", [])))
 
+    def test_single_residue_line_with_multiproblem_hw_handed_off(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw73.pdf": ["Problem 1\n多题一。\n\nProblem 2\n多题二。"]})
+        with open(os.path.join(mat, "homework", "hw73_sol.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+        be.texts["hw73_sol.pdf"] = ["4"]                          # 单行残渣配多题作业吃不下
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw), 2)
+        self.assertFalse(any((q.get("answer") or "").strip() for q in hw))
+        self.assertTrue(any(e["kind"] == "scanned_pdf" and "hw73_sol" in e["file"]
+                            for e in report.get("ai_review", [])))   # 白认领改移交
+
+    def test_numeric_table_text_is_content(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"lec01.pdf": ["讲义正文内容。"]})
+        with open(os.path.join(tmp, "mat", "data.txt"), "wb") as f:
+            f.write("0.12\n0.37\n0.55".encode("utf-8"))
+        code, payload, report = _run(mat, be)
+        self.assertEqual(code, 0)
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertIn("0.37", wiki_all)                           # 多行数字数据表不是残渣
+
+    def test_footer_page_not_swept_into_answer(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw74.pdf": ["Problem 1\n页脚扫尾题面。"]})
+        with open(os.path.join(mat, "homework", "hw74_sol.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+        be.texts["hw74_sol.pdf"] = ["Problem 1 Solution\n页脚扫尾的官方答案。", "37"]
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw), 1)
+        self.assertIn("页脚扫尾的官方答案", hw[0].get("answer", ""))
+        self.assertNotIn("37", hw[0].get("answer", ""))           # 残渣页不卷进答案切片
+        self.assertNotIn(2, hw[0].get("answer_source_pages") or [])
+
     def test_no_network_or_llm(self):
 
 

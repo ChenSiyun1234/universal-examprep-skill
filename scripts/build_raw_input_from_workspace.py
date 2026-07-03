@@ -1562,8 +1562,11 @@ def _page_has_content(text):
         return False
     kept = [ln for ln in (l.strip() for l in t.splitlines()) if ln and not _PAGE_RESIDUE_RE.match(ln)]
     joined = " ".join(kept)
-    # [^\W\d_] = 任意 Unicode 字母（拉丁/CJK/假名/谚文/西里尔…）——非中英文课程材料不误判空
-    return bool(re.search(r"[^\W\d_]", joined) or re.search(r"\d\s*[+\-*=^%<>]", joined))
+    # [^\W\d_] = 任意 Unicode 字母（拉丁/CJK/假名/谚文/西里尔…）——非中英文课程材料不误判空；
+    # 残渣剥完还剩 ≥2 行数字（统计数据表/纯数值答案键 0.12/0.37）也算内容——整页页码是
+    # 残渣行早被剥掉，能留下的多行数字是真数据
+    return bool(re.search(r"[^\W\d_]", joined) or re.search(r"\d\s*[+\-*=^%<>]", joined)
+                or (len(kept) >= 2 and re.search(r"\d", joined)))
 
 
 def _fmt_pages(nums):
@@ -1824,10 +1827,22 @@ def run(args, backend=None):
         lines = [ln.strip() for pg in pages if pg["file"] == rel0
                  for ln in (pg.get("text") or "").splitlines() if ln.strip()]
         return len(lines) == 1
+
+    def _single_problem_hw(hf0):
+        # markerless 单答兜底只对单题作业成立——多题作业吃不下整册单值，认领只会白丢
+        st0 = chr(10).join((pg.get("text") or "") for pg in pages if pg["file"] == hf0)
+        nums = {m["num"] for m in _hw_markers(st0)
+                if m.get("role") == "problem" and m.get("num") is not None}
+        return len(nums) <= 1
     _claimed_sols = ({sf for sf, hf in (_pairing or {}).items()
-                      if hf and sf in residue_files and _single_line_content(sf)}
+                      if hf and sf in residue_files and _single_line_content(sf)
+                      and _single_problem_hw(hf)}
                      if getattr(args, "extract_homework", "auto") != "never" else set())
     _flush_residue(_claimed_sols)
+    # 混排文件里的残渣页在【抽取前】剥离——否则页脚「37」会卷进答案切片与 answer_source_pages
+    #（认领的整册残渣答案文件不在 residue_page_keys 里，不受影响）
+    if residue_page_keys:
+        pages = [pg for pg in pages if (pg["file"], pg["page"]) not in residue_page_keys]
     lecture_pages = [pg for pg in pages if pg["file"] not in hw_related]
     lecture_items = []
     if args.extract_lecture_questions != "never":
