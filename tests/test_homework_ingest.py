@@ -2830,7 +2830,8 @@ class HomeworkIngest(unittest.TestCase):
 
     def test_visual_cue_vocabulary_bidirectional(self):
         for good in ("如下图所示，求阴影面积。", "见下图的电路。", "as shown in Figure 3, compute x.",
-                     "The matrix below is singular.", "下表所示的数据分布。"):
+                     "The matrix below is singular.", "下表所示的数据分布。",
+                     "见上页图，求电流方向。", "见上一页图。"):
             self.assertTrue(B.requires_assets_heuristic(good, renderable=False), good)
         for bad in ("求下列区域的定义域。", "draw a histogram of the data.",
                     "用图示法说明（自行作图）。"):
@@ -2889,6 +2890,78 @@ class HomeworkIngest(unittest.TestCase):
         self.assertTrue(any(w.startswith("wiki_figures_skipped") for w in report["warnings"]))
         wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
         self.assertIn("本章正文知识点", wiki_all)                 # 纯文字 wiki 照常完整
+
+    def test_adjacent_answer_page_never_becomes_prompt_asset(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw128.pdf": ["Problem 1\n见下页图，求最短路径。",
+                                          "Answer 1: 官方答案在此页。"]})
+        asset_root = os.path.join(tmp, "ws", "references", "assets")
+        code, payload, report = _run(mat, be, ["--asset-root", asset_root])
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        q_ctx = [a for a in hw[0].get("assets", []) if a.get("role") == "question_context"]
+        self.assertFalse(any("p002" in a.get("path", "") for a in q_ctx))   # 答案页绝不进题面资产
+
+    def test_residue_figure_page_still_renderable_as_adjacent(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw129.pdf": ["Problem 1\n见下页图，求电路电流。", "37"]})
+        asset_root = os.path.join(tmp, "ws", "references", "assets")
+        code, payload, report = _run(mat, be, ["--asset-root", asset_root])
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        paths = [a.get("path", "") for a in hw[0].get("assets", [])]
+        self.assertTrue(any("p002" in pth for pth in paths), paths)   # 残渣图页照样能当相邻图渲
+
+    def test_lecture_needs_item_uses_original_prompt_for_adjacent(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        with open(os.path.join(mat, "lec01.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+        be = FakeBackend({"lec01.pdf": ["Quiz 1.1 Problem\n如图，见下页图作答。", "图在此页。"]})
+        asset_root = os.path.join(tmp, "ws", "references", "assets")
+        code, payload, report = _run(mat, be, ["--asset-root", asset_root])
+        lec = [q for q in payload["quiz_bank"] if q["id"].startswith("lecture_quiz")]
+        paths = [a.get("path", "") for a in lec[0].get("assets", [])]
+        self.assertTrue(any("p002" in pth for pth in paths), paths)   # 指引句替换不吞跨页线索
+        self.assertNotIn("_prompt_text", lec[0])                      # 内部字段不出库
+
+    def test_collapsed_multi_footer_still_marker_only(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        with open(os.path.join(mat, "lec01.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+        be = FakeBackend({"lec01.pdf": ["Quiz 1.1 Problem\nPage 12 of 20\nSlide 3"]})
+        code, payload, report = _run(mat, be)
+        lec = [q for q in payload["quiz_bank"] if q["id"].startswith("lecture_quiz")]
+        self.assertEqual(lec[0]["question_text_status"], "page_reference")   # 折叠多页脚不击穿
+
+    def test_wiki_caption_must_anchor_line_start(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        with open(os.path.join(mat, "lec01.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+        be = FakeBackend({"lec01.pdf": ["正文顺带提到表 1: 的数据，但本页没有图。\n更多正文。"]})
+        asset_root = os.path.join(tmp, "ws", "references", "assets")
+        code, payload, report = _run(mat, be, ["--asset-root", asset_root])
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertNotIn("本章图示页", wiki_all)                      # 行中提及不算图表标题
+
+    def test_wiki_figure_names_do_not_collide(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(os.path.join(mat, "a"), exist_ok=True)
+        for rel in ("a/b.pdf", "a_b.pdf"):
+            with open(os.path.join(mat, *rel.split("/")), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class TwoBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                return ["Figure 1: 示例图\n正文。"]
+        asset_root = os.path.join(tmp, "ws", "references", "assets")
+        code, payload, report = _run(mat, TwoBackend({}), ["--asset-root", asset_root])
+        figs = [n for n in os.listdir(asset_root) if n.endswith("_fig.png")]
+        self.assertEqual(len(figs), 2)                                # 同净化名不同源不互撞
 
     def test_no_network_or_llm(self):
 

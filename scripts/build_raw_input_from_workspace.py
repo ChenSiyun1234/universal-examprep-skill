@@ -25,6 +25,7 @@ Usage:
   python scripts/validate_workspace.py skill_workspace
 """
 import argparse
+import zlib
 import json
 import os
 import re
@@ -212,7 +213,7 @@ STRONG_CUES = [re.compile(p, re.I) for p in (
     "文氏图", "如图", "阴影", "示意图",
     "如下图", "见下图", "如上图", "见上图", "下图所示", "上图所示",
     "如下表", "见下表", "如上表", "见上表", "下表所示", "上表所示",
-    r"[见如]\s*下一?页", r"(?:see|on)\s+(?:the\s+)?(?:next|previous)\s+page",   # 跨页图指涉
+    r"[见如]\s*[上下]一?页", r"(?:see|on)\s+(?:the\s+)?(?:next|previous)\s+page",   # 跨页图指涉
 )]
 # WEAK: a figure NOUN that might instead be a "produce" prompt ("draw the graph of y=x^2", "sketch the
 # tree"). Asset-dependent only for a renderable PDF source (where over-flagging just renders an extra
@@ -421,6 +422,9 @@ def extract_lecture_items(pages):
         # ("Quiz 1.1\n12") is a slide footer → marker_only; a symbolic prompt ("2+2=?", "√4=?") is real.
         _mo_body = "\n".join(l for l in _body_after_marker(stmt, kind, key[1], key[2]).splitlines()
                               if not _PAGE_RESIDUE_RE.match(l.strip()))   # 页脚残渣行不算正文
+        # _problem_statement 已把页面折叠成单行——行内再清一遍词形页脚（Page 12 of 20 Slide 3）
+        _mo_body = re.sub(r"(?i)(?:pages?|slides?)\s*\d+(?:\s*(?:of|/)\s*\d+)?"
+                          r"|第\s*\d+\s*[页张]", " ", _mo_body)
         marker_only = ((not needs) and len(prob_idxs) == 1
                        and not re.search(r"[A-Za-z一-鿿=+√∫∑^?×÷<>≤≥]", _mo_body))
         if needs:
@@ -451,6 +455,7 @@ def extract_lecture_items(pages):
             "source_file": pf,
             "source_pages": [p for (f, p) in q_pages],
             "_question_pages": q_pages,                     # stripped from the emitted bank
+            "_prompt_text": stmt,                           # 原始题面（needs 项的 question 会被替换成指引句）
             "_render": bool(needs or marker_only),          # render the page for figure- AND image-prompt items
             "requires_assets": bool(needs),
             "question_text_status": qts,
@@ -1938,6 +1943,7 @@ def run(args, backend=None):
     pages = []
     residue_files = {}
     residue_page_keys = set()
+    page_pdf_all_raw = {}
     for tp in texts:
         pages.extend(_read_text_file_pages(tp, _rel(tp, materials), report))
     for pdf in pdfs:
@@ -1946,6 +1952,7 @@ def run(args, backend=None):
             nonblank, no_content, total = 0, [], 0
             for i, txt in enumerate(backend.page_texts(pdf)):
                 pages.append({"file": rel, "page": i + 1, "text": txt, "_pdf": pdf})
+                page_pdf_all_raw[(rel, i + 1)] = pdf
                 total += 1
                 # 残渣感知判定：每页只剩页码「12」的扫描件不能算有文本（审计实测骗过精确空判定）
                 if _page_has_content(txt):
@@ -2090,6 +2097,8 @@ def run(args, backend=None):
     # ---- render assets for figure-dependent items ----
     asset_root = args.asset_root
     page_pdf = {(pg["file"], pg["page"]): pg["_pdf"] for pg in pages if pg.get("_pdf")}
+    page_pdf_all = dict(page_pdf_all_raw)   # 含残渣页——「见下页图」的图页往往正是无文本页
+    page_pdf_all.update(page_pdf)
 
     want_render = args.render_pages in ("auto", "required")
     if want_render and not backend.can_render():
@@ -2121,15 +2130,24 @@ def run(args, backend=None):
         assets = []
         # one asset PER (file, page) — render every question page AND every (continued) answer page,
         # each from its OWN source file.
-        _qtxt = it.get("question") or ""
+        _qtxt = (it.get("_prompt_text") or it.get("question") or "")   # needs 项的 question 是指引句
         _adj = []
         if re.search(r"下一?页|next\s+page|following\s+page", _qtxt, re.I):
             _adj += [(f, p + 1) for (f, p) in it.get("_question_pages", [])]
         if re.search(r"上一?页|previous\s+page|preceding\s+page", _qtxt, re.I):
             _adj += [(f, p - 1) for (f, p) in it.get("_question_pages", []) if p > 1]
-        # 「见下页图」的图在相邻页——一并渲染（只加确实存在的页，防声明幽灵 asset）
-        _adj = [(f, p) for (f, p) in _adj if (f, p) in page_pdf
-                and (f, p) not in it.get("_question_pages", [])]
+        # 「见下页图」的图在相邻页——一并渲染。查全量页映射（图页常是无文本残渣页）。
+        # 排除：已有题面页、_answer_pages、以及【页面文本带解答标记】的页——_answer_pages
+        # 只在答案依赖图时才设，纯文本答案页得靠内容判；解答页当题面资产就是泄题，宁缺勿泄
+        _ans_keys = set(it.get("_answer_pages", []))
+
+        def _adj_ok(f0, p0):
+            if (f0, p0) in _ans_keys or (f0, p0) in it.get("_question_pages", []):
+                return False
+            _t0 = next((pg.get("text") or "" for pg in pages
+                        if pg["file"] == f0 and pg["page"] == p0), "")
+            return not re.search(r"(?im)^[ \t>*#]*(?:solutions?|answers?|解答|答案)\b", _t0)
+        _adj = [(f, p) for (f, p) in _adj if (f, p) in page_pdf_all and _adj_ok(f, p)]
         plan = ([("question_context", f, p, "") for (f, p) in it.get("_question_pages", [])]
                 + [("question_context", f, p, "_adj") for (f, p) in _adj]
                 + [("answer_context", f, p, "_sol") for (f, p) in it.get("_answer_pages", [])])
@@ -2137,7 +2155,7 @@ def run(args, backend=None):
             name = _safe_asset_name(file, page, it["id"], suffix)
             rel_path = "references/assets/" + name
             wrote = False
-            pdf = page_pdf.get((file, page))
+            pdf = page_pdf_all.get((file, page))
             if can_write and pdf is not None:
                 try:
                     png = backend.render_page_png(pdf, page - 1)
@@ -2221,7 +2239,7 @@ def run(args, backend=None):
                           "choice/fill_blank 的题是否属实。" % _typed["subjective"]})
     # D5: wiki 配图——含图/表标题（Figure N / Table N / 图N / 表N）的讲义页渲染成 PNG，
     # 注入章节末尾「本章图示页」区；渲染不可用时警告降级（纯文字 wiki 照常完整）
-    _WIKI_CAP_RE = re.compile(r"(?m)^\s*(?:Figure|Fig\.?|Table)\s*\d+|[图表]\s*\d+\s*[:：.]")
+    _WIKI_CAP_RE = re.compile(r"(?m)^\s*(?:(?:Figure|Fig\.?|Table)\s*\d+|[图表]\s*\d+\s*[:：.])")
     wiki_fig_assets = {}
     _cap_pages = [(pg["file"], pg["page"]) for pg in wiki_pages
                   if _WIKI_CAP_RE.search(pg.get("text") or "")]
@@ -2241,7 +2259,8 @@ def run(args, backend=None):
                 continue
             if not _png:
                 continue
-            _name = _safe_asset_name(_f, _p, "wiki", "_fig")
+            _name = _safe_asset_name(_f, _p, "wiki%08x" % (zlib.crc32(_f.encode("utf-8")) & 0xffffffff),
+                                      "_fig")   # 源路径 CRC 防 a/b.pdf 与 a_b.pdf 同名互撞
             _full = os.path.join(asset_root, _name)
             if not _under(asset_root, _full):
                 report["warnings"].append("unsafe_asset_target_skipped")
