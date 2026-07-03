@@ -433,7 +433,7 @@ def _session_snapshots(turns, state_established=False, plan_phases=None):
     source-of-truth contract: within a turn study_state.json wins; and once state has appeared
     (fixture or any turn), a LATER md-only write is a hand-edit of the generated view — it must
     NOT advance checkpoint/row metrics（那正是 A4 要抓的漂移）. md fallback is for legacy sessions."""
-    out, stale_md = [], 0
+    out, stale_md, prev_dual = [], 0, None
     plan_phases = set(plan_phases) if plan_phases else None
     for t in turns:
         fa = t.get("files_after") or {}
@@ -454,12 +454,22 @@ def _session_snapshots(turns, state_established=False, plan_phases=None):
             snap = parse_state_json(_snap_text(fa, "study_state.json"), plan_phases)
             out.append(snap)
             if "study_progress.md" in fa:
-                # 双写但生成视图里的归档行数超过事实源——手改 md + 空转 state 写不能洗白
-                # （行指标只认 state，行数对比跨 md/state 源无 id 格式歧义，状态改写不误伤）
+                # 双写却手改生成视图的两种形态都要抓：① md 归档行数超过事实源（新增行）；
+                # ② md 行相对上一次双写发生变化而 state 纹丝不动（同数替换/改写）。
+                # 不直接比 md↔state 行键——跨源无 id 行键格式不可比会误报；
+                # 同源对比（md↔md、state↔state）没有这个问题
                 md_snap = parse_progress(_snap_text(fa, "study_progress.md"))
+                md_keys = ([_row_key(r) for r in md_snap["mistake_rows"]],
+                           [_row_key(r) for r in md_snap["confusion_rows"]])
+                st_keys = ([_row_key(r) for r in snap["mistake_rows"]],
+                           [_row_key(r) for r in snap["confusion_rows"]])
                 if (len(md_snap["mistake_rows"]) + len(md_snap["confusion_rows"])
                         > len(snap["mistake_rows"]) + len(snap["confusion_rows"])):
                     stale_md += 1
+                elif prev_dual is not None and md_keys != prev_dual[0] \
+                        and st_keys == prev_dual[1]:
+                    stale_md += 1
+                prev_dual = (md_keys, st_keys)
         elif "study_state.json" in evs:
             state_established = True   # 只有 write_file 事件、没带快照——事实源同样已确立，
             out.append(None)           # 后续 md-only 不能再当 legacy 来源

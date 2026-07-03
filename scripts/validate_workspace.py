@@ -62,8 +62,17 @@ def _plan_phase_nums(text):
     """Phase numbers in a study_plan.md, as strings — matches ALL supported word orders
     （「阶段N」「第N阶段」「Phase N」，与更新器/T4 解析器同款），否则合法计划会被当成
     没有阶段列表而跳过校验。"""
-    return {next(g for g in m.groups() if g)
-            for m in re.finditer(r"阶段\s*(\d+)|第\s*(\d+)\s*阶段|[Pp]hase\s*(\d+)", text or "")}
+    nums = set()
+    for ln in (text or "").splitlines():
+        h = ln.lstrip()
+        # 与更新器/T4 同口径：只认结构行、阶段号 ≥1
+        if not (h.startswith("#") or h.startswith("|") or re.match(r"[-*]\s", h)):
+            continue
+        for m in re.finditer(r"阶段\s*(\d+)|第\s*(\d+)\s*阶段|[Pp]hase\s*(\d+)", ln):
+            g = next(x for x in m.groups() if x)
+            if int(g) >= 1:
+                nums.add(g)
+    return nums
 
 
 def _reject_const(c):

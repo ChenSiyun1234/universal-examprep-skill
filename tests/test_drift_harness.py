@@ -140,6 +140,21 @@ class DriftHarness(unittest.TestCase):
         with self.assertRaises(D.DriftError):                     # 坏编码走畸形输入路径，
             D.evaluate(sc, _tr("good_session_state.jsonl"))       # 不是 UnicodeDecodeError 崩栈
 
+    def test_md_row_replacement_with_noop_state_flagged(self):
+        # 双写但 md 同数替换了行、state 空转——行数不变也要计手改
+        st1 = json.dumps({"version": 1, "current_phase": 2,
+                          "mistake_archive": [{"id": "q1", "note": "误答"}],
+                          "confusion_log": []}, ensure_ascii=False)
+        md1 = "当前阶段：2\n## 错题本\n- [#q1] 误答\n"
+        md2 = "当前阶段：2\n## 错题本\n- [#q9] 手改替换的行\n"
+        m = _eval_turns([
+            {"turn": 1, "assistant": "记录。", "phase_context": 2,
+             "files_after": {"study_state.json": st1, "study_progress.md": md1}},
+            {"turn": 2, "assistant": "替换。", "phase_context": 2,
+             "files_after": {"study_state.json": st1, "study_progress.md": md2}},
+        ])
+        self.assertEqual(m["md_write_after_state"], 1)
+
     def test_missing_transcript_exits_2(self):
         r = _cli(["--scenario", SCEN, "--transcript", os.path.join(TR, "does_not_exist.jsonl")])
         self.assertEqual(r.returncode, 2)

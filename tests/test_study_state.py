@@ -83,6 +83,27 @@ class Migration(unittest.TestCase):
         self.assertEqual(row["status"], "待回顾")
         self.assertIsNone(row["chapter"])
 
+    def test_prose_phase_mention_not_a_plan_entry(self):
+        ws = _mk_ws(tempfile.mkdtemp(), md=None)
+        with open(os.path.join(ws, "study_plan.md"), "w", encoding="utf-8", newline=chr(10)) as f:
+            f.write("# Plan" + chr(10) + "## 阶段1：栈" + chr(10) + chr(10)
+                    + "注意：不要提前进入阶段99（超纲内容）。" + chr(10))
+        r = _up(ws, ["init"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r99 = _up(ws, ["set", "--phase", "99"])
+        self.assertNotEqual(r99.returncode, 0)                    # 散文里的阶段号不是计划条目
+        self.assertEqual(_state(ws)["current_phase"], 1)
+
+    def test_blank_init_skips_phase_zero(self):
+        ws = _mk_ws(tempfile.mkdtemp(), md=None)
+        with open(os.path.join(ws, "study_plan.md"), "w", encoding="utf-8", newline=chr(10)) as f:
+            f.write("# Plan" + chr(10) + "## 阶段0：绪论" + chr(10) + "## 阶段1：栈" + chr(10))
+        r = _up(ws, ["init"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(_state(ws)["current_phase"], 1)          # 不种下全工具链拒收的 0 号断点
+        r2 = _up(ws, ["add-mistake", "--chapter", "1", "--note", "阶段0计划下照常可用"])
+        self.assertEqual(r2.returncode, 0, r2.stderr)
+
     def test_init_adopts_legacy_md(self):
         ws = _mk_ws(tempfile.mkdtemp())
         r = _up(ws, ["init"])

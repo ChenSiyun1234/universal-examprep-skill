@@ -395,8 +395,19 @@ def _plan_phases(ws):
     except (OSError, UnicodeDecodeError) as e:
         # 静默当「无计划」会禁用阶段守卫，写出计划修好后才发现的坏断点——必须报错
         _die("study_plan.md 存在但无法读取/非 UTF-8（%s）——阶段校验无法进行，请先修复计划文件" % e, 1)
-    return {int(next(g for g in m.groups() if g))
-            for m in re.finditer(r"阶段\s*(\d+)|第\s*(\d+)\s*阶段|[Pp]hase\s*(\d+)", text)}
+    nums = set()
+    for ln in text.splitlines():
+        h = ln.lstrip()
+        # 只认结构行（标题/表格/清单）里的阶段号——散文提醒「不要进入阶段99」不是计划条目
+        #（与 T4 解析器的 _is_structural 同口径）；且阶段号必须 ≥1——「阶段0」会让空白 init
+        # 种下 current_phase=0 这种全工具链拒收的断点
+        if not (h.startswith("#") or h.startswith("|") or re.match(r"[-*]\s", h)):
+            continue
+        for m in re.finditer(r"阶段\s*(\d+)|第\s*(\d+)\s*阶段|[Pp]hase\s*(\d+)", ln):
+            n = int(next(g for g in m.groups() if g))
+            if n >= 1:
+                nums.add(n)
+    return nums
 
 
 def cmd_set(ws, args):
