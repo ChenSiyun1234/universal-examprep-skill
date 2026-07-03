@@ -304,8 +304,10 @@ def _window_same_row(prev, cur):
     只有 update_progress 真会做的补章节回填算同一行。"""
     if prev == cur:
         return True
-    pp, _, pc = prev.partition("@")
-    cp, _, cc = cur.partition("@")
+    # 键是 point@chapter；point 可能含 @（如 C@语言），章节不含 @——从右切（rpartition）才不会把 point
+    # 的一段误当章节（Codex OSZRp）。
+    pp, _, pc = prev.rpartition("@")
+    cp, _, cc = cur.rpartition("@")
     return pp == cp and pc == "" and cc != ""   # 仅允许 backfill：prev 无章 → cur 有章
 
 
@@ -338,7 +340,7 @@ def parse_progress(text):
     phase = int(pm.group(1)) if pm else None
     mistake, confusion, cur = [], [], None
     mistake_st, confusion_st, cur_st = [], [], None
-    window_keys, window_st = [], []          # A6 🪟 窗口区：结构化成 point@chapter 键 + 状态（可跨源比对）
+    window_keys, window_st, window_nt = [], [], []   # A6 🪟 窗口区：point@chapter 键 + 状态 + 备注（可跨源比对）
     in_window = False
     for ln in t.splitlines():
         h = ln.strip()
@@ -367,8 +369,10 @@ def parse_progress(text):
             pt = cells[0]
             ch = cells[1] if len(cells) > 1 and cells[1] not in ("", "-") else ""
             stt = cells[2] if len(cells) > 2 and cells[2] not in ("", "-") else None
+            note = cells[3] if len(cells) > 3 and cells[3] not in ("", "-") else ""
             window_keys.append("%s@%s" % (pt, ch))
             window_st.append(stt)
+            window_nt.append(note)
             continue
         if cur is None:
             continue
@@ -394,16 +398,19 @@ def parse_progress(text):
                 cur_st.append(cells[-1] if len(cells) >= 4 and cells[-1] not in ("", "-") else None)
     return {"phase": phase, "mistake_rows": mistake, "confusion_rows": confusion,
             "mistake_status": mistake_st, "confusion_status": confusion_st,
-            "window_rows": window_keys, "window_status": window_st}
+            "window_rows": window_keys, "window_status": window_st, "window_note": window_nt}
 
 
 def _window_state_map(snap):
-    """有序的 [(point@chapter, status)] 列表 —— 用于跨源比对 state 与生成视图 md 的窗口面板是否一致。
+    """有序的 [(point@chapter, status, note)] 列表 —— 用于跨源比对 state 与生成视图 md 的窗口面板是否一致。
     用**保留重数**的排序列表而非 dict：md 里同一窗口行出现两次（陈旧/手改）不能被 dict 折叠掉而漏判
-    （Codex OSTZO）。省略 status 归一到渲染默认 在窗口。"""
+    （OSTZO）。带上 note：只改 note 的 state 更新若 md 面板没跟上（备注列陈旧）也要抓（OSZRm）。
+    省略 status 归一到渲染默认 在窗口。"""
     keys = snap.get("window_rows", []) or []
     sts = snap.get("window_status", []) or []
-    return sorted((k, (sts[i] if i < len(sts) and sts[i] else "在窗口")) for i, k in enumerate(keys))
+    nts = snap.get("window_note", []) or []
+    return sorted((k, (sts[i] if i < len(sts) and sts[i] else "在窗口"), (nts[i] if i < len(nts) else ""))
+                  for i, k in enumerate(keys))
 
 
 # ---------------- provenance + quiz (mirror T2 semantics) ----------------
@@ -519,7 +526,7 @@ def parse_state_json(text, plan_phases=None):
     if not isinstance(wv, list):
         raise DriftError("files_after 里的 study_state.json 字段 knowledge_window 必须是数组，实际 %s"
                          % type(wv).__name__)
-    window_rows, window_status = [], []
+    window_rows, window_status, window_note = [], [], []
     for r in wv:
         if not isinstance(r, dict) or not isinstance(r.get("point"), str) or not r["point"].strip():
             raise DriftError("study_state.json 快照的 knowledge_window 行必须是含非空 point 的对象: %r" % r)
@@ -538,6 +545,9 @@ def parse_state_json(text, plan_phases=None):
         # 省略 status 归一到渲染默认「在窗口」——update_progress.render_md 也把缺省 status 渲成 在窗口，
         # 否则 {point,chapter} 无 status 的合法行会让 state 图（None）与 md 图（在窗口）误判不一致（SGGn）
         window_status.append(stt if isinstance(stt, str) else "在窗口")
+        # 备注也按 _md_cell 归一（与 render_md 的备注列一致），省略 → ""，用于生成视图一致性比对（OSZRm）
+        wn = r.get("note")
+        window_note.append(_md_cell(wn, default="") if wn not in (None, "") else "")
 
     if len(set(window_rows)) != len(window_rows):
         # 同一 point@chapter 出现多次 = 追加而非更新的坏写入（update_progress 的 window-add 会去重）；
@@ -548,7 +558,7 @@ def parse_state_json(text, plan_phases=None):
                          "窗口进出应更新同一行而非追加）: %s" % dups)
     return {"phase": phase, "mistake_rows": m_rows, "confusion_rows": c_rows,
             "mistake_status": stat["mistake_archive"], "confusion_status": stat["confusion_log"],
-            "window_rows": window_rows, "window_status": window_status}
+            "window_rows": window_rows, "window_status": window_status, "window_note": window_note}
 
 
 def _snap_text(fa, name):
@@ -1236,7 +1246,11 @@ def run_llm(argv):
         sc = load_scenario(_resolve(scen_ref)) if isinstance(scen_ref, str) and scen_ref else None
     except (IOError, OSError, ValueError, KeyError, TypeError, DriftError):
         sc = None                                            # 坏 turns/scenario（含非字符串 scenario）交给 live runner 校验
-    if sc is not None and (sc.get("requires_state") or (set(sc.get("thresholds", {})) & _STATE_THRESH)):
+    fixture_has_state = False
+    if sc is not None and isinstance(sc.get("fixture"), str):
+        fixture_has_state = os.path.isfile(os.path.join(_resolve(sc["fixture"]), "study_state.json"))
+    if sc is not None and (sc.get("requires_state") or fixture_has_state
+                           or (set(sc.get("thresholds", {})) & _STATE_THRESH)):
         sys.stderr.write("run_drift: --llm 暂不支持依赖 study_state.json 的 scenario（%s：requires_state/"
                          "state·窗口阈值）——run_live_smoke 只录对话+合成 md、不录 agent 写的 state 快照，"
                          "会看不到 state/窗口写入而误判。请用无 state 的 scenario 跑 live，或走确定性 replay "

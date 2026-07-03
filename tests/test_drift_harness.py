@@ -290,6 +290,50 @@ class DriftHarness(unittest.TestCase):
              "knowledge_window": [{"point": "DFS|BFS", "chapter": "1", "status": "在窗口"}]}), [1])
         self.assertEqual(snap["window_rows"], ["DFS/BFS@1"])
 
+    def test_b3_window_point_with_at_sign(self):
+        # Codex OSZRp：point 名含 @（C@语言）时用 rpartition 从右切，backfill 不被误判为 丢+加
+        self.assertTrue(D._window_same_row("C@语言@", "C@语言@1"))       # 补章节 = 同一行
+        self.assertFalse(D._window_same_row("C@语言@1", "C@语言@"))      # 抹章 = 不同行
+        self.assertEqual(D._window_diff(["C@语言@"], ["C@语言@1"]), (0, 0))
+        self.assertEqual(D._window_diff(["C@语言@1"], ["C@语言@"]), (1, 1))
+
+    def test_b3_llm_rejects_state_backed_fixture(self):
+        # Codex OSZRj：scenario 没 requires_state/state 阈值，但 fixture 自带 study_state.json 也要拒——
+        # 否则 live 的 md-only 快照会被当陈旧，付费跑后 false-fail
+        d = tempfile.mkdtemp()
+        scj = os.path.join(d, "sc.json")
+        with open(scj, "w", encoding="utf-8") as f:
+            json.dump({"name": "txt_over_state_fx", "fixture": "benchmark/drift/fixtures/mini_course_long_state",
+                       "thresholds": {"goal_retention_min": 0.9}}, f, ensure_ascii=False)
+        sp = os.path.join(d, "t.json")
+        with open(sp, "w", encoding="utf-8") as f:
+            json.dump({"fixture": "benchmark/drift/fixtures/mini_course_long_state", "scenario": scj,
+                       "turns": [{"user": "hi"}]}, f, ensure_ascii=False)
+        r = _cli(["--llm", "--agent-cmd", "echo {prompt}", "--out-dir", os.path.join(d, "o"), "--turns", sp],
+                 env={"RUN_SKILL_DRIFT_LLM": "1"})
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("暂不支持", r.stderr)
+
+    def test_b3_window_note_only_stale_md_flagged(self):
+        # Codex OSZRm：只改 note 的窗口更新，md 备注列没跟上（陈旧）也要抓——比对带上 note
+        sc = D.load_scenario(os.path.join(DRIFT, "scenarios", "window_persist.json"))
+        turns = D.load_jsonl(_tr("window_persist_session.jsonl"), "w")
+        for t in turns:
+            fa = t.get("files_after") or {}
+            if "study_state.json" in fa:
+                st = json.loads(fa["study_state.json"])
+                for w in st["knowledge_window"]:
+                    if w["point"] == "队列FIFO":
+                        w["note"] = "新增备注XYZ"                      # state 加 note，md 保持旧（空）备注
+                fa["study_state.json"] = json.dumps(st, ensure_ascii=False)
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "noteonly.jsonl")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write("\n".join(json.dumps(t, ensure_ascii=False) for t in turns))
+        r = D.evaluate(sc, p)
+        self.assertGreater(r["metrics"]["md_write_after_state"], 0)
+        self.assertFalse(r["passed"])
+
     def test_b3_md_duplicate_window_row_flagged(self):
         # Codex OSTZO：md 里同一窗口行重复（陈旧/手改）不能被 dict 折叠——保留重数，md 与 state 不一致要抓
         sc = D.load_scenario(os.path.join(DRIFT, "scenarios", "window_persist.json"))
