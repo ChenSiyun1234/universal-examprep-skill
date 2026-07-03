@@ -75,16 +75,27 @@ class BehaviorSmokeTest(unittest.TestCase):
                 self.assertTrue(os.path.isdir(_bs(sc["fallback_workspace"])), f"{sc['name']}.fallback_workspace 不存在")
 
     def test_b1_every_scenario_documented(self):
-        # B1 覆盖矩阵收尾：每个 scenario 都必须在 behavior_smoke/README.md 与 coverage-matrix 的口径里
-        # 登记到（README 的场景表按名列出）——防止新增场景后文档静默漂移、matrix 与实现脱节
+        # B1 覆盖矩阵收尾守卫——防止新增/改名场景后文档静默漂移、matrix 与实现脱节。
         names = [sc["name"] for sc in H.load_scenarios()["scenarios"]]
+        # (1) README 是逐场景注册表：每个 scenario 必须有一行（新增场景漏更 README 就红）
         readme = _read("README.md")
         for n in names:
             self.assertIn("`%s`" % n, readme, "behavior_smoke/README.md 未登记场景 %s（B1：新增场景须同步文档）" % n)
-        # coverage-matrix 的读者说明应报出真实场景总数，避免停留在旧的「7 个」
+        # (2) coverage-matrix 按名点到的场景是「显式映射」——这些名字必须都是真实场景（renamed/removed
+        #     会红）且确实在 matrix 里登记；比只查总数强，能抓「改了名但 matrix 没跟」。
         matrix = open(os.path.join(ROOT, "benchmark", "docs", "coverage-matrix.md"), encoding="utf-8").read()
-        self.assertIn("%d 个行为场景" % len(names), matrix,
-                      "coverage-matrix.md 的场景计数与 scenarios.json（%d 个）不一致" % len(names))
+        matrix_named = ("zero_basic_key_question", "teaching_template", "visual_first_assets",
+                        "scope_override", "time_budget_no_questions", "knowledge_window_recheck",
+                        "lazy_load_best_effort")
+        for n in matrix_named:
+            self.assertIn(n, set(names), "coverage-matrix 点名了不存在的行为场景 %s（stale 引用）" % n)
+            self.assertIn("`%s`" % n, matrix, "coverage-matrix 应按名登记行为场景 %s" % n)
+        # (3) matrix 点名的 Tier 4 长会话场景在 drift/ 下（非 behavior smoke），也必须真实存在且被点名
+        drift_named = "mode_urgent_no_questions"
+        self.assertTrue(
+            os.path.isfile(os.path.join(ROOT, "benchmark", "drift", "scenarios", drift_named + ".json")),
+            "coverage-matrix 点名的 Tier4 drift 场景 %s 不存在" % drift_named)
+        self.assertIn("`%s`" % drift_named, matrix)
 
     # 4
     def test_quiz_output_only_uses_bank_ids(self):
