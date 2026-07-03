@@ -1396,6 +1396,99 @@ class HomeworkIngest(unittest.TestCase):
         self.assertEqual(hw[0]["homework_number"], 2)             # 不是 2c——胶连首字母不吞
         self.assertIn("胶连题号的答案", hw[0].get("answer", ""))   # 答案键 2. 配得上
 
+    # ---- regression guards: post-merge follow-up (CI flake + 6 findings) ----
+
+    def test_random_hwlike_root_name_stays_lecture(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "tmp_ps4abc")     # mkdtemp 随机名踩中 _ps4 的历史 CI flake
+        os.makedirs(mat)
+        with open(os.path.join(mat, "ch01.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+        be = FakeBackend({"ch01.pdf": ["Quiz 1.1 Problem\n讲义题面。\nQuiz 1.1 Solution\n讲义答案。"]})
+        code, payload, report = _run(mat, be)
+        lec = [q for q in payload["quiz_bank"] if q["id"].startswith("lecture_")]
+        self.assertTrue(lec)                                       # 讲义抽取不因根名误判被劫走
+        self.assertFalse(report["homework_files"])
+
+    def test_single_problem_numbered_steps_not_split(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw71.pdf": ["Problem 1\n单题册题面。"],
+                            "hw71_sol.pdf": ["Solution\n1. 第一步先求导。\n2. 第二步解方程。"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw), 1)
+        self.assertIn("第一步先求导", hw[0].get("answer", ""))      # 编号步骤是完整解答
+        self.assertIn("第二步解方程", hw[0].get("answer", ""))      # 不被当成答案清单拆掉
+
+    def test_versioned_solution_directory_pairs(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(os.path.join(mat, "homework"), exist_ok=True)
+        os.makedirs(os.path.join(mat, "solutions_final"), exist_ok=True)
+        for rel in ("homework/hw1.pdf", "solutions_final/hw1.pdf"):
+            with open(os.path.join(mat, *rel.split("/")), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class VerBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                if "solutions_final" in pdf_path.replace(chr(92), "/"):
+                    return ["Problem 1 Solution\n版本目录的官方答案。"]
+                return ["Problem 1\n版本目录题面。"]
+        code, payload, report = _run(mat, VerBackend({}))
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw), 1)                               # 不再当成第二份作业
+        self.assertIn("版本目录的官方答案", hw[0].get("answer", ""))
+
+    def test_decimal_space_answer_keys_split(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw73.pdf": ["Problem 1.1\n小数键题面一。\n\nProblem 1.2\n小数键题面二。"],
+                            "hw73_sol.pdf": ["Answers\n1.1 小数键答案一。\n1.2 小数键答案二。"]})
+        code, payload, report = _run(mat, be)
+        by_num = {q["homework_number"]: q for q in payload["quiz_bank"]
+                  if q.get("source_type") == "homework"}
+        self.assertIn("小数键答案一", by_num["1.1"].get("answer", ""))
+        self.assertIn("小数键答案二", by_num["1.2"].get("answer", ""))
+
+    def test_real_solution_block_not_merged_into_prompt(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw74.pdf": ["Problem 1\nSolution\nThe answer is 42."]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw), 1)
+        self.assertIn("42", hw[0].get("answer", ""))               # 真解答收为答案
+        self.assertNotIn("42", hw[0].get("question") or "")        # 不并回题面泄答案
+
+    def test_mixed_root_orphan_solutions_file_kept_out_of_wiki(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        for rel in ("hw1.pdf", "solutions.pdf", "lec01.pdf"):
+            with open(os.path.join(mat, rel), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class MixBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                rel = pdf_path.replace(chr(92), "/")
+                if rel.endswith("hw1.pdf"):
+                    return ["Problem 1\n混合根题面。"]
+                if rel.endswith("solutions.pdf"):
+                    return ["混合根的纯答案文字。"]
+                return ["混合根讲义正文。"]
+        code, payload, report = _run(mat, MixBackend({}))
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertNotIn("混合根的纯答案文字", wiki_all)            # 配不上也不准漏进 wiki
+        self.assertIn("混合根讲义正文", wiki_all)
+
+    def test_answer_to_number_headings_pair(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw76.pdf": ["Problem 1\n直呼号题面一。\n\nProblem 2\n直呼号题面二。"],
+                            "hw76_sol.pdf": ["Answer to 1: 直呼号答案一。\nAnswer to 2: 直呼号答案二。"]})
+        code, payload, report = _run(mat, be)
+        by_num = {q["homework_number"]: q for q in payload["quiz_bank"]
+                  if q.get("source_type") == "homework"}
+        self.assertIn("直呼号答案一", by_num[1].get("answer", ""))
+        self.assertIn("直呼号答案二", by_num[2].get("answer", ""))
+
     def test_no_network_or_llm(self):
 
 
