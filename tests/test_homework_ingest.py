@@ -2252,6 +2252,71 @@ class HomeworkIngest(unittest.TestCase):
         self.assertTrue(any(e["kind"] == "extract_failed"
                             for e in report.get("ai_review", [])))   # 异常不再只藏在 skipped
 
+    def test_residue_pdf_pages_never_enter_wiki(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {})
+        for rel in ("scan.pdf", "lec01.pdf"):
+            with open(os.path.join(tmp, "mat", rel), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class ScBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                if "scan" in pdf_path:
+                    return ["12", "13"]
+                return ["讲义正文内容。"]
+        code, payload, report = _run(mat, ScBackend({}))
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertNotIn("scan.pdf", wiki_all)                    # 残渣页绝不写进 wiki
+        self.assertTrue(any(w.startswith("pdf_no_text") for w in report["warnings"]))
+
+    def test_pagecount_footers_are_residue(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {})
+        for rel in ("deck.pdf", "lec01.pdf"):
+            with open(os.path.join(tmp, "mat", rel), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class FtBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                if "deck" in pdf_path:
+                    return ["1/20", "2 / 20", "3/20"]              # 纯页脚计数
+                return ["讲义正文内容。"]
+        code, payload, report = _run(mat, FtBackend({}))
+        self.assertTrue(any(w.startswith("pdf_no_text") for w in report["warnings"]))
+        self.assertTrue(any(e["kind"] == "scanned_pdf" for e in report.get("ai_review", [])))
+
+    def test_big5_text_decoded_correctly(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"lec01.pdf": ["讲义正文内容。"]})
+        with open(os.path.join(tmp, "mat", "notes_tw.txt"), "wb") as f:
+            f.write("繁體中文講義的重點內容，考試複習必讀章節。".encode("big5"))
+        code, payload, report = _run(mat, be)
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertIn("繁體中文講義", wiki_all)                   # Big5 不被 GBK 抢先解成乱码
+        self.assertTrue(any(w.startswith("encoding_fallback") and "BIG5" in w
+                            for w in report["warnings"]))
+
+    def test_hangul_text_counts_as_content(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"lec01.pdf": ["讲义正文内容。"]})
+        with open(os.path.join(tmp, "mat", "korea.txt"), "wb") as f:
+            f.write("자료 구조 강의 노트".encode("utf-8"))
+        code, payload, report = _run(mat, be)
+        self.assertEqual(code, 0)
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertIn("자료 구조", wiki_all)                      # 非中英文字母也算有效内容
+
+    def test_bare_numeric_answer_companion_still_claimed(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw71.pdf": ["Problem 1\n裸数答案题面。"],
+                            "hw71_sol.pdf": ["4"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw), 1)
+        self.assertEqual((hw[0].get("answer") or "").strip(), "4")   # 配对认领的裸答案册不当扫描件丢
+        self.assertFalse(any(e.get("file") == "hw71_sol.pdf"
+                             for e in report.get("ai_review", [])))
+
     def test_no_network_or_llm(self):
 
 

@@ -1549,7 +1549,7 @@ def _scan_materials(materials_dir):
 # 页码/页眉残渣行（纯数字、Page N of M、第N页）——扫描件每页常只残留这一行，
 # 精确空判定会被骗过（审计实测）
 _PAGE_RESIDUE_RE = re.compile(
-    r"^(?:[-–—•·.\s]*\d{1,4}[-–—•·.\s]*|pages?\s*\d+(?:\s*(?:of|/)\s*\d+)?"
+    r"^(?:[-–—•·.\s]*\d{1,4}[-–—•·.\s]*|\d{1,4}\s*/\s*\d{1,4}|pages?\s*\d+(?:\s*(?:of|/)\s*\d+)?"
     r"|第\s*\d+\s*页(?:\s*[/，,]?\s*共\s*\d+\s*页)?)$", re.I)
 
 
@@ -1561,7 +1561,8 @@ def _page_has_content(text):
         return False
     kept = [ln for ln in (l.strip() for l in t.splitlines()) if ln and not _PAGE_RESIDUE_RE.match(ln)]
     joined = " ".join(kept)
-    return bool(re.search(r"[A-Za-z一-鿿]", joined) or re.search(r"\d\s*[+\-*/=^%<>]", joined))
+    # [^\W\d_] = 任意 Unicode 字母（拉丁/CJK/假名/谚文/西里尔…）——非中英文课程材料不误判空
+    return bool(re.search(r"[^\W\d_]", joined) or re.search(r"\d\s*[+\-*=^%<>]", joined))
 
 
 def _fmt_pages(nums):
@@ -1582,22 +1583,54 @@ def _rel(path, base):
     return os.path.relpath(path, base).replace(os.sep, "/")
 
 
+# 常用汉字频表（简体+繁体各 ~120 高频字 + 课程域词）——GBK/Big5 双解码都成功时的确定性裁决：
+# 正确解码产出常用字、错误解码产出生僻乱码，占比一目了然；两边都低分则按不确定移交 AI
+_COMMON_HAN = set(
+    "的一是了我不人在他有这个上们来到时大地为子中你说生国年着就那和要她出也得里后自以会家可"
+    "下而过天去能对小多然于心学么之都好看起发当没成只如事把还用第样道想作种开美总从无情己面"
+    "最女但现前些所同日手又行意动方期它头经长儿回位分爱老因很给名法间知世什两次使身者被高已"
+    "亲其进此话常与活正感讲义课作业答案试卷题章节复习练习繁简编码点"
+    "這中大來上國個到說們為子和地出道也時年得就那要下以生會自著去之過家學對可她裡後小麼心多"
+    "天而能好都然沒日於起還發成事作當想看文無開手十用主行方又如前所本見經頭面公同三已老從動"
+    "兩長知民樣現分將外但身些與高意進法此月者必講義課作業答案試卷題章節複習練習繁簡編碼點體")
+
+
+def _han_score(t):
+    """解码文本里 CJK 字符落在常用字表的占比（无 CJK 记 0）。"""
+    cjk = re.findall(r"[\u4e00-\u9fff]", t)
+    if not cjk:
+        return 0.0
+    return sum(1 for c in cjk if c in _COMMON_HAN) / len(cjk)
+
+
 def _read_text_file_pages(path, rel, report=None):
-    """UTF-8 严格解码；失败按 GBK/Big5 依次严格重试（带警告——这是有依据的回退不是猜）；
-    全失败则跳过 + 警告 + 接管清单，绝不 errors=replace 把乱码静默灌进 wiki/题库。"""
+    """UTF-8 严格解码；失败对 GBK/Big5 双解码——只解得开一个就用它（带警告），两个都解得开
+    按常用字频裁决（Big5 字节流常常也是合法 GBK，先到先得会把繁体解成乱码入库）；
+    两边都像乱码则移交 AI，绝不 errors=replace 静默灌乱码。"""
     with open(path, "rb") as f:
         raw_b = f.read()
     raw = None
-    for enc in ("utf-8-sig", "gbk", "big5"):
-        try:
-            raw = raw_b.decode(enc)
-        except (UnicodeDecodeError, ValueError):
-            continue
-        if enc != "utf-8-sig" and report is not None:
+    try:
+        raw = raw_b.decode("utf-8-sig")
+    except (UnicodeDecodeError, ValueError):
+        cands = []
+        for enc in ("gbk", "big5"):
+            try:
+                cands.append((enc, raw_b.decode(enc)))
+            except (UnicodeDecodeError, ValueError):
+                continue
+        if len(cands) == 1:
+            enc, raw = cands[0]
+        elif len(cands) == 2:
+            scored = sorted(((_han_score(t), enc, t) for enc, t in cands), reverse=True)
+            if scored[0][0] >= 0.25:
+                _, enc, raw = scored[0]
+            else:
+                enc, raw = None, None      # 两边都像乱码——按编码不确定移交
+        if raw is not None and report is not None:
             report["warnings"].append(
-                "encoding_fallback: %s（不是 UTF-8，按 %s 解码成功——若内容乱码请转存 UTF-8 后重新构建）"
-                % (rel, enc.upper()))
-        break
+                "encoding_fallback: %s（不是 UTF-8，按 %s 解码（常用字占比裁决）——"
+                "若内容乱码请转存 UTF-8 后重新构建）" % (rel, enc.upper()))
     if raw is None:
         if report is not None:
             report["skipped"].append({"file": rel, "why": "无法解码（UTF-8/GBK/Big5 都失败）"})
@@ -1670,6 +1703,7 @@ def run(args, backend=None):
                             "纯 .txt/.md 材料无需任何依赖。" % len(pdfs)}, report
 
     pages = []
+    residue_files = {}
     for tp in texts:
         pages.extend(_read_text_file_pages(tp, _rel(tp, materials), report))
     for pdf in pdfs:
@@ -1685,12 +1719,9 @@ def run(args, backend=None):
                 else:
                     no_content.append(i + 1)
             if nonblank == 0:   # image-only/scanned PDF: pypdf returns "" per page → no usable text
-                report["skipped"].append({"file": rel, "why": "PDF 文本为空（可能是扫描件/图片 PDF，需 OCR，本工具不做）"})
-                report["warnings"].append("pdf_no_text: %s" % rel)
-                report["ai_review"].append({
-                    "kind": "scanned_pdf", "file": rel, "pages": no_content,
-                    "action": "整本无有效文本（疑似扫描件/纯图 PDF），内容未导入。请 AI 用多模态直接"
-                              "阅读该 PDF，把知识点/题目手工补进工作区。"})
+                # 先记账不立刻丢——整册可能是配对管线认领的裸答案册（整本就一个「4」）；
+                # 分类后未被认领的才从管线剔除并移交 AI
+                residue_files[rel] = no_content
             elif no_content:    # 混排文件里的扫描页：内容不会进 wiki/题库，必须留痕移交
                 report["warnings"].append(
                     "pdf_pages_no_text: %s（%d/%d 页无有效文本：p%s——疑似扫描/纯图页，这些页的内容"
@@ -1708,8 +1739,24 @@ def run(args, backend=None):
                           "或检查文件是否损坏/加密。"})
 
     report["pages_extracted"] = len(pages)
+
+    def _flush_residue(claimed):
+        # 整本无有效文本的 PDF：被作业/试卷管线认领的（裸答案册，整本就一个「4」）内容有效使用；
+        # 未被认领的从管线剔除（残渣绝不写进 wiki）并移交 AI
+        nonlocal pages
+        for rf in sorted(set(residue_files) - claimed):
+            pages = [pg for pg in pages if pg["file"] != rf]
+            report["skipped"].append({"file": rf, "why": "PDF 文本为空（可能是扫描件/图片 PDF，需 OCR，本工具不做）"})
+            report["warnings"].append("pdf_no_text: %s" % rf)
+            report["ai_review"].append({
+                "kind": "scanned_pdf", "file": rf, "pages": residue_files[rf],
+                "action": "整本无有效文本（疑似扫描件/纯图 PDF），内容未导入。请 AI 用多模态直接"
+                          "阅读该 PDF，把知识点/题目手工补进工作区。"})
+        residue_files.clear()
+
     # require some ACTUAL text, not just blank pages from a scanned PDF (else we'd emit an empty wiki and exit 0)
     if not any(_page_has_content(p.get("text")) for p in pages):
+        _flush_residue(set())
         report["warnings"].append("no_text_extracted")
         return 4, {"error": "未从 --materials 提取到任何文本内容（页面为空或全是扫描件/图片）。请确认有可解析的 "
                             "PDF/.txt/.md（PDF 文本需 pypdf；图片/扫描件需 OCR，本工具不做）。"}, report
@@ -1759,6 +1806,7 @@ def run(args, backend=None):
                 report["warnings"].append(
                     "exam_lecture_style: %s（试卷解答册且内容以讲义式标记为主——随卷归还"
                     "讲义管线配对官方解答，正文不进 wiki）" % _sf)
+    _flush_residue(hw_related)
     lecture_pages = [pg for pg in pages if pg["file"] not in hw_related]
     lecture_items = []
     if args.extract_lecture_questions != "never":
