@@ -1360,8 +1360,11 @@ def group_sections(pages, notes=None):
         if f not in all_files:
             all_files.append(f)
         markers = detect_lecture_markers(pg.get("text", ""))
-        # 词元边界：march-2024.pdf 的 "ch" 前面是字母，不是章节记号（审计实测捏造第 2024 章）
-        m = re.search(r"(?<![A-Za-z])ch(?:apter)?[ _-]?0*(\d+)", os.path.basename(f or ""), re.I)
+        # 词元边界：march-2024.pdf 的 "ch" 前面是字母，不是章节记号（审计实测捏造第 2024 章）；
+        # CamelCase（LectureChapter02）单列大小写敏感分支放行
+        _base = os.path.basename(f or "")
+        m = (re.search(r"(?<![A-Za-z])ch(?:apter)?[ _-]?0*(\d+)", _base, re.I)
+             or re.search(r"(?<=[a-z])Chapter[ _-]?0*(\d+)", _base))
         if markers:
             ch = markers[0]["chapter"]
             clue_files.add(f)

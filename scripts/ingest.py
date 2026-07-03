@@ -222,6 +222,9 @@ def main():
             normalized = TRUE_FALSE_NORMALIZE.get(q["answer"].strip().lower(), q["answer"])
             q["answer"] = normalized
     # ────────────────────────────────────────────────────────────────
+    # 补号后重算缺答案清单——validate 阶段无 id 的题记的是「#序号」占位，
+    # 持久化报告必须指向题库里真实存在的 id，后续会话的 AI 才能定位接手
+    missing_answer_ids = [q["id"] for q in quiz_bank if is_blank(q.get("answer"))]
 
     print(f"[+] 识别到科目: {course_name}")
     print(f"[+] 阶段数量: {len(phases)} 个")

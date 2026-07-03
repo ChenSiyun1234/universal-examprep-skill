@@ -2487,6 +2487,21 @@ class HomeworkIngest(unittest.TestCase):
         self.assertTrue(any(w.startswith("hw_solution_reassigned_to_lecture")
                             for w in report["warnings"]))         # 改道交还讲义也要留痕
 
+    def test_camelcase_chapter_filename_detected(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {})
+        with open(os.path.join(tmp, "mat", "LectureChapter02.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+
+        class CcBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                return ["驼峰命名章节的正文。"]
+        code, payload, report = _run(mat, CcBackend({}))
+        self.assertTrue(any(ph.get("phase_num") == 2 or "第 2 章" in (ph.get("phase_name") or "")
+                            for ph in payload["phases"]))         # CamelCase Chapter02 归第 2 章
+        self.assertFalse(any(w.startswith("chapter_unassigned")
+                             for w in report["warnings"]))
+
     def test_no_network_or_llm(self):
 
 
