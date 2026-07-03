@@ -116,6 +116,14 @@ def _keyline_num(m):
     return _hw_num(m.group(1) or m.group(2))
 
 
+def _keyline_filter(keyed_ms, prob_nums):
+    """小数-空白形（group 2）是弱信号——只有号真在题号集合里才算键，说明行「3.14 is pi」
+    直接丢弃、不毒化整节的 ⊆ 判定；定界形（group 1，1. A）是强信号，全部保留、由调用方的
+    全集 ⊆ 题号守卫把关（编号解答步骤因此不拆）。"""
+    return [m for m in keyed_ms
+            if m.group(1) is not None or _hw_num(m.group(2)) in prob_nums]
+
+
 _HW_PROB_SOL_HEAD_RE = re.compile(r"^\s*[\).\-]?\s*\(?\s*(?:solutions?|answers?|解答|答案)\s*[.:：]?", re.I)
 
 # Two classes of asset cue. ASSET_EXCLUDE masks known false-positive phrases first.
@@ -402,6 +410,18 @@ def _strip_sol_desc(stem):
     ——它们是解答后缀的一部分，分类与配对键都不该被它们挡住。"""
     stem = re.sub(r"(?i)(solutions?|answers?|sol|ans)(keys?|manuals?)", lambda m: m.group(1), stem)
     return _KEY_TOKEN_RE.sub("", stem)
+
+
+def _pure_sol_stem(stem):
+    """文件名剥掉解答描述词后【只剩】解答记号/连接词/版本词/hw 记号——纯解答名
+    （solutions / final_answers / hw1_key ✓；questions_answers 的 questions 是实义词 ✗）。
+    比 _sol_dir_segment 的目录后缀规则窄：Q&A 讲义（questions_answers.pdf）不能被误杀出 wiki。"""
+    stem = _strip_sol_desc(stem)
+    if not _SOL_TOKEN_RE.search(stem):
+        return False
+    rest = _SOL_TOKEN_RE.sub("", stem)
+    toks = re.findall(r"[A-Za-z一-鿿]+", rest)
+    return all(t.lower() in _SOL_TRAIL_OK or _HW_FILE_RE.search(t) for t in toks)
 
 
 def _sol_dir_segment(seg):
@@ -790,7 +810,7 @@ def extract_homework_items(pages, root_name=""):
         # 全无标记的纯编号答案册（1. A1 / 2. A2，连 Answers/Problem 标题都没有）——
         # 文件名配对已锁定伴随关系，整册按号拆
         if not marks_all:
-            keyed_ms = list(_HW_KEYLINE_RE.finditer(stream))
+            keyed_ms = _keyline_filter(_HW_KEYLINE_RE.finditer(stream), _hw_prob_nums(hf))
             keyset0 = {_keyline_num(m2) for m2 in keyed_ms}
             # 键控拆分一律要求号集 ⊆ 配对作业的已知题号——单题册里带编号的解答步骤
             # （1. 求导… 2. 解方程…）不是答案清单，按号拆会把官方解答截成第一步
@@ -809,7 +829,7 @@ def extract_homework_items(pages, root_name=""):
                 continue
             end0 = next((m2["start"] for m2 in marks_all if m2["start"] > m["start"]), len(stream))
             seg = stream[m["start"]:end0]
-            keyed_ms = list(_HW_KEYLINE_RE.finditer(seg))
+            keyed_ms = _keyline_filter(_HW_KEYLINE_RE.finditer(seg), _hw_prob_nums(hf))
             keyset0 = {_keyline_num(m2) for m2 in keyed_ms}
             # 键控拆分一律要求号集 ⊆ 配对作业的已知题号（单条「1. A1」可拆、单题册的
             # 编号解答步骤不拆——步骤号集不会都落在题号集合里）
@@ -946,7 +966,7 @@ def extract_homework_items(pages, root_name=""):
                 continue
             # 无号「Answers」节头：其下的「1. …」「2. …」编号行是整卷答案区——按号拆给各题
             seg = stream[mk2["start"]:end2]
-            keyed_ms = list(_HW_KEYLINE_RE.finditer(seg))
+            keyed_ms = _keyline_filter(_HW_KEYLINE_RE.finditer(seg), prob_nums)
             keyset = {_keyline_num(m2) for m2 in keyed_ms}
             # 键控拆分一律要求号集 ⊆ 本卷已知题号——单条「1. A」可拆（相邻兜底会把它安给
             # 节前那道题）；编号解答步骤/普通编号列表不在题号集合里，不拆
@@ -1028,9 +1048,16 @@ def extract_homework_items(pages, root_name=""):
                                    len(stream))
                     lbl_seg = stream[marks[k]["start"]:lbl_end]
                     lbl_line, _, lbl_rest = lbl_seg.partition(chr(10))
-                    label_like = ((_HW_ANSBOX_INSTR_RE.search(lbl_line)
-                                   and not re.search(r"[0-9A-Za-z一-鿿]", lbl_rest))
-                                  or _nonblank_slice(marks[k]["start"], lbl_end) is None)
+                    rest_lines = [l for l in lbl_rest.splitlines()
+                                  if re.search(r"[0-9A-Za-z一-鿿]", l)]
+                    # 标签的三种形态：空白栏；标签行本身是指示语且后无内容；标签行光秃但
+                    # 后续每一行都是指示语（Answer:\nWrite your answer in the box below）
+                    label_like = (_nonblank_slice(marks[k]["start"], lbl_end) is None
+                                  or (bool(_HW_ANSBOX_INSTR_RE.search(lbl_line))
+                                      and not rest_lines)
+                                  or (bool(rest_lines)
+                                      and all(_HW_ANSBOX_INSTR_RE.search(l)
+                                              for l in rest_lines)))
                 if marks[k]["num"] is None and no_pre and label_like:
                     ans = None         # 题面在答案标记前毫无内容且标记段是标签/空白栏——
                                        # 属题面指示语，不是官方答案
@@ -1045,8 +1072,8 @@ def extract_homework_items(pages, root_name=""):
                 if s_start is not None:
                     s_end = next((m2["start"] for m2 in marks[k + 1:] if m2["role"] == "problem"),
                                  len(stream))
-                    keyed_norm = {_keyline_num(m2)
-                                  for m2 in _HW_KEYLINE_RE.finditer(stream[s_start:s_end])}
+                    keyed_norm = {_keyline_num(m2) for m2 in _keyline_filter(
+                        _HW_KEYLINE_RE.finditer(stream[s_start:s_end]), prob_nums)}
                     sol_line, _, sol_rest = stream[s_start:s_end].partition(chr(10))
                     if marks[k]["num"] is None and keyed_norm and keyed_norm <= prob_nums:
                         ans = None      # 无号「Answers」节头 + 键控列表（多号，或单号但都是已知
@@ -1597,7 +1624,7 @@ def run(args, backend=None):
     # 纯讲义语料（无作业文件）保持原样，交给讲义答案配对
     if report.get("homework_files"):
         sol_dir_files |= {pg["file"] for pg in pages
-                          if _sol_dir_segment(os.path.splitext(os.path.basename(pg["file"]))[0])}
+                          if _pure_sol_stem(os.path.splitext(os.path.basename(pg["file"]))[0])}
     wiki_pages = [pg for pg in pages if pg["file"] not in sol_files
                   and pg["file"] not in sol_dir_files]
     raw_input = build_raw_input(course, group_sections(wiki_pages), lecture_items, homework_items)

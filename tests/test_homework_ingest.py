@@ -1489,6 +1489,42 @@ class HomeworkIngest(unittest.TestCase):
         self.assertIn("直呼号答案一", by_num[1].get("answer", ""))
         self.assertIn("直呼号答案二", by_num[2].get("answer", ""))
 
+    def test_stray_decimal_line_does_not_poison_key_split(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw81.pdf": ["Problem 1\n毒化题面一。\n\nProblem 2\n毒化题面二。"],
+                            "hw81_sol.pdf": ["Answers\n1. 毒化答案一。\n2. 毒化答案二。\n3.14 is pi 的说明行。"]})
+        code, payload, report = _run(mat, be)
+        by_num = {q["homework_number"]: q for q in payload["quiz_bank"]
+                  if q.get("source_type") == "homework"}
+        self.assertIn("毒化答案一", by_num[1].get("answer", ""))    # 裸小数说明行不毒化整节拆分
+        self.assertIn("毒化答案二", by_num[2].get("answer", ""))
+
+    def test_multiline_answer_box_instruction_not_stored(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw82.pdf": ["Problem 1\nAnswer:\nWrite your answer in the box below."]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw), 1)
+        self.assertFalse((hw[0].get("answer") or "").strip())     # 跨行指示语也是标签不是答案
+
+    def test_mixed_root_qa_handout_stays_in_wiki(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        for rel in ("hw1.pdf", "questions_answers.pdf"):
+            with open(os.path.join(mat, rel), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class QaBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                rel = pdf_path.replace(chr(92), "/")
+                if rel.endswith("hw1.pdf"):
+                    return ["Problem 1\n混合根题面。"]
+                return ["问答讲义的正文内容。"]
+        code, payload, report = _run(mat, QaBackend({}))
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertIn("问答讲义的正文内容", wiki_all)              # Q&A 讲义不因文件名被误杀
+
     def test_no_network_or_llm(self):
 
 
