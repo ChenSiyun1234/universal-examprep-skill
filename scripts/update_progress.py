@@ -389,6 +389,12 @@ def _plan_phases(ws):
     """Phase numbers listed in study_plan.md（阶段N / 第N阶段 / Phase N，与 T4 解析器同款），
     plan 缺失/无阶段时返回空集。"""
     plan_path = os.path.join(ws, "study_plan.md")
+    if os.path.islink(plan_path) or (os.path.isfile(plan_path)
+                                     and not os.path.realpath(plan_path).startswith(
+                                         os.path.realpath(ws) + os.sep)):
+        # validator 拒符号链接/逃出工作区的计划——官方变更路径不能反而信任外部计划，
+        # 写出 validator 拒收、恢复不进去的断点
+        _die("study_plan.md 是符号链接/经符号链接逃出工作区——阶段守卫不信任外部计划文件", 1)
     if not os.path.isfile(plan_path):
         return set()
     try:

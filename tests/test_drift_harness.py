@@ -263,6 +263,44 @@ class DriftHarness(unittest.TestCase):
         ])
         self.assertEqual(m["md_write_after_state"], 1)            # 只有 turn2 的状态背离计违规
 
+    def test_same_count_id_divergence_in_dual_write_flagged(self):
+        # 同数双写、state 与 md 都在变但 id 序列不同（state 进 q1、面板显示 q9）——id 键跨源可比
+        st1 = json.dumps({"version": 1, "current_phase": 2,
+                          "mistake_archive": [{"id": "q1", "note": "误答"}],
+                          "confusion_log": []}, ensure_ascii=False)
+        md_wrong = "当前阶段：2\n## 错题本\n- [#q9] 面板上是别的行\n"
+        m = _eval_turns([
+            {"turn": 1, "assistant": "记录。", "phase_context": 2,
+             "files_after": {"study_state.json": st1, "study_progress.md": md_wrong}},
+        ])
+        self.assertGreaterEqual(m["md_write_after_state"], 1)
+
+    def test_md_event_without_snapshot_beside_state_rejected(self):
+        # state 快照 + md 裸写事件（无 md 快照）——生成视图无从核对，按畸形输入拒收
+        st1 = json.dumps({"version": 1, "current_phase": 2,
+                          "mistake_archive": [], "confusion_log": []}, ensure_ascii=False)
+        with self.assertRaises(D.DriftError):
+            _eval_turns([{"turn": 1, "assistant": "x", "phase_context": 2,
+                          "files_after": {"study_state.json": st1},
+                          "events": [{"type": "write_file", "path": "study_progress.md"}]}])
+
+    def test_nonwhitelist_status_divergence_flagged(self):
+        # 手改状态列为词表外的合法词（已解决）——状态列取最后一格，不再靠白名单
+        st1 = json.dumps({"version": 1, "current_phase": 2,
+                          "mistake_archive": [{"id": "q1", "note": "误答", "status": "待复盘"}],
+                          "confusion_log": []}, ensure_ascii=False)
+        hdr = ("| 错题ID | 关联章节 | 错误原因分析 | 状态 |" + chr(10)
+               + "| :--- | :--- | :--- | :--- |" + chr(10))
+        md1 = "当前阶段：2" + chr(10) + "## 错题档案记录" + chr(10) + hdr + "| [#q1] | 1 | 误答 | 待复盘 |" + chr(10)
+        md2 = md1.replace("待复盘", "已解决")
+        m = _eval_turns([
+            {"turn": 1, "assistant": "记录。", "phase_context": 2,
+             "files_after": {"study_state.json": st1, "study_progress.md": md1}},
+            {"turn": 2, "assistant": "手改状态。", "phase_context": 2,
+             "files_after": {"study_state.json": st1, "study_progress.md": md2}},
+        ])
+        self.assertEqual(m["md_write_after_state"], 1)
+
     def test_missing_transcript_exits_2(self):
         r = _cli(["--scenario", SCEN, "--transcript", os.path.join(TR, "does_not_exist.jsonl")])
         self.assertEqual(r.returncode, 2)

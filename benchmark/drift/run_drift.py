@@ -314,7 +314,9 @@ def parse_progress(text):
                     and all(c in ("", "-") for c in cells[1:]):
                 continue
             cur.append(re.sub(r"\s+", " ", h))                     # a table DATA row with real content
-            cur_st.append(cells[-1] if cells and cells[-1] in _STATUS_WORDS else None)
+            # 生成表的状态列固定在最后一格（≥4 列才有状态列）——状态是自由文本
+            # （已订正/已复盘/已解决…），词表白名单会漏掉合法值让陈旧状态钻空子
+            cur_st.append(cells[-1] if len(cells) >= 4 and cells[-1] not in ("", "-") else None)
     return {"phase": phase, "mistake_rows": mistake, "confusion_rows": confusion,
             "mistake_status": mistake_st, "confusion_status": confusion_st}
 
@@ -438,11 +440,6 @@ def _snap_text(fa, name):
     return v
 
 
-# 生成视图状态列的已知词表——双写状态背离检查只在【两侧都有可比状态】时进行
-# （bullet 形没有状态列、自由文本不在词表里：都不比、不误报）
-_STATUS_WORDS = ("待复盘", "已订正", "待回顾", "已回顾", "未复习", "已复习", "未掌握", "已掌握")
-
-
 def _dual_key(row):
     """双写比对用的行键：idless 生成表行首列是占位 '-'，_row_key 会把所有此类行折叠成同一个
     cell:- 键、同数替换互相隐身——这里降级为【去状态列】的内容键（最后一列是状态，官方
@@ -482,6 +479,13 @@ def _session_snapshots(turns, state_established=False, plan_phases=None, init_du
             raise DriftError("转写第 %s 回合有 study_progress.md 快照但 study_state.json 只有 "
                              "write_file 事件没有快照——无法核对 A4 事实源，请补 state 快照"
                              % t.get("turn", "?"))
+        if "study_state.json" in fa and "study_progress.md" in evs \
+                and "study_progress.md" not in fa:
+            # 反向同理：写了生成视图（write_file 事件）却不给 md 快照——手改无从核对，
+            # 光靠 state_touch 豁免计数正好放走要抓的回归
+            raise DriftError("转写第 %s 回合写了 study_progress.md（write_file 事件）但没给 md 快照，"
+                             "而同回合有 state 快照——生成视图无从核对，请补 md 快照"
+                             % t.get("turn", "?"))
         if "study_state.json" in fa:
             state_established = True
             snap = parse_state_json(_snap_text(fa, "study_state.json"), plan_phases)
@@ -507,6 +511,14 @@ def _session_snapshots(turns, state_established=False, plan_phases=None, init_du
                     stale_md += 1
                 elif prev_dual is not None and md_keys != prev_dual[0] \
                         and st_keys == prev_dual[1]:
+                    stale_md += 1
+                elif ([k for k in md_keys[0] if k.startswith("id:")],
+                      [k for k in md_keys[1] if k.startswith("id:")]) != \
+                        ([k for k in st_keys[0] if k.startswith("id:")],
+                         [k for k in st_keys[1] if k.startswith("id:")]):
+                    # 带 id 的行键跨源可比（md 表格/bullet 的 [#id] ↔ state 行的 [#id]）——
+                    # 同数但 id 序列不同（state 进了 q1、生成视图却显示 q9）也是手改/陈旧面板；
+                    # 无 id 行仍只走同源比对，不误报
                     stale_md += 1
                 elif any(sm is not None and ss is not None and sm != ss for sm, ss in
                          list(zip(md_snap["mistake_status"], snap["mistake_status"]))

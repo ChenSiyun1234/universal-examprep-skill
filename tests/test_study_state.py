@@ -124,6 +124,19 @@ class Migration(unittest.TestCase):
         self.assertEqual(len(st["confusion_log"]), 1)             # 加粗标题终结上一节
         self.assertNotIn("待办", st["confusion_log"][0]["note"])
 
+    def test_symlinked_plan_rejected_by_phase_guard(self):
+        ws = _mk_ws(tempfile.mkdtemp(), md=None)
+        outside = os.path.join(os.path.dirname(ws), "outside_plan.md")
+        with open(outside, "w", encoding="utf-8", newline=chr(10)) as f:
+            f.write("## 阶段99：外部计划" + chr(10))
+        try:
+            os.symlink(outside, os.path.join(ws, "study_plan.md"))
+        except (OSError, NotImplementedError, AttributeError):
+            self.skipTest("无符号链接权限")
+        r = _up(ws, ["init"])
+        self.assertNotEqual(r.returncode, 0)                      # 外部计划不被信任
+        self.assertIn("符号链接", r.stderr)
+
     def test_init_adopts_legacy_md(self):
         ws = _mk_ws(tempfile.mkdtemp())
         r = _up(ws, ["init"])
