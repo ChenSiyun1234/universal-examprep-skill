@@ -60,7 +60,9 @@ _EXAM_FILE_RE = re.compile(
 # 这些词与试卷词同现时不按试卷收（讲义类照常走讲义管线，绝不猜）
 _EXAM_NEG_RE = re.compile(
     r"课件|讲义|讲稿|教案|提纲|笔记|总结|归纳|串讲|考点|知识点|重点|复习|安排|通知|范围|时间表|考试时间"
-    r"|(?<![A-Za-z])(?:lectures?|slides?|notes?|handouts?|reviews?|outlines?|syllabus|schedules?)(?![A-Za-z])",
+    r"|题型|说明|须知|指南|信息"
+    r"|(?<![A-Za-z])(?:lectures?|slides?|notes?|handouts?|reviews?|outlines?|syllabus|schedules?"
+    r"|format|info(?:rmation)?|instructions?|logistics|polic(?:y|ies)|guide(?:lines?)?)(?![A-Za-z])",
     re.I)
 
 
@@ -72,7 +74,7 @@ _PAPERISH_RE = re.compile(r"^\d{1,4}(?:[-_ .]?\d{1,4})?\s*[abAB]?\s*卷?$|^[abAB
 def _deglue_exam(stem):
     """试卷词与解答/键词胶连（midtermsolutions / finalanswers / quizkey）——插分隔符让
     解答记号检测、配对键剥离与试卷记号边界照常工作。"""
-    return re.sub(r"(?i)(midterms?|finals?|exams?|examinations?|quiz(?:zes)?\d*)"
+    return re.sub(r"(?i)(midterms?\d*|finals?\d*|exams?\d*|examinations?|quiz(?:zes)?\d*|prelims?\d*)"
                   r"((?:solutions?|answers?|soln?s?|ans)(?:keys?|manuals?)?|keys?)(?![a-z])",
                   lambda m: m.group(1) + "_" + m.group(2), stem)
 
@@ -114,7 +116,7 @@ _HW_ROOT_RE = re.compile(
 # solution/answer 需要词元边界：前面不能是字母（unanswered ≠ answers；hw1solution 的数字前缀合法），
 # 后面须是分隔符/括号/串尾——纯子串匹配会把 unanswered_hw1 误判成解答文件
 _SOL_TOKEN_RE = re.compile(r"(?<![A-Za-z])(?:solutions?|answers?)(?=[_\-. ()\\/]|$)"
-                           r"|(?<![A-Za-z])(?:sols?|ans)(?=[_\-. ()\\/]|$)|答案|解答", re.I)
+                           r"|(?<![A-Za-z])(?:soln?s?|ans)(?=[_\-. ()\\/]|$)|答案|解答", re.I)
 # 题号支持 教材式小数（1.1.2）与 字母小题（1(a) / 1a）——折叠会把真小题当重复丢掉
 # 裸字母小问要求后面不再跟字母——PDF 抽取丢空格的「Problem 2Compute」不许把 C 吞成小问 2c
 _HW_NUM_PAT = r"(\d+(?:\.\d+)*(?:\s*\([A-Za-z]\)|[A-Za-z](?![A-Za-z]))?)"
@@ -565,7 +567,7 @@ def classify_homework_files(files, root_name=""):
                         or any(_seg_exam(sg) for sg in os.path.dirname(rel).split("/") if sg))
         _a0 = 0 if (hw_m_raw is None and (_in_exam_ctx or _is_exam_path(rel, root_name))) else None
         desc_after_hw = bool((hw_m_raw is not None or _a0 is not None) and any(
-            m.start() > (hw_m_raw.start() if hw_m_raw is not None else _a0)
+            (m.start() > hw_m_raw.start() if hw_m_raw is not None else m.start() >= _a0)
             and all(t.lower() in _SOL_TRAIL_OK or _HW_FILE_RE.search(t)
                     for t in re.findall(r"[A-Za-z一-鿿]+", stem[m.end():]))
             for m in _KEY_TOKEN_RE.finditer(stem)))
@@ -875,9 +877,12 @@ def extract_homework_items(pages, root_name="", exclude=frozenset()):
                 and _has_prompt_text():
             hw_files.append(sf)
             report["homework_files"] = sorted(set(report["homework_files"]) | {sf})
-            if _is_exam_path(sf, root_name):
-                exam_files.add(sf)                     # 只发布了带解答试卷时它就是唯一试卷来源
-                report["exam_files"] = sorted(exam_files)
+            _sf_rel = sf.replace(chr(92), "/")
+            if (_is_exam_path(sf, root_name)
+                    or bool(root_name and _seg_exam(root_name))
+                    or any(_seg_exam(sg) for sg in os.path.dirname(_sf_rel).split("/") if sg)):
+                exam_files.add(sf)                     # 只发布了带解答试卷时它就是唯一试卷来源；
+                report["exam_files"] = sorted(exam_files)   # 试卷根/目录里的 generic 自含册同权
             report["warnings"].append("hw_selfcontained_solutions: %s（未配对但自含题面+解答，按作业解析）" % sf)
         else:
             report["warnings"].append("hw_unpaired_solution_file: %s（配不到对应作业题面文件，未导入答案）" % sf)

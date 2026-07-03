@@ -1632,14 +1632,16 @@ class HomeworkIngest(unittest.TestCase):
                      "past_paper.pdf", "sample exam.pdf", "practice-midterm.pdf",
                      "期末试卷A卷.pdf", "真题2014.pdf", "模拟卷.pdf", "模拟试卷（偏难).pdf",
                      "2019期中.pdf", "月考试题.pdf", "exams/2020.pdf",
-                     "midtermsolutions.pdf", "examanswers.pdf", "期末时间复杂度试题.pdf"):
+                     "midtermsolutions.pdf", "examanswers.pdf", "期末时间复杂度试题.pdf",
+                     "midtermsoln.pdf", "final1key.pdf"):
             self.assertTrue(B._is_exam_path(good), good)
         for bad in ("example.pdf", "os_example_question2.pdf", "final_version.pdf",
                     "final report.pdf", "模拟滤波器.pdf", "期末复习提纲.pdf",
                     "期中考试安排.pdf", "考试范围.pdf", "NetSec-期末复习提纲.pdf",
                     "final review.pdf", "lec01.pdf",
                     "midterm_notes/ch01.pdf", "期中复习/ch01.pdf", "exams/期末复习笔记.pdf",
-                    "final_exam_prep/sorting.pdf", "exams/graph_theory.pdf"):
+                    "final_exam_prep/sorting.pdf", "exams/graph_theory.pdf",
+                    "final_exam_format.pdf", "exam_info.pdf", "期末考试题型说明.pdf"):
             self.assertFalse(B._is_exam_path(bad), bad)
 
     def test_exam_paper_items_tagged_and_out_of_wiki(self):
@@ -2000,6 +2002,102 @@ class HomeworkIngest(unittest.TestCase):
         self.assertIn("随卷小测官方解答", got[0].get("answer", ""))   # 解答册随行配对
         wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
         self.assertNotIn("随卷小测官方解答", wiki_all)             # 正文照旧挡出 wiki
+
+    def test_exam_dir_bare_key_excluded_and_warned(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(os.path.join(mat, "exams"), exist_ok=True)
+        for rel in ("exams/2020.pdf", "exams/key.pdf"):
+            with open(os.path.join(mat, *rel.split("/")), "wb") as f:
+                f.write(b"%PDF-fake")
+        with open(os.path.join(mat, "lec01.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+
+        class BkBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                rel = pdf_path.replace(chr(92), "/")
+                if rel.endswith("exams/key.pdf"):
+                    return ["裸键册的标准答案。"]
+                if rel.endswith("2020.pdf"):
+                    return ["Problem 1\n裸键卷题面。"]
+                return ["讲义正文内容。"]
+        code, payload, report = _run(mat, BkBackend({}))
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertNotIn("裸键册的标准答案", wiki_all)            # 试卷目录的裸 key.pdf 判解答不泄漏
+        self.assertTrue(any("hw_unpaired_solution_file" in w or "hw_no_markers" in w
+                            for w in report["warnings"]))
+
+    def test_glued_soln_abbreviation_pairs(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        for rel in ("midterm.pdf", "midtermsoln.pdf", "lec01.pdf"):
+            with open(os.path.join(mat, rel), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class SnBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                rel = pdf_path.replace(chr(92), "/")
+                if rel.endswith("midtermsoln.pdf"):
+                    return ["Problem 1 Solution\n缩写胶连答案。"]
+                if rel.endswith("midterm.pdf"):
+                    return ["Problem 1\n缩写胶连题面。"]
+                return ["讲义正文内容。"]
+        code, payload, report = _run(mat, SnBackend({}))
+        ex = [q for q in payload["quiz_bank"] if q.get("source_type") == "exam"]
+        self.assertEqual(len(ex), 1)
+        self.assertIn("缩写胶连答案", ex[0].get("answer", ""))    # midtermsoln 判解答并配对
+
+    def test_exam_format_handout_stays_in_wiki(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        for rel in ("exam_info.pdf", "lec01.pdf"):
+            with open(os.path.join(mat, rel), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class FmBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                if "exam_info" in pdf_path:
+                    return ["考试形式说明：闭卷，允许一页 A4 小抄。"]
+                return ["讲义正文内容。"]
+        code, payload, report = _run(mat, FmBackend({}))
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertIn("允许一页 A4 小抄", wiki_all)               # 考试说明类是复习材料，留在 wiki
+
+    def test_exam_root_selfcontained_generic_tagged_exam(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "2020期末真题")
+        os.makedirs(mat)
+        with open(os.path.join(mat, "solutions.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+        be = FakeBackend({"solutions.pdf": ["Problem 1\n自含根卷的题面文字。\n"
+                                            "Problem 1 Solution\n自含根卷答案。"]})
+        code, payload, report = _run(mat, be)
+        ex = [q for q in payload["quiz_bank"] if q.get("source_type") == "exam"]
+        self.assertEqual(len(ex), 1)                              # 试卷根的 generic 自含册打 exam 标签
+        self.assertTrue(ex[0]["id"].startswith("exam_"))
+
+    def test_numbered_glued_key_pairs(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        for rel in ("final1.pdf", "final1key.pdf", "lec01.pdf"):
+            with open(os.path.join(mat, rel), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class NkBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                rel = pdf_path.replace(chr(92), "/")
+                if rel.endswith("final1key.pdf"):
+                    return ["Problem 1 Solution\n带号胶连键答案。"]
+                if rel.endswith("final1.pdf"):
+                    return ["Problem 1\n带号胶连键题面。"]
+                return ["讲义正文内容。"]
+        code, payload, report = _run(mat, NkBackend({}))
+        ex = [q for q in payload["quiz_bank"] if q.get("source_type") == "exam"]
+        self.assertEqual(len(ex), 1)
+        self.assertIn("带号胶连键答案", ex[0].get("answer", ""))   # final1key 拆胶连配回 final1
 
     def test_no_network_or_llm(self):
 
