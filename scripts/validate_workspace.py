@@ -66,7 +66,8 @@ def _plan_phase_nums(text):
     for ln in (text or "").splitlines():
         h = ln.lstrip()
         # 与更新器/T4 同口径：只认结构行、阶段号 ≥1
-        if not (h.startswith("#") or h.startswith("|") or re.match(r"[-*]\s", h)):
+        if not (h.startswith("#") or h.startswith("|") or re.match(r"[-*]\s", h)
+                or re.match(r"\d+\s*[.)、）]", h)):     # 有序列表（1. 阶段…）也是计划条目
             continue
         for m in re.finditer(r"阶段\s*(\d+)|第\s*(\d+)\s*阶段|[Pp]hase\s*(\d+)", ln):
             g = next(x for x in m.groups() if x)

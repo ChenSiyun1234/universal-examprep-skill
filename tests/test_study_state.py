@@ -104,6 +104,18 @@ class Migration(unittest.TestCase):
         r2 = _up(ws, ["add-mistake", "--chapter", "1", "--note", "阶段0计划下照常可用"])
         self.assertEqual(r2.returncode, 0, r2.stderr)
 
+    def test_ordered_list_plan_phases_recognized(self):
+        ws = _mk_ws(tempfile.mkdtemp(), md=None)
+        with open(os.path.join(ws, "study_plan.md"), "w", encoding="utf-8", newline=chr(10)) as f:
+            f.write("# Plan" + chr(10) + "1. 阶段 1：栈" + chr(10) + "2. 阶段 2：队列" + chr(10))
+        r = _up(ws, ["init"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r99 = _up(ws, ["set", "--phase", "99"])
+        self.assertNotEqual(r99.returncode, 0)                    # 有序列表计划的守卫同样生效
+        r2 = _up(ws, ["set", "--phase", "2"])
+        self.assertEqual(r2.returncode, 0, r2.stderr)
+        self.assertEqual(_state(ws)["current_phase"], 2)
+
     def test_init_adopts_legacy_md(self):
         ws = _mk_ws(tempfile.mkdtemp())
         r = _up(ws, ["init"])

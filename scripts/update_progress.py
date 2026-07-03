@@ -401,7 +401,8 @@ def _plan_phases(ws):
         # 只认结构行（标题/表格/清单）里的阶段号——散文提醒「不要进入阶段99」不是计划条目
         #（与 T4 解析器的 _is_structural 同口径）；且阶段号必须 ≥1——「阶段0」会让空白 init
         # 种下 current_phase=0 这种全工具链拒收的断点
-        if not (h.startswith("#") or h.startswith("|") or re.match(r"[-*]\s", h)):
+        if not (h.startswith("#") or h.startswith("|") or re.match(r"[-*]\s", h)
+                or re.match(r"\d+\s*[.)、）]", h)):     # 有序列表（1. 阶段…）也是计划条目
             continue
         for m in re.finditer(r"阶段\s*(\d+)|第\s*(\d+)\s*阶段|[Pp]hase\s*(\d+)", ln):
             n = int(next(g for g in m.groups() if g))

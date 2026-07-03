@@ -149,7 +149,8 @@ def _all_phase_nums(s):
 
 
 def _is_structural(line):
-    return line.startswith("#") or line.startswith("|") or bool(re.match(r"[-*]\s", line))
+    return (line.startswith("#") or line.startswith("|") or bool(re.match(r"[-*]\s", line))
+            or bool(re.match(r"\d+\s*[.)、）]", line)))   # 有序列表（1. 阶段…）也是计划条目
 
 
 def parse_plan_phases(text):
@@ -449,6 +450,13 @@ def _session_snapshots(turns, state_established=False, plan_phases=None):
                for e in (t.get("events") or []) if e.get("type") == "write_file"}
         md_touch = "study_progress.md" in fa or "study_progress.md" in evs
         state_touch = "study_state.json" in fa or "study_state.json" in evs
+        if "study_progress.md" in fa and "study_state.json" in evs \
+                and "study_state.json" not in fa:
+            # 带 md 快照却只给 state 的 write_file 事件、不给 state 快照——生成视图是否手改
+            # 无从核对，光靠事件豁免 md_write_after_state 正好放走要抓的回归；按畸形输入拒收
+            raise DriftError("转写第 %s 回合有 study_progress.md 快照但 study_state.json 只有 "
+                             "write_file 事件没有快照——无法核对 A4 事实源，请补 state 快照"
+                             % t.get("turn", "?"))
         if "study_state.json" in fa:
             state_established = True
             snap = parse_state_json(_snap_text(fa, "study_state.json"), plan_phases)
@@ -464,7 +472,9 @@ def _session_snapshots(turns, state_established=False, plan_phases=None):
                 st_keys = ([_row_key(r) for r in snap["mistake_rows"]],
                            [_row_key(r) for r in snap["confusion_rows"]])
                 if (len(md_snap["mistake_rows"]) + len(md_snap["confusion_rows"])
-                        > len(snap["mistake_rows"]) + len(snap["confusion_rows"])):
+                        != len(snap["mistake_rows"]) + len(snap["confusion_rows"])):
+                    # 双向都算：md 多行=手加，md 少行=state 进了新行而给学生看的生成视图没跟上
+                    #（官方更新每次写 state 都重渲染 md，双快照行数必然一致）
                     stale_md += 1
                 elif prev_dual is not None and md_keys != prev_dual[0] \
                         and st_keys == prev_dual[1]:

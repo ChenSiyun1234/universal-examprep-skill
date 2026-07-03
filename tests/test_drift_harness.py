@@ -155,6 +155,32 @@ class DriftHarness(unittest.TestCase):
         ])
         self.assertEqual(m["md_write_after_state"], 1)
 
+    def test_state_event_without_snapshot_beside_md_rejected(self):
+        # md 快照 + 只有 state 写事件——证据缺失不许豁免手改计数，按畸形输入拒收
+        md2 = "当前阶段：2\n## 错题本\n- [#q9] 手改的行\n"
+        with self.assertRaises(D.DriftError):
+            _eval_turns([{"turn": 1, "assistant": "x", "phase_context": 2,
+                          "files_after": {"study_progress.md": md2},
+                          "events": [{"type": "write_file", "path": "study_state.json"}]}])
+
+    def test_stale_md_missing_new_state_row_flagged(self):
+        # 双写但 state 进了新行、生成视图没跟上——反向背离同样计违规
+        st1 = json.dumps({"version": 1, "current_phase": 2,
+                          "mistake_archive": [{"id": "q1", "note": "误答"}],
+                          "confusion_log": []}, ensure_ascii=False)
+        st2 = json.dumps({"version": 1, "current_phase": 2,
+                          "mistake_archive": [{"id": "q1", "note": "误答"},
+                                              {"id": "q2", "note": "新错题"}],
+                          "confusion_log": []}, ensure_ascii=False)
+        md1 = "当前阶段：2\n## 错题本\n- [#q1] 误答\n"
+        m = _eval_turns([
+            {"turn": 1, "assistant": "记录。", "phase_context": 2,
+             "files_after": {"study_state.json": st1, "study_progress.md": md1}},
+            {"turn": 2, "assistant": "再记录。", "phase_context": 2,
+             "files_after": {"study_state.json": st2, "study_progress.md": md1}},
+        ])
+        self.assertEqual(m["md_write_after_state"], 1)
+
     def test_missing_transcript_exits_2(self):
         r = _cli(["--scenario", SCEN, "--transcript", os.path.join(TR, "does_not_exist.jsonl")])
         self.assertEqual(r.returncode, 2)
