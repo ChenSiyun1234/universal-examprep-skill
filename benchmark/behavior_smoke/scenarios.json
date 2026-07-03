@@ -62,10 +62,29 @@
     },
     {
       "name": "zero_basic_key_question",
-      "claim": "0 基础重点题精讲包含 考点拆解 / 标准答题步骤 / 易错点 / 3分钟速记",
+      "claim": "0 基础/panic 模式对每道重点题都走 A5 七步模板（①-⑦ + 每题来源块）；旧版只给 考点拆解+标准答题步骤 两段式（无 ①-⑦）现在判不合格",
       "prompt": "我 0 基础，请把这道重点题彻底讲透。",
-      "detector": "has_zero_basic_sections",
+      "detector": "teaching_template_ok + question_source_block_ok + has_zero_basic_sections",
       "mock_output": "mock/sample_outputs/zero_basic_explain.txt",
+      "mock_negative_legacy": "mock/sample_outputs/zero_basic_legacy_only.txt",
+      "best_effort": false
+    },
+    {
+      "name": "teaching_template",
+      "claim": "重点题精讲走固定七步模板（①题面图→②这题在问什么→③图里要读的量→④核心公式→⑤逐步演算→⑥答案自检→⑦知识点溯源，②必须在④前）且每题带一行来源块 题目来源｜答案来源｜canonical 标签，默认输出到来源块为止（易错点/3分钟速记/现在轮到你 仅学生要求才输出）；AI 生成答案时 ⚠️ 必须同时出现在来源行与答案块标题",
+      "prompt": "请精讲这道重点题（走七步讲解模板，标清来源）。",
+      "detector": "teaching_template_ok + question_source_block_ok",
+      "mock_output": "mock/sample_outputs/teaching_template_good.txt",
+      "mock_liberal": "mock/sample_outputs/teaching_template_liberal_good.txt",
+      "mock_ai_answer": "mock/sample_outputs/teaching_template_ai_answer_good.txt",
+      "mock_negative_skip_ask": "mock/sample_outputs/teaching_template_skip_ask.txt",
+      "mock_negative_formula_first": "mock/sample_outputs/teaching_template_formula_first.txt",
+      "mock_negative_no_source": "mock/sample_outputs/teaching_template_no_source.txt",
+      "mock_negative_unlabeled_source": "mock/sample_outputs/teaching_template_unlabeled_source.txt",
+      "mock_negative_missing_warn": "mock/sample_outputs/teaching_template_missing_warn.txt",
+      "mock_negative_warn_title": "mock/sample_outputs/teaching_template_warn_title.txt",
+      "mock_negative_unsolicited_closers": "mock/sample_outputs/teaching_template_unsolicited_closers.txt",
+      "mock_optin_closers": "mock/sample_outputs/teaching_template_optin_closers.txt",
       "best_effort": false
     },
     {

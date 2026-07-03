@@ -42,10 +42,11 @@ Pull chapter/phase-scoped items from `references/quiz_bank.json`, present one it
    - `diagram` — do not judge the figure from memory: follow `render_hint` to run the standard algorithm first, derive the structure, then compare against the student's drawing; state that the instructor's drawing method takes precedence.
 3. **Escape hatch**: on a wrong answer, give the logic gap + the item's `explanation` + a hint. On the 2nd consecutive wrong answer, offer three choices — view hint / skip and archive the wrong item / continue — and proceed per the choice.
 4. **Archive**: record skipped or wrong items — with `study_state.json`, run `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> add-mistake --id <qid> --chapter <ch> --note <错误原因>`（脚本按技能包根解析——学生工作区里没有 scripts/，不要按当前目录找） (hand-editing the generated md loses the row on the next render); without state, write into the `study_progress.md` wrong-item archive.
-5. **Source honesty**: when an item's or answer's `source` is `ai_generated`, flag it at grading time with 「⚠️ AI生成答案，非老师/教材提供」 (reference only, verify against the instructor/textbook).
+5. **Source honesty + per-item source block (A5)**: when an item's or answer's `source` is `ai_generated`, flag it at grading time with 「⚠️ AI生成答案，非老师/教材提供」 (reference only, verify against the instructor/textbook). Additionally, after grading EVERY item, emit the fixed one-line source block: `题目来源：<文件名> 第<N>页（<source_type>）｜答案来源：<文件名/老师·教材提供/AI 推导（无教材答案）>｜<canonical 溯源标签>` — the trailing label is exactly one of 🟢 来自资料 / 🟡 AI补充，可能与你老师讲的不完全一致 / ⚠️ AI生成答案，非老师/教材提供. When the answer is AI-supplied (no stored/教材 answer), the label MUST be ⚠️ AND the 解析/参考答案 block title carries ⚠️ (e.g. `参考答案（⚠️ AI生成答案，非老师/教材提供）`). Missing source metadata → write 「来源未知」, never fabricate a filename or page. Same contract as [`exam-tutor`](../exam-tutor/SKILL.md)'s teaching template.
 
 ## Output Contract
 - Present one item at a time; grade as pass/not-pass plus key-point feedback; refresh the progress panel at the end.
+- Each graded item's feedback ends with the one-line source block `题目来源：…｜答案来源：…｜<🟢/🟡/⚠️>` (Workflow step 5); an AI-supplied answer carries ⚠️ in both the 解析/参考答案 block title and the source label.
 - Update the check-in log and wrong-item archive — via `update_progress.py`（add-mistake / set-check）when `study_state.json` exists, else in `study_progress.md` — then hand control back to `exam-cram`.
 - Student-facing output defaults to Simplified Chinese unless the user asks otherwise. (See [`docs/language-policy.md`](../../docs/language-policy.md).)
 - Provenance labels in feedback are verbatim student-facing markers: 🟢 来自资料 / 🟡 AI补充，可能与你老师讲的不完全一致 / ⚠️ AI生成答案，非老师/教材提供.
@@ -54,6 +55,7 @@ Pull chapter/phase-scoped items from `references/quiz_bank.json`, present one it
 判分反馈用简短、具体的中文，先点考点再给改进：
 
 - **答对**：✅ 对了。这题考什么：……（一句点考点）。顺手记个易错点：……。
+- **每题判分反馈末尾固定加一行**：题目来源：hw02.pdf 第 3 页（homework）｜答案来源：hw02_sol.pdf 第 1 页｜🟢 来自资料（AI 生成答案时末尾标签用 ⚠️，且解析块标题带 ⚠️）。
 - **部分对**：🟡 思路对了一半——你答到了「……」，但漏了「……」这一步，补上就满分。
 - **答错**：❌ 这里错了：……（指出逻辑漏洞）。标准答题步骤：1.… 2.…。再看一眼原题解析。
 - **连错两次**：要不要 ① 查看提示　② 跳过并归档错题　③ 再想想？选 ② 我就「已记录到错题本」，考前再扫雷。

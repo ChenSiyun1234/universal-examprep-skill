@@ -34,7 +34,8 @@ RUN_SKILL_BEHAVIOR_LLM=1 python benchmark/behavior_smoke/run_behavior_smoke.py -
 | `confusion_tracking` | 「为什么」类疑问写入进度 | mock 进度的疑难点区新增一行 |
 | `checkpoint_recovery` | 从当前阶段续而非重启 | 从进度读出当前阶段 = 2，且续跑消息指向阶段 2 |
 | `no_python_fallback` | 无 Python 手写产出仍完整 | 手写工作区通过 Tier-1 校验 |
-| `zero_basic_key_question` | 0 基础精讲含 4 个小节 | mock 输出含 考点拆解 / 标准答题步骤 / 易错点 / 3分钟速记 |
+| `zero_basic_key_question` | 0 基础精讲含结构化小节 | mock 输出含 考点拆解（或 这题在问什么）+ 标准答题步骤（或 逐步演算）；易错点/3分钟速记 为可选收尾块不再要求 |
+| `teaching_template` | A5 七步讲解模板 + 每题来源块 | ①-⑦ 齐全按序（②在④前）、⑦ 落到章节/wiki；来源行 题目来源｜答案来源｜canonical 标签；AI 答案 ⚠️ 进来源行与答案块标题；默认到来源块为止、未经要求的收尾块被抓（学生要求了则豁免）；7 个反例全被抓 |
 | `visual_first_assets` | 视觉题先展示题面侧 asset | mock 输出必须先出现带 `题面图 / question-side asset` 标签的真实 fixture 本地图片；反例（答案图先出现 / 题目前泄露答案图或正文 / 未标注答案图 / 图片前正文 / 题后插图 / `问题：` 后迟到图片 / 不安全或缺失路径 / 只打印路径）必须不合格 |
 | `lazy_load_best_effort` | 只读当前章节 | **best-effort**：确定性模式跳过；需 transcript/LLM 才能真验 |
 

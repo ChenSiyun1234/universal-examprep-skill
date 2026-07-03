@@ -58,7 +58,7 @@ Selected by `argument-hint` or the user's tone; modes change emphasis only, not 
 
 - **normal** — concept review plus drilling, balanced (default).
 - **sprint** — attack only high-frequency / high-score chapters and question types; less lecturing, more drilling.
-- **panic** — "exam tomorrow, barely studied": switch to zero-baseline key-question coaching FIRST — for each teacher-marked key question give 【考点拆解】+【标准答题模板/步骤】+【易错点】+【3 分钟速记】, aiming for the student to reproduce the answer framework in the exam; then build the cheatsheet from those taught key questions (teaching precedes the cheatsheet, never the other way around).
+- **panic** — "exam tomorrow, barely studied": switch to zero-baseline key-question coaching FIRST — walk each teacher-marked key question through `exam-tutor`'s fixed seven-step template (① 题面图 → ② 这题在问什么 → ③ 图里要读的量 → ④ 核心公式 → ⑤ 逐步演算 → ⑥ 答案自检 → ⑦ 知识点溯源, plus the per-question source block; no unsolicited closers after it), aiming for the student to reproduce the answer framework in the exam; then build the cheatsheet from those taught key questions (teaching precedes the cheatsheet, never the other way around).
 - **mock** — test first, teach after: draw a full set of questions to simulate, grade, then coach the missed items.
 
 ## Output Contract
