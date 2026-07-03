@@ -215,55 +215,79 @@ def has_zero_basic_sections(text):
 
 
 # ---- A5：七步讲解模板 + 每题固定来源块 --------------------------------------------------------
-# 每步可接受的标题变体（含文科变体），元组顺序即 ①→⑦ 的强制顺序。
-TEACHING_TEMPLATE_STEPS = (
-    ("题面图",),
-    ("这题在问什么", "这题考什么"),
-    ("图里要读的量", "材料里要读的关键"),
-    ("核心公式", "核心概念"),
-    ("逐步演算", "逐步代入", "逐点展开"),
-    ("答案自检",),
-    ("知识点溯源",),
+# 七步逐一绑定「期望的圆圈序号」（① 第1步 … ⑦ 第7步）+ 块名变体（含文科变体）。绑定序号 → 抓
+# 「全用①/编号错乱」（Codex R2-HKR）；块名后必须紧跟标题终止符 → 子步骤「① 核心公式代入…」不再
+# 冒充 ④ 标题（HKH）；只认这七个圆圈步骤标题作正文边界 → 纯编号标题骨架也不算有正文（HKJ）。
+_SEVEN_STEPS = (
+    ("①", ("题面图",)),
+    ("②", ("这题在问什么", "这题考什么")),
+    ("③", ("图里要读的量", "材料里要读的关键句/概念", "材料里要读的关键概念",
+            "材料里要读的关键句", "材料里要读的关键")),
+    ("④", ("核心公式", "核心概念")),
+    ("⑤", ("逐步演算", "逐步代入", "逐点展开论证", "逐点展开")),
+    ("⑥", ("答案自检",)),
+    ("⑦", ("知识点溯源",)),
 )
+# 块名后的合法标题终止符：冒号 / 空白 / 行尾 / 括注起始（AI 答案 ⑤ 标题「逐步演算（⚠️…）」）/ 加粗星号 / 方括号收尾。
+_STEP_DELIM = r"(?=[：:\s（(*】〗]|$)"
+# 答案/解析块标题匹配（用于 AI 答案 ⚠️ 检查）——沿用较宽的行首前缀集。
 _TT_PREFIX = (r"(?m)^\s{0,3}(?:#{1,4}\s*|\*\*\s*|[①②③④⑤⑥⑦⑧⑨⑩]\s*"
               r"|[0-9一二三四五六七八九十]+\s*[、.．)）]\s*|[【〖]\s*){1,3}")
 
 
-def _tt_step_pos(text, variants):
-    """Earliest heading position among `variants` that is present WITH body, else -1."""
-    best = -1
-    for v in variants:
-        if not _zb(text, v):
-            continue
-        m = re.search(_TT_PREFIX + re.escape(v), text or "")
-        if m and (best < 0 or m.start() < best):
-            best = m.start()
-    return best
+def _split_questions(text):
+    """按 [#id] 把响应切成逐题片段；≤1 个 id 视为单题整体。多题时每个 [#id] 起一段（HKO）。"""
+    text = text or ""
+    idxs = [m.start() for m in re.finditer(r"\[#[^\]\n]+\]", text)]
+    if len(idxs) <= 1:
+        return [text]
+    return [text[idxs[i]:(idxs[i + 1] if i + 1 < len(idxs) else len(text))]
+            for i in range(len(idxs))]
 
 
-def teaching_template_ok(text):
-    """A5 七步讲解模板：①-⑦ 全部以真实标题+正文出现，且严格按顺序出现——抓「跳过②直接贴公式」
-    （② 缺失）与「公式先行」（④ 出现在 ② 之前）；⑦ 必须给出 wiki 路径 + 原文页链接（或如实
-    写「来源未知」），裸章节号不算溯源。"""
-    pos = []
-    for variants in TEACHING_TEMPLATE_STEPS:
-        p = _tt_step_pos(text, variants)
-        if p < 0:
-            return False
-        pos.append(p)
-    if pos != sorted(pos):
+def _seven_step_heads(text):
+    """按「期望圆圈序号 + 块名 + 终止符」定位七步标题，返回每步 (起, 止)；任一步缺失返回 None。"""
+    heads = []
+    for marker, variants in _SEVEN_STEPS:
+        found = None
+        for v in variants:
+            m = re.search(r"(?m)^\s{0,3}" + marker + r"\s*" + re.escape(v) + _STEP_DELIM, text)
+            if m:
+                found = (m.start(), m.end())
+                break
+        if not found:
+            return None
+        heads.append(found)
+    return heads
+
+
+def _one_question_template_ok(seg):
+    heads = _seven_step_heads(seg)
+    if heads is None:                       # 缺步（如跳过 ②）
         return False
-    # ⑦ 必须给出真实溯源：wiki 路径是硬要求；原文页要么给可点击 Markdown 链接、
-    # 要么如实写「来源未知/来源页未知」。裸「第 N 章」不算溯源。
-    # 检查范围限定在 ⑦ 自己的正文（切到其后的来源块行为止）——不能靠必然相邻的来源块行或
-    # opt-in 收尾块里的 wiki 路径/链接蒙混（Codex R1-F3 残留）。
-    tail = (text or "")[pos[-1]:]
+    starts = [h[0] for h in heads]
+    if starts != sorted(starts):            # 必须 ①→⑦ 物理顺序出现（抓公式先行）
+        return False
+    for s, e in heads:                      # 每步标题下必须有真实正文（到下一步标题/文末为止）
+        nxt = min([p for p in starts if p > s] + [len(seg)])
+        if len(re.sub(r"\s+", "", seg[e:nxt])) < 2:
+            return False
+    # ⑦ 溯源：wiki 路径 + 原文页链接（或如实「来源未知」）必须落在 ⑦ 自己的正文里（切到来源块行为止），
+    # 不能靠必然相邻的来源块行或 opt-in 收尾块里的 wiki/链接蒙混（Codex R1-F3）。
+    tail = seg[heads[-1][1]:]
     sb = SOURCE_BLOCK_RE.search(tail)
     seven_body = tail[:sb.start()] if sb else tail
     if "references/wiki/" not in seven_body:
         return False
     return bool(re.search(r"\[[^\]]+\]\([^)]+\)", seven_body)
                 or "来源未知" in seven_body or "来源页未知" in seven_body)
+
+
+def teaching_template_ok(text):
+    """A5 七步讲解模板：①-⑦ 按期望圆圈序号做真实标题、严格顺序、各带正文；⑦ 落到 wiki 路径 + 页链接
+    （或如实来源未知）。多题响应（零基础/panic 逐题精讲）里**每一道** [#id] 都必须各自满足——抓
+    「首题齐全、后续题省略 ②/④/⑦」（Codex R2-HKO）。"""
+    return all(_one_question_template_ok(s) for s in _split_questions(text or ""))
 
 
 # 来源块单行：题目来源：…｜答案来源：…（全角｜或 ASCII | 都接受），末尾还需 canonical 标签。
@@ -281,11 +305,8 @@ def _norm_warn(s):
     return (s or "").replace("\ufe0f", "")
 
 
-def question_source_block_ok(text, ai_answer=False):
-    """A5 每题固定来源块：`题目来源：…｜答案来源：…｜<canonical 标签>` 单行齐全，且**最后一段必须
-    逐字以 canonical 标签开头**——抓「来源块缺失」「无/伪标签」（行内别处塞个图标骗不过）；
-    ai_answer=True（无教材答案）时尾标签必须是 ⚠️ AI生成答案 canonical 文本，且答案块标题也带 ⚠️。"""
-    m = SOURCE_BLOCK_RE.search(text or "")
+def _one_source_block_ok(seg, ai_answer):
+    m = SOURCE_BLOCK_RE.search(seg or "")
     if not m:
         return False
     label = _norm_warn(re.split(r"[｜|]", m.group(0))[-1].strip())
@@ -298,10 +319,19 @@ def question_source_block_ok(text, ai_answer=False):
     if ai_answer:
         if core != canon[2]:
             return False
-        title = _ANSWER_TITLE_RE.search(text or "")
-        if not title or "⚠" not in title.group(0):
+        # 答案/解析块标题必须含**完整** ⚠️ AI生成答案，非老师/教材提供 文本，不能只有 ⚠️ 图标（HKM）。
+        title = _ANSWER_TITLE_RE.search(seg or "")
+        warn = _norm_warn(_CANONICAL_SOURCE_LABELS[2])
+        if not title or warn not in _norm_warn(title.group(0)):
             return False
     return True
+
+
+def question_source_block_ok(text, ai_answer=False):
+    """A5 每题固定来源块，**逐题**校验（HKO）：每个 [#id] 片段都要有一行 `题目来源：…｜答案来源：…｜
+    <canonical 标签>`，尾标签去括注后逐字等于 canonical（抓「来源块缺失」「无/伪标签」，R1-F1）；
+    ai_answer=True（无教材答案）时尾标签须为 ⚠️ canonical，且答案/解析块标题须含完整 ⚠️ 警告文本（HKM）。"""
+    return all(_one_source_block_ok(s, ai_answer) for s in _split_questions(text or ""))
 
 
 # 可选收尾块（易错点/3分钟速记/现在轮到你）——默认不许出现，仅学生要求/已存偏好时才输出。

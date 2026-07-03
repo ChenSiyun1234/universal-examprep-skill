@@ -495,6 +495,44 @@ class BehaviorSmokeTest(unittest.TestCase):
         self.assertFalse(H.teaching_template_ok(link_in_closer),
                          "⑦ 无链接、链接只在收尾块里必须被抓")
 
+    def test_teaching_template_marker_binding_and_segmentation(self):
+        # Codex R2：七步绑定期望圆圈序号 + 逐题校验 + 编号骨架不算有正文
+        good = _read("mock/sample_outputs/teaching_template_good.txt")
+        # HKR：七步全用 ① 编号（或错乱编号）必须被抓
+        allone = good
+        for mk in ("②", "③", "④", "⑤", "⑥", "⑦"):
+            allone = allone.replace(mk + " ", "① ")
+        self.assertNotEqual(allone, good)
+        self.assertFalse(H.teaching_template_ok(allone), "七步全用 ① 编号（misnumber）必须被抓")
+        # HKH：④ 标题被删、只在 ③ 正文留一条以块名开头的子步骤「① 核心公式代入…」不算 ④
+        drop4 = good.replace(
+            "④ 核心公式：\n顺序表定位：地址 = 基地址 + i × 元素大小 → O(1)；链表定位：从头走 i 步 → O(i)。\n",
+            "").replace(
+            "③ 图里要读的量：\n表长 n、要访问的下标 i；链表图里数一数从头结点走到第 i 个结点要跳几次。",
+            "③ 图里要读的量：\n表长 n。\n① 核心公式代入得地址。")
+        self.assertNotEqual(drop4, good)
+        self.assertFalse(H.teaching_template_ok(drop4), "④ 缺标题、子步骤以块名开头不得冒充 ④")
+        # HKJ：纯编号标题骨架（步下无正文）必须被抓
+        skeleton = ("[#x]\n1. 题面图\n2. 这题在问什么\n3. 图里要读的量\n4. 核心公式\n5. 逐步演算\n"
+                    "6. 答案自检\n7. 知识点溯源 references/wiki/ch01.md [p](../a.pdf#page=1)\n"
+                    "题目来源：a.pdf｜答案来源：b.pdf｜🟢 来自资料\n")
+        self.assertFalse(H.teaching_template_ok(skeleton), "纯编号标题骨架（无正文）必须被抓")
+        # HKO：两题响应里第二题省略 ②/④/⑦ 必须被抓；两题都齐全才通过
+        q2_bad = good + ("\n\n【第二题】[#mc_q2] 另一题\n① 题面图：\n本题无图。\n③ 图里要读的量：\nx。\n"
+                         "⑤ 逐步演算：\n算。\n⑥ 答案自检：\n对。\n"
+                         "题目来源：h.pdf｜答案来源：s.pdf｜🟢 来自资料\n")
+        self.assertFalse(H.teaching_template_ok(q2_bad), "多题时后续题缺步必须被抓（不能靠首题满足全局）")
+        q2_ok = good + ("\n\n【第二题】[#mc_q2] 另一题\n① 题面图：\n本题无图。\n② 这题在问什么：\n问啥。\n"
+                        "③ 图里要读的量：\nx。\n④ 核心公式：\nf。\n⑤ 逐步演算：\n算。\n⑥ 答案自检：\n对。\n"
+                        "⑦ 知识点溯源：\nreferences/wiki/ch03.md 原文 [p](../c.pdf#page=2)\n"
+                        "题目来源：h.pdf｜答案来源：s.pdf｜🟢 来自资料\n")
+        self.assertTrue(H.teaching_template_ok(q2_ok), "两题都各自齐全应通过")
+        # 逐题来源块：第二题缺来源块必须被抓
+        q2_no_src = good + ("\n\n【第二题】[#mc_q2] 另一题\n① 题面图：\n本题无图。\n② 这题在问什么：\n问啥。\n"
+                            "③ 图里要读的量：\nx。\n④ 核心公式：\nf。\n⑤ 逐步演算：\n算。\n⑥ 答案自检：\n对。\n"
+                            "⑦ 知识点溯源：\nreferences/wiki/ch03.md 原文 [p](../c.pdf#page=2)\n")
+        self.assertFalse(H.question_source_block_ok(q2_no_src), "多题时后续题缺来源块必须被抓")
+
     def test_question_source_block_detector(self):
         good = _read("mock/sample_outputs/teaching_template_good.txt")
         self.assertTrue(H.question_source_block_ok(good))
@@ -514,6 +552,11 @@ class BehaviorSmokeTest(unittest.TestCase):
             H.question_source_block_ok(_read("mock/sample_outputs/teaching_template_warn_title.txt"),
                                        ai_answer=True),
             "AI 答案来源行有 ⚠️ 但答案块标题没带 ⚠️ 必须被抓")
+        # Codex R2-HKM：答案块标题只有 ⚠️ 图标、没有完整「AI生成答案，非老师/教材提供」文本必须被抓
+        icon_only = ai.replace("⑤ 逐步演算（⚠️ AI生成答案，非老师/教材提供）：", "⑤ 逐步演算（⚠️）：")
+        self.assertNotEqual(icon_only, ai)
+        self.assertFalse(H.question_source_block_ok(icon_only, ai_answer=True),
+                         "答案块标题只有 ⚠️ 图标、无完整警告文本必须被抓")
         # ASCII 竖线分隔也接受
         self.assertTrue(H.question_source_block_ok(
             "题目来源：a.pdf 第 1 页（homework）| 答案来源：a_sol.pdf 第 1 页｜🟢 来自资料"))
