@@ -206,7 +206,13 @@ STRONG_CUES = [re.compile(p, re.I) for p in (
     r"venn", r"at right", r"to the right", r"shown (on the right|below|above)", r"as shown",
     r"\bshaded?\b",
     r"(figure|diagram|table|image|picture|chart|graph|tree|plot)s?\s+(below|above|at right|to the right)",
-    "文氏图", "图示", "如图", "阴影", "区域", "示意图",
+    r"matrix\s+(below|above|shown)", r"(shown|given)\s+in\s+(figure|table|fig\.?)\s*\d*",
+    # 复合形才算「图已给出」——裸「区域/图示」会把 求定义域区域 这类纯文字题误封（审计实测），
+    # 尤其 .txt 课程会被 fail-closed 卡死
+    "文氏图", "如图", "阴影", "示意图",
+    "如下图", "见下图", "如上图", "见上图", "下图所示", "上图所示",
+    "如下表", "见下表", "如上表", "见上表", "下表所示", "上表所示",
+    r"[见如]\s*下一?页", r"(?:see|on)\s+(?:the\s+)?(?:next|previous)\s+page",   # 跨页图指涉
 )]
 # WEAK: a figure NOUN that might instead be a "produce" prompt ("draw the graph of y=x^2", "sketch the
 # tree"). Asset-dependent only for a renderable PDF source (where over-flagging just renders an extra
@@ -214,6 +220,7 @@ STRONG_CUES = [re.compile(p, re.I) for p in (
 WEAK_CUES = [re.compile(p, re.I) for p in (
     r"\bdiagram\b", r"\bfigure\b", r"\btable\b", r"\bgraph\b", r"\bplot\b", r"\btree\b", r"\bcircuit\b",
     r"\bdraw\b", r"\bdrawn\b", r"\baxes\b", r"\brectangle\b", r"\btriangle\b",
+    r"\bhistograms?\b", r"\bflow\s*charts?\b", "流程图", "柱状图", "折线图", "饼图", "图示", "区域",
 )]
 
 
@@ -412,9 +419,10 @@ def extract_lecture_items(pages):
         # heading (not a char-length cutoff — a terse CJK prompt like "求导"/"证明" is a real question).
         # real prompt content = a LETTER, CJK char, or math operator/relation. A bare page-number body
         # ("Quiz 1.1\n12") is a slide footer → marker_only; a symbolic prompt ("2+2=?", "√4=?") is real.
+        _mo_body = "\n".join(l for l in _body_after_marker(stmt, kind, key[1], key[2]).splitlines()
+                              if not _PAGE_RESIDUE_RE.match(l.strip()))   # 页脚残渣行不算正文
         marker_only = ((not needs) and len(prob_idxs) == 1
-                       and not re.search(r"[A-Za-z一-鿿=+√∫∑^?×÷<>≤≥]",
-                                         _body_after_marker(stmt, kind, key[1], key[2])))
+                       and not re.search(r"[A-Za-z一-鿿=+√∫∑^?×÷<>≤≥]", _mo_body))
         if needs:
             qts = "page_reference"
             question = ("（%s %d.%d）本题依赖原始讲义 %s 第 %d 页的图/表，须配合所附 asset 作答。"
@@ -1274,8 +1282,10 @@ def extract_homework_items(pages, root_name="", exclude=frozenset()):
                     body_txt = (same_line + "\n" + body_txt).strip()
             # 只有正文【没有实质内容】才算 marker-only——"2+2=?"/"求导" 这类短而完整的题面仍是 full；
             # 纯数字正文（如 "Problem 1\n12" 的页脚页码）没有字母/CJK/运算符，是抽取残渣 → 按图片题处理
-            marker_only = (len(re.findall(r"[0-9A-Za-z一-鿿]", body_txt)) == 0
-                           or not re.search(r"[A-Za-z一-鿿+\-*/=^%<>?？()（）]", body_txt))
+            _mo_body = "\n".join(l for l in body_txt.splitlines()
+                                  if not _PAGE_RESIDUE_RE.match(l.strip()))   # 页脚残渣行不算正文
+            marker_only = (len(re.findall(r"[0-9A-Za-z一-鿿]", _mo_body)) == 0
+                           or not re.search(r"[A-Za-z一-鿿+\-*/=^%<>?？()（）]", _mo_body))
             # chapter：只在题文/文件名明说时才标（第N章 / Chapter N / chNN）——作业号 ≠ 章节号，不硬编
             chm = (re.search(r"(?:第\s*(\d+)\s*章|Chapter\s+(\d+))", q_text, re.I)
                    or re.search(r"(?:^|[\/_\-. ])ch\s*0*(\d+)", hf, re.I))
@@ -1390,6 +1400,7 @@ def group_sections(pages, notes=None):
         if pg.get("file") not in sec["files"]:
             sec["files"].append(pg.get("file"))
         sec["pages"].append(pg.get("page"))
+        sec.setdefault("page_keys", []).append((f, pg.get("page")))
         if (pg.get("text") or "").strip():
             sec["text_blocks"].append("<!-- %s p.%d -->\n%s" % (pg.get("file"), pg.get("page"),
                                                                  pg.get("text", "").strip()))
@@ -2110,7 +2121,17 @@ def run(args, backend=None):
         assets = []
         # one asset PER (file, page) — render every question page AND every (continued) answer page,
         # each from its OWN source file.
+        _qtxt = it.get("question") or ""
+        _adj = []
+        if re.search(r"下一?页|next\s+page|following\s+page", _qtxt, re.I):
+            _adj += [(f, p + 1) for (f, p) in it.get("_question_pages", [])]
+        if re.search(r"上一?页|previous\s+page|preceding\s+page", _qtxt, re.I):
+            _adj += [(f, p - 1) for (f, p) in it.get("_question_pages", []) if p > 1]
+        # 「见下页图」的图在相邻页——一并渲染（只加确实存在的页，防声明幽灵 asset）
+        _adj = [(f, p) for (f, p) in _adj if (f, p) in page_pdf
+                and (f, p) not in it.get("_question_pages", [])]
         plan = ([("question_context", f, p, "") for (f, p) in it.get("_question_pages", [])]
+                + [("question_context", f, p, "_adj") for (f, p) in _adj]
                 + [("answer_context", f, p, "_sol") for (f, p) in it.get("_answer_pages", [])])
         for role, file, page, suffix in plan:
             name = _safe_asset_name(file, page, it["id"], suffix)
@@ -2198,8 +2219,52 @@ def run(args, backend=None):
                           "实为判断/编程/选择题（选项在图里）等，改写 type（合法值 choice/subjective/"
                           "diagram/fill_blank/true_false/code）并补 options；同时抽查已判为 "
                           "choice/fill_blank 的题是否属实。" % _typed["subjective"]})
+    # D5: wiki 配图——含图/表标题（Figure N / Table N / 图N / 表N）的讲义页渲染成 PNG，
+    # 注入章节末尾「本章图示页」区；渲染不可用时警告降级（纯文字 wiki 照常完整）
+    _WIKI_CAP_RE = re.compile(r"(?m)^\s*(?:Figure|Fig\.?|Table)\s*\d+|[图表]\s*\d+\s*[:：.]")
+    wiki_fig_assets = {}
+    _cap_pages = [(pg["file"], pg["page"]) for pg in wiki_pages
+                  if _WIKI_CAP_RE.search(pg.get("text") or "")]
+    if _cap_pages and can_write:
+        if len(_cap_pages) > 30:
+            report["warnings"].append("wiki_figures_capped: 图示页 %d 张只渲染前 30 张（控制体积；"
+                                      "其余可用 build_visual_index --apply 补）" % len(_cap_pages))
+            _cap_pages = _cap_pages[:30]
+        for _f, _p in _cap_pages:
+            _pdf = page_pdf.get((_f, _p))
+            if _pdf is None:
+                continue
+            try:
+                _png = backend.render_page_png(_pdf, _p - 1)
+            except Exception as e:
+                report["skipped"].append({"file": _f, "why": "wiki 图示页渲染失败 p.%d: %s" % (_p, e)})
+                continue
+            if not _png:
+                continue
+            _name = _safe_asset_name(_f, _p, "wiki", "_fig")
+            _full = os.path.join(asset_root, _name)
+            if not _under(asset_root, _full):
+                report["warnings"].append("unsafe_asset_target_skipped")
+                continue
+            os.makedirs(asset_root, exist_ok=True)
+            with open(_full, "wb") as _fh:
+                _fh.write(_png)
+            rendered += 1
+            wiki_fig_assets[(_f, _p)] = "../assets/" + _name
+        report["pages_rendered"] = rendered
+    elif _cap_pages and want_render:
+        report["warnings"].append(
+            "wiki_figures_skipped: 检测到 %d 个图/表标题页但渲染不可用（缺后端或 --asset-root）——"
+            "wiki 纯文字仍完整；需要配图请补齐后重建" % len(_cap_pages))
+
     _ch_notes = []
     sections = group_sections(wiki_pages, _ch_notes)
+    if wiki_fig_assets:
+        for sec in sections:
+            gal = ["![%s 第 %d 页图示](%s)" % (f0, p0, wiki_fig_assets[(f0, p0)])
+                   for (f0, p0) in sec.get("page_keys", []) if (f0, p0) in wiki_fig_assets]
+            if gal:
+                sec["text_blocks"].append("### 本章图示页（构建时自动渲染）\n\n" + "\n\n".join(gal))
     for _f in _ch_notes:
         report["warnings"].append(
             "chapter_unassigned: %s（无任何章节线索，按上文/第 1 章并入——正确分章请重命名加 chNN "

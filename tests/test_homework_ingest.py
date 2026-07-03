@@ -2826,6 +2826,70 @@ class HomeworkIngest(unittest.TestCase):
         for q in hw:
             self.assertEqual(q["type"], "subjective")              # 计分书写行不是挖空
 
+    # ---- D5: wiki 配图 + 图题召回补强 regression guards ----
+
+    def test_visual_cue_vocabulary_bidirectional(self):
+        for good in ("如下图所示，求阴影面积。", "见下图的电路。", "as shown in Figure 3, compute x.",
+                     "The matrix below is singular.", "下表所示的数据分布。"):
+            self.assertTrue(B.requires_assets_heuristic(good, renderable=False), good)
+        for bad in ("求下列区域的定义域。", "draw a histogram of the data.",
+                    "用图示法说明（自行作图）。"):
+            self.assertFalse(B.requires_assets_heuristic(bad, renderable=False), bad)
+
+    def test_lecture_footer_does_not_defeat_marker_only(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        with open(os.path.join(mat, "lec01.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+        be = FakeBackend({"lec01.pdf": ["Quiz 1.1 Problem\nPage 12 of 20"]})
+        code, payload, report = _run(mat, be)
+        lec = [q for q in payload["quiz_bank"] if q["id"].startswith("lecture_quiz")]
+        self.assertTrue(lec)
+        self.assertEqual(lec[0]["question_text_status"], "page_reference")   # 页脚不算正文
+
+    def test_hw_footer_does_not_defeat_marker_only(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw126.pdf": ["Problem 1\nSlide 3"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(hw[0]["question_text_status"], "page_reference")    # 同规
+
+    def test_adjacent_page_rendered_for_next_page_figure(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw127.pdf": ["Problem 1\n见下页图，求最短路径。", "图在此页。"]})
+        asset_root = os.path.join(tmp, "ws", "references", "assets")
+        code, payload, report = _run(mat, be, ["--asset-root", asset_root])
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        paths = [a.get("path", "") for a in hw[0].get("assets", [])]
+        self.assertTrue(any("p002" in pth for pth in paths), paths)          # 下页图一并渲染
+
+    def test_wiki_figure_pages_injected(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        with open(os.path.join(mat, "lec01.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+        be = FakeBackend({"lec01.pdf": ["Figure 1: 排序流程示例\n本章正文知识点。"]})
+        asset_root = os.path.join(tmp, "ws", "references", "assets")
+        code, payload, report = _run(mat, be, ["--asset-root", asset_root])
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertIn("本章图示页", wiki_all)                     # 图示区注入章节
+        self.assertIn("../assets/", wiki_all)
+        self.assertTrue(any(n.endswith("_fig.png") for n in os.listdir(asset_root)))
+
+    def test_wiki_figures_skipped_warns(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        with open(os.path.join(mat, "lec01.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+        be = FakeBackend({"lec01.pdf": ["Figure 1: 排序流程示例\n本章正文知识点。"]})
+        code, payload, report = _run(mat, be)                    # 无 asset-root
+        self.assertTrue(any(w.startswith("wiki_figures_skipped") for w in report["warnings"]))
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertIn("本章正文知识点", wiki_all)                 # 纯文字 wiki 照常完整
+
     def test_no_network_or_llm(self):
 
 
