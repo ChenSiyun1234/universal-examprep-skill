@@ -1549,8 +1549,9 @@ def _scan_materials(materials_dir):
 # 页码/页眉残渣行（纯数字、Page N of M、第N页）——扫描件每页常只残留这一行，
 # 精确空判定会被骗过（审计实测）
 _PAGE_RESIDUE_RE = re.compile(
-    r"^(?:[-–—•·.\s]*\d{1,4}[-–—•·.\s]*|\d{1,4}\s*/\s*\d{1,4}|pages?\s*\d+(?:\s*(?:of|/)\s*\d+)?"
-    r"|第\s*\d+\s*页(?:\s*[/，,]?\s*共\s*\d+\s*页)?)$", re.I)
+    r"^(?:[-–—•·.\s]*\d{1,4}[-–—•·.\s]*|\d{1,4}\s*/\s*\d{1,4}"
+    r"|(?:pages?|slides?)\s*\d+(?:\s*(?:of|/)\s*\d+)?"
+    r"|第\s*\d+\s*[页张](?:\s*[/，,]?\s*共\s*\d+\s*[页张])?)$", re.I)
 
 
 def _page_has_content(text):
@@ -1816,10 +1817,16 @@ def run(args, backend=None):
                 report["warnings"].append(
                     "exam_lecture_style: %s（试卷解答册且内容以讲义式标记为主——随卷归还"
                     "讲义管线配对官方解答，正文不进 wiki）" % _sf)
-    # 认领 = 真被当答案消费的配对解答册（裸答案「4」）；扫描的作业/试卷【题面册】什么都
-    # 产不出，必须照常移交 AI（光一条 hw_no_markers 不够——那不带多模态行动指引）
-    _claimed_sols = {sf for sf, hf in (_pairing or {}).items() if hf} \
-        if getattr(args, "extract_homework", "auto") != "never" else set()
+    # 认领 = 真能当答案消费的配对解答册：整册剥空后只剩【单行】内容（裸答案「4」——
+    # markerless 单答兜底的形态）；多行残渣（12\n13 的逐页页码）绝不能灌进 quiz_bank 当
+    # 官方答案，照常移交 AI。扫描的作业/试卷【题面册】与未配对残渣册同样移交
+    def _single_line_content(rel0):
+        lines = [ln.strip() for pg in pages if pg["file"] == rel0
+                 for ln in (pg.get("text") or "").splitlines() if ln.strip()]
+        return len(lines) == 1
+    _claimed_sols = ({sf for sf, hf in (_pairing or {}).items()
+                      if hf and sf in residue_files and _single_line_content(sf)}
+                     if getattr(args, "extract_homework", "auto") != "never" else set())
     _flush_residue(_claimed_sols)
     lecture_pages = [pg for pg in pages if pg["file"] not in hw_related]
     lecture_items = []

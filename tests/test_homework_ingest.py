@@ -2366,6 +2366,35 @@ class HomeworkIngest(unittest.TestCase):
         self.assertTrue(any(w.startswith("unsupported_format") and "server.log" in w
                             for w in report["warnings"]))         # 只豁免已知垃圾名，不按扩展名猜
 
+    def test_multiline_residue_solution_not_consumed_as_answer(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw72.pdf": ["Problem 1\n多行残渣题面。"]})
+        with open(os.path.join(mat, "homework", "hw72_sol.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+        be.texts["hw72_sol.pdf"] = ["12", "13"]                   # 逐页页码残渣
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw), 1)
+        self.assertFalse((hw[0].get("answer") or "").strip())     # 残渣绝不当官方答案
+        self.assertTrue(any(e["kind"] == "scanned_pdf" and "hw72_sol" in e["file"]
+                            for e in report.get("ai_review", [])))
+
+    def test_slide_footer_deck_flagged_as_scanned(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {})
+        for rel in ("deck2.pdf", "lec01.pdf"):
+            with open(os.path.join(tmp, "mat", rel), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class SlBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                if "deck2" in pdf_path:
+                    return ["Slide 1", "slide 2", "Slide 3 of 20"]
+                return ["讲义正文内容。"]
+        code, payload, report = _run(mat, SlBackend({}))
+        self.assertTrue(any(w.startswith("pdf_no_text") for w in report["warnings"]))
+        self.assertTrue(any(e["kind"] == "scanned_pdf" for e in report.get("ai_review", [])))
+
     def test_no_network_or_llm(self):
 
 
