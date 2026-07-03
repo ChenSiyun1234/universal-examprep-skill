@@ -155,6 +155,52 @@ class DriftHarness(unittest.TestCase):
         r = D.evaluate(sc, _tr("bad_urgent_1day_questions.jsonl"))
         self.assertEqual(r["metrics"]["urgent_mode_questions"], 0)
 
+    def test_b3_window_persist_good_passes(self):
+        # B3：A6 知识点窗口长会话持久化——窗口条目随讲解登记（≥2）、进出用状态迁移不丢行（lost=0）
+        sc = os.path.join(DRIFT, "scenarios", "window_persist.json")
+        r = D.evaluate(D.load_scenario(sc), _tr("window_persist_session.jsonl"))
+        self.assertTrue(r["passed"], r["failures"])
+        self.assertGreaterEqual(r["metrics"]["window_rows_added"], 2)
+        self.assertEqual(r["metrics"]["window_rows_lost"], 0)
+
+    def test_b3_window_row_silently_dropped_fails(self):
+        # 某回合把已登记的窗口条目从 knowledge_window 里静默删掉 → window_rows_lost>0 → 挂门槛
+        sc = D.load_scenario(os.path.join(DRIFT, "scenarios", "window_persist.json"))
+        turns = D.load_jsonl(_tr("window_persist_session.jsonl"), "w")
+        last = turns[-1]
+        st = json.loads(last["files_after"]["study_state.json"])
+        st["knowledge_window"] = [w for w in st["knowledge_window"] if w["point"] != "队列FIFO"]
+        last["files_after"]["study_state.json"] = json.dumps(st, ensure_ascii=False)
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "dropped.jsonl")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write("\n".join(json.dumps(t, ensure_ascii=False) for t in turns))
+        r = D.evaluate(sc, p)
+        self.assertFalse(r["passed"])
+        self.assertIn("window_rows_lost_max", _fail_thresholds(r))
+        self.assertEqual(r["metrics"]["window_rows_lost"], 1)
+
+    def test_b3_window_status_transition_not_a_loss(self):
+        # 窗口进出（在窗口→窗口外→已实测）是状态迁移、键不变 → 不算丢行
+        sc = D.load_scenario(os.path.join(DRIFT, "scenarios", "window_persist.json"))
+        r = D.evaluate(sc, _tr("window_persist_session.jsonl"))
+        self.assertEqual(r["metrics"]["window_rows_lost"], 0)
+
+    def test_b3_bad_window_row_fails_loud(self):
+        # knowledge_window 里出现缺 point 的坏行 → 畸形输入 fail-loud（exit 2），不静默当 0 行通过
+        sc = D.load_scenario(os.path.join(DRIFT, "scenarios", "window_persist.json"))
+        turns = D.load_jsonl(_tr("window_persist_session.jsonl"), "w")
+        st = json.loads(turns[-1]["files_after"]["study_state.json"])
+        st["knowledge_window"].append({"chapter": "1", "status": "在窗口"})   # 缺 point
+        turns[-1]["files_after"]["study_state.json"] = json.dumps(st, ensure_ascii=False)
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "bad.jsonl")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write("\n".join(json.dumps(t, ensure_ascii=False) for t in turns))
+        rc = _cli(["--scenario", os.path.join(DRIFT, "scenarios", "window_persist.json"),
+                   "--transcript", p]).returncode
+        self.assertEqual(rc, 2)                                  # 畸形输入 = exit 2
+
     def test_a6_detector_parity_drift_vs_behavior_smoke(self):
         # drift 的 _asks_student_question 是 behavior_smoke.asks_student_question 的逐字等价副本——
         # 用一组含反问/自答/中英/跨行/缺 cue 的样本锁二者一致，任一处漂了就红
@@ -521,7 +567,7 @@ class DriftHarness(unittest.TestCase):
         self.assertTrue(data["all_passed"])
         names = sorted(r["scenario"] for r in data["results"])
         self.assertEqual(names, ["live_smoke_basic", "long_session_basic", "long_session_state",
-                                 "mode_urgent_no_questions"])   # every committed scenario ran
+                                 "mode_urgent_no_questions", "window_persist"])   # every committed scenario ran
 
     # extra coverage: wrong-phase and untagged detection via small synthetic transcripts
     def test_wrong_phase_quiz_detected(self):
@@ -971,14 +1017,25 @@ class DriftHarness(unittest.TestCase):
         with open(RUN, encoding="utf-8") as f:
             src = f.read()
         for banned in ("import requests", "import anthropic", "import openai", "import numpy",
-                       "urllib.request", "http.client", "import socket", "import subprocess", "claude -p"):
+                       "urllib.request", "http.client", "import socket", "claude -p"):
             self.assertNotIn(banned, src)
+        # B3：subprocess 现在合法用于 opt-in 的 --llm 委托（转正给 run_live_smoke），但确定性 replay
+        # 路径必须仍纯净——所有 subprocess.run/Popen/call 调用都只能落在 run_llm 函数体内。
+        import re as _re
+        m = _re.search(r"\ndef run_llm\(.*?(?=\ndef )", src, _re.S)
+        run_llm_body = m.group(0) if m else ""
+        calls = _re.findall(r"subprocess\.(?:run|Popen|call)\b", src)
+        self.assertTrue(calls, "预期 run_llm 里有 subprocess 委托调用")
+        for c in _re.finditer(r"subprocess\.(?:run|Popen|call)\b", src):
+            self.assertIn(c.group(0), run_llm_body,
+                          "subprocess 调用逃出了 opt-in 的 run_llm 委托路径（确定性 replay 必须无子进程）")
 
-    def test_llm_skeleton_never_succeeds(self):
-        r = _cli(["--llm"])                                      # not opted in
+    def test_llm_opt_in_delegates_never_succeeds_without_agent(self):
+        # B3：--llm 转正——委托给 run_live_smoke 真管线，但仍绝不无 agent 就报成功
+        r = _cli(["--llm"])                                      # 未 opt-in → 门控拒绝
         self.assertEqual(r.returncode, 2)
-        r2 = _cli(["--llm"], env={"RUN_SKILL_DRIFT_LLM": "1"})   # opted in, but unimplemented
-        self.assertEqual(r2.returncode, 3)                      # never 0 — a skeleton must not report success
+        r2 = _cli(["--llm"], env={"RUN_SKILL_DRIFT_LLM": "1"})   # opt-in 但没给 --agent-cmd/--turns
+        self.assertNotEqual(r2.returncode, 0)                   # 委托的 live runner 缺必需参数 → 非 0，绝不 0
 
     # 13) fixture is self-authored plain text; no copyrighted / binary materials committed
     def test_fixture_is_self_authored_text(self):

@@ -14,9 +14,11 @@ thresholds:
   * wiki lazy-load / overread — reads scoped to the phase's chapter; optional token/cost accounting.
 
 This is DETERMINISTIC REPLAY of a scripted transcript. It does NOT run a real agent — so it measures
-whether a *recorded* session drifts, not whether a live model will. Real long-session LLM runs remain a
-future/opt-in path (`--llm`, gated by RUN_SKILL_DRIFT_LLM=1) that is a SKELETON here and never returns
-success. Nothing in this file calls a model, reads a key, hits the network, or runs a paid benchmark.
+whether a *recorded* session drifts, not whether a live model will. The DEFAULT path calls no model,
+reads no key, hits no network, runs no paid benchmark. Real long-session LLM runs are the OPT-IN `--llm`
+path (B3): gated by RUN_SKILL_DRIFT_LLM=1, it delegates to `run_live_smoke.py` — drive a real agent
+turn-by-turn (token-capped, abort-on-failure, fixture-sandboxed) → record a T5b log → convert to JSONL
+→ score with THIS file's `compute_metrics`/thresholds → ledger. CI never runs it (env gate + real agent).
 
 Exit codes: 0 = all scenarios pass their thresholds · 1 = a threshold failed · 2 = malformed input / bad file.
 
@@ -30,6 +32,7 @@ import glob
 import json
 import os
 import re
+import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -440,10 +443,29 @@ def parse_state_json(text, plan_phases=None):
         stat[field] = sts
         return out
     stat = {}
-    return {"phase": phase, "mistake_rows": _rows("mistake_archive"),
-            "confusion_rows": _rows("confusion_log"),
-            "mistake_status": stat["mistake_archive"],
-            "confusion_status": stat["confusion_log"]}
+    m_rows, c_rows = _rows("mistake_archive"), _rows("confusion_log")
+
+    # A6 知识点窗口行：point 必填、chapter 选填、status 选填——键为 point@chapter（同名不同章不折叠），
+    # 与 update_progress 的窗口 schema 同口径；坏行（缺 point / 非字符串）按畸形输入 fail-loud。
+    wv = st.get("knowledge_window")
+    if wv is None:
+        wv = []
+    if not isinstance(wv, list):
+        raise DriftError("files_after 里的 study_state.json 字段 knowledge_window 必须是数组，实际 %s"
+                         % type(wv).__name__)
+    window_rows, window_status = [], []
+    for r in wv:
+        if not isinstance(r, dict) or not isinstance(r.get("point"), str) or not r["point"].strip():
+            raise DriftError("study_state.json 快照的 knowledge_window 行必须是含非空 point 的对象: %r" % r)
+        ch = r.get("chapter")
+        if ch is not None and not isinstance(ch, (str, int)) or isinstance(ch, bool):
+            raise DriftError("study_state.json 快照的 knowledge_window 行 chapter 必须是字符串/整数或省略: %r" % r)
+        window_rows.append("%s@%s" % (r["point"].strip(), "" if ch in (None, "") else str(ch)))
+        window_status.append(r["status"] if isinstance(r.get("status"), str) else None)
+
+    return {"phase": phase, "mistake_rows": m_rows, "confusion_rows": c_rows,
+            "mistake_status": stat["mistake_archive"], "confusion_status": stat["confusion_log"],
+            "window_rows": window_rows, "window_status": window_status}
 
 
 def _snap_text(fa, name):
@@ -926,6 +948,7 @@ def compute_metrics(scenario, fixture_dir, turns):
         if snap is not None:
             parsed.append(snap)
     mistake_added = confusion_added = rows_lost = 0
+    window_added = window_lost = 0
     for prev, cur in zip(parsed, parsed[1:]):
         for field, is_m in (("mistake_rows", True), ("confusion_rows", False)):
             pset = {_row_key(r) for r in prev[field]}
@@ -936,6 +959,12 @@ def compute_metrics(scenario, fixture_dir, turns):
             else:
                 confusion_added += gained
             rows_lost += lost
+        # A6 知识点窗口持久化：窗口条目跨轮新增可以（讲了新点），但**丢失**（静默掉行）不行——
+        # 窗口进出是 status 迁移不是删行；键 point@chapter 不因状态改变（在窗口→已实测）而算丢失。
+        pw = set(prev.get("window_rows", []))
+        cw = set(cur.get("window_rows", []))
+        window_added += len(cw - pw)
+        window_lost += len(pw - cw)
 
     # 7) wiki lazy-load / overread — read events checked against the RUNNING phase (see turn_phase)
     wiki_reads = 0
@@ -982,6 +1011,7 @@ def compute_metrics(scenario, fixture_dir, turns):
         "explanation_turns": len(expl), "provenance_fidelity": provenance_fidelity,
         "mistake_rows_added": mistake_added, "confusion_rows_added": confusion_added,
         "progress_rows_lost": rows_lost, "md_write_after_state": md_after_state,
+        "window_rows_added": window_added, "window_rows_lost": window_lost,
         "wiki_reads": wiki_reads, "unique_wiki_files": wiki_files, "overread_flag": overread,
         "cost": cost,
     }
@@ -1002,6 +1032,8 @@ THRESHOLD_RULES = {
     "checkpoint_reset_max": ("reset_detected", "max"),
     "provenance_fidelity_min": ("provenance_fidelity", "min"),
     "progress_rows_lost_max": ("progress_rows_lost", "max"),
+    "window_rows_added_min": ("window_rows_added", "min"),   # A6：长会话里至少登记过 N 个窗口条目
+    "window_rows_lost_max": ("window_rows_lost", "max"),     # A6：窗口条目不得静默丢失（进出是状态迁移）
     "md_write_after_state_max": ("md_write_after_state", "max"),   # A4: state 确立后手改生成视图的次数
     "wiki_unique_files_max": ("unique_wiki_files", "max"),
     "overread_max": ("overread_flag", "max"),
@@ -1062,13 +1094,22 @@ def _fmt(result):
     return "\n".join(lines)
 
 
-def run_llm_skeleton():
-    """Opt-in real-agent long-session mode — NOT IMPLEMENTED. Never returns success (exit 0)."""
+def run_llm(argv):
+    """B3：opt-in 真 agent 长会话漂移测量——不再是 skeleton。委托给 run_live_smoke.py 的真管线
+    （驱动真 agent 逐回合 → 录 T5b 会话日志 → 转 JSONL → 本文件的 compute_metrics/阈值判分 → 记账），
+    它已实现 token 上限、失败中止、fixture 沙箱、opt-in env 门控。用 `--turns <spec>`（内含 fixture/
+    scenario/turns）指定回合脚本，`--agent-cmd`/`--out-dir`/`--max-*` 等透传。CI 绝不跑（env 门控 + 需真 agent）。"""
     if os.environ.get("RUN_SKILL_DRIFT_LLM") != "1":
-        sys.stderr.write("run_drift: --llm 需 RUN_SKILL_DRIFT_LLM=1 显式开启（真 agent 长会话，opt-in）\n")
+        sys.stderr.write("run_drift: --llm 需 RUN_SKILL_DRIFT_LLM=1 显式开启（真 agent 长会话，会产生真实"
+                         "调用成本，opt-in、CI 绝不运行）\n")
         return 2
-    sys.stderr.write("run_drift: 真 LLM 长会话漂移测量尚未实现（本 PR 只交付确定性 replay）；不接入、不计成功\n")
-    return 3
+    live = os.path.join(HERE, "run_live_smoke.py")
+    if not os.path.isfile(live):
+        sys.stderr.write("run_drift: 缺 run_live_smoke.py，无法运行真 agent 长会话\n")
+        return 3
+    # 透传 --llm 之外的所有参数给 live runner（--agent-cmd/--out-dir/--turns/--max-* 由它校验）
+    passthrough = [a for a in (argv or []) if a != "--llm"]
+    return subprocess.run([sys.executable, live] + passthrough).returncode
 
 
 def main(argv=None):
@@ -1082,11 +1123,15 @@ def main(argv=None):
     ap.add_argument("--transcript", help="transcript JSONL 路径（覆盖 scenario 里的默认 transcript）")
     ap.add_argument("--all", action="store_true", help="跑 scenarios/ 下所有 scenario 各自的 transcript")
     ap.add_argument("--json-out", default=None, help="把汇总写到显式路径的 JSON（默认只打印，不写任何 results 目录）")
-    ap.add_argument("--llm", action="store_true", help="opt-in 真 agent 长会话（未实现的 skeleton，绝不计成功）")
-    args = ap.parse_args(argv)
-
+    ap.add_argument("--llm", action="store_true",
+                    help="opt-in 真 agent 长会话（委托 run_live_smoke.py 真管线；需 RUN_SKILL_DRIFT_LLM=1，CI 绝不跑）")
+    # --llm 下把未知参数（--agent-cmd/--turns/--out-dir/--max-* 等）透传给 live runner；
+    # 确定性 replay 路径仍严格解析——未识别参数报错，防 typo 静默吞掉
+    args, extra = ap.parse_known_args(argv)
     if args.llm:
-        return run_llm_skeleton()
+        return run_llm(argv if argv is not None else sys.argv[1:])
+    if extra:
+        ap.error("未识别的参数: %s" % " ".join(extra))
 
     results = []
     try:
