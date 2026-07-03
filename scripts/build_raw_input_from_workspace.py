@@ -64,11 +64,17 @@ _EXAM_NEG_RE = re.compile(
     re.I)
 
 
-# 章节式讲义名（ch01 / chapter2 / lec3 / week4 / 第3章）——目录/根的试卷上下文不覆盖它们：
-# final_exam_prep/ch01.pdf 是复习用的讲义，不是卷子
-_CHAPTERISH_RE = re.compile(
-    r"(?:^|[\\/_\-. ])(?:ch(?:apter)?[ _-]?\d|lec(?:t(?:ure)?)?[ _-]?\d|week[ _-]?\d"
-    r"|unit[ _-]?\d|topic[ _-]?\d|session[ _-]?\d)|第\s*[一二三四五六七八九十\d]+\s*[章讲节课]", re.I)
+# 「像卷子」的文件名（1.pdf / 2020a.pdf / A卷.pdf / 2020-05.pdf）——目录/根的试卷上下文
+# 只覆盖这类名字；混合备考文件夹里的 sorting.pdf / ch01.pdf 是讲义，不被上下文吞掉
+_PAPERISH_RE = re.compile(r"^\d{1,4}(?:[-_ .]?\d{1,4})?\s*[abAB]?\s*卷?$|^[abAB]\s*卷?$|^卷[一二三四五12345]$")
+
+
+def _deglue_exam(stem):
+    """试卷词与解答/键词胶连（midtermsolutions / finalanswers / quizkey）——插分隔符让
+    解答记号检测、配对键剥离与试卷记号边界照常工作。"""
+    return re.sub(r"(?i)(midterms?|finals?|exams?|examinations?|quiz(?:zes)?\d*)"
+                  r"(solutions?|answers?|soln?s?|keys?|ans)(?![a-z])",
+                  lambda m: m.group(1) + "_" + m.group(2), stem)
 
 
 def _seg_exam(seg):
@@ -84,13 +90,13 @@ def _is_exam_path(rel, root_name=""):
     segs = [sg for sg in rel.split("/") if sg]
     if not segs:
         return False
-    segs[-1] = os.path.splitext(segs[-1])[0]
+    segs[-1] = _deglue_exam(os.path.splitext(segs[-1])[0])
     if _EXAM_NEG_RE.search(segs[-1]):
         return False                       # 文件名负例词一票否决（exams/期末复习笔记.pdf 是笔记）
     if _seg_exam(segs[-1]):
         return True                        # 文件名自身就是试卷信号
-    if _CHAPTERISH_RE.search(segs[-1]):
-        return False                       # 目录/根上下文不覆盖章节式讲义名
+    if not _PAPERISH_RE.match(segs[-1].strip()):
+        return False                       # 目录/根上下文只覆盖「像卷子」的文件名
     if any(_seg_exam(sg) for sg in segs[:-1]):
         return True
     return bool(root_name and _seg_exam(root_name))
@@ -523,7 +529,7 @@ def classify_homework_files(files, root_name=""):
     root_is_hw = bool(root_name and _HW_ROOT_RE.search("/" + root_name))
     for f in files:
         rel = f.replace("\\", "/")
-        stem = os.path.splitext(os.path.basename(f))[0]
+        stem = _deglue_exam(os.path.splitext(os.path.basename(f))[0])
         stem_nokey = _strip_sol_desc(stem)             # key/manual 描述词（含胶连形）属于解答后缀
         sol_m = _SOL_TOKEN_RE.search(stem_nokey)
         hw_m = _HW_FILE_RE.search(stem_nokey)
@@ -553,7 +559,9 @@ def classify_homework_files(files, root_name=""):
             hw_m_raw = _EXAM_FILE_RE.search(stem)      # midterm_key.pdf：试卷记号与 hw 记号同权当锚
         # 试卷上下文来自目录/根（exams/2020_key.pdf、2023期末真题/1_key.pdf）时锚定串首——
         # 试卷语境下键描述词后缀本身就是答案册记号
-        _a0 = 0 if (hw_m_raw is None and _is_exam_path(rel, root_name)) else None
+        _in_exam_ctx = (bool(root_name and _seg_exam(root_name))
+                        or any(_seg_exam(sg) for sg in os.path.dirname(rel).split("/") if sg))
+        _a0 = 0 if (hw_m_raw is None and (_in_exam_ctx or _is_exam_path(rel, root_name))) else None
         desc_after_hw = bool((hw_m_raw is not None or _a0 is not None) and any(
             m.start() > (hw_m_raw.start() if hw_m_raw is not None else _a0)
             and all(t.lower() in _SOL_TRAIL_OK or _HW_FILE_RE.search(t)
@@ -577,7 +585,7 @@ def classify_homework_files(files, root_name=""):
     for sf in sols:
         rel = sf.replace("\\", "/")
         sdir = os.path.dirname(rel)
-        stem = os.path.splitext(os.path.basename(sf))[0]
+        stem = _deglue_exam(os.path.splitext(os.path.basename(sf))[0])
         # 配对键要把 解答记号、key/manual 描述词（含胶连形）与连接词（solutions_for_hw1 的 for）一并剥掉
         stem_pair = _SOL_TOKEN_RE.sub("", _strip_sol_desc(stem))
         stem_pair = re.sub(r"(?<![A-Za-z])(?:for|to|of|the)(?=[_. ()-]|$)", "", stem_pair, flags=re.I)
@@ -655,10 +663,16 @@ def classify_homework_files(files, root_name=""):
         # 是讲义解答）——从作业管线除名，交还讲义配对，不再据为己有。
         # 根目录本身就是作业文件夹时全部文件都在作业上下文里，不除名（否则根级
         # solutions.pdf 会漏进 wiki 泄答案）
-        # 试卷答案册（midterm_solutions / 期末试卷答案）绝不除名——除名会让它逃过 wiki 排除、
-        # 标准答案整册泄进复习材料（审计实测）；试卷线索与作业线索同权
-        if not root_is_hw and not _HW_FILE_RE.search(sf.replace(chr(92), "/")) \
-                and not _is_exam_path(sf, root_name):
+        # 试卷答案册（midterm_solutions / midterm_solutions_review / 期末试卷答案）绝不除名——
+        # 除名会让它逃过 wiki 排除、标准答案整册泄进复习材料（审计实测）。这里用【裸试卷记号】
+        # 判定（不做负例否决：review 后缀否决的是题面卷分类，不否决它是答案册的事实），
+        # 目录/根的试卷上下文同样保留
+        sf_rel = sf.replace(chr(92), "/")
+        sf_stem = _deglue_exam(os.path.splitext(os.path.basename(sf))[0])
+        sf_exam_ctx = (bool(root_name and _seg_exam(root_name))
+                       or any(_seg_exam(sg) for sg in os.path.dirname(sf_rel).split("/") if sg))
+        if not root_is_hw and not sf_exam_ctx and not _HW_FILE_RE.search(sf_rel) \
+                and not _EXAM_FILE_RE.search("/" + sf_stem):
             del pairing[sf]
     return hw, pairing
 
