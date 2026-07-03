@@ -465,8 +465,10 @@ def extract_lecture_items(pages):
                                        for j in ans_idx) if t).strip()
             if sol:
                 item["answer"] = sol + ("（解答可能依赖图，须看原页/asset）" if needs else "")
+                _apply_choice_answer(item)
             else:
                 item["answer"] = ref + ("（依赖图，须看原页/asset）" if needs else "")
+                _apply_choice_answer(item)
         else:
             item["answer_status"] = "unknown"   # honest: no solution page detected
         items.append(item)
@@ -1293,6 +1295,7 @@ def extract_homework_items(pages, root_name="", exclude=frozenset()):
             if ans:
                 sf, body, apages = ans
                 item["answer"] = body                     # 不静默截断
+                _apply_choice_answer(item)
                 item["answer_source_file"] = sf
                 item["answer_source_pages"] = apages or None
                 if item["answer_source_pages"] is None:
@@ -1616,8 +1619,39 @@ def _fmt_pages(nums):
 
 # ---- D4: 保守题型启发——只认高置信形态，判不准保持 subjective（汇总警报交 AI 复核）----
 # 选项行只认【大写】A-D（(a)(b) 小写通常是小问不是选项，绝不猜）
-_OPTION_LINE_RE = re.compile(r"^[ \t]*[（(]?([A-D])[）)．.、:：][ \t]*(\S.*)$")
+_OPTION_LINE_RE = re.compile(r"^[ \t]*[（(]?([A-E])[）)．.、:：][ \t]*(\S.*)$")
 _BLANK_RUN_RE = re.compile(r"[_＿]{3,}")
+
+
+def _normalize_choice_answer(ans_text, options):
+    """把解答切片归一成选项字母（validator 只认 裸标签/选项全文/选项正文）：剥解答标题与
+    键前缀后剩单个 A-E（可带括号/句点）才认；整段恰是某选项全文/正文也认；否则 None。"""
+    t = " ".join(str(ans_text or "").split())
+    t = re.sub(r"(?i)^(?:quiz|example)\s+\d+(?:\.\d+)*\s*(?:solutions?|answers?)\s*[:：.]?\s*", "", t)
+    t = re.sub(r"(?i)^(?:problem|exercise|question)?\s*#?\d*(?:\.\d+)*\s*"
+               r"(?:solutions?|answers?|解答|答案)\s*[:：.]?\s*", "", t)
+    t = re.sub(r"^\d+(?:\.\d+)*\s*[.)、]\s*", "", t).strip()
+    m = re.fullmatch(r"[（(]?([A-E])[）)．.。]?", t)
+    if m:
+        return m.group(1).upper()
+    for o in options or []:
+        if t == o or t == re.sub(r"^[A-E][.．、:：)]\s*", "", o).strip():
+            return str(o)[:1]
+    return None
+
+
+def _apply_choice_answer(item):
+    """type=choice 且已带答案的题：答案归一成字母；归一不了（长解答/引用页）就降级主观——
+    宁可少标一个选择题，不发一个 validator 必拒的题。"""
+    if item.get("type") != "choice" or not item.get("answer"):
+        return
+    na = _normalize_choice_answer(item["answer"], item.get("options"))
+    if na is not None:
+        item["answer"] = na
+    else:
+        item["type"] = "subjective"
+        item.pop("options", None)
+        item.setdefault("keywords", [])
 
 
 def _classify_question_type(q_text):
@@ -1636,7 +1670,7 @@ def _classify_question_type(q_text):
     # 行内选项：讲义题面常被空白折叠成一行（… A. 对的 B. 错的）——只认 A．/A:/（A）
     # 这类点号冒号/全角括号形，不认英文半角 (A)（散文引用「见(A)节」会误判）
     t = q_text or ""
-    ms = list(re.finditer(r"(?:^|\s)(?:（([A-D])）|([A-D])[．.、:：])[ \t]*", t))
+    ms = list(re.finditer(r"(?:^|\s)(?:（([A-E])）|([A-E])[．.、:：])[ \t]*", t))
     seq = [(m.group(1) or m.group(2)) for m in ms]
     if len(seq) >= 2 and seq == [chr(65 + i) for i in range(len(seq))]:
         opts2 = []
@@ -1649,8 +1683,15 @@ def _classify_question_type(q_text):
             opts2.append("%s. %s" % (seq[j], body))
         if opts2:
             return "choice", opts2
-    if _BLANK_RUN_RE.search(q_text or ""):
-        return "fill_blank", None
+    prev = ""
+    for ln in (q_text or "").splitlines():
+        if _BLANK_RUN_RE.search(ln):
+            ctx = prev + " " + ln
+            # 填空线若挨着 答案/解答/作答 关键词，是答题栏不是题面挖空——保持主观题
+            if not re.search(r"(?i)answers?|solutions?|show\s+your\s+work|答案|解答|作答|答题", ctx):
+                return "fill_blank", None
+        if ln.strip():
+            prev = ln
     return "subjective", None
 
 
@@ -2059,7 +2100,8 @@ def run(args, backend=None):
                 "kind": "type_defaulted", "file": "references/quiz_bank.json",
                 "action": "有 %d 道题按主观题默认定型（启发式判不准绝不硬猜）。请 AI 抽查这些题：若"
                           "实为判断/编程/选择题（选项在图里）等，改写 type（合法值 choice/subjective/"
-                          "diagram/fill_blank/true_false/code）并补 options。" % _typed["subjective"]})
+                          "diagram/fill_blank/true_false/code）并补 options；同时抽查已判为 "
+                          "choice/fill_blank 的题是否属实。" % _typed["subjective"]})
     _ch_notes = []
     sections = group_sections(wiki_pages, _ch_notes)
     for _f in _ch_notes:

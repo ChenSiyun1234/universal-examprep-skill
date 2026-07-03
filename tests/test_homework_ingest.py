@@ -2517,7 +2517,7 @@ class HomeworkIngest(unittest.TestCase):
         self.assertEqual(hw[0]["type"], "choice")                  # 大写连续选项行 → 选择题
         self.assertEqual(len(hw[0]["options"]), 4)
         self.assertIn("换行的丙", hw[0]["options"][2])             # 选项续行并入
-        self.assertIn("B", hw[0].get("answer", ""))
+        self.assertEqual(hw[0].get("answer"), "B")               # 键前缀剥掉，validator 可过
 
     def test_lowercase_subparts_not_choice(self):
         tmp = tempfile.mkdtemp()
@@ -2546,6 +2546,7 @@ class HomeworkIngest(unittest.TestCase):
         self.assertTrue(lec)
         self.assertEqual(lec[0]["type"], "choice")                 # 讲义测验同样识别
         self.assertEqual(len(lec[0]["options"]), 2)
+        self.assertEqual(lec[0].get("answer"), "A")                # 解答标题剥掉归一成字母
 
     def test_type_heuristic_warning_and_review_entry(self):
         tmp = tempfile.mkdtemp()
@@ -2554,6 +2555,36 @@ class HomeworkIngest(unittest.TestCase):
         self.assertTrue(any(w.startswith("type_heuristic") for w in report["warnings"]))
         self.assertTrue(any(e["kind"] == "type_defaulted"
                             for e in report.get("ai_review", [])))  # 默认定型必须交 AI 复核
+
+    def test_choice_with_unnormalizable_answer_downgrades(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw100.pdf": ["Problem 1\n选出正确项：\nA. 甲\nB. 乙"],
+                            "hw100_sol.pdf": ["1. 因为甲显然不对，所以综合判断选乙（详见教材）。"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(hw[0]["type"], "subjective")              # 长解答归一不了→降级不硬标
+        self.assertNotIn("options", hw[0])
+        self.assertIn("选乙", hw[0].get("answer", ""))             # 答案原文保留
+
+    def test_five_option_mcq_detected(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw101.pdf": ["Problem 1\n五选一：\nA. 甲\nB. 乙\nC. 丙\nD. 丁\nE. 戊"],
+                            "hw101_sol.pdf": ["1. E"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(hw[0]["type"], "choice")
+        self.assertEqual(len(hw[0]["options"]), 5)                 # E 选项不再被吞进 D
+        self.assertEqual(hw[0].get("answer"), "E")
+
+    def test_response_box_blank_stays_subjective(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw102.pdf": ["Problem 1\n求积分并写出过程。\nAnswer: ________"],
+                            "hw103.pdf": ["Problem 1\n证明不等式。\nShow your work: ________"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw), 2)
+        for q in hw:
+            self.assertEqual(q["type"], "subjective")              # 答题栏空线不是题面挖空
 
     def test_no_network_or_llm(self):
 
