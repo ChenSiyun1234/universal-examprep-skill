@@ -1528,7 +1528,8 @@ class HomeworkIngest(unittest.TestCase):
     def test_root_name_boundaries_hardened(self):
         for bad in ("mat-ps4keyboard", "tmp_hw3ansible", "非作业资料", "tmp习题abc"):
             self.assertIsNone(B._HW_ROOT_RE.search("/" + bad), bad)   # 后缀/中文都要词元边界
-        for good in ("HW3", "hw2solutions", "ps4", "problem set 2", "作业3", "线代作业", "习题册"):
+        for good in ("HW3", "hw2solutions", "ps4", "problem set 2", "作业3", "线代作业", "习题册",
+                     "作业资料", "线代作业资料"):
             self.assertIsNotNone(B._HW_ROOT_RE.search("/" + good), good)
 
     def test_bare_key_file_kept_out_of_wiki(self):
@@ -1566,6 +1567,44 @@ class HomeworkIngest(unittest.TestCase):
         hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
         self.assertEqual(len(hw), 1)
         self.assertFalse((hw[0].get("answer") or "").strip())     # 常见 worksheet 指令不是答案
+
+    def test_bare_manual_handout_stays_in_wiki(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        for rel in ("hw1.pdf", "manual.pdf"):
+            with open(os.path.join(mat, rel), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class ManBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                if pdf_path.replace(chr(92), "/").endswith("manual.pdf"):
+                    return ["课程手册的正文内容。"]
+                return ["Problem 1\n手册题面。"]
+        code, payload, report = _run(mat, ManBackend({}))
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertIn("课程手册的正文内容", wiki_all)              # 裸 manual 是讲义不是答案册
+
+    def test_chinese_homework_materials_root_recognized(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "作业资料")
+        os.makedirs(mat)
+        with open(os.path.join(mat, "1.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+        be = FakeBackend({"1.pdf": ["Problem 1\n中文资料根的题面。"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw), 1)                               # 作业资料/ 根按作业上下文导入
+        self.assertIn("中文资料根的题面", hw[0].get("question") or "")
+
+    def test_decimal_space_blank_key_stays_unknown(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw93.pdf": ["Problem 1.1\n小数空栏题面。"],
+                            "hw93_sol.pdf": ["Answers\n1.1 ________"]})
+        code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertEqual(len(hw), 1)
+        self.assertFalse((hw[0].get("answer") or "").strip())     # 小数-空白空栏不是官方答案
 
     def test_no_network_or_llm(self):
 

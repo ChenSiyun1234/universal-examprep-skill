@@ -54,7 +54,7 @@ _HW_ROOT_RE = re.compile(
     r"(?:^|[\\/_\-. ])(?:(?:hw|homework|assignments?|problem[ _-]?sets?|psets?)[ _\-]?\d*"
     r"|ps[ _\-]?\d+)"
     r"(?=$|[\\/_\-. ()]|(?:solutions?|answers?|sols?|ans|keys?|manuals?)(?:$|[\\/_\-. ()0-9]))"
-    r"|(?:作业|习题)(?=$|[\\/_\-. ()0-9]|答案|解答|册|本|集)", re.I)
+    r"|(?<![非无免])(?:作业|习题)(?=$|[\\/_\-. ()0-9]|答案|解答|册|本|集|资料|材料)", re.I)
 # tokens that mark a SOLUTION companion file (hw1_sol.pdf / HW2_Answers.pdf / 作业3答案.pdf)。
 # solution/answer 需要词元边界：前面不能是字母（unanswered ≠ answers；hw1solution 的数字前缀合法），
 # 后面须是分隔符/括号/串尾——纯子串匹配会把 unanswered_hw1 误判成解答文件
@@ -419,8 +419,10 @@ def _pure_sol_stem(stem):
     """文件名剥掉解答描述词后【只剩】解答记号/连接词/版本词/hw 记号——纯解答名
     （solutions / final_answers / hw1_key ✓；questions_answers 的 questions 是实义词 ✗）。
     比 _sol_dir_segment 的目录后缀规则窄：Q&A 讲义（questions_answers.pdf）不能被误杀出 wiki。"""
-    has_key = bool(_KEY_TOKEN_RE.search(stem))     # key/manual 描述词本身也是答案册记号——
-    stem = _strip_sol_desc(stem)                   # 先剥再查会把 key.pdf / final_key.pdf 漏成讲义
+    # keys? 描述词本身就是答案册记号（key.pdf / final_key.pdf）；manuals? 单独出现是课程
+    # 手册（manual.pdf），只有伴随解答/答案记号（solution_manual）才算——不误杀正常讲义
+    has_key = bool(re.search(r"(?<![A-Za-z])keys?(?=[_\-. ()]|$)", stem, re.I))
+    stem = _strip_sol_desc(stem)
     if not (_SOL_TOKEN_RE.search(stem) or has_key):
         return False
     rest = _SOL_TOKEN_RE.sub("", stem)
@@ -733,15 +735,17 @@ def _hw_nonblank_slice(stream, bounds, fname, s_start, s_end):
     if line_rest == first:
         # 键控答案行「1. ________」——裸编号键不是内容，剥掉才能看清填空线
         #（「1. 4」这类真实数值答案剥键后仍有内容，不受影响）
-        km = re.match(r"^[ \t]*\d+(?:\.\d+)*(?:[ \t]*\([A-Za-z]\)|[A-Za-z])?[.)、][ \t]*", first)
+        # 小数-空白分支放前——定界分支的 [ \t]* 会回溯成「1.」抢走「1.1 ____」的匹配
+        km = re.match(r"^[ \t]*(?:\d+(?:\.\d+)+[ \t]+"
+                      r"|\d+(?:\.\d+)*(?:[ \t]*\([A-Za-z]\)|[A-Za-z])?[.)、][ \t]*)", first)
         if km:
             line_rest = first[km.end():]
     if line_rest.strip() and _hw_blank_line(line_rest):
         return None                        # 同行是填空线——worksheet 空栏，不是答案
     a_tail = rest if rest else line_rest
     # 键控空栏册（1. ________ 换行 2. ____）——逐行剥裸编号键后再判空白/内容，键号本身不是答案
-    a_eval = re.sub(r"(?m)^[ \t]*\d+(?:\.\d+)*(?:[ \t]*\([A-Za-z]\)|[A-Za-z])?[.)、][ \t]*",
-                    "", a_tail)
+    a_eval = re.sub(r"(?m)^[ \t]*(?:\d+(?:\.\d+)+[ \t]+"
+                    r"|\d+(?:\.\d+)*(?:[ \t]*\([A-Za-z]\)|[A-Za-z])?[.)、][ \t]*)", "", a_tail)
     first_content = next((ln for ln in a_eval.splitlines() if ln.strip()), "")
     if first_content and _hw_blank_line(first_content):
         return None                        # 多行空栏（Answer: 换行后接填空线与指示语）同理
