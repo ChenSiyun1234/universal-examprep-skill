@@ -213,7 +213,6 @@ STRONG_CUES = [re.compile(p, re.I) for p in (
     "文氏图", "如图", "阴影", "示意图",
     "如下图", "见下图", "如上图", "见上图", "下图所示", "上图所示",
     "如下表", "见下表", "如上表", "见上表", "下表所示", "上表所示",
-    r"[见如]\s*[上下]一?页", r"(?:see|on)\s+(?:the\s+)?(?:next|previous)\s+page",   # 跨页图指涉
 )]
 # WEAK: a figure NOUN that might instead be a "produce" prompt ("draw the graph of y=x^2", "sketch the
 # tree"). Asset-dependent only for a renderable PDF source (where over-flagging just renders an extra
@@ -222,6 +221,8 @@ WEAK_CUES = [re.compile(p, re.I) for p in (
     r"\bdiagram\b", r"\bfigure\b", r"\btable\b", r"\bgraph\b", r"\bplot\b", r"\btree\b", r"\bcircuit\b",
     r"\bdraw\b", r"\bdrawn\b", r"\baxes\b", r"\brectangle\b", r"\btriangle\b",
     r"\bhistograms?\b", r"\bflow\s*charts?\b", "流程图", "柱状图", "折线图", "饼图", "图示", "区域",
+    # 跨页指涉只对可渲染 PDF 生效——.txt 里的 see next page 是文字指引，fail-closed 会误封
+    r"[见如]\s*[上下]一?页", r"(?:see|on)\s+(?:the\s+)?(?:next|previous)\s+page",
 )]
 
 
@@ -427,6 +428,11 @@ def extract_lecture_items(pages):
                           r"|第\s*\d+\s*[页张]", " ", _mo_body)
         marker_only = ((not needs) and len(prob_idxs) == 1
                        and not re.search(r"[A-Za-z一-鿿=+√∫∑^?×÷<>≤≥]", _mo_body))
+        # 完整原始题面（锚页 + 续页切片）——needs/marker_only 的 question 会被替换成指引句，
+        # 跨页图线索（见下页图 在续页上）要靠它检查
+        _cont_parts = [_problem_statement(pages[k].get("text", ""), kind, key[1], key[2])
+                       or " ".join((pages[k].get("text") or "").split()) for k in prob_idxs if k != i]
+        orig_question = " ".join([stmt] + _cont_parts).strip()
         if needs:
             qts = "page_reference"
             question = ("（%s %d.%d）本题依赖原始讲义 %s 第 %d 页的图/表，须配合所附 asset 作答。"
@@ -437,11 +443,8 @@ def extract_lecture_items(pages):
                         % (label, key[1], key[2], pf, prob_page["page"]))
         else:
             qts = "full"
-            # slice each continued page to THIS problem's portion (cut at the next marker on that page)
-            # so a `Quiz 1.1 Problem (Continued) … Quiz 1.2 Problem …` page doesn't append Quiz 1.2's text.
-            cont_parts = [_problem_statement(pages[k].get("text", ""), kind, key[1], key[2])
-                          or " ".join((pages[k].get("text") or "").split()) for k in prob_idxs if k != i]
-            question = " ".join([stmt] + cont_parts).strip()
+            # continued 切片已在 orig_question 内按题裁好（Quiz 1.1 (Continued) 页不吞 Quiz 1.2）
+            question = orig_question
         item_id = "lecture_%s_%d_%d" % (kind, key[1], key[2])
         if key in ambiguous:   # readable stem + injective index (so a/b.pdf vs a_b.pdf don't collide)
             item_id += "__%s_%d" % (re.sub(r"[^\w]", "_", os.path.splitext(pf)[0]), file_idx[(key, pf)])
@@ -455,7 +458,7 @@ def extract_lecture_items(pages):
             "source_file": pf,
             "source_pages": [p for (f, p) in q_pages],
             "_question_pages": q_pages,                     # stripped from the emitted bank
-            "_prompt_text": stmt,                           # 原始题面（needs 项的 question 会被替换成指引句）
+            "_prompt_text": orig_question,                  # 原始题面含续页（needs 项 question 被替换成指引句）
             "_render": bool(needs or marker_only),          # render the page for figure- AND image-prompt items
             "requires_assets": bool(needs),
             "question_text_status": qts,
@@ -2140,6 +2143,8 @@ def run(args, backend=None):
         # 排除：已有题面页、_answer_pages、以及【页面文本带解答标记】的页——_answer_pages
         # 只在答案依赖图时才设，纯文本答案页得靠内容判；解答页当题面资产就是泄题，宁缺勿泄
         _ans_keys = set(it.get("_answer_pages", []))
+        _asf = it.get("answer_source_file") or it.get("source_file")
+        _ans_keys |= {(_asf, p0) for p0 in (it.get("answer_source_pages") or [])}
 
         def _adj_ok(f0, p0):
             if (f0, p0) in _ans_keys or (f0, p0) in it.get("_question_pages", []):
@@ -2239,10 +2244,11 @@ def run(args, backend=None):
                           "choice/fill_blank 的题是否属实。" % _typed["subjective"]})
     # D5: wiki 配图——含图/表标题（Figure N / Table N / 图N / 表N）的讲义页渲染成 PNG，
     # 注入章节末尾「本章图示页」区；渲染不可用时警告降级（纯文字 wiki 照常完整）
-    _WIKI_CAP_RE = re.compile(r"(?m)^\s*(?:(?:Figure|Fig\.?|Table)\s*\d+|[图表]\s*\d+\s*[:：.])")
+    _WIKI_CAP_RE = re.compile(
+        r"(?m)^\s*(?:(?:Figure|Fig\.?|Table)\s*\d+|[图表]\s*[\d一二三四五六七八九十]+(?:[:：.、\s]|$))")
     wiki_fig_assets = {}
     _cap_pages = [(pg["file"], pg["page"]) for pg in wiki_pages
-                  if _WIKI_CAP_RE.search(pg.get("text") or "")]
+                  if pg.get("_pdf") and _WIKI_CAP_RE.search(pg.get("text") or "")]   # cap 只数可渲染页
     if _cap_pages and can_write:
         if len(_cap_pages) > 30:
             report["warnings"].append("wiki_figures_capped: 图示页 %d 张只渲染前 30 张（控制体积；"

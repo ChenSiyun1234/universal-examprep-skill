@@ -2830,9 +2830,11 @@ class HomeworkIngest(unittest.TestCase):
 
     def test_visual_cue_vocabulary_bidirectional(self):
         for good in ("如下图所示，求阴影面积。", "见下图的电路。", "as shown in Figure 3, compute x.",
-                     "The matrix below is singular.", "下表所示的数据分布。",
-                     "见上页图，求电流方向。", "见上一页图。"):
+                     "The matrix below is singular.", "下表所示的数据分布。"):
             self.assertTrue(B.requires_assets_heuristic(good, renderable=False), good)
+        for pdf_only in ("见上页图，求电流方向。", "见下页图。", "See next page for the formula."):
+            self.assertTrue(B.requires_assets_heuristic(pdf_only, renderable=True), pdf_only)
+            self.assertFalse(B.requires_assets_heuristic(pdf_only, renderable=False), pdf_only)
         for bad in ("求下列区域的定义域。", "draw a histogram of the data.",
                     "用图示法说明（自行作图）。"):
             self.assertFalse(B.requires_assets_heuristic(bad, renderable=False), bad)
@@ -2962,6 +2964,57 @@ class HomeworkIngest(unittest.TestCase):
         code, payload, report = _run(mat, TwoBackend({}), ["--asset-root", asset_root])
         figs = [n for n in os.listdir(asset_root) if n.endswith("_fig.png")]
         self.assertEqual(len(figs), 2)                                # 同净化名不同源不互撞
+
+    def test_cn_adjacent_answer_page_never_prompt_asset(self):
+        tmp = tempfile.mkdtemp()
+        mat, be = _mk(tmp, {"hw130.pdf": ["Problem 1\n见下页图，求值。", "答案：42。"]})
+        asset_root = os.path.join(tmp, "ws", "references", "assets")
+        code, payload, report = _run(mat, be, ["--asset-root", asset_root])
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
+        self.assertIn("42", hw[0].get("answer", ""))
+        q_ctx = [a for a in hw[0].get("assets", []) if a.get("role") == "question_context"]
+        self.assertFalse(any("p002" in a.get("path", "") for a in q_ctx))   # 中文答案页双保险排除
+
+    def test_continued_page_cross_page_cue_detected(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        with open(os.path.join(mat, "lec01.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+        be = FakeBackend({"lec01.pdf": ["Quiz 1.1 Problem\n题干开头。",
+                                        "Quiz 1.1 Problem (Continued)\n见下页图作答。",
+                                        "图在此页。"]})
+        asset_root = os.path.join(tmp, "ws", "references", "assets")
+        code, payload, report = _run(mat, be, ["--asset-root", asset_root])
+        lec = [q for q in payload["quiz_bank"] if q["id"].startswith("lecture_quiz")]
+        paths = [a.get("path", "") for a in lec[0].get("assets", [])]
+        self.assertTrue(any("p003" in pth for pth in paths), paths)   # 续页上的跨页线索也生效
+
+    def test_cn_caption_without_punct_detected(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        with open(os.path.join(mat, "lec01.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+        be = FakeBackend({"lec01.pdf": ["图 1 排序流程示例\n本章正文知识点。"]})
+        asset_root = os.path.join(tmp, "ws", "references", "assets")
+        code, payload, report = _run(mat, be, ["--asset-root", asset_root])
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertIn("本章图示页", wiki_all)                     # 无标点中文标题也算
+
+    def test_txt_captions_do_not_consume_render_cap(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        with open(os.path.join(mat, "notes.txt"), "wb") as f:
+            f.write("Figure 1: 文本示意，不可渲染。\n正文。".encode("utf-8"))
+        with open(os.path.join(mat, "lec01.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+        be = FakeBackend({"lec01.pdf": ["Figure 1: 真图页\n正文知识点。"]})
+        asset_root = os.path.join(tmp, "ws", "references", "assets")
+        code, payload, report = _run(mat, be, ["--asset-root", asset_root])
+        figs = [n for n in os.listdir(asset_root) if n.endswith("_fig.png")]
+        self.assertEqual(len(figs), 1)                            # txt 标题不占渲染名额
 
     def test_no_network_or_llm(self):
 
