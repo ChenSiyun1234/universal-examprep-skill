@@ -1625,6 +1625,535 @@ class HomeworkIngest(unittest.TestCase):
         self.assertIn("2+2=4", hw[0].get("answer", ""))            # 带算式的行是真解答
         self.assertNotIn("2+2=4", hw[0].get("question") or "")     # 不并回题面泄答案
 
+    # ---- D1: 试卷管线 regression guards ----
+
+    def test_exam_filename_recognition_boundaries(self):
+        for good in ("midterm.pdf", "final_exam.pdf", "final 2019.pdf", "quiz3.pdf",
+                     "past_paper.pdf", "sample exam.pdf", "practice-midterm.pdf",
+                     "期末试卷A卷.pdf", "真题2014.pdf", "模拟卷.pdf", "模拟试卷（偏难).pdf",
+                     "2019期中.pdf", "月考试题.pdf", "exams/2020.pdf",
+                     "midtermsolutions.pdf", "examanswers.pdf", "期末时间复杂度试题.pdf",
+                     "midtermsoln.pdf", "final1key.pdf", "exams/final.pdf", "pastpaperanswers.pdf"):
+            self.assertTrue(B._is_exam_path(good), good)
+        for bad in ("example.pdf", "os_example_question2.pdf", "final_version.pdf",
+                    "final report.pdf", "模拟滤波器.pdf", "期末复习提纲.pdf",
+                    "期中考试安排.pdf", "考试范围.pdf", "NetSec-期末复习提纲.pdf",
+                    "final review.pdf", "lec01.pdf",
+                    "midterm_notes/ch01.pdf", "期中复习/ch01.pdf", "exams/期末复习笔记.pdf",
+                    "final_exam_prep/sorting.pdf", "exams/graph_theory.pdf",
+                    "final_exam_format.pdf", "exam_info.pdf", "期末考试题型说明.pdf"):
+            self.assertFalse(B._is_exam_path(bad), bad)
+
+    def test_exam_paper_items_tagged_and_out_of_wiki(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        for rel in ("midterm.pdf", "lec01.pdf"):
+            with open(os.path.join(mat, rel), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class ExBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                if pdf_path.replace(chr(92), "/").endswith("midterm.pdf"):
+                    return ["Problem 1\n期中试卷的题面。"]
+                return ["讲义正文内容。"]
+        code, payload, report = _run(mat, ExBackend({}))
+        ex = [q for q in payload["quiz_bank"] if q.get("source_type") == "exam"]
+        self.assertEqual(len(ex), 1)                              # 试卷题以 source_type=exam 入库
+        self.assertTrue(ex[0]["id"].startswith("exam_"))
+        self.assertIn("期中试卷的题面", ex[0].get("question") or "")
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertNotIn("期中试卷的题面", wiki_all)              # 试卷绝不进 wiki
+        self.assertIn("midterm.pdf", report.get("exam_files", []))
+
+    def test_exam_solutions_pair_and_never_leak(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        for rel in ("midterm.pdf", "midterm_solutions.pdf", "lec01.pdf"):
+            with open(os.path.join(mat, rel), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class ExBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                rel = pdf_path.replace(chr(92), "/")
+                if rel.endswith("midterm_solutions.pdf"):
+                    return ["Problem 1 Solution\n期中卷的标准答案。"]
+                if rel.endswith("midterm.pdf"):
+                    return ["Problem 1\n期中卷题面。"]
+                return ["讲义正文内容。"]
+        code, payload, report = _run(mat, ExBackend({}))
+        ex = [q for q in payload["quiz_bank"] if q.get("source_type") == "exam"]
+        self.assertEqual(len(ex), 1)
+        self.assertIn("期中卷的标准答案", ex[0].get("answer", ""))   # 试卷答案册照常配对
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertNotIn("期中卷的标准答案", wiki_all)             # 审计 P1：答案册绝不泄 wiki
+
+    def test_unpaired_exam_solutions_warn_and_stay_out_of_wiki(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        for rel in ("期末试卷答案.pdf", "lec01.pdf"):
+            with open(os.path.join(mat, rel), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class ExBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                if "期末试卷答案" in pdf_path:
+                    return ["一、标准答案甲。\n二、标准答案乙。"]
+                return ["讲义正文内容。"]
+        code, payload, report = _run(mat, ExBackend({}))
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertNotIn("标准答案甲", wiki_all)                  # 除名逃逸漏洞已堵死
+        self.assertTrue(any("hw_unpaired_solution_file" in w or "hw_no_markers" in w
+                            or "exam_no_markers" in w for w in report["warnings"]))
+
+    def test_exam_without_markers_hands_off_to_ai(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        for rel in ("真题2020.pdf", "lec01.pdf"):
+            with open(os.path.join(mat, rel), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class ExBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                if "真题" in pdf_path:
+                    return ["一、(10 分) 大题号排版的试卷正文。"]
+                return ["讲义正文内容。"]
+        code, payload, report = _run(mat, ExBackend({}))
+        self.assertTrue(any(w.startswith("exam_no_markers") for w in report["warnings"]))
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertNotIn("大题号排版", wiki_all)                  # 抽不出题也不准漏进 wiki
+
+    def test_exam_root_folder_context(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "2023期末真题")
+        os.makedirs(mat)
+        with open(os.path.join(mat, "1.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+        be = FakeBackend({"1.pdf": ["Problem 1\n试卷根目录的题面。"]})
+        code, payload, report = _run(mat, be)
+        ex = [q for q in payload["quiz_bank"] if q.get("source_type") == "exam"]
+        self.assertEqual(len(ex), 1)                              # 根目录名的试卷上下文生效
+        self.assertIn("试卷根目录的题面", ex[0].get("question") or "")
+
+    def test_selfcontained_exam_solutions_tagged_exam(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        for rel in ("midterm_solutions.pdf", "lec01.pdf"):
+            with open(os.path.join(mat, rel), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class ExBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                if "midterm_solutions" in pdf_path:
+                    return ["Problem 1\n自含卷的题面。\nProblem 1 Solution\n自含卷的答案。"]
+                return ["讲义正文内容。"]
+        code, payload, report = _run(mat, ExBackend({}))
+        ex = [q for q in payload["quiz_bank"] if q.get("source_type") == "exam"]
+        self.assertEqual(len(ex), 1)                              # 自含题答册补进 exam_files
+        self.assertTrue(ex[0]["id"].startswith("exam_"))
+        self.assertIn("midterm_solutions.pdf", report.get("exam_files", []))
+
+    def test_lecture_style_quiz_handout_reroutes_to_lecture(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        for rel in ("quiz3.pdf", "lec01.pdf"):
+            with open(os.path.join(mat, rel), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class QzBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                if "quiz3" in pdf_path:
+                    return ["Quiz 1.1 Problem\n讲义式小测题面。\nQuiz 1.1 Solution\n讲义式小测答案。"]
+                return ["讲义正文内容。"]
+        code, payload, report = _run(mat, QzBackend({}))
+        lec = [q for q in payload["quiz_bank"] if q["id"].startswith("lecture_")]
+        self.assertTrue(any("讲义式小测题面" in (q.get("question") or "") for q in lec))
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertNotIn("讲义式小测答案", wiki_all)              # 归还讲义管线但仍不进 wiki
+        self.assertTrue(any(w.startswith("exam_lecture_style") for w in report["warnings"]))
+        self.assertFalse(any(w.startswith("exam_no_markers") for w in report["warnings"]))
+
+    def test_exam_root_generic_solutions_never_leak(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "2023期末真题")
+        os.makedirs(mat)
+        for rel in ("1.pdf", "solutions.pdf"):
+            with open(os.path.join(mat, rel), "wb") as f:
+                f.write(b"%PDF-fake")
+        be = FakeBackend({"1.pdf": ["Problem 1\n根卷题面。"],
+                          "solutions.pdf": ["根卷的标准答案整册。"]})
+        code, payload, report = _run(mat, be)
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertNotIn("根卷的标准答案整册", wiki_all)          # 试卷根上下文的答案册不除名不泄漏
+
+    def test_exam_key_file_is_solution_not_second_paper(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        for rel in ("midterm.pdf", "midterm_key.pdf", "lec01.pdf"):
+            with open(os.path.join(mat, rel), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class KyBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                rel = pdf_path.replace(chr(92), "/")
+                if rel.endswith("midterm_key.pdf"):
+                    return ["Problem 1 Solution\n期中键答案。"]
+                if rel.endswith("midterm.pdf"):
+                    return ["Problem 1\n期中键题面。"]
+                return ["讲义正文内容。"]
+        code, payload, report = _run(mat, KyBackend({}))
+        ex = [q for q in payload["quiz_bank"] if q.get("source_type") == "exam"]
+        self.assertEqual(len(ex), 1)                              # key 是答案册，不是第二份卷子
+        self.assertIn("期中键答案", ex[0].get("answer", ""))
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertNotIn("期中键答案", wiki_all)
+
+    def test_exam_dir_key_file_pairs_as_solution(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(os.path.join(mat, "exams"), exist_ok=True)
+        for rel in ("exams/2020.pdf", "exams/2020_key.pdf"):
+            with open(os.path.join(mat, *rel.split("/")), "wb") as f:
+                f.write(b"%PDF-fake")
+        with open(os.path.join(mat, "lec01.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+
+        class KyBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                rel = pdf_path.replace(chr(92), "/")
+                if rel.endswith("2020_key.pdf"):
+                    return ["Problem 1 Solution\n目录卷键答案。"]
+                if rel.endswith("2020.pdf"):
+                    return ["Problem 1\n目录卷题面。"]
+                return ["讲义正文内容。"]
+        code, payload, report = _run(mat, KyBackend({}))
+        ex = [q for q in payload["quiz_bank"] if q.get("source_type") == "exam"]
+        self.assertEqual(len(ex), 1)                              # 目录上下文的 key 是答案册
+        self.assertIn("目录卷键答案", ex[0].get("answer", ""))
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertNotIn("目录卷键答案", wiki_all)
+
+    def test_quiz_handout_with_stray_problem_line_prefers_lecture(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        for rel in ("quiz4.pdf", "lec01.pdf"):
+            with open(os.path.join(mat, rel), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class QzBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                if "quiz4" in pdf_path:
+                    return ["Quiz 1.1 Problem\n占优小测题面。\nQuiz 1.1 Solution\n占优小测答案。\n"
+                            "Problem 1\n杂散的一行。"]
+                return ["讲义正文内容。"]
+        code, payload, report = _run(mat, QzBackend({}))
+        ex = [q for q in payload["quiz_bank"] if q.get("source_type") == "exam"]
+        self.assertFalse(ex)                                      # 讲义标记占优→不走作业解析器
+        lec = [q for q in payload["quiz_bank"] if q["id"].startswith("lecture_")]
+        self.assertTrue(any("占优小测题面" in (q.get("question") or "") for q in lec))
+        self.assertFalse(any("占优小测答案" in (q.get("question") or "")
+                             for q in payload["quiz_bank"]))       # 答案绝不卷进任何题面
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertNotIn("占优小测答案", wiki_all)                 # 归还讲义管线但正文仍挡出 wiki
+
+    def test_exam_root_does_not_swallow_chapterish_lectures(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "final_exam_prep")
+        os.makedirs(mat)
+        for rel in ("ch01.pdf", "1.pdf"):
+            with open(os.path.join(mat, rel), "wb") as f:
+                f.write(b"%PDF-fake")
+        be = FakeBackend({"ch01.pdf": ["章节讲义的正文知识点。"],
+                          "1.pdf": ["Problem 1\n备考卷题面。"]})
+        code, payload, report = _run(mat, be)
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertIn("章节讲义的正文知识点", wiki_all)            # ch01 是讲义，不被根上下文吞掉
+        ex = [q for q in payload["quiz_bank"] if q.get("source_type") == "exam"]
+        self.assertEqual(len(ex), 1)                              # 裸编号 1.pdf 仍按卷子收
+        self.assertIn("备考卷题面", ex[0].get("question") or "")
+
+    def test_glued_exam_solutions_pair_and_never_leak(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        for rel in ("midterm.pdf", "midtermsolutions.pdf", "lec01.pdf"):
+            with open(os.path.join(mat, rel), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class GlBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                rel = pdf_path.replace(chr(92), "/")
+                if rel.endswith("midtermsolutions.pdf"):
+                    return ["Problem 1 Solution\n胶连卷答案。"]
+                if rel.endswith("midterm.pdf"):
+                    return ["Problem 1\n胶连卷题面。"]
+                return ["讲义正文内容。"]
+        code, payload, report = _run(mat, GlBackend({}))
+        ex = [q for q in payload["quiz_bank"] if q.get("source_type") == "exam"]
+        self.assertEqual(len(ex), 1)
+        self.assertIn("胶连卷答案", ex[0].get("answer", ""))      # midtermsolutions 拆胶连后配对
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertNotIn("胶连卷答案", wiki_all)
+
+    def test_mixed_prep_root_keeps_named_lectures(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "final_exam_prep")
+        os.makedirs(mat)
+        for rel in ("sorting.pdf", "1.pdf"):
+            with open(os.path.join(mat, rel), "wb") as f:
+                f.write(b"%PDF-fake")
+        be = FakeBackend({"sorting.pdf": ["排序讲义的正文知识点。"],
+                          "1.pdf": ["Problem 1\n备考卷一题面。"]})
+        code, payload, report = _run(mat, be)
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertIn("排序讲义的正文知识点", wiki_all)            # 有名字的讲义不被备考根吞掉
+        ex = [q for q in payload["quiz_bank"] if q.get("source_type") == "exam"]
+        self.assertEqual(len(ex), 1)                              # 像卷子的 1.pdf 仍按卷收
+
+    def test_exam_solutions_with_review_suffix_never_leak(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        for rel in ("midterm.pdf", "midterm_solutions_review.pdf", "lec01.pdf"):
+            with open(os.path.join(mat, rel), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class RvBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                rel = pdf_path.replace(chr(92), "/")
+                if rel.endswith("midterm_solutions_review.pdf"):
+                    return ["带后缀答案册的标准答案。"]
+                if rel.endswith("midterm.pdf"):
+                    return ["Problem 1\n带后缀卷题面。"]
+                return ["讲义正文内容。"]
+        code, payload, report = _run(mat, RvBackend({}))
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertNotIn("带后缀答案册的标准答案", wiki_all)      # 负例词不否决答案册的排除
+        ex = [q for q in payload["quiz_bank"] if q.get("source_type") == "exam"]
+        self.assertEqual(len(ex), 1)                              # round-5 起 review 尾缀可剥，
+        self.assertIn("带后缀答案册的标准答案", ex[0].get("answer", ""))   # 答案册直接配回卷子
+
+    def test_glued_compound_answer_key_pairs(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        for rel in ("midterm.pdf", "midtermanswerkey.pdf", "lec01.pdf"):
+            with open(os.path.join(mat, rel), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class GkBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                rel = pdf_path.replace(chr(92), "/")
+                if rel.endswith("midtermanswerkey.pdf"):
+                    return ["Problem 1 Solution\n复合胶连键答案。"]
+                if rel.endswith("midterm.pdf"):
+                    return ["Problem 1\n复合胶连键题面。"]
+                return ["讲义正文内容。"]
+        code, payload, report = _run(mat, GkBackend({}))
+        ex = [q for q in payload["quiz_bank"] if q.get("source_type") == "exam"]
+        self.assertEqual(len(ex), 1)
+        self.assertIn("复合胶连键答案", ex[0].get("answer", ""))   # answerkey 复合胶连也拆
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertNotIn("复合胶连键答案", wiki_all)
+
+    def test_review_suffixed_exam_key_pairs_and_never_leaks(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        for rel in ("midterm.pdf", "midterm_key_review.pdf", "lec01.pdf"):
+            with open(os.path.join(mat, rel), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class KrBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                rel = pdf_path.replace(chr(92), "/")
+                if rel.endswith("midterm_key_review.pdf"):
+                    return ["Problem 1 Solution\n带审阅后缀键答案。"]
+                if rel.endswith("midterm.pdf"):
+                    return ["Problem 1\n带审阅后缀键题面。"]
+                return ["讲义正文内容。"]
+        code, payload, report = _run(mat, KrBackend({}))
+        ex = [q for q in payload["quiz_bank"] if q.get("source_type") == "exam"]
+        self.assertEqual(len(ex), 1)                              # review 后缀不否决答案册锚定
+        self.assertIn("带审阅后缀键答案", ex[0].get("answer", ""))
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertNotIn("带审阅后缀键答案", wiki_all)
+
+    def test_exam_root_generic_solutions_reroute_with_paper(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "2020期末真题")
+        os.makedirs(mat)
+        for rel in ("1.pdf", "solutions.pdf"):
+            with open(os.path.join(mat, rel), "wb") as f:
+                f.write(b"%PDF-fake")
+        be = FakeBackend({"1.pdf": ["Quiz 1.1 Problem\n随卷小测题面。"],
+                          "solutions.pdf": ["Quiz 1.1 Solution\n随卷小测官方解答。"]})
+        code, payload, report = _run(mat, be)
+        lec = [q for q in payload["quiz_bank"] if q["id"].startswith("lecture_")]
+        got = [q for q in lec if "随卷小测题面" in (q.get("question") or "")]
+        self.assertTrue(got)                                      # 卷子归还讲义管线
+        self.assertIn("随卷小测官方解答", got[0].get("answer", ""))   # 解答册随行配对
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertNotIn("随卷小测官方解答", wiki_all)             # 正文照旧挡出 wiki
+
+    def test_exam_dir_bare_key_excluded_and_warned(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(os.path.join(mat, "exams"), exist_ok=True)
+        for rel in ("exams/2020.pdf", "exams/key.pdf"):
+            with open(os.path.join(mat, *rel.split("/")), "wb") as f:
+                f.write(b"%PDF-fake")
+        with open(os.path.join(mat, "lec01.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+
+        class BkBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                rel = pdf_path.replace(chr(92), "/")
+                if rel.endswith("exams/key.pdf"):
+                    return ["裸键册的标准答案。"]
+                if rel.endswith("2020.pdf"):
+                    return ["Problem 1\n裸键卷题面。"]
+                return ["讲义正文内容。"]
+        code, payload, report = _run(mat, BkBackend({}))
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertNotIn("裸键册的标准答案", wiki_all)            # 试卷目录的裸 key.pdf 判解答不泄漏
+        self.assertTrue(any("hw_unpaired_solution_file" in w or "hw_no_markers" in w
+                            for w in report["warnings"]))
+
+    def test_glued_soln_abbreviation_pairs(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        for rel in ("midterm.pdf", "midtermsoln.pdf", "lec01.pdf"):
+            with open(os.path.join(mat, rel), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class SnBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                rel = pdf_path.replace(chr(92), "/")
+                if rel.endswith("midtermsoln.pdf"):
+                    return ["Problem 1 Solution\n缩写胶连答案。"]
+                if rel.endswith("midterm.pdf"):
+                    return ["Problem 1\n缩写胶连题面。"]
+                return ["讲义正文内容。"]
+        code, payload, report = _run(mat, SnBackend({}))
+        ex = [q for q in payload["quiz_bank"] if q.get("source_type") == "exam"]
+        self.assertEqual(len(ex), 1)
+        self.assertIn("缩写胶连答案", ex[0].get("answer", ""))    # midtermsoln 判解答并配对
+
+    def test_exam_format_handout_stays_in_wiki(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        for rel in ("exam_info.pdf", "lec01.pdf"):
+            with open(os.path.join(mat, rel), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class FmBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                if "exam_info" in pdf_path:
+                    return ["考试形式说明：闭卷，允许一页 A4 小抄。"]
+                return ["讲义正文内容。"]
+        code, payload, report = _run(mat, FmBackend({}))
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertIn("允许一页 A4 小抄", wiki_all)               # 考试说明类是复习材料，留在 wiki
+
+    def test_exam_root_selfcontained_generic_tagged_exam(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "2020期末真题")
+        os.makedirs(mat)
+        with open(os.path.join(mat, "solutions.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+        be = FakeBackend({"solutions.pdf": ["Problem 1\n自含根卷的题面文字。\n"
+                                            "Problem 1 Solution\n自含根卷答案。"]})
+        code, payload, report = _run(mat, be)
+        ex = [q for q in payload["quiz_bank"] if q.get("source_type") == "exam"]
+        self.assertEqual(len(ex), 1)                              # 试卷根的 generic 自含册打 exam 标签
+        self.assertTrue(ex[0]["id"].startswith("exam_"))
+
+    def test_numbered_glued_key_pairs(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        for rel in ("final1.pdf", "final1key.pdf", "lec01.pdf"):
+            with open(os.path.join(mat, rel), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class NkBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                rel = pdf_path.replace(chr(92), "/")
+                if rel.endswith("final1key.pdf"):
+                    return ["Problem 1 Solution\n带号胶连键答案。"]
+                if rel.endswith("final1.pdf"):
+                    return ["Problem 1\n带号胶连键题面。"]
+                return ["讲义正文内容。"]
+        code, payload, report = _run(mat, NkBackend({}))
+        ex = [q for q in payload["quiz_bank"] if q.get("source_type") == "exam"]
+        self.assertEqual(len(ex), 1)
+        self.assertIn("带号胶连键答案", ex[0].get("answer", ""))   # final1key 拆胶连配回 final1
+
+    def test_bare_final_in_exam_root_is_paper(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "final_exam")
+        os.makedirs(mat)
+        with open(os.path.join(mat, "final.pdf"), "wb") as f:
+            f.write(b"%PDF-fake")
+        be = FakeBackend({"final.pdf": ["Problem 1\n裸名卷题面。"]})
+        code, payload, report = _run(mat, be)
+        ex = [q for q in payload["quiz_bank"] if q.get("source_type") == "exam"]
+        self.assertEqual(len(ex), 1)                              # 试卷根里的裸 final.pdf 是卷子
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertNotIn("裸名卷题面", wiki_all)
+
+    def test_root_level_final_solutions_never_leak(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        for rel in ("final_solutions.pdf", "lec01.pdf"):
+            with open(os.path.join(mat, rel), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class FsBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                if "final_solutions" in pdf_path:
+                    return ["期末卷的标准答案整册。"]
+                return ["讲义正文内容。"]
+        code, payload, report = _run(mat, FsBackend({}))
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertNotIn("期末卷的标准答案整册", wiki_all)         # 裸 final 的答案册不除名不泄漏
+        self.assertTrue(any("hw_unpaired_solution_file" in w or "hw_no_markers" in w
+                            for w in report["warnings"]))
+
+    def test_glued_pastpaper_answers_pair(self):
+        tmp = tempfile.mkdtemp()
+        mat = os.path.join(tmp, "mat")
+        os.makedirs(mat, exist_ok=True)
+        for rel in ("pastpaper.pdf", "pastpaperanswers.pdf", "lec01.pdf"):
+            with open(os.path.join(mat, rel), "wb") as f:
+                f.write(b"%PDF-fake")
+
+        class PpBackend(FakeBackend):
+            def page_texts(self, pdf_path):
+                rel = pdf_path.replace(chr(92), "/")
+                if rel.endswith("pastpaperanswers.pdf"):
+                    return ["Problem 1 Solution\n历年卷胶连答案。"]
+                if rel.endswith("pastpaper.pdf"):
+                    return ["Problem 1\n历年卷题面。"]
+                return ["讲义正文内容。"]
+        code, payload, report = _run(mat, PpBackend({}))
+        ex = [q for q in payload["quiz_bank"] if q.get("source_type") == "exam"]
+        self.assertEqual(len(ex), 1)
+        self.assertIn("历年卷胶连答案", ex[0].get("answer", ""))   # paper 族胶连拆分配对
+        wiki_all = " ".join(ph.get("wiki_content", "") for ph in payload.get("phases", []))
+        self.assertNotIn("历年卷胶连答案", wiki_all)
+
     def test_no_network_or_llm(self):
 
 
