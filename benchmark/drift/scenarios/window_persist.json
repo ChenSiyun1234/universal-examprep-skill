@@ -9,6 +9,7 @@
     "goal_retention_min": 0.9,
     "plan_mutations_max": 0,
     "untagged_questions_max": 0,
+    "provenance_fidelity_min": 0.8,
     "progress_rows_lost_max": 0,
     "window_rows_added_min": 2,
     "window_rows_lost_max": 0,

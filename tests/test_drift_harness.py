@@ -238,6 +238,28 @@ class DriftHarness(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertIn("必须显式", r.stderr)
 
+    def test_b3_llm_rejects_state_scenario(self):
+        # Codex OSL85：--turns 指向依赖 state 的 scenario（window_persist）时 --llm 显式拒绝——
+        # run_live_smoke 不录 study_state.json，会看不到 state/窗口写入而误判
+        d = tempfile.mkdtemp()
+        spec = {"fixture": "benchmark/drift/fixtures/mini_course_long_state",
+                "scenario": "benchmark/drift/scenarios/window_persist.json", "turns": [{"user": "hi"}]}
+        sp = os.path.join(d, "turns.json")
+        with open(sp, "w", encoding="utf-8") as f:
+            json.dump(spec, f, ensure_ascii=False)
+        r = _cli(["--llm", "--agent-cmd", "echo {prompt}", "--out-dir", d, "--turns", sp],
+                 env={"RUN_SKILL_DRIFT_LLM": "1"})
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("暂不支持", r.stderr)
+
+    def test_b3_duplicate_window_row_fails_loud(self):
+        # Codex OSL86：同一快照里同 point@chapter 重复（追加而非更新）= 坏写入 → exit 2
+        bad = json.dumps({"current_phase": 1, "mistake_archive": [], "confusion_log": [],
+                          "knowledge_window": [{"point": "栈", "chapter": "1", "status": "在窗口"},
+                                               {"point": "栈", "chapter": "1", "status": "窗口外"}]})
+        with self.assertRaises(D.DriftError):
+            D.parse_state_json(bad, [1])
+
     def test_b3_status_migration_required(self):
         # Codex R5LB：只保留窗口行、状态全程不迁移（在窗口→窗口外→已实测 没发生）应挂 migrations 门槛
         sc = D.load_scenario(os.path.join(DRIFT, "scenarios", "window_persist.json"))

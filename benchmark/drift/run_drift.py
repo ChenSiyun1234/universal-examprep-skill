@@ -532,6 +532,13 @@ def parse_state_json(text, plan_phases=None):
         # 否则 {point,chapter} 无 status 的合法行会让 state 图（None）与 md 图（在窗口）误判不一致（SGGn）
         window_status.append(stt if isinstance(stt, str) else "在窗口")
 
+    if len(set(window_rows)) != len(window_rows):
+        # 同一 point@chapter 出现多次 = 追加而非更新的坏写入（update_progress 的 window-add 会去重）；
+        # 静默收下会让 _window_diff 把重复当"新增"、迁移循环把它当迁移、生成视图折叠掉——矛盾的重复行
+        # 却报 lost=0（Codex OSL86）。按畸形输入 fail-loud。
+        dups = sorted({k for k in window_rows if window_rows.count(k) > 1})
+        raise DriftError("study_state.json 快照的 knowledge_window 有重复条目（同一 point@chapter 多次出现，"
+                         "窗口进出应更新同一行而非追加）: %s" % dups)
     return {"phase": phase, "mistake_rows": m_rows, "confusion_rows": c_rows,
             "mistake_status": stat["mistake_archive"], "confusion_status": stat["confusion_log"],
             "window_rows": window_rows, "window_status": window_status}
@@ -1198,9 +1205,32 @@ def run_llm(argv):
     passthrough = [a for a in (argv or []) if a != "--llm"]
     # run_live_smoke 的 --turns 有默认值（短 smoke live_smoke_basic）——委托时不带 --turns 会静默跑成
     # 短 smoke 而非调用者想要的长会话漂移探针。这里强制要求显式 --turns（Codex R_Xg）。
-    if "--turns" not in passthrough and not any(a.startswith("--turns=") for a in passthrough):
+    turns_path = None
+    for i, a in enumerate(passthrough):
+        if a == "--turns" and i + 1 < len(passthrough):
+            turns_path = passthrough[i + 1]
+        elif a.startswith("--turns="):
+            turns_path = a.split("=", 1)[1]
+    if not turns_path:
         sys.stderr.write("run_drift: --llm 长会话漂移必须显式指定 --turns <回合脚本>（否则委托的 live "
                          "runner 会默认跑短 smoke 而非长会话漂移）\n")
+        return 2
+    # run_live_smoke 目前只录对话 + 阶段切换时的合成 study_progress.md 快照，**不录 agent 写的
+    # study_state.json**。因此 --turns 指向的 scenario 若依赖 state 快照（requires_state 或含 state/窗口
+    # 阈值），live 判分会因看不到 state 写入而恒 0、谎报成 agent 失败——显式拒绝、指明是管线限制（Codex OSL85）。
+    _STATE_THRESH = {"progress_rows_lost_max", "checkpoint_reset_max", "md_write_after_state_max",
+                     "window_rows_added_min", "window_rows_lost_max", "window_status_migrations_min",
+                     "urgent_mode_persisted_min"}
+    try:
+        spec = json.loads(_read(_resolve(turns_path)))
+        sc = load_scenario(_resolve(spec["scenario"])) if isinstance(spec, dict) and spec.get("scenario") else None
+    except (IOError, OSError, ValueError, KeyError, DriftError):
+        sc = None                                            # 让 live runner 自己去校验坏 turns/scenario
+    if sc is not None and (sc.get("requires_state") or (set(sc.get("thresholds", {})) & _STATE_THRESH)):
+        sys.stderr.write("run_drift: --llm 暂不支持依赖 study_state.json 的 scenario（%s：requires_state/"
+                         "state·窗口阈值）——run_live_smoke 只录对话+合成 md、不录 agent 写的 state 快照，"
+                         "会看不到 state/窗口写入而误判。请用无 state 的 scenario 跑 live，或走确定性 replay "
+                         "（--scenario ... --transcript ...）。捕获真实 state 快照是后续工作。\n" % sc.get("name"))
         return 2
     return subprocess.run([sys.executable, live] + passthrough).returncode
 
