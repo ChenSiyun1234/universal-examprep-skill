@@ -74,6 +74,18 @@ class BehaviorSmokeTest(unittest.TestCase):
             if "fallback_workspace" in sc:
                 self.assertTrue(os.path.isdir(_bs(sc["fallback_workspace"])), f"{sc['name']}.fallback_workspace 不存在")
 
+    def test_b1_every_scenario_documented(self):
+        # B1 覆盖矩阵收尾：每个 scenario 都必须在 behavior_smoke/README.md 与 coverage-matrix 的口径里
+        # 登记到（README 的场景表按名列出）——防止新增场景后文档静默漂移、matrix 与实现脱节
+        names = [sc["name"] for sc in H.load_scenarios()["scenarios"]]
+        readme = _read("README.md")
+        for n in names:
+            self.assertIn("`%s`" % n, readme, "behavior_smoke/README.md 未登记场景 %s（B1：新增场景须同步文档）" % n)
+        # coverage-matrix 的读者说明应报出真实场景总数，避免停留在旧的「7 个」
+        matrix = open(os.path.join(ROOT, "benchmark", "docs", "coverage-matrix.md"), encoding="utf-8").read()
+        self.assertIn("%d 个行为场景" % len(names), matrix,
+                      "coverage-matrix.md 的场景计数与 scenarios.json（%d 个）不一致" % len(names))
+
     # 4
     def test_quiz_output_only_uses_bank_ids(self):
         bank_ids = H.load_quiz_bank_ids(H.FIXTURE)
