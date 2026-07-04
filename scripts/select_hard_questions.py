@@ -271,11 +271,11 @@ def main(argv=None):
         if source_types:
             notes.append("已按存档范围 scope→source_type=%s（未标签项排除）" % "/".join(sorted(source_types)))
 
-    # 某章起步补弱：必须显式传 --from-chapter。绝不再从 current_phase 猜——阶段号未必等于章号
-    # （study_plan.md 可能把 阶段1 映到 ch03），拿阶段号当章号会漏掉/错选章节。
+    # 某章起步补弱：需要一个**显式**章范围——--chapter（精确章）或 --from-chapter（该章及之后）任一即可。
+    # 都没有才 fail-loud；绝不从 current_phase 猜（阶段号未必等于章号，study_plan 可把 阶段1 映到 ch03）。
     from_chapter = args.from_chapter
-    if mode == "某章起步补弱" and from_chapter is None:
-        _die("某章起步补弱 需要显式起步章：请传 --from-chapter <N>。不再从 current_phase 猜——"
+    if mode == "某章起步补弱" and from_chapter is None and args.chapter is None:
+        _die("某章起步补弱 需要显式章范围：传 --chapter <N> 或 --from-chapter <N>。不从 current_phase 猜——"
              "阶段号未必等于章号（study_plan 可把阶段映到别的章），猜会漏选/错选章节")
 
     scored = []

@@ -301,12 +301,12 @@ class CliIO(unittest.TestCase):
         self.assertEqual([it["id"] for it in obj["items"]], ["hw"])
 
     # ---- 某章起步补弱：必须显式 --from-chapter，绝不从 current_phase 猜（阶段号≠章号）----
-    def test_weak_start_mode_requires_explicit_from_chapter(self):
-        # 即便 state 带 current_phase 也 fail-loud——不再拿阶段号当章号猜
+    def test_weak_start_mode_requires_explicit_scope(self):
+        # 既无 --chapter 也无 --from-chapter，即便 state 带 current_phase 也 fail-loud——不拿阶段号当章号猜
         self._state({"mode": "某章起步补弱", "current_phase": 3})
         r = self._run()
         self.assertEqual(r.returncode, 2)
-        self.assertIn("起步章", r.stderr)
+        self.assertIn("章范围", r.stderr)
         self.assertIn("阶段号未必等于章号", r.stderr)
 
     def test_weak_start_mode_cli_from_chapter_works(self):
@@ -314,6 +314,12 @@ class CliIO(unittest.TestCase):
         obj = json.loads(self._run("--from-chapter", "5").stdout)
         self.assertEqual(obj["from_chapter"], 5)
         self.assertEqual([it["id"] for it in obj["items"]], ["hard"])
+
+    def test_weak_start_mode_chapter_alone_satisfies(self):
+        # 显式 --chapter 即算显式章范围（不再报 usage error）——检查点抽题路径可用
+        self._state({"mode": "某章起步补弱", "current_phase": 1})
+        obj = json.loads(self._run("--chapter", "3").stdout)
+        self.assertEqual([it["id"] for it in obj["items"]], ["mid"])   # 只出第 3 章
 
     def test_on_the_fly_difficulty_when_unscored(self):
         # 题库无 difficulty 字段 → 即时补算，不落盘
