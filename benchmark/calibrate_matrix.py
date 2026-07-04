@@ -111,9 +111,10 @@ def build_pool(results_dir, cfg):
 
 
 def _is_deterministic(p):
-    """数值题(check_numeric)与词法快路(scored_by=lexical)是确定性判分——它们天然一致会灌水 kappa，
-    不测被校准的 LLM 裁判，校准时排除。"""
-    return p.get("answer_type") == "numeric" or p.get("scored_by") == "lexical"
+    """确定性判分——不测被校准的 LLM 裁判、会灌高 kappa，校准时排除：
+    · 数值题（check_numeric 确定性）· 词法快路（scored_by=lexical）· 越界探针（answerable=false 走确定性弃答判定）。"""
+    return (p.get("answer_type") == "numeric" or p.get("scored_by") == "lexical"
+            or not p.get("answerable"))
 
 
 def _sheet_paths(out_dir):
@@ -121,8 +122,25 @@ def _sheet_paths(out_dir):
             os.path.join(out_dir, ".calibration_key.jsonl"))
 
 
+def _assert_config_matches(results_dir, cfg):
+    """校验给的 config 与产出该 results_dir 的一致（run_matrix 写的 .run_meta 指纹）——否则会把旧答案/判定
+    按 (course,id) 配到**新题面/金标**上（id 没变、内容变了），静默出错。没 meta 就不强求（老格式/手拼）。"""
+    meta_path = os.path.join(results_dir, ".run_meta.json")
+    if not os.path.isfile(meta_path):
+        return
+    try:
+        with open(meta_path, encoding="utf-8") as f:
+            prev_fp = json.load(f).get("fingerprint")
+    except ValueError:
+        return
+    if prev_fp and prev_fp != RM._config_fingerprint(cfg):
+        _die("给的 config 与产出该 results_dir 的 run_matrix 记录不一致（config/题集/材料变了）——"
+             "校准会把旧答案/判定配到新题面/金标上；请用**产出该 results_dir 的同一 config**")
+
+
 def cmd_sample(args):
     cfg = RM.load_config(args.config)
+    _assert_config_matches(args.results_dir, cfg)
     pool = build_pool(args.results_dir, cfg)
     if not pool:
         _die("没有可抽样的条目（answers/scores 与 config 金标对不上，或题集为空）")
@@ -230,10 +248,16 @@ def cmd_kappa(args):
                          "——这些行未计入 kappa。\n" % unmatched)
     agree = sum(1 for h, j in zip(human, judge) if h == j) / n
     k = S.cohen_kappa(human, judge)
+    degenerate = len(set(judge)) < 2 or len(set(human)) < 2   # 裁判(或你)判定全同 → kappa 退化，不是有效校准
     print("=== 人工 vs 裁判一致性（n=%d，未填 %d，未匹配 %d）===" % (n, blank, unmatched))
     print("  原始一致率 agreement = %.1f%%" % (agree * 100))
-    print("  Cohen's kappa        = %.3f   ->  %s"
-          % (k, "可信(>=0.6)" if k >= 0.6 else "偏低，先改进裁判/题目再信任数字"))
+    if degenerate:
+        print("  Cohen's kappa        = %.3f   ->  ⚠️ 退化：样本里裁判%s判定全同（%s），kappa 无意义——"
+              "需要判对判错都有的分层样本（真跑数据）才是有效校准。"
+              % (k, "" if len(set(judge)) < 2 else "或你", "非分层" if len(set(judge)) < 2 else "你全填成一类"))
+    else:
+        print("  Cohen's kappa        = %.3f   ->  %s"
+              % (k, "可信(>=0.6)" if k >= 0.6 else "偏低，先改进裁判/题目再信任数字"))
     if disagree:
         print("\n  人机分歧 %d 条（judge=裁判判, human=你判；这些是裁判最可能错的地方）：" % len(disagree))
         for ref, j, h, q in disagree:

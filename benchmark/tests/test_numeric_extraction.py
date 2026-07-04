@@ -74,6 +74,15 @@ class ExtractFinalNumber(unittest.TestCase):
         self.assertIsNone(J._extract_final_number("1,00^2"))
         self.assertEqual(J.check_numeric("答案 1,00^2", "10000", 0), (False, None))
 
+    def test_bad_final_power_no_fallback(self):
+        # 末位是坏乘方 → None，不回退到前面的 42（单遍有序扫，末位无效即 None）
+        self.assertIsNone(J._extract_final_number("题号 42，答案是 1,00^2"))
+        self.assertEqual(J.check_numeric("题号 42，答案是 1,00^2", "42", 0), (False, None))
+
+    def test_scientific_base_power(self):
+        # 科学计数底数的乘方 1e6^2 = (1e6)^2 = 1e12（不再被拆成 1e36.0 落到 0）
+        self.assertEqual(J._extract_final_number("1e6^2"), 1e12)
+
 
 class CheckNumeric(unittest.TestCase):
     def test_comma_gold_and_answer(self):

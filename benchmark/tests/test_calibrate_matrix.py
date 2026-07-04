@@ -69,6 +69,23 @@ class SampleFromMatrix(unittest.TestCase):
         r = _cm("sample", "--results-dir", empty, "--config", FIX, "--n", "6")
         self.assertEqual(r.returncode, 2)
 
+    def test_config_mismatch_refused(self):
+        # results_dir 的 .run_meta 记的是 fixture config；用不同 config（改了 models/arms）sample → 拒
+        d = tempfile.mkdtemp(prefix="b5cm_")
+        self.addCleanup(shutil.rmtree, d, True)
+        src = os.path.dirname(FIX)
+        cfg2 = {"courses": [{"name": "minios", "items": os.path.join(src, "items.jsonl"),
+                             "combined": os.path.join(src, "materials", "_combined.txt"),
+                             "skill_ws": os.path.join(src, "skill_ws"),
+                             "raw_ws": os.path.join(src, "raw_ws")}],
+                "models": ["opus"], "arms": ["closedbook"], "mock": True}   # 不同指纹
+        cfgp = os.path.join(d, "config.json")
+        with open(cfgp, "w", encoding="utf-8") as f:
+            json.dump(cfg2, f)
+        r = _cm("sample", "--results-dir", self.out, "--config", cfgp, "--n", "3")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("不一致", r.stderr)
+
 
 class KappaComputation(unittest.TestCase):
     def setUp(self):
@@ -109,6 +126,14 @@ class KappaComputation(unittest.TestCase):
         r = _cm("kappa", "--results-dir", self.out)
         self.assertEqual(r.returncode, 1)
 
+    def test_degenerate_kappa_gated(self):
+        # 裁判判定全同（都 1）+ 人全填 1 → kappa 退化，报"退化"而非"可信"
+        self._write([(1, 1), (1, 1), (1, 1)])
+        r = _cm("kappa", "--results-dir", self.out)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("退化", r.stdout)
+        self.assertNotIn("可信", r.stdout)
+
     def test_unmatched_ref_surfaced(self):
         # 填了但 ref_id 对不上 key（表被改/串）→ 不静默丢，报未匹配数 + stderr 警告
         self._write([(1, 1), (0, 0)])
@@ -133,6 +158,9 @@ class CustomPool(unittest.TestCase):
             for iid, at, gold in (("f1", "factual", "g"), ("n1", "numeric", "5"), ("je1", "factual", "g")):
                 f.write(json.dumps({"id": iid, "question": "q", "gold_answer": gold,
                                     "answer_type": at, "answerable": True}) + "\n")
+            # 越界探针（answerable=false）——确定性弃答判定，应从校准池排除
+            f.write(json.dumps({"id": "p1", "question": "q", "gold_answer": "",
+                                "answer_type": "factual", "answerable": False}) + "\n")
         self.cfgp = os.path.join(self.d, "config.json")
         with open(self.cfgp, "w", encoding="utf-8") as f:
             json.dump({"courses": [{"name": "c", "items": items}], "models": ["opus"],
@@ -143,29 +171,30 @@ class CustomPool(unittest.TestCase):
         def base(iid):
             return {"course": "c", "model": "opus", "arm": "closedbook", "item_id": iid}
         with open(os.path.join(self.res, "answers.jsonl"), "w", encoding="utf-8") as f:
-            for iid in ("f1", "n1", "je1"):
+            for iid in ("f1", "n1", "je1", "p1"):
                 f.write(json.dumps(dict(base(iid), answer="a")) + "\n")
         with open(os.path.join(self.res, "scores.jsonl"), "w", encoding="utf-8") as f:
             f.write(json.dumps(dict(base("f1"), correct=True, scored_by="llm", judge_error=0)) + "\n")
             f.write(json.dumps(dict(base("n1"), correct=True, scored_by="mock", judge_error=0)) + "\n")
             f.write(json.dumps(dict(base("je1"), correct=False, scored_by="llm", judge_error=1)) + "\n")
+            f.write(json.dumps(dict(base("p1"), correct=True, scored_by="llm", judge_error=0)) + "\n")
 
     def test_build_pool_skips_judge_error_carries_type(self):
         cfg = __import__("run_matrix").load_config(self.cfgp)
         pool = CM.build_pool(self.res, cfg)
         ids = {p["id"] for p in pool}
-        self.assertEqual(ids, {"f1", "n1"})              # je1 (judge_error) 排除
+        self.assertEqual(ids, {"f1", "n1", "p1"})        # je1 (judge_error) 排除；p1 在池但校准时再排
         f1 = next(p for p in pool if p["id"] == "f1")
         self.assertEqual(f1["answer_type"], "factual")
         self.assertEqual(f1["scored_by"], "llm")
 
-    def test_sample_excludes_deterministic_and_hides_model_arm(self):
+    def test_sample_excludes_deterministic_oos_and_hides_model_arm(self):
         r = _cm("sample", "--results-dir", self.res, "--config", self.cfgp, "--n", "10")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("已排除", r.stdout)                 # n1(numeric) 被排除的提示
+        self.assertIn("已排除", r.stdout)                 # n1(numeric) + p1(OOS) 被排除的提示
         with open(os.path.join(self.res, "calibration", "calibration_sheet.csv"), encoding="utf-8-sig") as f:
             rows = list(csv.DictReader(f))
-        self.assertEqual(len(rows), 1)                   # 只剩 f1（llm 判的）
+        self.assertEqual(len(rows), 1)                   # 只剩 f1（llm 判、可答）——numeric/OOS 都排除
         self.assertNotIn("model", rows[0])               # 待填表不含 model/arm（不带偏标注）
         self.assertNotIn("arm", rows[0])
 

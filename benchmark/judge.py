@@ -25,14 +25,14 @@ ABSTAIN_MARKERS = [
     "not covered", "cannot determine", "not in the material", "i don't know", "not sure",
 ]
 
-# 抓答案里的数字 token（B5 加固）：贪婪吃下 逗号+数字 连串（1,000,000 / 3,14 / 1,2,3 都成**一个** token），
-# 交给 _to_number 判定——合法美式千分位才转数，其余带逗号的（欧式小数/乱逗号）当歧义拒绝（返回 None、被标记），
-# 而不是像旧实现落到片段（"3,14"→"14"、"1,00"→"0"）造成静默误判。也支持科学计数 1e6/1.5e-3、正负号、小数。
-_NUM_TOKEN = re.compile(r"[-+]?\d+(?:,\d+)*(?:\.\d+)?(?:[eE][+-]?\d+)?")
+# 数字抽取（B5 加固）——**单遍、按出现顺序**扫，取最后一个数值单元的值（末位无效就 None，绝不回退到前面的数）。
+# 三类单元按序：数值底数乘方（10^6 / 1,000^2 / 1e6^2）；符号底数乘方（n^2 / O(n^2)，丢弃）；普通数字 token
+# （1,000,000 千分位、1e6 科学计数、3,14/1,2,3 歧义逗号→拒）。逗号/科学计数/乘方/正负/小数都在一个正则里排好序。
 _US_GROUP = re.compile(r"^[-+]?\d{1,3}(?:,\d{3})+(?:\.\d+)?$")     # 合法美式千分位
-# 乘方 a^b 先算成值（10^6→1000000，base 可带千分位逗号 1,000^2）；符号底数的乘方（n^2/O(n^2)）不是数值答案，剥掉指数
-_CARET_POW = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*\^\s*([-+]?\d+)")
-_SYM_POW = re.compile(r"([A-Za-z_]\w*)\s*\^\s*[-+]?\d+")
+_ANY_NUM = re.compile(
+    r"(?P<pow>[-+]?\d[\d,]*(?:\.\d+)?(?:[eE][+-]?\d+)?\s*\^\s*[-+]?\d+)"   # 数值(含科学计数/千分位)底数乘方
+    r"|(?P<sym>[A-Za-z_]\w*\s*\^\s*[-+]?\d+)"                             # 符号底数乘方（不是数值答案，跳过）
+    r"|(?P<num>[-+]?\d+(?:,\d+)*(?:\.\d+)?(?:[eE][+-]?\d+)?)")            # 普通数字 token
 
 
 def _to_number(s):
@@ -49,27 +49,31 @@ def _to_number(s):
     return v if math.isfinite(v) else None             # 1e400 之类 → inf → 拒绝（否则 abs(inf-inf)=nan 判错）
 
 
+def _pow_value(tok):
+    base_str, _, exp_str = tok.partition("^")
+    base = _to_number(base_str)                        # 底数歧义(1,00^2) → None
+    if base is None:
+        return None
+    try:
+        v = base ** float(exp_str.strip())
+    except (ValueError, OverflowError, ZeroDivisionError):
+        return None
+    return v if math.isfinite(v) else None
+
+
 def _extract_final_number(text):
-    """返回文本里**最后一个**可解析的数字（float），无则 None。最终答案通常在末尾。"""
+    """返回文本里**最后一个数值单元**的值（float），无/末位无效则 None。最终答案通常在末尾。"""
     if not text:
         return None
-
-    def _pow(m):
-        base = _to_number(m.group(1))                  # 走 _to_number：底数歧义(1,00^2)返回 None
-        if base is not None:
-            try:
-                v = base ** float(m.group(2))
-                if math.isfinite(v):
-                    return repr(v)
-            except (ValueError, OverflowError, ZeroDivisionError):
-                pass
-        return " "                                     # 底数歧义/溢出/非有限 → 整个乘方作废，不留残数当答案
-    text = _CARET_POW.sub(_pow, text)                  # 数值底数乘方 → 值
-    text = _SYM_POW.sub(r"\1", text)                   # 符号底数乘方 → 只留底数（丢掉指数，别被当答案）
-    tokens = _NUM_TOKEN.findall(text)
-    if not tokens:
-        return None
-    return _to_number(tokens[-1])                      # 取**最后一个 token**的值：末位歧义就 None，不回退到前面的数
+    last = None
+    for m in _ANY_NUM.finditer(text):
+        if m.group("sym") is not None:
+            continue                                   # 符号乘方(n^2) 不是数值答案 → 不更新 last
+        if m.group("pow") is not None:
+            last = _pow_value(m.group("pow"))          # 末位是坏乘方 → last=None（不回退）
+        else:
+            last = _to_number(m.group("num"))          # 末位歧义/inf → last=None（不回退）
+    return last
 
 _GOLD_MIN_LEN = 2
 _NEG_TOKENS = ("不是", "并非", "不叫", "不属于", "not", "no", "never", "未", "非")
