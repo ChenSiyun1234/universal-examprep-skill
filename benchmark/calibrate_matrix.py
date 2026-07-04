@@ -195,14 +195,25 @@ def cmd_sample(args):
     else:
         print("[i] 池里全是确定性判分（numeric/词法快路），无 LLM 裁判判定可校准——照抽以验流程，但 kappa 对裁判无意义。")
 
+    # 四层分层：可答判对 / 可答判错 / 越界弃答 / 越界未弃答（可答:越界 ≈ 2:1，判对:判错各半）。
+    # 只按判对/判错两层抽会让越界探针的占比随池子波动——弃答检测器也是校准对象，得保证两个方向都进样。
+    # 某层供给不足就先层内配平、再全池补满（补满会打破配比，末尾如实报出实际构成）。
     rng = random.Random(args.seed)
-    pos = [p for p in pool if p["judge_correct"] == 1]
-    neg = [p for p in pool if p["judge_correct"] == 0]
-    rng.shuffle(pos); rng.shuffle(neg)
-    half = args.n // 2
-    pick = pos[:half] + neg[:args.n - half]
-    if len(pick) < args.n:                              # 一层不够就用另一层补满
-        extra = (pos[half:] + neg[args.n - half:])
+    strata = {(True, 1): [], (True, 0): [], (False, 1): [], (False, 0): []}
+    for p in pool:
+        strata[(bool(p["answerable"]), p["judge_correct"])].append(p)
+    for v in strata.values():
+        rng.shuffle(v)
+    third = args.n // 3
+    targets = {(True, 1): third, (True, 0): third,
+               (False, 1): (args.n - 2 * third) // 2,
+               (False, 0): args.n - 2 * third - (args.n - 2 * third) // 2}
+    pick = []
+    for k, want in targets.items():
+        pick += strata[k][:want]
+        strata[k] = strata[k][want:]
+    if len(pick) < args.n:                              # 某层不够 → 用其余层补满（先随机混合）
+        extra = [p for v in strata.values() for p in v]
         rng.shuffle(extra)
         pick += extra[:args.n - len(pick)]
     rng.shuffle(pick)
@@ -226,9 +237,16 @@ def cmd_sample(args):
             kf.write(json.dumps({"ref_id": ref, "judge_correct": p["judge_correct"],
                                  "model": p["model"], "arm": p["arm"]}, ensure_ascii=False) + "\n")
 
-    n_pos = sum(1 for p in pick if p["judge_correct"] == 1)   # 实际抽到的判对/判错数（一层空时补满会打破半分）
-    print("[+] 抽样 %d 条（裁判判对 %d / 判错 %d），已写待填表：\n    %s"
-          % (len(pick), n_pos, len(pick) - n_pos, sheet))
+    n_pos = sum(1 for p in pick if p["judge_correct"] == 1)   # 实际抽到的判对/判错数（一层空时补满会打破配比）
+    comp = {"可答判对": 0, "可答判错": 0, "越界弃答": 0, "越界未弃答": 0}
+    for p in pick:
+        if p["answerable"]:
+            comp["可答判对" if p["judge_correct"] else "可答判错"] += 1
+        else:
+            comp["越界弃答" if p["judge_correct"] else "越界未弃答"] += 1
+    print("[+] 抽样 %d 条（裁判判对 %d / 判错 %d；构成 %s），已写待填表：\n    %s"
+          % (len(pick), n_pos, len(pick) - n_pos,
+             " ".join("%s=%d" % kv for kv in comp.items()), sheet))
     if n_pos == len(pick) or n_pos == 0:
         print("    注：这批裁判判定全同（分层不成）——真校准需 answers/scores 里判对判错都有（真跑数据）。")
     tail = "" if not args.out_dir else " --out-dir %s" % args.out_dir   # 自定义 out-dir 也带进续跑命令

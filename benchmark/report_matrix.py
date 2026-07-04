@@ -201,8 +201,8 @@ def block(lang, S):
     cav = [
         (f"题量 n={S['n_items']}（{tr('每条都跨 3 臂同题对比，最公平','same items across all arms')}）。",
          f"n={S['n_items']} items, each answered under all conditions."),
-        ("判分由 Sonnet 4.6 完成，数值题用程序精确比对，并经人工抽查 16 题与判分结果逐题对照，一致性 Cohen's kappa = 0.875（高度一致），故上表数字可信。判分模型与被测模型同属一个家族，是已知局限。",
-         "Judging by Sonnet 4.6; numeric items compared programmatically, and validated by a 16-item human spot-check with Cohen's kappa = 0.875 (high agreement), so the numbers above are trustworthy. Judge and tested models share one family, a known limitation."),
+        ("判分由 Sonnet 4.6 完成，数值题用程序精确比对，并经两次独立人工校准：16 题抽查 Cohen's kappa = 0.875；另做 24 题四层分层盲测（可答判对/判错 + 越界弃答/未弃答，判分对人隐藏）kappa = 0.833——均高度一致、互相印证，故上表数字可信。两次里观察到的人机分歧都是判分偏严（把正确答案判错）——这是抽样迹象（样本有限，不构成对全部判分的证明），提示数字更可能偏保守而非虚高。判分模型与被测模型同属一个家族，是已知局限。",
+         "Judging by Sonnet 4.6; numeric items compared programmatically, validated by two independent human calibrations: a 16-item spot-check (Cohen's kappa = 0.875) and a 24-item four-stratum blind calibration (answerable right/wrong + out-of-scope abstained/not, judge verdicts hidden; kappa = 0.833) — both high agreement, corroborating each other. All observed disagreements had the judge being too strict (marking correct answers wrong) — a sampled indication (limited n, not proof over all judgments) that the numbers lean conservative rather than inflated. Judge and tested models share one family, a known limitation."),
         ("「给全材料」臂把整门课 dump 进提示，频繁撞订阅配额/上下文上限；其报错答案已从计分中剔除，仅在真答案上计分（样本量见上）。这本身说明 dump 全课在工程上不可行。",
          "The full-materials arm dumps the whole course and frequently hits subscription-quota / context limits; its error replies are excluded and it is scored on real answers only (sample sizes above) — which itself shows dumping a whole course is operationally impractical."),
         ("幻觉/忠实度以整篇讲义为依据，会把“正确但讲义没写”的展开也算作不忠实——对 grounding 基准是合理口径，但解读时需知晓。",
