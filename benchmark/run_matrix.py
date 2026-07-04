@@ -142,9 +142,19 @@ def load_items(course):
             if "answer_type" not in d or "answerable" not in d:
                 _die("课程 %s 的 items 第 %d 行缺 answer_type/answerable——像是问题-only 文件（*_q.jsonl），"
                      "请指向带金标的 items 文件" % (course.get("name"), ln))
-            if d.get("answerable") is not False and not str(d.get("gold_answer", "")).strip():
+            if not isinstance(d["answerable"], bool):
+                # "answerable":"false"（字符串）会被 bool() 当 True，越界探针被算进可答题、污染指标——须真 bool
+                _die("课程 %s 的 items 第 %d 行 answerable 必须是 true/false 布尔（不是字符串/数字）"
+                     % (course.get("name"), ln))
+            if d["answerable"] and not str(d.get("gold_answer", "")).strip():
                 _die("课程 %s 的 items 第 %d 行 answerable 但无 gold_answer——金标缺失，无法判分"
                      % (course.get("name"), ln))
+            if d.get("answer_type") == "numeric" and d.get("tolerance") not in (None, ""):
+                try:
+                    float(d["tolerance"])               # 坏 tolerance（如 "abc"）在此 fail-loud，别等 check_numeric 崩
+                except (TypeError, ValueError):
+                    _die("课程 %s 的 items 第 %d 行 numeric tolerance 非数字：%r"
+                         % (course.get("name"), ln, d.get("tolerance")))
             rid = str(d["id"])
             if rid in seen:
                 _die("课程 %s 的 items 第 %d 行 id 重复：%s（首见于第 %d 行）"
@@ -313,15 +323,27 @@ def _scored_keys(score_path):
     return keys
 
 
+def _file_hash(p):
+    """items 文件**内容**哈希——就地改题/改 gold（路径没变）也让指纹变，旧 score 不被当仍有效。"""
+    try:
+        with open(p, "rb") as f:
+            return hashlib.md5(f.read()).hexdigest()
+    except OSError:
+        return None
+
+
 def _config_fingerprint(cfg):
-    """决定任务集 + 判分的配置指纹：课程名/各路径、模型、臂、主/次课程。改了任一 → 指纹变。"""
+    """决定任务集 + 判分的配置指纹：课程名/各路径 + **items 内容** + 模型/臂/主次课程 + judge_model。
+    改了任一（含就地编辑 items、换裁判模型）→ 指纹变 → 拒绝复用旧 results_dir。"""
     sig = {
-        "courses": sorted((c["name"], c.get("items"), c.get("combined"),
-                           c.get("skill_ws"), c.get("raw_ws")) for c in cfg["courses"]),
+        "courses": sorted((c["name"], c.get("items"), _file_hash(c.get("items")),
+                           c.get("combined"), c.get("skill_ws"), c.get("raw_ws"))
+                          for c in cfg["courses"]),
         "models": sorted(cfg["models"]),
         "arms": sorted(cfg["arms"]),
         "primary": cfg["primary_course"],
         "secondary": cfg.get("secondary_course"),
+        "judge_model": cfg.get("judge_model"),
     }
     return hashlib.md5(json.dumps(sig, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
@@ -476,16 +498,20 @@ def main(argv=None):
                     help="输出目录（覆盖 config.results_dir；按 cwd 解析）")
     args = ap.parse_args(argv)
 
+    if args.mock and args.real:
+        _die("--mock 与 --real 互斥，别同时给（否则会静默按 mock 跑，留下占位摘要）")
+    if args.limit < 0:
+        _die("--limit 不能为负（是「前 N 个」；负值会从尾部切、还被当有意部分跑聚合出截断摘要）")
+
     cfg = load_config(args.config or _FIXTURE_CONFIG)
     if args.results_dir is not None:
         cfg["results_dir"] = os.path.abspath(args.results_dir)
-    mock = True
     if args.real:
         mock = False
-    if args.mock:
+    elif args.mock:
         mock = True
-    if not args.real and not args.mock:
-        mock = bool(cfg.get("mock", True))              # 缺省看 config，默认 mock
+    else:
+        mock = bool(cfg.get("mock", True))              # 都没给 → 看 config，默认 mock
     run(cfg, mock=mock, limit=args.limit)
     return 0
 

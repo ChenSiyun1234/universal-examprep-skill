@@ -173,6 +173,32 @@ class ConfigValidation(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertIn("gold_answer", r.stderr)
 
+    def _items_cfg(self, item):
+        with open(os.path.join(self.d, "i.jsonl"), "w", encoding="utf-8") as f:
+            f.write(json.dumps(item) + "\n")
+        return self._cfg({"courses": [{"name": "a", "items": "i.jsonl"}], "arms": ["closedbook"]})
+
+    def test_answerable_non_bool_exits_2(self):
+        # "answerable":"false"（字符串）会被 bool() 当 True → 拒绝
+        r = _run("--mock", "--config", self._items_cfg(
+            {"id": "x", "question": "q", "gold_answer": "a", "answer_type": "factual",
+             "answerable": "false"}))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("布尔", r.stderr)
+
+    def test_bad_numeric_tolerance_exits_2(self):
+        r = _run("--mock", "--config", self._items_cfg(
+            {"id": "x", "question": "q", "gold_answer": "5", "answer_type": "numeric",
+             "answerable": True, "tolerance": "abc"}))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("tolerance", r.stderr)
+
+    def test_negative_limit_exits_2(self):
+        self.assertEqual(_run("--mock", "--config", FIXTURE_CFG, "--limit", "-1").returncode, 2)
+
+    def test_mock_and_real_together_exits_2(self):
+        self.assertEqual(_run("--mock", "--real", "--config", FIXTURE_CFG).returncode, 2)
+
     def test_relative_paths_resolved_to_config_dir(self):
         # config 里的相对 items 路径按 config 目录解析
         with open(os.path.join(self.d, "i.jsonl"), "w", encoding="utf-8") as f:
@@ -302,6 +328,27 @@ class FixesRegression(unittest.TestCase):
         with open(cfg2p, "w", encoding="utf-8") as f:
             json.dump(cfg2, f)
         r = _run("--mock", "--config", cfg2p, "--results-dir", self.out)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("不同的 config", r.stderr)
+
+    def test_items_content_edit_refused(self):
+        # 就地编辑 items 内容（路径没变）→ 指纹变 → 拒绝复用旧 results_dir（旧 score 不当仍有效）
+        d = tempfile.mkdtemp(prefix="b4ic_")
+        self.addCleanup(shutil.rmtree, d, True)
+        itemsp = os.path.join(d, "items.jsonl")
+
+        def write_items(gold):
+            with open(itemsp, "w", encoding="utf-8") as f:
+                f.write(json.dumps({"id": "x", "question": "q", "gold_answer": gold,
+                                    "answer_type": "factual", "answerable": True}) + "\n")
+        write_items("a")
+        cfgp = os.path.join(d, "config.json")
+        with open(cfgp, "w", encoding="utf-8") as f:
+            json.dump({"courses": [{"name": "c", "items": itemsp}], "models": ["opus"],
+                       "arms": ["closedbook"], "mock": True}, f)
+        _run("--mock", "--config", cfgp, "--results-dir", self.out)
+        write_items("b")                                  # 就地改 gold（路径不变，内容变）
+        r = _run("--mock", "--config", cfgp, "--results-dir", self.out)
         self.assertEqual(r.returncode, 2)
         self.assertIn("不同的 config", r.stderr)
 
