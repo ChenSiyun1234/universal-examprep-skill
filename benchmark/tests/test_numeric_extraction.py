@@ -255,6 +255,14 @@ class HardeningRound4(unittest.TestCase):
         self.assertTrue(J.check_numeric("the result is (-2)^2", "4", 0)[0])
         self.assertIsNone(J._extract_final_number("(-2)^0.5"))   # 复数仍拒
 
+    def test_plural_citation_labels(self):
+        # 复数引用（pages 12-13 / slides 3/20 / chapters 5-6）同样跳过；stages/messages 不误伤
+        self.assertEqual(J._extract_final_number("answer is 42, see pages 12-13"), 42.0)
+        self.assertIsNone(J._extract_final_number("see slides 3/20"))
+        self.assertEqual(J._extract_final_number("answer is 42 (chapters 5-6)"), 42.0)
+        self.assertTrue(J.check_numeric("answer is 42, see pages 12-13", "42", 0)[0])
+        self.assertEqual(J._extract_final_number("there are 3 stages 5"), 5.0)   # stages 不是引用词
+
     def test_parenthesized_equation_citation(self):
         # Eq. (7) / equation (7)：括号形式的公式引用也跳过
         self.assertEqual(J._extract_final_number("answer is 42 by equation (7)"), 42.0)

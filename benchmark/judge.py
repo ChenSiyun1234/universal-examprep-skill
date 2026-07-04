@@ -54,8 +54,9 @@ _STRIP_SP = re.compile(r"[ \u00a0\u2009\u202f]")
 # 引用语境：英文关键词在数字前（chapter 7 / p. 12 / equation (7)——括号可选），中文要求「第」在前**且**
 # 章/页/讲等类别字紧随其后（第7章）。「7 章」「共 7 章」这类**数量**（无「第」前缀）不算引用，照常当数。
 _CITE_EN = re.compile(
-    r"(?<![a-z])(?:(?:chapter|chap|ch|page|section|sec|figure|fig|table|tab|"
-    r"equation|eq|lecture|lec|slide|question|problem|exercise|ex|ref)\.?|p{1,2}\.)\s*\(?\s*$", re.I)
+    r"(?<![a-z])(?:(?:chapters?|chap|ch|pages?|sections?|sec|figures?|figs?|tables?|tab|"
+    r"equations?|eqs?|lectures?|lec|slides?|questions?|problems?|exercises?|ex|refs?)\.?"
+    r"|p{1,2}\.)\s*\(?\s*$", re.I)   # 复数形（pages 12-13 / slides 3/20）同样是引用
 # p/pp **必须带点**（p. 45 是页码引用；p .32 / p = .32 是 p 值，不是引用）。
 _CITE_CN_AFTER = re.compile(r"^\s*(?:[-–—~到至]\s*\d+(?:\.\d+)?\s*)?[章节節页頁讲講题題课課问問条]")
 
