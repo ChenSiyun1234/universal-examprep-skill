@@ -43,6 +43,7 @@ for _s in ("stdout", "stderr"):
 STATE_NAME = "study_state.json"
 LEARNING_MODES = ("零基础从头讲", "某章起步补弱", "查缺补漏")
 _MIXED_SCOPES = {None, "", "混合题池", "mixed", "混合"}   # 非限制性范围——不过滤
+_MIXED_OVERRIDE = {"all", "mixed", "*", "混合", "全部"}   # --source-type 传这些 = 一次性覆盖为混合池
 # 已订正/已解决的错题、已回顾的疑难不再算薄弱——否则查缺补漏会把「已经拿下的」永远顶在最前，
 # 挤掉仍待复盘的真薄弱点（错题走 待复盘→已订正/已复盘/已解决；疑难走 待回顾→已回顾）。
 _MISTAKE_RESOLVED = {"已订正", "已复盘", "已解决"}
@@ -246,9 +247,10 @@ def main(argv=None):
                     help="A6 学习模式；缺省时读 study_state.mode，再缺省按 查缺补漏")
     ap.add_argument("--chapter", default=None, help="只出该章（chapter 或 phase 精确匹配）")
     ap.add_argument("--from-chapter", type=int, default=None,
-                    help="只出该数值章号及之后（某章起步补弱用；缺省时从 study_state.current_phase 推）")
+                    help="只出该数值章号及之后（某章起步补弱用）；不从 current_phase 猜，缺省即不按此过滤")
     ap.add_argument("--source-type", default=None,
-                    help="按来源类型过滤（逗号分隔，与 A2 一致）；缺省时读 study_state.scope，未标签项一律排除")
+                    help="按来源类型过滤（逗号分隔，与 A2 一致）；缺省读 study_state.scope，未标签项一律排除；"
+                         "传 all/mixed/* 显式覆盖为混合池（本轮，A2 越界须先声明）")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
 
@@ -264,8 +266,15 @@ def main(argv=None):
     notes = []
 
     # 范围过滤（A2 契约）：显式 --source-type 优先；否则按存档 scope 推导——非混合但推不出即 fail-loud。
+    # 显式 --source-type all/mixed/* = 一次性覆盖存档范围为混合池（A2 越界覆盖路径；声明由技能层负责）。
     if args.source_type is not None:
-        source_types = _parse_source_types(args.source_type)
+        if args.source_type.strip().lower() in _MIXED_OVERRIDE:
+            source_types = None
+            if (state or {}).get("scope") not in _MIXED_SCOPES:
+                notes.append("已按显式 --source-type %s 覆盖存档范围为混合池（本轮；A2 越界覆盖须先向学生声明）"
+                             % args.source_type.strip())
+        else:
+            source_types = _parse_source_types(args.source_type)
     else:
         source_types = _scope_to_source_types((state or {}).get("scope"))
         if source_types:

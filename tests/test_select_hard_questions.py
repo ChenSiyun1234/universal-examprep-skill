@@ -233,6 +233,18 @@ class CliIO(unittest.TestCase):
         obj = json.loads(self._run("--source-type", "exam").stdout)
         self.assertEqual([it["id"] for it in obj["items"]], ["mid"])   # mid 是 exam
 
+    def test_source_type_all_overrides_scope_to_mixed(self):
+        # 存档 homework-only + --source-type all → 一次性覆盖为混合池（返回所有题，含 exam/untagged）
+        self.bank[0]["source_type"] = "homework"      # easy
+        self.bank[1]["source_type"] = "exam"          # mid（hard 无 source_type=untagged）
+        with open(os.path.join(self.ws, "references", "quiz_bank.json"), "w", encoding="utf-8") as f:
+            json.dump(self.bank, f, ensure_ascii=False, indent=2)
+        self._state({"mode": "查缺补漏", "scope": "homework-only"})
+        obj = json.loads(self._run("--source-type", "all").stdout)
+        self.assertIsNone(obj["source_types"])                       # 混合池
+        self.assertEqual({it["id"] for it in obj["items"]}, {"easy", "mid", "hard"})
+        self.assertTrue(any("覆盖存档范围为混合池" in n for n in obj["notes"]))
+
     def test_unmappable_scope_fails_loud(self):
         self._state({"mode": "查缺补漏", "scope": "某个自定义范围"})
         r = self._run()
