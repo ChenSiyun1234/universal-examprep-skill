@@ -32,24 +32,27 @@ class ClassifyUnit(unittest.TestCase):
         idx2 = shq.build_mastery({"confusion_log": [{"id": None, "chapter": 3}]})
         self.assertEqual(shq.classify(_q("qy", chapter=3), idx2)[0], "weak")
 
-    def test_window_out_is_weak_by_chapter_and_point(self):
+    def test_window_out_is_weak_by_point_not_whole_chapter(self):
+        # 窗口外只让**覆盖该点**的题薄弱；同章其它无关点的题不被牵连（点级，非章级）
         idx = shq.build_mastery({"knowledge_window": [
             {"point": "积分", "chapter": 5, "status": "窗口外"}]})
-        self.assertEqual(shq.classify(_q("a", chapter=5), idx)[0], "weak")            # 章命中
-        self.assertEqual(shq.classify(_q("b", chapter=99, knowledge_points=["定积分"]), idx)[0], "weak")  # 点子串命中
+        self.assertEqual(shq.classify(_q("b", chapter=99, knowledge_points=["定积分"]), idx)[0], "weak")   # 点子串命中
+        self.assertEqual(shq.classify(_q("a", chapter=5), idx)[0], "neutral")     # 同章但无该点 → 不牵连
+        self.assertEqual(shq.classify(_q("c", chapter=5, knowledge_points=["矩阵"]), idx)[0], "neutral")  # 同章不同点
 
-    def test_in_window_is_mastered(self):
+    def test_in_window_is_mastered_by_point(self):
         idx = shq.build_mastery({"knowledge_window": [
             {"point": "极限", "chapter": 4, "status": "在窗口"},
             {"point": "连续", "chapter": 6, "status": "已实测"}]})
-        self.assertEqual(shq.classify(_q("a", chapter=4), idx)[0], "mastered")
-        self.assertEqual(shq.classify(_q("b", chapter=6), idx)[0], "mastered")
+        self.assertEqual(shq.classify(_q("a", chapter=4, knowledge_points=["极限"]), idx)[0], "mastered")
+        self.assertEqual(shq.classify(_q("b", chapter=6, knowledge_points=["连续性"]), idx)[0], "mastered")
+        self.assertEqual(shq.classify(_q("c", chapter=4), idx)[0], "neutral")    # 同章无该点 → 不算已掌握
 
     def test_weak_beats_mastered_when_both(self):
-        # 同章既在窗口又有错题 → weak 优先（有错题就还没掌握）
+        # 同点既在窗口又有错题 → weak 优先（有错题就还没掌握）
         idx = shq.build_mastery({"mistake_archive": [{"id": None, "chapter": 4}],
                                  "knowledge_window": [{"point": "p", "chapter": 4, "status": "在窗口"}]})
-        self.assertEqual(shq.classify(_q("a", chapter=4), idx)[0], "weak")
+        self.assertEqual(shq.classify(_q("a", chapter=4, knowledge_points=["p"]), idx)[0], "weak")
 
     def test_weak_matches_via_phase_not_only_chapter(self):
         # 只带 phase 的题：trouble/窗口按 chapter-OR-phase 命中（与 A2 一致）
@@ -76,8 +79,10 @@ class ClassifyUnit(unittest.TestCase):
         self.assertIn("3", idx2["trouble_ch"])
 
     def test_resolved_confusion_not_weak(self):
-        idx = shq.build_mastery({"confusion_log": [{"chapter": 5, "status": "已回顾"}]})
-        self.assertNotIn("5", idx["trouble_ch"])
+        # 已回顾 与 已解决 的疑难都不再算薄弱；待回顾 仍算
+        for done in ("已回顾", "已解决"):
+            idx = shq.build_mastery({"confusion_log": [{"chapter": 5, "status": done}]})
+            self.assertNotIn("5", idx["trouble_ch"], done)
         idx2 = shq.build_mastery({"confusion_log": [{"chapter": 6, "status": "待回顾"}]})
         self.assertIn("6", idx2["trouble_ch"])
 

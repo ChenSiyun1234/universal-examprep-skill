@@ -44,10 +44,10 @@ STATE_NAME = "study_state.json"
 LEARNING_MODES = ("零基础从头讲", "某章起步补弱", "查缺补漏")
 _MIXED_SCOPES = {None, "", "混合题池", "mixed", "混合"}   # 非限制性范围——不过滤
 _MIXED_OVERRIDE = {"all", "mixed", "*", "混合", "全部"}   # --source-type 传这些 = 一次性覆盖为混合池
-# 已订正/已解决的错题、已回顾的疑难不再算薄弱——否则查缺补漏会把「已经拿下的」永远顶在最前，
-# 挤掉仍待复盘的真薄弱点（错题走 待复盘→已订正/已复盘/已解决；疑难走 待回顾→已回顾）。
+# 已订正/已解决的错题、已回顾/已解决的疑难不再算薄弱——否则查缺补漏会把「已经拿下的」永远顶在最前，
+# 挤掉仍待复盘的真薄弱点（错题走 待复盘→已订正/已复盘/已解决；疑难走 待回顾→已回顾，也可 已解决）。
 _MISTAKE_RESOLVED = {"已订正", "已复盘", "已解决"}
-_CONFUSION_RESOLVED = {"已回顾"}
+_CONFUSION_RESOLVED = {"已回顾", "已解决"}
 
 
 def _die(msg, code=2):
@@ -156,9 +156,10 @@ def _item_points(q):
 
 
 def build_mastery(state):
-    """把 study_state 拆成掌握索引；state 为 None 时返回空索引（全 neutral）。"""
-    idx = {"mistake_ids": set(), "trouble_ch": set(),
-           "weak_ch": set(), "weak_pt": set(), "strong_ch": set(), "strong_pt": set()}
+    """把 study_state 拆成掌握索引；state 为 None 时返回空索引（全 neutral）。
+    错题/疑难是**章级**（trouble_ch）——一章有错就整章薄弱；知识点窗口是**点级**（weak_pt/strong_pt）——
+    一个窗口外的点只让**覆盖该点**的题薄弱，绝不把整章拖下水（否则 ch5 一个窗口外点会把无关的 ch5 题全顶到前面）。"""
+    idx = {"mistake_ids": set(), "trouble_ch": set(), "weak_pt": set(), "strong_pt": set()}
     if not state:
         return idx
     for m in state.get("mistake_archive") or []:
@@ -169,24 +170,19 @@ def build_mastery(state):
                 idx["trouble_ch"].add(str(m["chapter"]))
     for c in state.get("confusion_log") or []:
         if (isinstance(c, dict) and c.get("chapter") is not None
-                and c.get("status") not in _CONFUSION_RESOLVED):              # 已回顾的疑难不再算薄弱
+                and c.get("status") not in _CONFUSION_RESOLVED):              # 已回顾/已解决的疑难不再算薄弱
             idx["trouble_ch"].add(str(c["chapter"]))
     for w in state.get("knowledge_window") or []:
         if not isinstance(w, dict):
             continue
-        status = w.get("status") or "在窗口"
-        ch = str(w["chapter"]) if w.get("chapter") is not None else None
         pt = str(w["point"]).strip() if w.get("point") else None
+        if not pt:                                     # 窗口条目按点匹配；无 point 无法定位到题，跳过
+            continue
+        status = w.get("status") or "在窗口"
         if status == "窗口外":
-            if ch:
-                idx["weak_ch"].add(ch)
-            if pt:
-                idx["weak_pt"].add(pt)
+            idx["weak_pt"].add(pt)
         elif status in ("在窗口", "已实测"):
-            if ch:
-                idx["strong_ch"].add(ch)
-            if pt:
-                idx["strong_pt"].add(pt)
+            idx["strong_pt"].add(pt)
     return idx
 
 
@@ -208,11 +204,9 @@ def classify(q, idx):
         return "weak", "错题"
     if chs & idx["trouble_ch"]:
         return "weak", "本章有错题/疑难"
-    if chs & idx["weak_ch"]:
-        return "weak", "窗口外(章)"
-    if _pt_hit(pts, idx["weak_pt"]):
+    if _pt_hit(pts, idx["weak_pt"]):                   # 窗口外：仅覆盖该点的题算薄弱（非整章）
         return "weak", "窗口外(点)"
-    if (chs & idx["strong_ch"]) or _pt_hit(pts, idx["strong_pt"]):
+    if _pt_hit(pts, idx["strong_pt"]):                 # 在窗口/已实测：仅覆盖该点的题算已掌握
         return "mastered", "在窗口/已实测"
     return "neutral", "常规"
 
