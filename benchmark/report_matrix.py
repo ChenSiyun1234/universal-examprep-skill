@@ -142,7 +142,8 @@ def block(lang, S):
     if cost.get("skill"):
         o.append(f"""<h3 style="font-size:16px;margin-top:18px">{tr("💵 平均每题成本（同精度下更省才是 skill 的差异）","💵 Cost per question (the skill's real edge: same accuracy, lower cost)")}</h3>""")
         o.append('<table><tr>' + "".join(f'<th>{tr(z,e)}</th>' for _, z, e, _ in ARMS) + "</tr><tr>"
-                 + "".join(f'<td>${cost.get(ak)}</td>' for ak, *_ in ARMS) + "</tr></table>")
+                 + "".join("<td>%s</td>" % ("N/A" if cost.get(ak) is None else "$%s" % cost[ak])
+                           for ak, *_ in ARMS) + "</tr></table>")
         o.append('<p class="muted">' + tr(
             "同等甚至更高精度下，本技能每题成本低于裸文件 agent——它只取压缩过的相关章节，而裸文件 agent 每题都要翻检整堆原始文件。",
             "At equal-or-better accuracy the skill costs less per question than the raw-files agent — it pulls one "
@@ -267,7 +268,11 @@ def block_generic(lang, S):
     if cpq:
         o.append(f'<h2>{tr("每题成本 Cost/question", "Cost per question")}</h2><ul>')
         for course in sorted(cpq):
-            pairs = "  ·  ".join(f"{html.escape(a)}=${cpq[course].get(a)}" for a in sorted(cpq[course]))
+            # 全 infra 臂的每题成本是 null（没有一条完成的模型答案）——渲染成 N/A，不出现 "$None"
+            pairs = "  ·  ".join(
+                "%s=%s" % (html.escape(a),
+                           "N/A" if cpq[course].get(a) is None else "$%s" % cpq[course][a])
+                for a in sorted(cpq[course]))
             o.append(f'<li>{html.escape(course)}: {pairs}</li>')
         o.append("</ul>")
     if S.get("psyc"):

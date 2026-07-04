@@ -390,7 +390,8 @@ class FixesRegression(unittest.TestCase):
         self.assertIn("不同的 config", r.stderr)
 
     def test_material_content_edit_refused(self):
-        # 就地改 combined 材料内容（路径不变）→ 指纹变 → 拒绝复用旧 results_dir
+        # 就地改 combined 材料内容（路径不变）且**选了 material 臂** → 指纹变 → 拒绝复用旧 results_dir。
+        # （加固批语义收窄：没选 material 臂时判分不读 combined，改它不拒续跑——见 HardeningB4X。）
         d = tempfile.mkdtemp(prefix="b4mc_")
         self.addCleanup(shutil.rmtree, d, True)
         itemsp = os.path.join(d, "items.jsonl")
@@ -403,7 +404,7 @@ class FixesRegression(unittest.TestCase):
         cfgp = os.path.join(d, "config.json")
         with open(cfgp, "w", encoding="utf-8") as f:
             json.dump({"courses": [{"name": "c", "items": itemsp, "combined": combp}],
-                       "models": ["opus"], "arms": ["closedbook"], "mock": True}, f)
+                       "models": ["opus"], "arms": ["closedbook", "material"], "mock": True}, f)
         _run("--mock", "--config", cfgp, "--results-dir", self.out)
         with open(combp, "w", encoding="utf-8") as f:
             f.write("material version TWO")                # 就地改材料内容
@@ -552,6 +553,198 @@ class FixesRegression(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)               # 不因 c2 缺席失败
         with open(os.path.join(self.out, "summary.json"), encoding="utf-8") as f:
             self.assertEqual(json.load(f)["courses"], ["c1"])
+
+
+class HardeningB4X(unittest.TestCase):
+    """加固批（对抗审计 9 条）：账本坏行死锁、崩溃残段自愈、meta 缺键、指纹盲点、NaN/Inf 金标、陈旧 summary。"""
+
+    def setUp(self):
+        self.out = tempfile.mkdtemp(prefix="b4hx_")
+        self.addCleanup(shutil.rmtree, self.out, True)
+
+    def _mock_run(self):
+        return _run("--mock", "--config", FIXTURE_CFG, "--results-dir", self.out)
+
+    # ---- NaN / Infinity 金标与容差 ----
+    def _items_cfg(self, item):
+        d = tempfile.mkdtemp(prefix="b4hi_")
+        self.addCleanup(shutil.rmtree, d, True)
+        with open(os.path.join(d, "i.jsonl"), "w", encoding="utf-8") as f:
+            f.write(json.dumps(item) + "\n")
+        p = os.path.join(d, "config.json")
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump({"courses": [{"name": "a", "items": os.path.join(d, "i.jsonl")}],
+                       "arms": ["closedbook"]}, f)
+        return p
+
+    def test_nan_tolerance_rejected(self):
+        # json.loads 接受裸 NaN 字面量、float() 不报错——tol=NaN 任何比较 False、每答案判错，须显式拦
+        r = _run("--mock", "--config", self._items_cfg(
+            {"id": "x", "question": "q", "gold_answer": "5", "answer_type": "numeric",
+             "answerable": True, "tolerance": float("nan")}))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("有限数", r.stderr)
+
+    def test_infinity_tolerance_rejected(self):
+        # tol=Infinity → 任何答案都在容差内 → 全判对
+        r = _run("--mock", "--config", self._items_cfg(
+            {"id": "x", "question": "q", "gold_answer": "5", "answer_type": "numeric",
+             "answerable": True, "tolerance": float("inf")}))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("有限数", r.stderr)
+
+    def test_nan_gold_rejected(self):
+        r = _run("--mock", "--config", self._items_cfg(
+            {"id": "x", "question": "q", "gold_answer": float("nan"), "answer_type": "numeric",
+             "answerable": True}))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("有限数", r.stderr)
+
+    # ---- 账本坏行：中间坏行 fail-loud（不再和 aggregate 形成死锁），崩溃残段自愈 ----
+    def test_interior_malformed_score_row_fails_loud(self):
+        self._mock_run()
+        sp = os.path.join(self.out, "scores.jsonl")
+        with open(sp, encoding="utf-8") as f:
+            lines = f.read().splitlines(True)
+        lines[0] = '{"course": "minios", "model": "opus", "arm": "closedb\n'   # 截断的半行 + 换行
+        with open(sp, "w", encoding="utf-8") as f:
+            f.write("".join(lines))
+        r = self._mock_run()
+        self.assertEqual(r.returncode, 2)                # 以前：静默跳过→重判→aggregate 死→每次续跑白做
+        self.assertIn("第 1 行", r.stderr)
+
+    def test_missing_key_score_row_fails_loud(self):
+        self._mock_run()
+        sp = os.path.join(self.out, "scores.jsonl")
+        with open(sp, encoding="utf-8") as f:
+            rows = [json.loads(l) for l in f if l.strip()]
+        del rows[0]["item_id"]                           # 合法 JSON 但缺必备键
+        with open(sp, "w", encoding="utf-8") as f:
+            for d in rows:
+                f.write(json.dumps(d, ensure_ascii=False) + "\n")
+        r = self._mock_run()
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("KeyError", r.stderr)
+
+    def test_partial_tail_self_heals(self):
+        # 崩溃只写了半行（末行无换行且非法）→ 视作未写入：截掉 + 续跑补齐，无重复、聚合成功
+        self._mock_run()
+        sp = os.path.join(self.out, "scores.jsonl")
+        with open(sp, encoding="utf-8") as f:
+            lines = f.read().splitlines(True)
+        with open(sp, "w", encoding="utf-8") as f:
+            f.write("".join(lines[:-1]))
+            f.write(lines[-1].rstrip("\n")[:30])         # 半行、无换行
+        r = self._mock_run()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("残段", r.stderr)
+        rows = _rows(sp)
+        keys = [(d["course"], d["model"], d["arm"], d["item_id"]) for d in rows]
+        self.assertEqual(len(keys), len(set(keys)))      # 无重复
+        self.assertEqual(len(rows), 30)
+
+    def test_complete_tail_without_newline_not_duplicated(self):
+        # 末行完整只是缺换行 → 行有效：补换行再续写，绝不黏行、绝不重打
+        self._mock_run()
+        ap = os.path.join(self.out, "answers.jsonl")
+        with open(ap, encoding="utf-8") as f:
+            content = f.read()
+        with open(ap, "w", encoding="utf-8") as f:
+            f.write(content.rstrip("\n"))                # 去掉末尾换行
+        r = self._mock_run()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rows = _rows(ap)                                 # 若黏行，这里 json.loads 直接炸
+        self.assertEqual(len(rows), 30)
+        keys = [(d["course"], d["model"], d["arm"], d["item_id"]) for d in rows]
+        self.assertEqual(len(keys), len(set(keys)))
+
+    # ---- meta 缺键拒绝 ----
+    def test_meta_missing_fingerprint_refused(self):
+        self._mock_run()
+        with open(os.path.join(self.out, ".run_meta.json"), "w", encoding="utf-8") as f:
+            json.dump({"mode": "mock"}, f)               # 缺 fingerprint
+        r = self._mock_run()
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("fingerprint", r.stderr)
+
+    def test_meta_missing_mode_refused(self):
+        self._mock_run()
+        with open(os.path.join(self.out, ".run_meta.json"), encoding="utf-8") as f:
+            fp = json.load(f)["fingerprint"]
+        with open(os.path.join(self.out, ".run_meta.json"), "w", encoding="utf-8") as f:
+            json.dump({"fingerprint": fp}, f)            # 缺 mode
+        r = self._mock_run()
+        self.assertEqual(r.returncode, 2)
+
+    # ---- 指纹盲点 ----
+    def _fp_cfg(self, arms, combined_text):
+        d = tempfile.mkdtemp(prefix="b4fp_")
+        self.addCleanup(shutil.rmtree, d, True)
+        items = os.path.join(d, "i.jsonl")
+        with open(items, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"id": "x", "question": "q", "gold_answer": "a",
+                                "answer_type": "factual", "answerable": True}) + "\n")
+        comb = os.path.join(d, "c.txt")
+        with open(comb, "w", encoding="utf-8") as f:
+            f.write(combined_text)
+        return {"courses": [{"name": "a", "items": items, "combined": comb}],
+                "models": ["opus"], "arms": arms, "primary_course": "a", "secondary_course": None}
+
+    def test_fingerprint_ignores_unused_material(self):
+        # 没选 material 臂时，改 combined 不该变指纹（判分不读它）——否则合法续跑被误拒
+        cfg = self._fp_cfg(["closedbook"], "v1")
+        fp1 = RM._config_fingerprint(cfg)
+        with open(cfg["courses"][0]["combined"], "w", encoding="utf-8") as f:
+            f.write("v2 changed")
+        self.assertEqual(RM._config_fingerprint(cfg), fp1)
+        # 选了 material 臂 → 改 combined 必须变指纹
+        cfg2 = self._fp_cfg(["closedbook", "material"], "v1")
+        fp2 = RM._config_fingerprint(cfg2)
+        with open(cfg2["courses"][0]["combined"], "w", encoding="utf-8") as f:
+            f.write("v2 changed")
+        self.assertNotEqual(RM._config_fingerprint(cfg2), fp2)
+
+    def test_fingerprint_judge_default_explicit_equivalent(self):
+        # 缺省裁判 = 显式 haiku（判分实际用的解析值）——补写默认值不该被当"换裁判"拒续跑
+        cfg = self._fp_cfg(["closedbook"], "v1")
+        fp_default = RM._config_fingerprint(cfg)
+        cfg["judge_model"] = "haiku"
+        self.assertEqual(RM._config_fingerprint(cfg), fp_default)
+        cfg["judge_model"] = "sonnet"
+        self.assertNotEqual(RM._config_fingerprint(cfg), fp_default)
+
+    # ---- 聚合子进程的警告透传 ----
+    def test_ragged_warning_forwarded_through_runner(self):
+        # aggregate 的「答题集不齐平」警告写在子进程 stderr——runner capture 后必须转发，不能吞。
+        # 制造不齐平：给某一格追加一条**不在题集里的**已答+已判行（不进任务表 → resume 不会补平）。
+        self._mock_run()
+        extra = {"course": "minios", "model": "opus", "arm": "skill", "item_id": "extra_x"}
+        with open(os.path.join(self.out, "answers.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps(dict(extra, answerable=True, status="ok",
+                                    answer="a", cost_usd=0.0)) + "\n")
+        with open(os.path.join(self.out, "scores.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps(dict(extra, answerable=True, correct=True, hallucinated=0,
+                                    abstained=0, judge_error=0)) + "\n")
+        r = self._mock_run()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("不齐平", r.stderr)                # 警告透传到 runner 的 stderr
+        with open(os.path.join(self.out, "summary.json"), encoding="utf-8") as f:
+            self.assertTrue(json.load(f)["ragged_matrix"])
+
+    # ---- 聚合失败也删陈旧 summary ----
+    def test_aggregate_failure_drops_stale_summary(self):
+        self._mock_run()
+        self.assertTrue(os.path.isfile(os.path.join(self.out, "summary.json")))
+        sp = os.path.join(self.out, "scores.jsonl")
+        with open(sp, encoding="utf-8") as f:
+            first = f.readline()
+        with open(sp, "a", encoding="utf-8") as f:
+            f.write(first)                               # 追加重复 key 行 → aggregate _die
+        r = self._mock_run()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("aggregate_matrix 失败", r.stderr)
+        # 旧 summary 必须被删——否则 report_matrix 会读一份对不上的陈旧摘要
+        self.assertFalse(os.path.isfile(os.path.join(self.out, "summary.json")))
 
 
 if __name__ == "__main__":
