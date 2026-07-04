@@ -150,7 +150,7 @@ class MockPipeline(unittest.TestCase):
             rag.main(["--real", "--config", cfgp, "--results-dir", self.out])
 
     def test_explicit_backend_flag_beats_mode_flag(self):
-        # 显式 --backend mock 优先级最高，即便同时 --real
+        # 显式 --backend mock 优先级最高，即便同时 --real；且 summary 从实际后端推导，不被 --real 错标
         cfgp = os.path.join(self.out, "cfg.json")
         with open(cfgp, "w", encoding="utf-8") as f:
             json.dump({"results_dir": self.out}, f)
@@ -158,6 +158,15 @@ class MockPipeline(unittest.TestCase):
                                    "--results-dir", self.out]), 0)
         s = json.loads(self._read(os.path.join(self.out, "summary.json")))
         self.assertEqual(s["backend"], "mock")
+        self.assertTrue(s["mock"])          # 跑的是 mock → summary 必须标 mock:true（不因 --real 错标 real）
+
+    def test_resolve_backend_name_single_source(self):
+        # summary/密钥校验的事实源：resolve_backend_name 与 make_backend 实际选择一致
+        self.assertEqual(B.resolve_backend_name({"mock": True}), "mock")
+        self.assertEqual(B.resolve_backend_name({"mock": False}), "llamaindex")
+        self.assertEqual(B.resolve_backend_name({"backend": "mock", "mock": False}), "mock")
+        self.assertEqual(B.resolve_backend_name({"backend": "real"}), "llamaindex")
+        self.assertEqual(B.resolve_backend_name({}), "mock")           # 默认 mock
 
     def test_config_relative_paths_anchored_to_config_dir(self):
         # config 里的相对路径按 config 文件所在目录解析（不是 cwd）——隔离不被破坏

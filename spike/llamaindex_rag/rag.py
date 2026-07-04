@@ -46,11 +46,6 @@ def build_argparser():
     return ap
 
 
-def _is_real(cfg):
-    return ((cfg.get("backend") in ("llamaindex", "real"))
-            or (cfg.get("mock") is False and not cfg.get("backend")))
-
-
 def run(cfg, limit=None):
     items = contract.load_jsonl(cfg["items_path"])
     materials = contract.read_text(cfg["materials_text"])
@@ -88,8 +83,12 @@ def main(argv=None):
     cfg = contract.load_config(args)
     if args.self_test:
         return _self_test(cfg)
-    # 真跑前置：密钥缺失就明确报错（--mock 永远不读密钥）。
-    if _is_real(cfg) and not cfg.get("openai_api_key"):
+    # 一切从**实际解析出的后端名**推导（而非零散的 mock 标志）——否则 --backend mock + --real
+    # 会跑 mock 却把 summary/tag 标成 real。
+    backend_name = B.resolve_backend_name(cfg)
+    is_mock = (backend_name == "mock")
+    # 真跑前置：密钥缺失就明确报错（mock 永远不读密钥）。
+    if not is_mock and not cfg.get("openai_api_key"):
         raise SystemExit("[-] 真跑需要 openai_api_key（写进 config.json；--mock 不需要）")
 
     records = run(cfg, limit=args.limit)
@@ -100,12 +99,11 @@ def main(argv=None):
     contract.write_jsonl(os.path.join(results_dir, "answers.jsonl"),
                          [{"id": r["id"], "rag": r["rag"]} for r in records])
     abstained = sum(1 for r in records if contract.looks_abstained(r["rag"]))
-    is_mock = bool(cfg.get("mock", True)) and not _is_real(cfg)
     summary = {
         "n": len(records),
         "abstained": abstained,
         "answered": len(records) - abstained,
-        "backend": cfg.get("backend") or ("mock" if is_mock else "llamaindex"),
+        "backend": backend_name,
         "mock": is_mock,
         "note": "占位提示：未测量正确率 / placeholder, no correctness measured",
     }

@@ -51,14 +51,21 @@ class Backend(abc.ABC):
         return self.generate(item.get("question", ""), chunks)
 
 
+def resolve_backend_name(config):
+    """把 config 解析成实际会用的后端名（mock / llamaindex）——单一事实源。
+    summary/tag/密钥校验都用它，而非零散的 mock 标志，避免 --backend mock + --real 这类组合被错标。"""
+    name = config.get("backend") or ("mock" if config.get("mock", True) else "llamaindex")
+    return "llamaindex" if name == "real" else name
+
+
 def make_backend(config):
     """唯一的分支点。mock 在任何重依赖 import 之前短路；真后端惰性 import（其模块顶仍是 stdlib）。"""
-    name = (config.get("backend")
-            or ("mock" if config.get("mock", True) else "llamaindex"))
+    raw = config.get("backend") or ("mock" if config.get("mock", True) else "llamaindex")
+    if raw not in ("mock", "llamaindex", "real"):
+        raise SystemExit("[-] 未知 backend：%r（应为 mock / llamaindex）" % raw)
+    name = resolve_backend_name(config)
     if name == "mock":
         from mock_backend import MockBackend        # stdlib-only
         return MockBackend(config)
-    if name in ("llamaindex", "real"):
-        from llamaindex_backend import LlamaIndexBackend   # 模块顶为 stdlib；重依赖在其方法内
-        return LlamaIndexBackend(config)
-    raise SystemExit("[-] 未知 backend：%r（应为 mock / llamaindex）" % name)
+    from llamaindex_backend import LlamaIndexBackend   # 模块顶为 stdlib；重依赖在其方法内
+    return LlamaIndexBackend(config)
