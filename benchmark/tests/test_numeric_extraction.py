@@ -243,6 +243,40 @@ class HardeningRound3(unittest.TestCase):
         self.assertEqual(v["hallucinated"], 1)
 
 
+class HardeningRound4(unittest.TestCase):
+    """第 5 轮评审批次：括号负底数乘方、equation (7) 引用、带单位猜测不豁免。"""
+
+    def test_parenthesized_negative_base_power(self):
+        # (-2)^2 是标准写法：不再落到裸指数 2
+        self.assertEqual(J._extract_final_number("(-2)^2"), 4.0)
+        self.assertEqual(J._extract_final_number("答案是 (-3)^2"), 9.0)
+        self.assertTrue(J.check_numeric("the result is (-2)^2", "4", 0)[0])
+        self.assertIsNone(J._extract_final_number("(-2)^0.5"))   # 复数仍拒
+
+    def test_parenthesized_equation_citation(self):
+        # Eq. (7) / equation (7)：括号形式的公式引用也跳过
+        self.assertEqual(J._extract_final_number("answer is 42 by equation (7)"), 42.0)
+        self.assertEqual(J._extract_final_number("answer is 42, see Eq. (7)"), 42.0)
+        self.assertIsNone(J._extract_final_number("see equation (7)"))
+        self.assertTrue(J.check_numeric("answer is 42 by equation (7)", "42", 0)[0])
+
+    def test_unit_bearing_guess_not_exempt(self):
+        # 带单位的**猜测**（不确定+报数=对冲）不豁免——只有材料范围陈述（前有提示词）才豁免
+        item = {"id": "q", "question": "?", "gold_answer": "42",
+                "answer_type": "numeric", "answerable": True, "tolerance": None}
+        for ans in ("not sure, maybe 5 years", "无法确定，可能是 1960 年"):
+            v = J.judge_answer(item, ans, None)
+            self.assertFalse(v["abstained"], ans)
+            self.assertEqual(v["hallucinated"], 1, ans)
+        # 材料范围陈述仍豁免（有 材料/全部/查了/checked 等提示词）
+        for ans in ("材料中未涵盖该数值——我查了全部 20 讲都没提。",
+                    "无法确定，材料只讨论了 1960 年代的研究",
+                    "not covered in the material; I checked all 20 lectures"):
+            v = J.judge_answer(item, ans, None)
+            self.assertTrue(v["abstained"], ans)
+            self.assertEqual(v["hallucinated"], 0, ans)
+
+
 class ContainsGoldHardening(unittest.TestCase):
     """词法快路加固：ASCII 词边界 + 小句级否定。False 是安全方向（落回 LLM 裁判）。"""
 

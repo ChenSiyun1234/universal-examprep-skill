@@ -211,13 +211,17 @@ class CustomPool(unittest.TestCase):
         self.assertEqual(f1["answer_type"], "factual")
         self.assertEqual(f1["scored_by"], "llm")
 
-    def test_sample_excludes_deterministic_oos_and_hides_model_arm(self):
+    def test_sample_excludes_deterministic_keeps_oos_hides_model_arm(self):
         r = _cm("sample", "--results-dir", self.res, "--config", self.cfgp, "--n", "10")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("已排除", r.stdout)                 # n1(numeric) + p1(OOS) 被排除的提示
+        self.assertIn("已排除", r.stdout)                 # n1(numeric) 被排除的提示
         with open(os.path.join(self.res, "calibration", "calibration_sheet.csv"), encoding="utf-8-sig") as f:
             rows = list(csv.DictReader(f))
-        self.assertEqual(len(rows), 1)                   # 只剩 f1（llm 判、可答）——numeric/OOS 都排除
+        # f1（llm 判、可答）+ p1（越界探针——弃答检测器的判定也要人工校准）；numeric 快路排除
+        self.assertEqual(len(rows), 2)
+        by_ans = {r_["answerable"]: r_ for r_ in rows}
+        self.assertEqual(set(by_ans), {"0", "1"})
+        self.assertIn("越界题", by_ans["0"]["question"])   # 越界行带「以是否老实弃答为准」标注
         self.assertNotIn("model", rows[0])               # 待填表不含 model/arm（不带偏标注）
         self.assertNotIn("arm", rows[0])
 

@@ -134,10 +134,12 @@ def build_pool(results_dir, cfg):
 
 
 def _is_deterministic(p):
-    """确定性判分——不测被校准的 LLM 裁判、会灌高 kappa，校准时排除：
-    · 数值题（check_numeric 确定性）· 词法快路（scored_by=lexical）· 越界探针（answerable=false 走确定性弃答判定）。"""
-    return (p.get("answer_type") == "numeric" or p.get("scored_by") == "lexical"
-            or not p.get("answerable"))
+    """确定性判分且**无需人工校准**的项——数值题（check_numeric）与词法快路（scored_by=lexical）
+    天然一致会灌高 kappa，抽样排除。**越界探针（answerable=false）保留在样本里**：它们的判定来自
+    弃答检测器（looks_abstained 关键词启发式，照样会错），待填表已标注「越界题以是否老实弃答为准」，
+    人工 vs 弃答检测器的一致性正是要校准的东西之一。"""
+    return p.get("answerable") and (p.get("answer_type") == "numeric"
+                                    or p.get("scored_by") == "lexical")
 
 
 def _sheet_paths(out_dir):
