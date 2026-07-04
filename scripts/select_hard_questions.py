@@ -29,7 +29,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import score_difficulty as sd   # noqa: E402  同目录，复用打分与题库加载
+import score_difficulty as sd            # noqa: E402  同目录，复用打分与题库加载
+from select_questions import SOURCE_TYPES  # noqa: E402  单一 source_type 词表，与 A2 一致
 
 for _s in ("stdout", "stderr"):
     try:
@@ -39,11 +40,37 @@ for _s in ("stdout", "stderr"):
 
 STATE_NAME = "study_state.json"
 LEARNING_MODES = ("零基础从头讲", "某章起步补弱", "查缺补漏")
+_MIXED_SCOPES = {None, "", "混合题池", "mixed", "混合"}   # 非限制性范围——不过滤
 
 
 def _die(msg, code=2):
     sys.stderr.write("select_hard_questions: " + msg + "\n")
     raise SystemExit(code)
+
+
+def _parse_source_types(raw):
+    """把 '--source-type homework,exam' 解析成校验过的集合（与 A2 select_questions 同语义）。"""
+    vals = [v.strip() for v in raw.split(",") if v.strip()]
+    bad = [v for v in vals if v not in SOURCE_TYPES]
+    if bad:
+        _die("非法 source_type: %s（应为 %s）" % (", ".join(bad), sorted(SOURCE_TYPES)))
+    return set(vals)
+
+
+def _scope_to_source_types(scope):
+    """把存档的范围偏好映射到 source_type 集合。返回 None 表示不过滤（混合池）。
+    非混合但映射不出干净 source_type 时 fail-loud——绝不静默放宽被记录的范围（A2 契约）。"""
+    if scope in _MIXED_SCOPES:
+        return None
+    norm = str(scope).strip().lower()
+    for suf in ("-only", "_only", " only", "-仅", "仅"):
+        if norm.endswith(suf):
+            norm = norm[: -len(suf)].strip()
+    if norm in SOURCE_TYPES:
+        return {norm}
+    _die("study_state 记录了范围偏好「%s」，但无法自动映射到 source_type；"
+         "请显式传 --source-type <%s>，或先解除范围偏好——避免静默越界（A2 范围契约）"
+         % (scope, "/".join(sorted(SOURCE_TYPES))))
 
 
 def load_state(ws):
@@ -153,9 +180,11 @@ def order_items(scored, mode):
     def key(it):
         rank = _CLASS_RANK[it["cls"]]
         if mode == "零基础从头讲":
-            d = it["difficulty"]                         # 全局先易后难
-        else:
-            d = it["difficulty"] if it["cls"] == "weak" else -it["difficulty"]
+            # 新手：难度优先（全局先易后难），掌握类别仅作同难度内的次序 tiebreak——
+            # 绝不让一道 weak 的难题排到简单题前面（那正是本模式要避免的 hard-first）。
+            return (it["difficulty"], rank, it["orig_idx"])
+        # 其余模式：先按掌握类别（weak→neutral→mastered），weak 内先易后难、其余先难。
+        d = it["difficulty"] if it["cls"] == "weak" else -it["difficulty"]
         return (rank, d, it["orig_idx"])
     return sorted(scored, key=key)
 
@@ -168,7 +197,9 @@ def main(argv=None):
                     help="A6 学习模式；缺省时读 study_state.mode，再缺省按 查缺补漏")
     ap.add_argument("--chapter", default=None, help="只出该章（chapter 或 phase 精确匹配）")
     ap.add_argument("--from-chapter", type=int, default=None,
-                    help="只出该数值章号及之后（某章起步补弱用）")
+                    help="只出该数值章号及之后（某章起步补弱用；缺省时从 study_state.current_phase 推）")
+    ap.add_argument("--source-type", default=None,
+                    help="按来源类型过滤（逗号分隔，与 A2 一致）；缺省时读 study_state.scope，未标签项一律排除")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
 
@@ -180,14 +211,38 @@ def main(argv=None):
         mode = "查缺补漏"                                # state 里可能是旧模式串——回落默认，不炸
     idx = build_mastery(state)
     late = sd._late_chapter_cutoff(items)
+    notes = []
+
+    # 范围过滤（A2 契约）：显式 --source-type 优先；否则按存档 scope 推导——非混合但推不出即 fail-loud。
+    if args.source_type is not None:
+        source_types = _parse_source_types(args.source_type)
+    else:
+        source_types = _scope_to_source_types((state or {}).get("scope"))
+        if source_types:
+            notes.append("已按存档范围 scope→source_type=%s（未标签项排除）" % "/".join(sorted(source_types)))
+
+    # 某章起步补弱：起步章缺省时从 current_phase 推；推不出且未给 --from-chapter 即 fail-loud（不静默扫全库）。
+    from_chapter = args.from_chapter
+    if mode == "某章起步补弱" and from_chapter is None:
+        cp = (state or {}).get("current_phase")
+        if isinstance(cp, int) and not isinstance(cp, bool):
+            from_chapter = cp
+        elif isinstance(cp, str) and cp.strip().isdigit():
+            from_chapter = int(cp.strip())
+        else:
+            _die("某章起步补弱 需要起步章：请传 --from-chapter <N>，"
+                 "或让 study_state 带数值 current_phase——否则会退化成全库扫描，违背本模式的按章补弱")
+        notes.append("某章起步补弱：起步章默认为 current_phase=%d（可用 --from-chapter 覆盖）" % from_chapter)
 
     scored = []
     for i, q in enumerate(items):
         if args.chapter is not None and str(args.chapter) not in _chapter_keys(q):
             continue
-        if args.from_chapter is not None:
+        if source_types is not None and q.get("source_type") not in source_types:
+            continue                                     # 未标签(source_type=None)一律排除，绝不静默越界
+        if from_chapter is not None:
             nc = sd._numeric_chapter(q)
-            if nc is None or nc < args.from_chapter:
+            if nc is None or nc < from_chapter:
                 continue
         d = q.get("difficulty")
         if not (isinstance(d, int) and not isinstance(d, bool) and 1 <= d <= 5):
@@ -205,11 +260,15 @@ def main(argv=None):
 
     if args.json:
         print(json.dumps({"mode": mode, "count": len(payload),
-                          "state_loaded": state is not None, "items": payload},
+                          "state_loaded": state is not None,
+                          "source_types": sorted(source_types) if source_types else None,
+                          "from_chapter": from_chapter, "notes": notes, "items": payload},
                          ensure_ascii=False, indent=2))
     else:
         print("[A7] 模式=%s｜%s｜选出 %d 题（难度×掌握状态启发式排序，非 LLM）"
               % (mode, "已读 study_state" if state is not None else "无 state（全按常规）", len(payload)))
+        for note in notes:
+            print("    · " + note)
         for it in payload:
             print("  %-16s d=%d  %-8s  %s" % (it["id"], it["difficulty"], it["class"], it["select_reason"]))
     return 0

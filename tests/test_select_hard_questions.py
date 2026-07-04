@@ -83,8 +83,18 @@ class OrderUnit(unittest.TestCase):
         items = [self._mk("weak", 4, 0), self._mk("neutral", 2, 1),
                  self._mk("mastered", 5, 2), self._mk("mastered", 1, 3)]
         out = [it["id"] for it in shq.order_items(items, "零基础从头讲")]
-        # 全升序但 weak 先：weak(i0 d4) → neutral(i1 d2) → mastered 升序(i3 d1, i2 d5)
-        self.assertEqual(out, ["i0", "i1", "i3", "i2"])
+        # 零基础=难度优先（全局先易后难），掌握类别仅同难度内 tiebreak：
+        # d1(i3) → d2(i1) → d4(i0) → d5(i2)。绝不把 weak 难题(i0 d4)排到简单题前。
+        self.assertEqual(out, ["i3", "i1", "i0", "i2"])
+
+    def test_beginner_never_serves_hard_weak_before_easy(self):
+        # 回归 finding：weak d5 绝不排在 neutral d1 之前（零基础模式）
+        items = [self._mk("weak", 5, 0), self._mk("neutral", 1, 1)]
+        out = [it["id"] for it in shq.order_items(items, "零基础从头讲")]
+        self.assertEqual(out, ["i1", "i0"])
+        # 对照：查缺补漏模式下 weak 仍先行（巩固优先）
+        out2 = [it["id"] for it in shq.order_items(items, "查缺补漏")]
+        self.assertEqual(out2, ["i0", "i1"])
 
 
 class CliIO(unittest.TestCase):
@@ -159,6 +169,67 @@ class CliIO(unittest.TestCase):
     def test_num_limit(self):
         obj = json.loads(self._run("-n", "1").stdout)
         self.assertEqual(obj["count"], 1)
+
+    # ---- finding 1: 存档 scope 必须被应用（A2 契约，未标签项排除）----
+    def test_stored_scope_excludes_out_of_scope_and_untagged(self):
+        # homework-only 存档范围：只应返回 source_type=homework，exam/untagged 排除
+        self.bank = [
+            {"id": "hw1", "chapter": 1, "type": "subjective", "question": "q", "answer": "a",
+             "difficulty": 2, "source_type": "homework"},
+            {"id": "ex1", "chapter": 1, "type": "subjective", "question": "q", "answer": "a",
+             "difficulty": 4, "source_type": "exam"},
+            {"id": "untagged", "chapter": 1, "type": "subjective", "question": "q", "answer": "a",
+             "difficulty": 3},
+        ]
+        with open(os.path.join(self.ws, "references", "quiz_bank.json"), "w", encoding="utf-8") as f:
+            json.dump(self.bank, f, ensure_ascii=False, indent=2)
+        self._state({"mode": "查缺补漏", "scope": "homework-only"})
+        obj = json.loads(self._run().stdout)
+        self.assertEqual([it["id"] for it in obj["items"]], ["hw1"])
+        self.assertEqual(obj["source_types"], ["homework"])
+
+    def test_cli_source_type_overrides_scope(self):
+        self.bank[0]["source_type"] = "homework"
+        self.bank[1]["source_type"] = "exam"
+        with open(os.path.join(self.ws, "references", "quiz_bank.json"), "w", encoding="utf-8") as f:
+            json.dump(self.bank, f, ensure_ascii=False, indent=2)
+        self._state({"mode": "查缺补漏", "scope": "homework-only"})
+        obj = json.loads(self._run("--source-type", "exam").stdout)
+        self.assertEqual([it["id"] for it in obj["items"]], ["mid"])   # mid 是 exam
+
+    def test_unmappable_scope_fails_loud(self):
+        self._state({"mode": "查缺补漏", "scope": "某个自定义范围"})
+        r = self._run()
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("无法自动映射", r.stderr)
+
+    def test_mixed_scope_no_filter(self):
+        self._state({"mode": "查缺补漏", "scope": "混合题池"})
+        obj = json.loads(self._run().stdout)
+        self.assertIsNone(obj["source_types"])
+        self.assertEqual(obj["count"], 3)
+
+    def test_bad_source_type_value_exits_2(self):
+        self.assertEqual(self._run("--source-type", "nonsense").returncode, 2)
+
+    # ---- finding 3: 某章起步补弱 缺 --from-chapter 时默认 current_phase，推不出 fail-loud ----
+    def test_weak_start_mode_defaults_from_current_phase(self):
+        self._state({"mode": "某章起步补弱", "current_phase": 3})
+        obj = json.loads(self._run().stdout)
+        self.assertEqual(obj["from_chapter"], 3)
+        self.assertEqual({it["id"] for it in obj["items"]}, {"mid", "hard"})   # ch3/ch5 ≥ 3
+
+    def test_weak_start_mode_fails_without_start(self):
+        self._state({"mode": "某章起步补弱"})               # 无 current_phase
+        r = self._run()
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("起步章", r.stderr)
+
+    def test_weak_start_mode_cli_from_chapter_wins(self):
+        self._state({"mode": "某章起步补弱", "current_phase": 1})
+        obj = json.loads(self._run("--from-chapter", "5").stdout)
+        self.assertEqual(obj["from_chapter"], 5)
+        self.assertEqual([it["id"] for it in obj["items"]], ["hard"])
 
     def test_on_the_fly_difficulty_when_unscored(self):
         # 题库无 difficulty 字段 → 即时补算，不落盘

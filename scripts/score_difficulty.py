@@ -117,8 +117,10 @@ def _kp_count(q):
 
 
 def _multipage(q):
-    """source_pages 跨 >1 页即多页解答。接受 [start,end] / list / "3-5" / "3,4"。"""
-    sp = q.get("source_pages")
+    """多页解答信号：读**答案**页 answer_source_pages（解答的出处页），跨 >1 页即多步长解答。
+    注意不是 source_pages——那是**题面**页；两页题面不等于难，多页解答才是难度信号。
+    接受 [start,end] / list / "3-5" / "3,4" / {"start","end"}。"""
+    sp = q.get("answer_source_pages")
     pages = set()
     if isinstance(sp, list):
         for x in sp:

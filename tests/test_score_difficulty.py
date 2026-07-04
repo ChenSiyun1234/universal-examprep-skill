@@ -66,14 +66,20 @@ class ScoreItemUnit(unittest.TestCase):
         d2, _ = sd.score_item(_item(maybe_requires_assets=True), None)
         self.assertEqual(d2, d0)
 
-    def test_multipage_parsing_variants(self):
-        self.assertTrue(sd._multipage(_item(source_pages="3-5")))
-        self.assertTrue(sd._multipage(_item(source_pages=[3, 4])))
-        self.assertTrue(sd._multipage(_item(source_pages="3,4")))
-        self.assertTrue(sd._multipage(_item(source_pages={"start": 2, "end": 4})))
-        self.assertFalse(sd._multipage(_item(source_pages="3")))
-        self.assertFalse(sd._multipage(_item(source_pages=[7])))
+    def test_multipage_reads_answer_pages_not_prompt_pages(self):
+        # 多页解答信号读 answer_source_pages（解答页），不是 source_pages（题面页）
+        self.assertTrue(sd._multipage(_item(answer_source_pages="3-5")))
+        self.assertTrue(sd._multipage(_item(answer_source_pages=[3, 4])))
+        self.assertTrue(sd._multipage(_item(answer_source_pages="3,4")))
+        self.assertTrue(sd._multipage(_item(answer_source_pages={"start": 2, "end": 4})))
+        self.assertFalse(sd._multipage(_item(answer_source_pages="3")))
+        self.assertFalse(sd._multipage(_item(answer_source_pages=[7])))
         self.assertFalse(sd._multipage(_item()))
+        # 两页题面（source_pages）不是难度信号，绝不误判为多页解答
+        self.assertFalse(sd._multipage(_item(source_pages="2-3")))
+        self.assertFalse(sd._multipage(_item(source_pages=[2, 3])))
+        # 一页题面 + 多页解答 → 命中
+        self.assertTrue(sd._multipage(_item(source_pages=[1], answer_source_pages=[2, 3])))
 
     def test_late_chapter_cutoff_needs_three_numeric_chapters(self):
         self.assertIsNone(sd._late_chapter_cutoff([_item(chapter=1), _item(chapter=2)]))
@@ -109,7 +115,7 @@ class ScoreCliIO(unittest.TestCase):
             _item(id="easy", chapter=1),
             _item(id="hard", chapter=5, type="subjective",
                   question="计算分段函数积分 ∫", knowledge_points=["a", "b", "c"],
-                  requires_assets=True, source_pages="2-4"),
+                  requires_assets=True, answer_source_pages="2-4"),
         ]
         self.path = os.path.join(self.ws, "references", "quiz_bank.json")
         self._write(self.bank)
