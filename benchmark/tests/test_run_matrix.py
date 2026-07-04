@@ -228,6 +228,14 @@ class ConfigValidation(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertIn("不能为负", r.stderr)
 
+    def test_unknown_answer_type_exits_2(self):
+        # 拼错 "numerci" → fail-loud（否则走非数值路、忽略 tolerance、静默污染）
+        r = _run("--mock", "--config", self._items_cfg(
+            {"id": "x", "question": "q", "gold_answer": "a", "answer_type": "numerci",
+             "answerable": True}))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("answer_type", r.stderr)
+
     def test_relative_paths_resolved_to_config_dir(self):
         # config 里的相对 items 路径按 config 目录解析
         with open(os.path.join(self.d, "i.jsonl"), "w", encoding="utf-8") as f:
@@ -472,6 +480,47 @@ class FixesRegression(unittest.TestCase):
         r = _run("--mock", "--config", FIXTURE_CFG, "--results-dir", self.out)
         self.assertEqual(r.returncode, 2)
         self.assertIn(".run_meta", r.stderr)
+
+    def test_generate_real_marker_answer_not_dropped(self):
+        # 合法答案含 "resets" 等词（ok=True）→ 不被当配额错丢弃
+        orig = RM.real_answer
+        RM.real_answer = lambda *a, **k: ("the cache resets and usage limit is 5", 0.01, True, "")
+        try:
+            ans, cost, kind = RM._generate_real({}, {}, "opus", "closedbook", {"question": "q"})
+            self.assertEqual(kind, "ok")
+            self.assertIn("resets", ans)
+        finally:
+            RM.real_answer = orig
+
+    def test_generate_real_infra_error_classified_hard(self):
+        # 真错误文本（ok=False）才走 classify → hard
+        orig = RM.real_answer
+        RM.real_answer = lambda *a, **k: ("", None, False, "hit your limit; resets later")
+        try:
+            ans, cost, kind = RM._generate_real({}, {}, "opus", "closedbook", {"question": "q"})
+            self.assertEqual(kind, "hard")
+        finally:
+            RM.real_answer = orig
+
+    def test_reordered_models_refused(self):
+        # 同课程同模型集但顺序不同 → 指纹不同 → 拒绝复用（--limit 切片顺序会变）
+        d = tempfile.mkdtemp(prefix="b4ord_")
+        self.addCleanup(shutil.rmtree, d, True)
+        src = os.path.dirname(FIXTURE_CFG)
+        course = {"name": "minios", "items": os.path.join(src, "items.jsonl"),
+                  "combined": os.path.join(src, "materials", "_combined.txt"),
+                  "skill_ws": os.path.join(src, "skill_ws"), "raw_ws": os.path.join(src, "raw_ws")}
+
+        def write_cfg(models):
+            cfgp = os.path.join(d, "config.json")
+            with open(cfgp, "w", encoding="utf-8") as f:
+                json.dump({"courses": [course], "models": models, "arms": ["closedbook"],
+                           "mock": True}, f)
+            return cfgp
+        _run("--mock", "--config", write_cfg(["opus", "haiku"]), "--results-dir", self.out)
+        r = _run("--mock", "--config", write_cfg(["haiku", "opus"]), "--results-dir", self.out)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("不同的 config", r.stderr)
 
     def test_resume_rescores_answer_without_score(self):
         # 崩溃后"有答案没判分"：删掉 scores 模拟 → 续跑重判该题（不重生成、不重复 answer）

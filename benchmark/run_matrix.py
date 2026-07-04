@@ -47,6 +47,7 @@ import judge as J                       # noqa: E402  judge_answer / mock_judge
 DEFAULT_ARMS = ["closedbook", "rawfiles", "skill"]
 DEFAULT_MODELS = ["opus", "sonnet", "haiku"]
 KNOWN_ARMS = {"closedbook", "rawfiles", "material", "skill"}
+KNOWN_ANSWER_TYPES = {"numeric", "definition", "factual"}   # judge 支持的金标类型
 _FIXTURE_CONFIG = os.path.join(HERE, "fixtures", "mini_course_matrix", "config.json")
 
 
@@ -145,6 +146,10 @@ def load_items(course):
             if "answer_type" not in d or "answerable" not in d:
                 _die("课程 %s 的 items 第 %d 行缺 answer_type/answerable——像是问题-only 文件（*_q.jsonl），"
                      "请指向带金标的 items 文件" % (course.get("name"), ln))
+            if d["answer_type"] not in KNOWN_ANSWER_TYPES:
+                # 拼错如 "numerci" 会走 judge 的非数值路、忽略 tolerance、短数值答案被判弃答/错，静默污染
+                _die("课程 %s 的 items 第 %d 行 answer_type=%r 未知（应为 %s 之一）"
+                     % (course.get("name"), ln, d["answer_type"], "/".join(sorted(KNOWN_ANSWER_TYPES))))
             if not isinstance(d["answerable"], bool):
                 # "answerable":"false"（字符串）会被 bool() 当 True，越界探针被算进可答题、污染指标——须真 bool
                 _die("课程 %s 的 items 第 %d 行 answerable 必须是 true/false 布尔（不是字符串/数字）"
@@ -195,19 +200,45 @@ def mock_answer(arm, item):
     return str(item.get("gold_answer", "")) or J.ABSTAIN_MARKERS[0]
 
 
+def _gen_claude(prompt, model, cwd=None, skill=False, timeout=900):
+    """run_matrix 自带的 claude 生成调用，返回 (answer, cost, ok, err_text)。
+    ok=True 表示拿到**有效 JSON result**——即便答案内容恰好含 resets/usage limit 等词也**不**误判为配额错。
+    只有拿不到 result（非 JSON / 空 result / 超时 / 异常）才 ok=False，再对**错误文本**分类 hard/transient。
+    （STDIN 传 prompt：material 臂会塞进整门课 ~100-230K 字符，走 argv 会撞 Windows WinError 206。）"""
+    args = ["claude", "-p", "--output-format", "json", "--model", model]
+    if skill:
+        args += ["--allowedTools", "Read", "Glob", "Grep"]
+    workdir = os.path.join(HERE, cwd) if cwd else HERE
+    try:
+        p = subprocess.run(args, cwd=workdir, input=prompt, capture_output=True,
+                           text=True, encoding="utf-8", timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return "", None, False, "TIMEOUT"
+    except Exception as e:                              # 绝不让一次坏调用弄崩整趟
+        return "", None, False, "API Error: %s" % e
+    try:
+        data = json.loads(p.stdout)
+    except json.JSONDecodeError:
+        return "", None, False, (p.stdout or p.stderr or "").strip()
+    res = data.get("result") or ""
+    if res.strip():
+        return res, data.get("total_cost_usd"), True, ""
+    return "", data.get("total_cost_usd"), False, (p.stdout or p.stderr or "").strip()
+
+
 def real_answer(cfg, course, model, arm, item):
-    """真跑：按臂 shell claude（复用 gen.run_claude）。生成端只见 question，绝不见 gold。"""
+    """真跑：按臂 shell claude，返回 (answer, cost, ok, err)。生成端只见 question，绝不见 gold。"""
     q = item["question"]
     if arm == "closedbook":
-        return gen.run_claude(gen.CLOSEDBOOK.format(q=q), model)
+        return _gen_claude(gen.CLOSEDBOOK.format(q=q), model)
     if arm == "material":
-        return gen.run_claude(gen.MATERIAL.format(material=_read(course.get("combined")), q=q), model)
+        return _gen_claude(gen.MATERIAL.format(material=_read(course.get("combined")), q=q), model)
     if arm == "rawfiles":
-        return gen.run_claude(gen.RAWFILES.format(q=q), model,
-                              cwd=os.path.relpath(course["raw_ws"], HERE), skill=True)
+        return _gen_claude(gen.RAWFILES.format(q=q), model,
+                           cwd=os.path.relpath(course["raw_ws"], HERE), skill=True)
     if arm == "skill":
-        return gen.run_claude(gen.SKILL.format(q=q), model,
-                              cwd=os.path.relpath(course["skill_ws"], HERE), skill=True)
+        return _gen_claude(gen.SKILL.format(q=q), model,
+                           cwd=os.path.relpath(course["skill_ws"], HERE), skill=True)
     _die("未知 arm: %s" % arm)
 
 
@@ -288,23 +319,28 @@ def _assert_not_published(results_dir):
         _die("results_dir 指向已发布的 results/matrix——拒绝覆盖已提交的真实结果，请换一个 --results-dir")
 
 
-def _classify(answer):
-    # gen.classify + TIMEOUT 归入 transient（可重试）——否则 900s 超时会被当正常答案判成"答错"
-    if (answer or "").strip() == "TIMEOUT":
+def _classify(text):
+    # 对**错误文本**分类：TIMEOUT 归 transient；其余用 gen.classify（hit your limit→hard 等）。
+    # 绝不用来分类合法答案——那是 _gen_claude 的 ok 信号的活。
+    if (text or "").strip() == "TIMEOUT":
         return "transient"
-    return gen.classify(answer)
+    return gen.classify(text)
 
 
 def _generate_real(cfg, course, model, arm, item):
-    """真跑一题：瞬时错误/超时按 gen.py 退避重试 3 次。返回 (answer, cost, kind)。"""
-    ans, cost = "", 0.0
+    """真跑一题：瞬时错误/超时退避重试 3 次。返回 (answer, cost, kind)。
+    成功用 _gen_claude 的 ok 信号判定（不看答案文本），失败才对**错误文本**分类 hard/transient——
+    合法答案里含 resets/usage limit 等词不再被误判成配额错。"""
+    cost = 0.0
     for attempt in range(3):
-        ans, cost = real_answer(cfg, course, model, arm, item)
-        kind = _classify(ans)
-        if kind in ("ok", "hard"):
-            return ans, cost or 0.0, kind
+        ans, cost, ok, err = real_answer(cfg, course, model, arm, item)
+        if ok:
+            return ans, cost or 0.0, "ok"
+        kind = _classify(err)
+        if kind == "hard":
+            return "", cost or 0.0, "hard"
         time.sleep(5 * (attempt + 1) ** 2)             # 5s, 20s, 45s（仅真跑触发）
-    return ans, cost or 0.0, _classify(ans)
+    return "", cost or 0.0, "transient"
 
 
 def _load_answers_map(ans_path):
@@ -368,12 +404,14 @@ def _dir_hash(d):
 def _config_fingerprint(cfg):
     """决定任务集 + 判分的配置指纹：课程名 + **items/combined 内容 + raw_ws/skill_ws 目录内容** +
     模型/臂/主次课程 + judge_model。改了任一（含就地重生成材料/wiki、改题、换裁判）→ 指纹变 → 拒绝复用旧目录。"""
+    # **保持顺序**（不 sort）——任务序是 course×arm×model×item，--limit 按此切片、resume 跳已判分 key，
+    # 所以重排课程/臂/模型对部分跑并不等价，理应算不同配置、不复用同一 results_dir。
     sig = {
-        "courses": sorted((c["name"], _file_hash(c.get("items")), _file_hash(c.get("combined")),
-                           _dir_hash(c.get("skill_ws")), _dir_hash(c.get("raw_ws")))
-                          for c in cfg["courses"]),
-        "models": sorted(cfg["models"]),
-        "arms": sorted(cfg["arms"]),
+        "courses": [(c["name"], _file_hash(c.get("items")), _file_hash(c.get("combined")),
+                     _dir_hash(c.get("skill_ws")), _dir_hash(c.get("raw_ws")))
+                    for c in cfg["courses"]],
+        "models": list(cfg["models"]),
+        "arms": list(cfg["arms"]),
         "primary": cfg["primary_course"],
         "secondary": cfg.get("secondary_course"),
         "judge_model": cfg.get("judge_model"),
