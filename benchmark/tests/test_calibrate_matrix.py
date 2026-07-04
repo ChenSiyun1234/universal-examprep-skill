@@ -225,6 +225,45 @@ class CustomPool(unittest.TestCase):
         self.assertNotIn("model", rows[0])               # 待填表不含 model/arm（不带偏标注）
         self.assertNotIn("arm", rows[0])
 
+    def test_four_strata_composition(self):
+        # 四层分层：池子四层充足时，n=24 抽成 可答判对/判错=8/8 + 越界弃答/未弃答=4/4（2:1 可答:越界）
+        d = tempfile.mkdtemp(prefix="b5st_")
+        self.addCleanup(shutil.rmtree, d, True)
+        items = os.path.join(d, "items.jsonl")
+        with open(items, "w", encoding="utf-8") as f:
+            for i in range(20):
+                f.write(json.dumps({"id": "a%02d" % i, "question": "q", "gold_answer": "g",
+                                    "answer_type": "factual", "answerable": True}) + "\n")
+            for i in range(10):
+                f.write(json.dumps({"id": "o%02d" % i, "question": "q", "gold_answer": "",
+                                    "answer_type": "factual", "answerable": False}) + "\n")
+        cfgp = os.path.join(d, "config.json")
+        with open(cfgp, "w", encoding="utf-8") as f:
+            json.dump({"courses": [{"name": "c", "items": items}], "models": ["opus"],
+                       "arms": ["closedbook"], "mock": True}, f)
+        res = os.path.join(d, "res")
+        os.makedirs(res)
+        fa = open(os.path.join(res, "answers.jsonl"), "w", encoding="utf-8")
+        fs = open(os.path.join(res, "scores.jsonl"), "w", encoding="utf-8")
+        with fa, fs:
+            for grp, cnt in (("a", 20), ("o", 10)):      # 可答/越界，各一半判对一半判错(=弃答/未弃答)
+                for i in range(cnt):
+                    base = {"course": "c", "model": "opus", "arm": "closedbook",
+                            "item_id": "%s%02d" % (grp, i)}
+                    fa.write(json.dumps(dict(base, answer="x")) + "\n")
+                    fs.write(json.dumps(dict(base, correct=(i % 2 == 0), scored_by="llm",
+                                             judge_error=0)) + "\n")
+        r = _cm("sample", "--results-dir", res, "--config", cfgp, "--n", "24")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("可答判对=8", r.stdout)
+        self.assertIn("可答判错=8", r.stdout)
+        self.assertIn("越界弃答=4", r.stdout)
+        self.assertIn("越界未弃答=4", r.stdout)
+        with open(os.path.join(res, "calibration", "calibration_sheet.csv"), encoding="utf-8-sig") as f:
+            rows = list(csv.DictReader(f))
+        self.assertEqual(len(rows), 24)
+        self.assertEqual(sum(1 for row in rows if row["answerable"] == "0"), 8)
+
     def test_out_dir_preserved_in_followup(self):
         od = os.path.join(self.d, "myout")
         r = _cm("sample", "--results-dir", self.res, "--config", self.cfgp, "--n", "10", "--out-dir", od)
