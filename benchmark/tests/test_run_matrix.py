@@ -424,7 +424,7 @@ class FixesRegression(unittest.TestCase):
         self.assertEqual(r2.returncode, 0, r2.stderr)     # 不被误判成不同 config
 
     def test_judge_infra_failure_flagged(self):
-        # 判分侧 claude 撞配额/超时 → score_row 标 judge_infra_failed（不落盘、下次重判）
+        # 判分侧 claude 撞配额/超时（非 JSON 错误串）→ score_row 标 judge_infra_failed（不落盘、下次重判）
         import gen
         orig = gen.run_claude
         gen.run_claude = lambda prompt, model, **kw: ("hit your limit; resets later", None)
@@ -436,6 +436,42 @@ class FixesRegression(unittest.TestCase):
             self.assertTrue(jf)
         finally:
             gen.run_claude = orig
+
+    def test_valid_judge_json_with_marker_word_not_infra(self):
+        # 合法判分 JSON（内容恰好含 "resets" 等 gen.classify 词表词）不误判为 infra
+        import gen
+        orig = gen.run_claude
+        gen.run_claude = lambda prompt, model, **kw: (
+            '{"claims":[{"claim":"resets the cache","supported":1}],"correct":1,"abstained":0}', None)
+        try:
+            item = {"id": "q", "question": "?", "gold_answer": "xyz",
+                    "answer_type": "factual", "answerable": True}
+            row, jf = RM.score_row("c", "m", "closedbook", item, "unrelated answer",
+                                   mock=False, judge_model="haiku")
+            self.assertFalse(jf)                         # 判分成功 → 不是 infra（尽管含 resets）
+        finally:
+            gen.run_claude = orig
+
+    def _seed_answers(self):
+        os.makedirs(self.out, exist_ok=True)
+        with open(os.path.join(self.out, "answers.jsonl"), "w", encoding="utf-8") as f:
+            f.write(json.dumps({"course": "minios", "model": "opus", "arm": "closedbook",
+                                "item_id": "x", "status": "ok", "answer": "a"}) + "\n")
+
+    def test_artifacts_without_meta_refused(self):
+        # 有 answers 产物但无 .run_meta（如没带 dotfile 复制）→ 拒绝（无法核对隔离）
+        self._seed_answers()
+        r = _run("--mock", "--config", FIXTURE_CFG, "--results-dir", self.out)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn(".run_meta", r.stderr)
+
+    def test_artifacts_with_corrupt_meta_refused(self):
+        self._seed_answers()
+        with open(os.path.join(self.out, ".run_meta.json"), "w", encoding="utf-8") as f:
+            f.write("{corrupt json")
+        r = _run("--mock", "--config", FIXTURE_CFG, "--results-dir", self.out)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn(".run_meta", r.stderr)
 
     def test_resume_rescores_answer_without_score(self):
         # 崩溃后"有答案没判分"：删掉 scores 模拟 → 续跑重判该题（不重生成、不重复 answer）

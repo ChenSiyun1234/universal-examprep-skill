@@ -244,16 +244,18 @@ def build_tasks(cfg):
 def score_row(course_name, model, arm, item, answer, mock, judge_model="haiku"):
     """返回 (score_row, judge_infra_failed)。judge_infra_failed=True 表示判分侧 claude 撞了配额/超时/API 错
     （不是裁判真判不了）——这种 score 不该落盘当"已完成"，否则永远不会重判。"""
-    infra = {"failed": False}
+    last = {"out": None}
     if mock:
         ask = lambda p: J.mock_judge(p)
     else:
         def ask(p):
-            out = _real_ask_judge(p, judge_model)
-            if _classify(out) != "ok":                  # 判分侧撞配额/超时/API 错
-                infra["failed"] = True
-            return out
+            last["out"] = _real_ask_judge(p, judge_model)
+            return last["out"]
     verdict = J.judge_answer(item, answer, ask, judge_repeats=1)
+    # judge_infra_failed 仅当：判分**真失败**(judge_error) 且那次 raw 判分输出本身是配额/超时/API 错。
+    # 不能只看 _classify(out)——合法判分 JSON 里恰好含"resets"等词会被 gen.classify 误判成 hard。
+    infra_failed = (not mock and bool(verdict.get("judge_error"))
+                    and last["out"] is not None and _classify(last["out"]) != "ok")
     f = verdict.get("faithfulness")                     # judge_error 时可能为 None——原样透传（aggregate 接受 None/缺省）
     row = {"course": course_name, "model": model, "arm": arm, "item_id": item["id"],
            "answerable": bool(item.get("answerable", True)),
@@ -263,7 +265,7 @@ def score_row(course_name, model, arm, item, answer, mock, judge_model="haiku"):
            "judge_error": int(verdict.get("judge_error", 0)),
            "faithfulness": (None if f is None else float(f)),
            "scored_by": verdict.get("scored_by", "mock" if mock else "llm")}
-    return row, infra["failed"]
+    return row, infra_failed
 
 
 def _real_ask_judge(prompt, judge_model):               # 真跑判分：shell claude（用 config 指定的裁判模型）
@@ -386,12 +388,22 @@ def _assert_run_meta(results_dir, mock, cfg):
     mode = "mock" if mock else "real"
     fp = _config_fingerprint(cfg)
     meta_path = os.path.join(results_dir, ".run_meta.json")
+    has_artifacts = any(os.path.isfile(os.path.join(results_dir, n)) and
+                        os.path.getsize(os.path.join(results_dir, n)) > 0
+                        for n in ("answers.jsonl", "scores.jsonl"))
+    prev = None
     if os.path.isfile(meta_path):
         try:
             with open(meta_path, encoding="utf-8") as f:
                 prev = json.load(f)
         except ValueError:
-            prev = {}
+            prev = None                                 # 损坏 → 当作没有可读 meta
+    if not isinstance(prev, dict):
+        # meta 缺失/损坏但已有 answers/scores 产物 → 无法核对 mock/real 与 config 一致性，拒绝（保隔离）
+        if has_artifacts:
+            _die("results_dir 有 answers/scores 产物但 .run_meta 缺失/损坏——无法核对 mock/real 与 config 一致性，"
+                 "请换一个干净的 --results-dir")
+    else:
         if prev.get("mode") and prev["mode"] != mode:
             _die("results_dir 已有 %s 运行的产物，拒绝与 %s 混用——请换一个 --results-dir（mock/real 别同目录）"
                  % (prev["mode"], mode))
@@ -492,8 +504,18 @@ def run(cfg, mock, limit=0):
     print("[matrix] 新作答 %d（重判 %d，跳过/待续 %d），累计成本 $%.4f，用时 %ds"
           % (n_ok, n_rescore, n_skip, total_cost, int(time.time() - t0)))
 
+    def _drop_stale_summary():
+        # 不聚合就退出时，删掉可能存在的旧 summary.json——否则它比现在的 answers/scores 还旧，
+        # 下游 report_matrix 读它就是读一份对不上的陈旧摘要。
+        try:
+            if os.path.isfile(summary_path):
+                os.remove(summary_path)
+        except OSError:
+            pass
+
     # 主课程还没有任何作答行 → 跳过聚合、报可续、退 0
     if not _answers_has_course(ans_path, cfg["primary_course"]):
+        _drop_stale_summary()
         print("[matrix] 主课程 %s 暂无作答行——跳过聚合（%s）。"
               % (cfg["primary_course"], "配额未恢复，稍后再跑 --real 续" if quota_stop else "先补齐作答再聚合"))
         return None
@@ -501,6 +523,7 @@ def run(cfg, mock, limit=0):
     # 真跑有 infra 跳过（撞配额 / 生成或判分失败）→ 不聚合，别把缺 score 的更小分母伪装成完成的测量。
     # 注意：即便 --limit 也要拦——--limit 只允许"干净"的部分冒烟聚合；有 infra 跳过就是缺判分，得续跑。
     if not mock and (quota_stop or n_skip > 0):
+        _drop_stale_summary()
         print("[matrix] 真跑有未完成任务（%s）——跳过聚合，避免把缺判分的更小分母伪装成完成测量；恢复后跑到 0 剩余再聚合。"
               % ("撞配额停" if quota_stop else "有 %d 个任务失败待重试" % n_skip))
         return None
