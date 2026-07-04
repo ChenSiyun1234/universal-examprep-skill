@@ -142,6 +142,21 @@ class KappaComputation(unittest.TestCase):
         self.assertIn("退化", r.stdout)
         self.assertNotIn("可信", r.stdout)
 
+    def test_invalid_label_fails_loud(self):
+        # 填了 yes/2 这类非 0/1 → 不能当空格静默丢（会让 kappa 虚高）——fail loud 列出坏格
+        self._write([(1, 1), ("yes", 0), (2, 1)])
+        r = _cm("kappa", "--results-dir", self.out)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("不是 0/1", r.stderr)
+        self.assertIn("cal_002", r.stderr)
+
+    def test_excel_float_labels_accepted(self):
+        # Excel 数字化的 1.0/0.0 是合法标注
+        self._write([("1.0", 1), ("0.0", 0)])
+        r = _cm("kappa", "--results-dir", self.out)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("一致率 agreement = 100.0%", r.stdout)
+
     def test_unmatched_ref_surfaced(self):
         # 填了但 ref_id 对不上 key（表被改/串）→ 不静默丢，报未匹配数 + stderr 警告
         self._write([(1, 1), (0, 0)])
@@ -211,6 +226,64 @@ class CustomPool(unittest.TestCase):
         r = _cm("sample", "--results-dir", self.res, "--config", self.cfgp, "--n", "10", "--out-dir", od)
         self.assertIn("--out-dir %s" % od, r.stdout)     # 续跑命令带上自定义 out-dir
 
+    def test_missing_meta_warns_loud(self):
+        # 手拼目录（无 .run_meta.json）→ 放行但 stderr 响亮警告「指纹无从核对」
+        r = _cm("sample", "--results-dir", self.res, "--config", self.cfgp, "--n", "10")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("没有 .run_meta.json", r.stderr)
+
+    def test_corrupt_meta_refused(self):
+        # .run_meta.json 损坏 → 不能默认放行（假定不匹配比静默放行安全）
+        with open(os.path.join(self.res, ".run_meta.json"), "w", encoding="utf-8") as f:
+            f.write('{"mode": "mock", "fingerp')          # 截断的半个 JSON
+        r = _cm("sample", "--results-dir", self.res, "--config", self.cfgp, "--n", "10")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("损坏", r.stderr)
+
+    def test_meta_without_fingerprint_refused(self):
+        with open(os.path.join(self.res, ".run_meta.json"), "w", encoding="utf-8") as f:
+            json.dump({"mode": "mock"}, f)                # 缺 fingerprint 字段
+        r = _cm("sample", "--results-dir", self.res, "--config", self.cfgp, "--n", "10")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("fingerprint", r.stderr)
+
+    def test_duplicate_answer_rows_refused(self):
+        # answers.jsonl 同 key 重复行 → 人标的答案可能不是裁判判的那条——拒
+        with open(os.path.join(self.res, "answers.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps({"course": "c", "model": "opus", "arm": "closedbook",
+                                "item_id": "f1", "answer": "another"}) + "\n")
+        r = _cm("sample", "--results-dir", self.res, "--config", self.cfgp, "--n", "10")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("重复行", r.stderr)
+
+    def test_duplicate_score_rows_refused(self):
+        with open(os.path.join(self.res, "scores.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps({"course": "c", "model": "opus", "arm": "closedbook",
+                                "item_id": "f1", "correct": False, "scored_by": "llm",
+                                "judge_error": 0}) + "\n")
+        r = _cm("sample", "--results-dir", self.res, "--config", self.cfgp, "--n", "10")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("重复行", r.stderr)
+
+    def test_formula_injection_neutralized(self):
+        # 模型答案以 = 开头（不可信文本）→ 加 ' 前缀，Excel 不再当公式执行
+        ans = os.path.join(self.res, "answers.jsonl")
+        with open(ans, encoding="utf-8") as f:
+            rows = [json.loads(l) for l in f if l.strip()]
+        for row in rows:
+            if row["item_id"] == "f1":
+                row["answer"] = "=HYPERLINK(evil)"
+        with open(ans, "w", encoding="utf-8") as f:
+            for row in rows:
+                f.write(json.dumps(row) + "\n")
+        r = _cm("sample", "--results-dir", self.res, "--config", self.cfgp, "--n", "10")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(os.path.join(self.res, "calibration", "calibration_sheet.csv"),
+                  encoding="utf-8-sig") as f:
+            rows = list(csv.DictReader(f))
+        target = next(row for row in rows if "HYPERLINK" in row["model_answer"])
+        self.assertTrue(target["model_answer"].startswith("'="), target["model_answer"])
+
 
 class Units(unittest.TestCase):
     def test_model_family(self):
@@ -219,6 +292,22 @@ class Units(unittest.TestCase):
         self.assertEqual(CM._model_family("gemini-2.5"), "gemini")
         self.assertEqual(CM._model_family("gpt-4o"), "openai")
         self.assertEqual(CM._model_family("deepseek-chat"), "deepseek")
+
+    def test_self_preference_falls_back_to_config(self):
+        # summary.json 缺（infra 跳过的真跑会删过期 summary）→ 从 config 推裁判家族，警告照发
+        out = tempfile.mkdtemp(prefix="b5spc_")
+        self.addCleanup(shutil.rmtree, out, True)
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            CM._warn_self_preference(out, [{"model": "opus"}], {"judge_model": "haiku"})
+        self.assertIn("自我偏好", buf.getvalue())
+        # mock config → 裁判是 mock 家族 → 不警告
+        buf2 = io.StringIO()
+        with redirect_stdout(buf2):
+            CM._warn_self_preference(out, [{"model": "opus"}], {"mock": True})
+        self.assertEqual(buf2.getvalue(), "")
 
     def test_load_jsonl_tolerates_bom(self):
         # 编辑器重存加了 BOM 的合法 .jsonl 不该被 fail-loud 误杀（utf-8-sig 读）

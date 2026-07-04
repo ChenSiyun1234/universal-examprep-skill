@@ -28,15 +28,35 @@ ABSTAIN_MARKERS = [
 # 数字抽取（B5 加固）——**单遍、按出现顺序**扫，取最后一个数值单元的值（末位无效就 None，绝不回退到前面的数）。
 # 一个数字单元 = 数字/逗号/小数点的连串（末位须是数字，不吞尾随标点）+ 可选科学计数。逗号+小数点混排交给
 # _to_number 判：合法美式千分位（1,000,000 / 1,000.50）才转数，欧式（1.234,56）或乱逗号（3,14 / 1,2,3）当歧义拒。
-# 乘方：数值^数值算成值（10^6 / 1e6^2）；含符号的乘方（n^2 / 2^n，复杂度记号）不是数值答案 → 跳过、不当数。
+# 乘方：数值^数值算成值（10^6 / 1e6^2 / 2^2.5）；含符号的乘方（n^2 / 2^n，复杂度记号）不是数值答案 → 跳过。
 # 整数部分可省（.05 / p=.32 这类无前导零小数——APA/统计惯例，PSYC 110 常见），交给 _to_number 判逗号歧义。
-_NUM = r"[-+]?(?:\d+(?:[.,]\d+)*|[.,]\d+)(?:[eE][+-]?\d+)?"
+# 符号仅在词/数边界起效：3-5 / 2020-01-01 / 555-1234 里的 - 是连字符不是负号（CJK 后仍算负号：答案是-5）。
+# 空格千分位（ISO 31-0：1 000 000，含 NBSP/thin space）整段捕获后去空格转数。分数 3/4 算成 0.75（分母 0 拒）。
+# 章节/页码引用（chapter 7 / p.12 / 第7章）不是数值答案 → 跳过——防「答案是 42，见第 7 章」把 7 当答案。
+# 负号边界：字母/数字/下划线后的 - 是连字符（3-5 / 2020-01-01 / Q-5）；逗号/括号/CJK 后仍是负号
+# （(3,-2) 坐标、roots 5,-3、答案是-5）。
+_SIGN = r"(?:(?<![0-9A-Za-z_])[-+])?"
+_SP_GROUP = ('(?<![0-9A-Za-z_])\\d{1,3}(?:[ \xa0\u2009\u202f]\\d{3})+'
+             + '(?:[.,]\\d+)?(?!\\d)')              # 空格系千分位：左界防 Q1 粘连，尾界防 1 2020 前缀吞并
+_NUM_CORE = r"(?:\d+(?:[.,]\d+)*|[.,]\d+)(?:[eE][+-]?\d+)?"
+_UNIT = _SIGN + r"(?:" + _SP_GROUP + r"|" + _NUM_CORE + r")"
+_DEC_EXP = r"[-+]?\d+(?:\.\d+)?"                                   # 指数允许小数（2^2.5）
 _US_GROUP = re.compile(r"^[-+]?\d{1,3}(?:,\d{3})+(?:\.\d+)?$")     # 合法美式千分位（可带小数）
+_POW_TAIL = r"(?:\s*\^\s*" + _DEC_EXP + r")?"                     # 分数操作数允许自带乘方（1/2^10）
 _ANY_NUM = re.compile(
-    r"(?P<pow>" + _NUM + r"\s*\^\s*[-+]?\d+)"                # 数值底数 ^ 数值指数 → 算成值
-    r"|(?P<sym>[A-Za-z_]\w*\s*\^\s*[-+]?\d+)"                # 符号底数乘方 n^2 → 跳过
-    r"|(?P<sym2>" + _NUM + r"\s*\^\s*[A-Za-z_]\w*)"          # 数值底数 ^ 符号指数 2^n（复杂度记号）→ 跳过
-    r"|(?P<num>" + _NUM + r")")                             # 普通数字单元
+    r"(?P<frac>" + _UNIT + _POW_TAIL + r"\s*/\s*" + _UNIT + _POW_TAIL + r")"   # 分数（^ 先于 / 结合）
+    r"|(?P<pow>" + _UNIT + r"\s*\^\s*" + _DEC_EXP + r")"      # 数值底数 ^ 数值指数 → 算成值
+    r"|(?P<sym>[A-Za-z_]\w*\s*\^\s*" + _DEC_EXP + r")"       # 符号底数乘方 n^2 / n^2.5 → 跳过
+    r"|(?P<sym2>" + _UNIT + r"\s*\^\s*[A-Za-z_]\w*)"         # 数值底数 ^ 符号指数 2^n（复杂度记号）→ 跳过
+    r"|(?P<num>" + _UNIT + r")")                             # 普通数字单元
+_STRIP_SP = re.compile(r"[ \u00a0\u2009\u202f]")
+# 引用语境：英文关键词在数字前（chapter 7 / p. 12），中文要求「第」在前**且**章/页/讲等类别字紧随其后（第7章）。
+# 「7 章」「共 7 章」这类**数量**（无「第」前缀）不算引用，照常当数。
+_CITE_EN = re.compile(
+    r"(?<![a-z])(?:(?:chapter|chap|ch|page|section|sec|figure|fig|table|tab|"
+    r"equation|eq|lecture|lec|slide|question|problem|exercise|ex|ref)\.?|p{1,2}\.)\s*$", re.I)
+# p/pp **必须带点**（p. 45 是页码引用；p .32 / p = .32 是 p 值，不是引用）。
+_CITE_CN_AFTER = re.compile(r"^\s*(?:[-–—~到至]\s*\d+(?:\.\d+)?\s*)?[章节節页頁讲講题題课課问問条]")
 
 
 def _to_number(s):
@@ -53,34 +73,92 @@ def _to_number(s):
     return v if math.isfinite(v) else None             # 1e400 之类 → inf → 拒绝（否则 abs(inf-inf)=nan 判错）
 
 
+def _unit_number(tok):
+    """一个数字单元 token → float（先剥空格千分位再走 _to_number 的逗号歧义判定）。
+    带空格千分位 + 单个逗号小数（ISO 欧式 1 000,5）时逗号**无歧义**是小数点——空格分组已定界。"""
+    s = _STRIP_SP.sub("", tok)
+    if s != tok and re.fullmatch(r"[-+]?\d+,\d+", s):
+        s = s.replace(",", ".")
+    return _to_number(s)
+
+
 def _pow_value(tok):
     base_str, _, exp_str = tok.partition("^")
-    base = _to_number(base_str)                        # 底数歧义(1,00^2) → None
+    base = _unit_number(base_str)                      # 底数歧义(1,00^2) → None
     if base is None:
         return None
     try:
         v = base ** float(exp_str.strip())
     except (ValueError, OverflowError, ZeroDivisionError):
         return None
+    if not isinstance(v, float) or not math.isfinite(v):
+        return None                                    # 负底数小数指数 → complex → 拒（isfinite 会 TypeError）
+    return v
+
+
+def _side_value(s):
+    """分数的一侧：可自带乘方（1/2^10 的 2^10）。"""
+    return _pow_value(s) if "^" in s else _unit_number(s)
+
+
+def _frac_value(tok):
+    num_str, _, den_str = tok.partition("/")
+    n, d = _side_value(num_str), _side_value(den_str)
+    if n is None or d is None or d == 0:               # 分母 0 / 任一侧歧义 → 整个分数作废
+        return None
+    v = n / d
     return v if math.isfinite(v) else None
+
+
+def _is_citation(text, start, end):
+    """数字是否处在章节/页码**引用**语境（chapter 7 / p. 12 / 第7章）——引用不是数值答案。"""
+    pre = text[max(0, start - 12):start]
+    if _CITE_EN.search(pre):
+        return True
+    return bool(re.search(r"第\s*$", pre) and _CITE_CN_AFTER.match(text[end:]))
+
+
+_CITE_RANGE_GAP = re.compile(r"\s*[-–—~到至]\s*$")     # 引用区间连接符（page 12-13 / 第7-8章 的 -）
+
+
+def _extract_final_unit(text):
+    """返回 (最后一个数值单元的值或 None, 该单元的结束偏移)；全文无数值单元则返回 None。"""
+    if not text:
+        return None
+    last = None
+    cite_end = None                                    # 上一个被跳过的引用数字的结尾（用于吞掉区间后半）
+    for m in _ANY_NUM.finditer(text):
+        if m.group("sym") is not None or m.group("sym2") is not None:
+            continue                                   # 含符号的乘方(n^2 / 2^n) 不是数值答案 → 不更新 last
+        if m.group("num") is not None or m.group("frac") is not None:
+            if _is_citation(text, m.start(), m.end()):
+                cite_end = m.end()                     # page 3/4 这类引用分数也跳过
+                continue
+            if cite_end is not None and _CITE_RANGE_GAP.fullmatch(text[cite_end:m.start()]):
+                cite_end = m.end()                     # 引用区间后半（page 12-13 的 13）一并跳过
+                continue
+        cite_end = None
+        if m.group("pow") is not None:
+            last = (_pow_value(m.group("pow")), m.end())   # 末位是坏乘方 → 值 None（不回退）
+        elif m.group("frac") is not None:
+            last = (_frac_value(m.group("frac")), m.end())  # 分数 → 值（坏分数 None，不回退）
+        else:
+            last = (_unit_number(m.group("num")), m.end())  # 末位歧义/inf → 值 None（不回退）
+    return last
 
 
 def _extract_final_number(text):
     """返回文本里**最后一个数值单元**的值（float），无/末位无效则 None。最终答案通常在末尾。"""
-    if not text:
-        return None
-    last = None
-    for m in _ANY_NUM.finditer(text):
-        if m.group("sym") is not None or m.group("sym2") is not None:
-            continue                                   # 含符号的乘方(n^2 / 2^n) 不是数值答案 → 不更新 last
-        if m.group("pow") is not None:
-            last = _pow_value(m.group("pow"))          # 末位是坏乘方 → last=None（不回退）
-        else:
-            last = _to_number(m.group("num"))          # 末位歧义/inf → last=None（不回退）
-    return last
+    u = _extract_final_unit(text)
+    return None if u is None else u[0]
 
 _GOLD_MIN_LEN = 2
 _NEG_TOKENS = ("不是", "并非", "不叫", "不属于", "not", "no", "never", "未", "非")
+# 小句级否定（词法快路的否定升级）：强否定在 gold 所在小句里**前后任一侧**出现都不走快路，交给 LLM 裁判。
+# 单字否定（未/非）只看紧邻窗口——防「未来」「非常」误伤。英文 not/no/never 用词边界——防 note/know 误伤。
+_CLAUSE_SPLIT = re.compile(r"[。．.!?！？;；,，\n]")
+_NEG_STRONG_CN = ("不是", "并非", "不叫", "不属于", "没有", "不算", "不对", "并不", "错误", "未提及")
+_NEG_EN = re.compile(r"(?<![a-z])(?:not|no|never|nor|wrong|incorrect|false)(?![a-z])|n't(?![a-z])", re.I)
 
 
 def looks_abstained(answer):
@@ -93,23 +171,77 @@ def _norm(s):
     return re.sub(r"\s+", "", (s or "").lower())
 
 
+def _lex_norm(s):
+    """小写 + 空白折叠成单空格，再剥掉紧邻标点的空格（'word - ram'→'word-ram'）——
+    但保留**词间**空格，让 ASCII 词边界检查有意义（microRAM ≠ ' RAM'）。"""
+    s = re.sub(r"\s+", " ", (s or "").lower()).strip()
+    return re.sub(r" (?=[^0-9a-zÀ-ɏ一-鿿])"
+                  r"|(?<=[^0-9a-zÀ-ɏ一-鿿]) ", "", s)
+
+
+def _ascii_alnum(c):
+    return c.isascii() and c.isalnum()
+
+
 def contains_gold(answer, gold):
     """Deterministic: True if the canonical gold answer appears verbatim inside the answer
-    (whitespace/case-insensitive) and isn't immediately negated.
+    (whitespace/case-insensitive), at an ASCII word boundary, and isn't negated in its clause.
 
     A cheap, noise-free CORRECTNESS signal for canonical short answers — the same spirit as the
     numeric path. It exists because the LLM judge was demonstrably marking exact-match answers
     (e.g. answer 'Word-RAM。' vs gold 'Word-RAM') as unsupported. Short golds (< 2 chars) defer to
-    the numeric/LLM paths to avoid spurious substring hits."""
-    g = _norm(gold)
+    the numeric/LLM paths to avoid spurious substring hits. False here is SAFE — it just falls
+    through to the LLM judge — so every guard errs toward rejecting the fast path."""
+    g = _lex_norm(gold)
     if len(g) < _GOLD_MIN_LEN:
         return False
-    a = _norm(answer)
+    a = _lex_norm(answer)
+    # 检查**每一处**出现：「有人说不是 Word-RAM，其实正确模型就是 Word-RAM」——第一处被否定、第二处干净 → True
     idx = a.find(g)
-    if idx < 0:
+    while idx >= 0:
+        if _occurrence_ok(a, g, idx):
+            return True
+        idx = a.find(g, idx + 1)
+    return False
+
+
+def _occurrence_ok(a, g, idx):
+    """gold 在 a[idx:] 的这一处出现是否算数：ASCII 词边界 + 所在小句无强否定 + 贴邻无单字否定。"""
+    # ASCII 词边界：gold 边缘是 ASCII 字母/数字时，答案里贴邻的字符不能也是（microRAM 不算含 RAM）
+    if _ascii_alnum(g[0]) and idx > 0 and _ascii_alnum(a[idx - 1]):
         return False
-    pre = a[max(0, idx - 6):idx]                       # light guard: reject '不是 Word-RAM' / 'not X'
-    return not any(_norm(n) in pre for n in _NEG_TOKENS)
+    end = idx + len(g)
+    if _ascii_alnum(g[-1]) and end < len(a) and _ascii_alnum(a[end]):
+        return False
+    # 小句级否定：gold 所在小句里前后任一侧出现强否定（'Word-RAM is not the answer'）→ 不走快路
+    cs = 0
+    for mm in _CLAUSE_SPLIT.finditer(a, 0, idx):
+        cs = mm.end()
+    me = _CLAUSE_SPLIT.search(a, end)
+    clause = a[cs:me.start() if me else len(a)]
+    if any(t in clause for t in _NEG_STRONG_CN) or _NEG_EN.search(clause):
+        return False
+    pre6 = a[max(0, idx - 6):idx]                      # 近窗：多字否定词
+    if any(t in pre6 for t in ("不是", "并非", "不叫", "不属于", "not", "no", "never")):
+        return False
+    pre2 = a[max(0, idx - 2):idx]                      # 贴邻：单字否定（未/非）——防「非常明显是 X」被 6 字窗误伤
+    return not any(t in pre2 for t in ("未", "非"))
+
+
+# 弃答里的**顺带计数**（「我查了全部 20 讲都没提」「材料只讲到 1960 年代」）：末位数字后紧跟量词/单位类别字
+# → 它是材料规模的陈述，不是报答案——弃答豁免仍成立，不翻成 hallucinated。
+_COUNT_AFTER = re.compile(
+    r"^\s*(?:[讲章页题课节遍次门册条年]"
+    r"|(?:lectures?|chapters?|pages?|slides?|sections?|questions?|problems?|lessons?|times|years?)(?![a-z]))",
+    re.I)
+
+
+def _incidental_count(answer):
+    """答案里最后一个数字单元是否只是「材料规模」类顺带计数（后跟 讲/章/页/年/lectures…）。"""
+    u = _extract_final_unit(answer)
+    if u is None:
+        return False
+    return bool(_COUNT_AFTER.match(answer[u[1]:]))
 
 
 def check_numeric(answer, gold, tolerance):
@@ -199,6 +331,8 @@ def judge_answer(item, answer, ask_judge, judge_repeats=1):
     if out["answer_type"] == "numeric":
         correct, parsed = check_numeric(answer, item["gold_answer"], item.get("tolerance"))
         out["parsed_number"] = parsed
+        if parsed is not None and out["abstained"] and not _incidental_count(answer):
+            out["abstained"] = False       # 挂着「不确定」却仍报出具体数字 = 已作答；对冲不能把瞎编洗成弃答
         out["faithfulness"] = 1.0 if correct else 0.0
         out["correct"] = correct
         out["hallucinated"] = 0 if (correct or out["abstained"]) else 1

@@ -46,6 +46,13 @@ def _flat(s):
     return " ".join(str(s or "").split())
 
 
+def _csv_safe(s):
+    """Excel/Sheets 公式注入防护：单元格以 = + - @ 或制表/回车开头时加 ' 前缀（Excel 视为文本标记、
+    不显示）。模型答案是**不可信文本**——'=HYPERLINK(...)' 直接进表会在标注者打开时被当公式执行。"""
+    s = str(s)
+    return "'" + s if s[:1] in ("=", "+", "-", "@", "\t", "\r") else s
+
+
 def _model_family(model):
     m = (model or "").lower()
     if any(t in m for t in ("opus", "sonnet", "haiku", "claude")):
@@ -91,12 +98,25 @@ def build_pool(results_dir, cfg):
 
     def key(r):
         return (r.get("course"), r.get("model"), r.get("arm"), str(r.get("item_id")))
-    answers = {key(r): r.get("answer", "") for r in ans_rows}
+    # 重复行（同 (course,model,arm,item) 多条）说明文件被拼接/损坏——保哪条都可能让人标注的答案
+    # 与裁判实际判的答案**不是同一条**，直接拒绝，别猜。
+    answers = {}
+    for r in ans_rows:
+        k = key(r)
+        if k in answers:
+            _die("answers.jsonl 有重复行 (course=%s, model=%s, arm=%s, item=%s)——文件疑被拼接/损坏，"
+                 "人工核对去重后再校准" % k)
+        answers[k] = r.get("answer", "")
+    seen_scores = set()
     pool = []
     for sc in score_rows:
         if sc.get("judge_error"):                      # 判分失败：没有有效裁判判定，不进校准池
             continue
         k = key(sc)
+        if k in seen_scores:
+            _die("scores.jsonl 有重复行 (course=%s, model=%s, arm=%s, item=%s)——同一答案存在多条裁判判定，"
+                 "无法确定人工该对哪条校准；人工核对去重后再来" % k)
+        seen_scores.add(k)
         item = gold.get(sc.get("course"), {}).get(str(sc.get("item_id")))
         if item is None or k not in answers:
             continue
@@ -127,16 +147,24 @@ def _sheet_paths(out_dir):
 
 def _assert_config_matches(results_dir, cfg):
     """校验给的 config 与产出该 results_dir 的一致（run_matrix 写的 .run_meta 指纹）——否则会把旧答案/判定
-    按 (course,id) 配到**新题面/金标**上（id 没变、内容变了），静默出错。没 meta 就不强求（老格式/手拼）。"""
+    按 (course,id) 配到**新题面/金标**上（id 没变、内容变了），静默出错。
+    · meta 缺失（手拼目录）→ 响亮警告但放行（指纹无从核对，责任交还操作者）；
+    · meta 存在但坏/缺指纹 → 直接拒——这曾是 run_matrix 目录，读不出指纹时**假定不匹配**比静默放行安全。"""
     meta_path = os.path.join(results_dir, ".run_meta.json")
     if not os.path.isfile(meta_path):
+        sys.stderr.write("calibrate_matrix: ⚠️ 该 results_dir 没有 .run_meta.json——无法核对 config 指纹。"
+                         "请自行确保这就是产出这些 answers/scores 的**同一 config**（金标配错会把标注带偏）。\n")
         return
     try:
         with open(meta_path, encoding="utf-8") as f:
             prev_fp = json.load(f).get("fingerprint")
-    except ValueError:
-        return
-    if prev_fp and prev_fp != RM._config_fingerprint(cfg):
+    except (ValueError, OSError):
+        _die(".run_meta.json 损坏（读不出/非法 JSON）——无法核对 config 指纹，不能默认放行；"
+             "人工确认 config 无误后可删掉该文件重试（等价于放弃指纹校验，会有警告）")
+    if not prev_fp:
+        _die(".run_meta.json 缺 fingerprint 字段——无法核对 config 指纹；"
+             "人工确认 config 无误后可删掉该文件重试（等价于放弃指纹校验，会有警告）")
+    if prev_fp != RM._config_fingerprint(cfg):
         _die("给的 config 与产出该 results_dir 的 run_matrix 记录不一致（config/题集/材料变了）——"
              "校准会把旧答案/判定配到新题面/金标上；请用**产出该 results_dir 的同一 config**")
 
@@ -179,11 +207,12 @@ def cmd_sample(args):
         for i, p in enumerate(pick, 1):
             ref = "cal_%03d" % i
             note = "" if p["answerable"] else "  ←【越界题：材料无答案，正确=老实弃答】"
-            w.writerow({"ref_id": ref, "course": p["course"],
+            w.writerow({"ref_id": ref, "course": _csv_safe(_flat(p["course"])),
                         "answerable": int(p["answerable"]),
-                        "question": _flat(p["question"]) + note, "gold_answer": _flat(p["gold_answer"]),
-                        "reference_span": _flat(p["reference_span"]),
-                        "model_answer": _flat(p["answer"]), "human_correct": ""})
+                        "question": _csv_safe(_flat(p["question"]) + note),
+                        "gold_answer": _csv_safe(_flat(p["gold_answer"])),
+                        "reference_span": _csv_safe(_flat(p["reference_span"])),
+                        "model_answer": _csv_safe(_flat(p["answer"])), "human_correct": ""})
             # model/arm 藏进 key（不进待填表，避免带偏标注），留作后续按臂/模型分析
             kf.write(json.dumps({"ref_id": ref, "judge_correct": p["judge_correct"],
                                  "model": p["model"], "arm": p["arm"]}, ensure_ascii=False) + "\n")
@@ -196,12 +225,13 @@ def cmd_sample(args):
     tail = "" if not args.out_dir else " --out-dir %s" % args.out_dir   # 自定义 out-dir 也带进续跑命令
     print("    用 Excel/编辑器打开，给 human_correct 列填 1（对/可接受）或 0（错）；填完跑："
           "python calibrate_matrix.py kappa --results-dir %s%s" % (args.results_dir, tail))
-    _warn_self_preference(args.results_dir, pool)
+    _warn_self_preference(args.results_dir, pool, cfg)
     return 0
 
 
-def _warn_self_preference(results_dir, pool):
-    """裁判与生成器同家族 → 自我偏好嫌疑。裁判模型从 summary.json 读，生成器家族从 pool 的 model 推。"""
+def _warn_self_preference(results_dir, pool, cfg=None):
+    """裁判与生成器同家族 → 自我偏好嫌疑。裁判模型优先从 summary.json 读；summary 缺（infra 跳过的真跑会
+    删掉过期 summary）时退回 config 推断（mock→mock，否则 judge_model 或 run_matrix 默认 haiku）。"""
     judge_model = None
     sp = os.path.join(results_dir, "summary.json")
     if os.path.isfile(sp):
@@ -210,6 +240,8 @@ def _warn_self_preference(results_dir, pool):
                 judge_model = json.load(f).get("judge_model")
         except ValueError:
             pass
+    if not judge_model and cfg:
+        judge_model = "mock" if cfg.get("mock") else (cfg.get("judge_model") or "haiku")
     if not judge_model:
         return
     jf = _model_family(judge_model)
@@ -220,6 +252,15 @@ def _warn_self_preference(results_dir, pool):
               % (judge_model, jf, "/".join(sorted(gen_families))))
 
 
+def _parse_label(hv):
+    """人工标注单元格 → 1/0；容忍 Excel 数字化（'1.0'/'０'），其余（yes/2/x）返回 None 由上层 fail-loud。"""
+    try:
+        v = float(hv)
+    except (TypeError, ValueError):
+        return None
+    return int(v) if v in (0.0, 1.0) else None
+
+
 def cmd_kappa(args):
     out_dir = args.out_dir or os.path.join(args.results_dir, "calibration")
     sheet, keyp = _sheet_paths(out_dir)
@@ -228,20 +269,28 @@ def cmd_kappa(args):
     key = {d["ref_id"]: d["judge_correct"] for d in _load_jsonl(keyp)}
     with open(sheet, encoding="utf-8-sig") as f:
         rows = list(csv.DictReader(f))
-    human, judge, disagree, blank, unmatched = [], [], [], 0, 0
+    human, judge, disagree, blank, unmatched, invalid = [], [], [], 0, 0, []
     for r in rows:
         hv = (r.get("human_correct") or "").strip()
-        if hv not in ("0", "1"):
-            blank += 1
+        if hv == "":
+            blank += 1                                 # 真空单元格 = 还没填，可跳
+            continue
+        h = _parse_label(hv)
+        if h is None:
+            invalid.append((r.get("ref_id", "?"), hv))  # 填了但不是 0/1（yes/2/Excel 改写）——不能当空格静默丢
             continue
         ref = r["ref_id"]
         if ref not in key:
             unmatched += 1                             # 填了但 ref_id 对不上 key（表被改/串了）——别静默丢
             continue
-        h, j = int(hv), int(key[ref])
+        j = int(key[ref])
         human.append(h); judge.append(j)
         if h != j:
             disagree.append((ref, j, h, (r.get("question", "") or "")[:70]))
+    if invalid:
+        _die("有 %d 行 human_correct 不是 0/1（不能当没填静默丢，会让 kappa 虚高）：%s\n"
+             "  只接受 1（对/可接受）或 0（错）；改好这些格再跑。"
+             % (len(invalid), ", ".join("%s=%r" % (ref, v) for ref, v in invalid[:10])))
     n = len(human)
     if n == 0:
         _die("还没有已填的 human_correct（%d 行为空，%d 行 ref_id 对不上 key）。先在 %s 填好再跑。"

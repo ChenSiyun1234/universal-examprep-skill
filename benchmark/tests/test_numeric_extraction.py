@@ -118,6 +118,166 @@ class ExtractFinalNumber(unittest.TestCase):
         self.assertTrue(J.check_numeric("答案 1,000,000（即 O(2^n)）", "1000000", 0)[0])
 
 
+class HardeningRound2(unittest.TestCase):
+    """对抗审计批次：连字符≠负号、空格千分位、分数、引用语境、小数指数、对冲弃答。"""
+
+    def test_hyphen_is_not_minus(self):
+        # 3-5 / 60-70 的 - 是连字符：第二个数不再变负
+        self.assertEqual(J._extract_final_number("the answer is 3-5"), 5.0)
+        self.assertEqual(J._extract_final_number("roughly 60-70 percent"), 70.0)
+        self.assertEqual(J._extract_final_number("call 555-1234"), 1234.0)
+        # 关键：'range 8-42' 不再撞对 gold=-42（旧行为 -42.0 假阳）
+        self.assertEqual(J.check_numeric("range 8-42", "-42", 0.5), (False, 42.0))
+
+    def test_iso_date_not_negative(self):
+        # 已知局限：日期不是标量，末段取 1.0（但绝不再是 -1.0 去撞负数 gold）
+        self.assertEqual(J._extract_final_number("2020-01-01"), 1.0)
+        self.assertFalse(J.check_numeric("2020-01-01", "-1", 0)[0])
+
+    def test_minus_after_cjk_still_sign(self):
+        self.assertEqual(J._extract_final_number("答案是-5"), -5.0)
+        self.assertEqual(J._extract_final_number("温度 -5 度"), -5.0)
+
+    def test_space_grouped_thousands(self):
+        # ISO 31-0 空格千分位（含 NBSP）：整段一个数，不再取末组
+        self.assertEqual(J._extract_final_number("1 000 000"), 1000000.0)
+        self.assertEqual(J._extract_final_number("1 234"), 1234.0)
+        self.assertEqual(J._extract_final_number("1 000"), 1000.0)   # NBSP 分组
+        self.assertEqual(J._extract_final_number("1 234.56"), 1234.56)
+        # 关键：'1 000 survivors' 不再撞对 gold=0
+        self.assertFalse(J.check_numeric("there were 1 000 survivors", "0", 0.5)[0])
+        # 空格组 + 逗号小数（ISO 欧式 1 234,56）：空格分组已定界 → 逗号无歧义是小数点
+        self.assertEqual(J._extract_final_number("1 234,56"), 1234.56)
+        self.assertEqual(J._extract_final_number("总共 1 000,5 元"), 1000.5)
+        # 左右边界：词粘连不并组、前缀不吞并
+        self.assertEqual(J._extract_final_number("Q1 100 points"), 100.0)
+        self.assertEqual(J._extract_final_number("January 1 2020"), 2020.0)
+
+    def test_decimal_exponent(self):
+        self.assertAlmostEqual(J._extract_final_number("2^2.5"), 2 ** 2.5)
+        self.assertIsNone(J._extract_final_number("n^2.5"))   # 符号乘方连小数指数一起跳过
+
+    def test_fractions(self):
+        self.assertEqual(J._extract_final_number("答案是 3/4"), 0.75)
+        self.assertEqual(J._extract_final_number("1/2"), 0.5)
+        self.assertIsNone(J._extract_final_number("5/0"))     # 除零 → 作废不回退
+        self.assertTrue(J.check_numeric("probability = 3/4", "0.75", 0.01)[0])
+        # 关键：'the ratio 3/4' 不再撞对 gold=4（旧行为取分母 4.0 假阳）
+        self.assertEqual(J.check_numeric("the ratio 3/4", "4", None), (False, 0.75))
+
+    def test_citation_numbers_skipped(self):
+        # 「见第 7 章 / per chapter 7 / p. 12」是引用不是答案
+        self.assertEqual(J._extract_final_number("The answer is 42, per chapter 7"), 42.0)
+        self.assertTrue(J.check_numeric("The answer is 42, per chapter 7", "42", 0)[0])
+        self.assertFalse(J.check_numeric("The answer is 42, per chapter 7", "7", 0)[0])
+        for s in ("see chapter 7", "见第 7 章", "第3讲", "see page 12", "p. 45"):
+            self.assertIsNone(J._extract_final_number(s), s)
+        # 数量（无「第」前缀）不是引用，照常当数
+        self.assertEqual(J._extract_final_number("这本书共 7 章"), 7.0)
+        # p = .05 不受 'p' 引用关键词影响（中间有 =）
+        self.assertAlmostEqual(J._extract_final_number("p = .05"), 0.05)
+
+    def test_hedged_numeric_commit_not_abstain(self):
+        # 报了具体数字还挂「not sure」→ 不算弃答，瞎编照记 hallucinated
+        item = {"id": "q", "question": "?", "gold_answer": "4",
+                "answer_type": "numeric", "answerable": True, "tolerance": None}
+        v = J.judge_answer(item, "The answer is 999, though I am not sure why", None)
+        self.assertFalse(v["abstained"])
+        self.assertEqual(v["hallucinated"], 1)
+        # 真弃答（没报数）不受影响
+        v2 = J.judge_answer(item, "材料中未涵盖，无法确定", None)
+        self.assertTrue(v2["abstained"])
+        self.assertEqual(v2["hallucinated"], 0)
+
+
+class HardeningRound3(unittest.TestCase):
+    """第二轮对抗验证批次：complex 乘方、引用区间/引用分数、逗号后负号、分数带乘方、顺带计数弃答豁免。"""
+
+    def test_complex_pow_no_crash(self):
+        # (-2)^0.5 是复数——不崩、拒 None（isfinite(complex) 会 TypeError）
+        self.assertIsNone(J._extract_final_number("-2^0.5"))
+        self.assertEqual(J.check_numeric("答案是 -4^0.5", "2", 0), (False, None))
+
+    def test_citation_range_skipped(self):
+        # page 12-13 / 第7-8章 的区间后半不再漏出来当答案
+        self.assertEqual(J._extract_final_number("answer is 42, see page 12-13"), 42.0)
+        self.assertEqual(J._extract_final_number("answer is 42 (pp. 12-13)"), 42.0)
+        self.assertEqual(J._extract_final_number("答案是42，见第7-8章"), 42.0)
+
+    def test_citation_fraction_skipped(self):
+        # page 3/4 / slide 3/20 是引用不是分数答案
+        self.assertEqual(J._extract_final_number("The answer is 42 (page 3/4)"), 42.0)
+        self.assertIsNone(J._extract_final_number("see slide 3/20 for the answer"))
+
+    def test_p_value_without_equals(self):
+        # p .32 是 p 值不是页码（p/pp 引用**必须带点**：p. 45 才是页码）
+        self.assertAlmostEqual(J._extract_final_number("significant, p .32"), 0.32)
+        self.assertIsNone(J._extract_final_number("p. 45"))
+
+    def test_sign_after_comma_kept(self):
+        # (3,-2) 坐标 / roots 5,-3：逗号后的 - 仍是负号（连字符规则只挡字母数字后的 -）
+        self.assertEqual(J._extract_final_number("坐标是 (3,-2)"), -2.0)
+        self.assertEqual(J._extract_final_number("the roots are 5,-3"), -3.0)
+        self.assertTrue(J.check_numeric("point (2,-7)", "-7", 0)[0])
+        self.assertFalse(J.check_numeric("the roots are 5,-3", "3", 0)[0])   # 不再丢负号撞对 gold=3
+
+    def test_fraction_with_power(self):
+        # 1/2^10 = 1/(2^10)（^ 先于 / 结合）；2^3/4 = (2^3)/4——不再把裸指数/分母当答案
+        self.assertAlmostEqual(J._extract_final_number("概率是 1/2^10"), 1.0 / 1024)
+        self.assertEqual(J._extract_final_number("2^3/4"), 2.0)
+        self.assertFalse(J.check_numeric("概率是 1/2^10", "10", 0)[0])
+
+    def test_incidental_count_keeps_abstain(self):
+        # 弃答里顺带提到材料规模（20 讲 / 1960 年代 / 20 lectures）→ 弃答豁免仍成立
+        item = {"id": "q", "question": "?", "gold_answer": "42",
+                "answer_type": "numeric", "answerable": True, "tolerance": None}
+        for ans in ("材料中未涵盖该数值——我查了全部 20 讲都没提。",
+                    "无法确定，材料只讨论了 1960 年代的研究",
+                    "not covered in the material; I checked all 20 lectures"):
+            v = J.judge_answer(item, ans, None)
+            self.assertTrue(v["abstained"], ans)
+            self.assertEqual(v["hallucinated"], 0, ans)
+        # 真对冲（报了裸数字）仍翻转
+        v = J.judge_answer(item, "The answer is 999, though I am not sure why", None)
+        self.assertFalse(v["abstained"])
+        self.assertEqual(v["hallucinated"], 1)
+
+
+class ContainsGoldHardening(unittest.TestCase):
+    """词法快路加固：ASCII 词边界 + 小句级否定。False 是安全方向（落回 LLM 裁判）。"""
+
+    def test_ascii_word_boundary(self):
+        self.assertFalse(J.contains_gold("microRAM", "RAM"))
+        self.assertFalse(J.contains_gold("the DRAMatic case", "RAM"))
+        self.assertTrue(J.contains_gold("The answer is RAM", "RAM"))
+        self.assertTrue(J.contains_gold("Word-RAM。", "Word-RAM"))
+        self.assertTrue(J.contains_gold("word - ram", "Word-RAM"))   # 标点邻空格归一保留
+
+    def test_clause_negation(self):
+        self.assertFalse(J.contains_gold("Word-RAM is not the answer", "Word-RAM"))
+        self.assertFalse(J.contains_gold("这个模型并不是我们讨论的那种 Word-RAM", "Word-RAM"))
+        self.assertFalse(J.contains_gold("不是 Word-RAM", "Word-RAM"))
+        self.assertFalse(J.contains_gold("the answer word-ram is wrong", "word-ram"))
+        # 否定在**别的小句**不误伤
+        self.assertTrue(J.contains_gold("没有别的名字，就叫 Word-RAM", "Word-RAM"))
+        # note/know 不触发 not/no（词边界）
+        self.assertTrue(J.contains_gold("note that it is Word-RAM", "Word-RAM"))
+        self.assertTrue(J.contains_gold("know it is Word-RAM", "Word-RAM"))
+
+    def test_all_occurrences_checked(self):
+        # 第一处被否定、第二处干净 → True（逐处检查，不只看第一处）
+        self.assertTrue(J.contains_gold(
+            "Some say it is not Word-RAM, but the correct model is Word-RAM.", "Word-RAM"))
+
+    def test_single_char_neg_only_adjacent(self):
+        # 「非常明显是 X」的「非」在 6 字窗里但不贴邻 → 不误伤；贴邻的「非/未」仍拒
+        self.assertTrue(J.contains_gold("非常明显是 Word-RAM", "Word-RAM"))
+        self.assertFalse(J.contains_gold("非 Word-RAM", "Word-RAM"))
+
+    def test_cjk_gold_unaffected(self):
+        self.assertTrue(J.contains_gold("短时记忆又称工作记忆", "工作记忆"))
+
+
 class CheckNumeric(unittest.TestCase):
     def test_comma_gold_and_answer(self):
         ok, parsed = J.check_numeric("答案 1,000,000", "1000000", 0)
