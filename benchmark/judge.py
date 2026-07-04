@@ -18,13 +18,57 @@ overlap heuristic, no Claude needed) and in real mode (a `claude -p` call).
 
 import re
 import json
+import math
 
 ABSTAIN_MARKERS = [
     "材料中未涵盖", "材料未涵盖", "无法确定", "不确定", "未提及", "没有提到",
     "not covered", "cannot determine", "not in the material", "i don't know", "not sure",
 ]
 
-_NUM_RE = re.compile(r"-?\d+(?:\.\d+)?")
+# 抓答案里的数字 token（B5 加固）：贪婪吃下 逗号+数字 连串（1,000,000 / 3,14 / 1,2,3 都成**一个** token），
+# 交给 _to_number 判定——合法美式千分位才转数，其余带逗号的（欧式小数/乱逗号）当歧义拒绝（返回 None、被标记），
+# 而不是像旧实现落到片段（"3,14"→"14"、"1,00"→"0"）造成静默误判。也支持科学计数 1e6/1.5e-3、正负号、小数。
+_NUM_TOKEN = re.compile(r"[-+]?\d+(?:,\d+)*(?:\.\d+)?(?:[eE][+-]?\d+)?")
+_US_GROUP = re.compile(r"^[-+]?\d{1,3}(?:,\d{3})+(?:\.\d+)?$")     # 合法美式千分位
+# 乘方 a^b 先算成值（10^6→1000000，base 可带千分位逗号 1,000^2）；符号底数的乘方（n^2/O(n^2)）不是数值答案，剥掉指数
+_CARET_POW = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*\^\s*([-+]?\d+)")
+_SYM_POW = re.compile(r"([A-Za-z_]\w*)\s*\^\s*[-+]?\d+")
+
+
+def _to_number(s):
+    """字符串数字 → float；空/非数/非有限(inf/nan)/带逗号但非合法千分位 都返回 None（宁可标记也不猜）。"""
+    s = str(s).strip()
+    if "," in s:
+        if not _US_GROUP.match(s):                     # 有逗号但不是合法千分位 → 歧义，拒绝
+            return None
+        s = s.replace(",", "")
+    try:
+        v = float(s)
+    except (TypeError, ValueError):
+        return None
+    return v if math.isfinite(v) else None             # 1e400 之类 → inf → 拒绝（否则 abs(inf-inf)=nan 判错）
+
+
+def _extract_final_number(text):
+    """返回文本里**最后一个**可解析的数字（float），无则 None。最终答案通常在末尾。"""
+    if not text:
+        return None
+
+    def _pow(m):
+        try:
+            base = float(m.group(1).replace(",", ""))
+            v = base ** float(m.group(2))
+            return repr(v) if math.isfinite(v) else m.group(0)
+        except (ValueError, OverflowError):
+            return m.group(0)
+    text = _CARET_POW.sub(_pow, text)                  # 数值底数乘方 → 值
+    text = _SYM_POW.sub(r"\1", text)                   # 符号底数乘方 → 只留底数（丢掉指数，别被当答案）
+    last = None
+    for m in _NUM_TOKEN.finditer(text):
+        v = _to_number(m.group(0))
+        if v is not None:
+            last = v
+    return last
 
 _GOLD_MIN_LEN = 2
 _NEG_TOKENS = ("不是", "并非", "不叫", "不属于", "not", "no", "never", "未", "非")
@@ -65,15 +109,11 @@ def check_numeric(answer, gold, tolerance):
     Compares the LAST number in the answer (final answers usually come last) to gold.
     Returns (correct: bool, parsed: float|None).
     """
-    nums = _NUM_RE.findall(answer or "")
-    if not nums:
+    parsed = _extract_final_number(answer)
+    gold_val = _to_number(gold)
+    if parsed is None or gold_val is None:
         return False, None
-    try:
-        parsed = float(nums[-1])
-        gold_val = float(gold)
-    except (TypeError, ValueError):
-        return False, None
-    tol = 1e-6 if tolerance in (None, "") else float(tolerance)
+    tol = 1e-6 if tolerance in (None, "") else abs(float(tolerance))
     return abs(parsed - gold_val) <= tol, parsed
 
 
