@@ -199,6 +199,35 @@ class ConfigValidation(unittest.TestCase):
     def test_mock_and_real_together_exits_2(self):
         self.assertEqual(_run("--mock", "--real", "--config", FIXTURE_CFG).returncode, 2)
 
+    def test_non_bool_mock_config_exits_2(self):
+        # "mock":"false"（字符串）会被 bool() 当 True → 拒绝
+        cfg = {"courses": [{"name": "a", "items": "i.jsonl"}], "arms": ["closedbook"], "mock": "false"}
+        r = _run("--mock", "--config", self._cfg(cfg))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("mock", r.stderr)
+
+    def test_empty_items_file_exits_2(self):
+        with open(os.path.join(self.d, "empty.jsonl"), "w", encoding="utf-8") as f:
+            f.write("# 只有注释\n\n")
+        r = _run("--mock", "--config", self._cfg({"courses": [{"name": "a", "items": "empty.jsonl"}],
+                                                  "arms": ["closedbook"]}))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("空题集", r.stderr)
+
+    def test_non_numeric_gold_exits_2(self):
+        r = _run("--mock", "--config", self._items_cfg(
+            {"id": "x", "question": "q", "gold_answer": "abc", "answer_type": "numeric",
+             "answerable": True}))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("gold_answer 非数字", r.stderr)
+
+    def test_negative_tolerance_exits_2(self):
+        r = _run("--mock", "--config", self._items_cfg(
+            {"id": "x", "question": "q", "gold_answer": "5", "answer_type": "numeric",
+             "answerable": True, "tolerance": -1}))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("不能为负", r.stderr)
+
     def test_relative_paths_resolved_to_config_dir(self):
         # config 里的相对 items 路径按 config 目录解析
         with open(os.path.join(self.d, "i.jsonl"), "w", encoding="utf-8") as f:
@@ -351,6 +380,48 @@ class FixesRegression(unittest.TestCase):
         r = _run("--mock", "--config", cfgp, "--results-dir", self.out)
         self.assertEqual(r.returncode, 2)
         self.assertIn("不同的 config", r.stderr)
+
+    def test_material_content_edit_refused(self):
+        # 就地改 combined 材料内容（路径不变）→ 指纹变 → 拒绝复用旧 results_dir
+        d = tempfile.mkdtemp(prefix="b4mc_")
+        self.addCleanup(shutil.rmtree, d, True)
+        itemsp = os.path.join(d, "items.jsonl")
+        with open(itemsp, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"id": "x", "question": "q", "gold_answer": "a",
+                                "answer_type": "factual", "answerable": True}) + "\n")
+        combp = os.path.join(d, "combined.txt")
+        with open(combp, "w", encoding="utf-8") as f:
+            f.write("material version one")
+        cfgp = os.path.join(d, "config.json")
+        with open(cfgp, "w", encoding="utf-8") as f:
+            json.dump({"courses": [{"name": "c", "items": itemsp, "combined": combp}],
+                       "models": ["opus"], "arms": ["closedbook"], "mock": True}, f)
+        _run("--mock", "--config", cfgp, "--results-dir", self.out)
+        with open(combp, "w", encoding="utf-8") as f:
+            f.write("material version TWO")                # 就地改材料内容
+        r = _run("--mock", "--config", cfgp, "--results-dir", self.out)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("不同的 config", r.stderr)
+
+    def test_bad_items_then_fixed_not_refused(self):
+        # 首跑 items 坏 → 死在建任务前、不写 .run_meta；修好后同目录续跑不被误判成"不同 config"
+        d = tempfile.mkdtemp(prefix="b4bf_")
+        self.addCleanup(shutil.rmtree, d, True)
+        itemsp = os.path.join(d, "items.jsonl")
+        with open(itemsp, "w", encoding="utf-8") as f:
+            f.write("# 空题集\n")
+        cfgp = os.path.join(d, "config.json")
+        with open(cfgp, "w", encoding="utf-8") as f:
+            json.dump({"courses": [{"name": "c", "items": itemsp}], "models": ["opus"],
+                       "arms": ["closedbook"], "mock": True}, f)
+        r1 = _run("--mock", "--config", cfgp, "--results-dir", self.out)
+        self.assertEqual(r1.returncode, 2)                # 空题集死
+        self.assertFalse(os.path.isfile(os.path.join(self.out, ".run_meta.json")))
+        with open(itemsp, "w", encoding="utf-8") as f:    # 修好
+            f.write(json.dumps({"id": "x", "question": "q", "gold_answer": "a",
+                                "answer_type": "factual", "answerable": True}) + "\n")
+        r2 = _run("--mock", "--config", cfgp, "--results-dir", self.out)
+        self.assertEqual(r2.returncode, 0, r2.stderr)     # 不被误判成不同 config
 
     def test_judge_infra_failure_flagged(self):
         # 判分侧 claude 撞配额/超时 → score_row 标 judge_infra_failed（不落盘、下次重判）

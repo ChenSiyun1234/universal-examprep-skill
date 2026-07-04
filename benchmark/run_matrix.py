@@ -117,6 +117,9 @@ def load_config(path):
         _die("primary_course 不在 courses 里: %s" % cfg["primary_course"])
     if cfg.get("secondary_course") and cfg["secondary_course"] not in cfg["_courses_by_name"]:
         _die("secondary_course 不在 courses 里: %s" % cfg["secondary_course"])
+    if "mock" in cfg and not isinstance(cfg["mock"], bool):
+        # "mock":"false"（字符串）会被 bool() 当 True、静默走离线 mock——须真 bool
+        _die("config.mock 必须是 true/false 布尔（不是字符串/数字）")
     return cfg
 
 
@@ -149,18 +152,32 @@ def load_items(course):
             if d["answerable"] and not str(d.get("gold_answer", "")).strip():
                 _die("课程 %s 的 items 第 %d 行 answerable 但无 gold_answer——金标缺失，无法判分"
                      % (course.get("name"), ln))
-            if d.get("answer_type") == "numeric" and d.get("tolerance") not in (None, ""):
+            if d.get("answer_type") == "numeric" and d.get("answerable"):
+                # numeric 金标本身必须是数字，且 tolerance（若给）为非负数——否则 check_numeric 会把每个答案
+                # 都判错（如 gold=5 tol=-1），坏金标静默污染报告。都在此 fail-loud。
                 try:
-                    float(d["tolerance"])               # 坏 tolerance（如 "abc"）在此 fail-loud，别等 check_numeric 崩
+                    float(d.get("gold_answer"))
                 except (TypeError, ValueError):
-                    _die("课程 %s 的 items 第 %d 行 numeric tolerance 非数字：%r"
-                         % (course.get("name"), ln, d.get("tolerance")))
+                    _die("课程 %s 的 items 第 %d 行 numeric gold_answer 非数字：%r"
+                         % (course.get("name"), ln, d.get("gold_answer")))
+                if d.get("tolerance") not in (None, ""):
+                    try:
+                        tol = float(d["tolerance"])
+                    except (TypeError, ValueError):
+                        _die("课程 %s 的 items 第 %d 行 numeric tolerance 非数字：%r"
+                             % (course.get("name"), ln, d.get("tolerance")))
+                    if tol < 0:
+                        _die("课程 %s 的 items 第 %d 行 numeric tolerance 不能为负：%r"
+                             % (course.get("name"), ln, d.get("tolerance")))
             rid = str(d["id"])
             if rid in seen:
                 _die("课程 %s 的 items 第 %d 行 id 重复：%s（首见于第 %d 行）"
                      % (course.get("name"), ln, rid, seen[rid]))
             seen[rid] = ln
             items.append(d)
+    if not items:
+        # 文件在但全是注释/空行 → 空题集，别静默退 0 伪装成成功冒烟（什么都没测）
+        _die("课程 %s 的 items 文件没有任何题目（%s）——空题集，拒绝当成功跑" % (course.get("name"), path))
     return items
 
 
@@ -324,7 +341,9 @@ def _scored_keys(score_path):
 
 
 def _file_hash(p):
-    """items 文件**内容**哈希——就地改题/改 gold（路径没变）也让指纹变，旧 score 不被当仍有效。"""
+    """文件**内容**哈希——就地改内容（路径没变）也让指纹变。缺路径/读不到 → None。"""
+    if not p:
+        return None
     try:
         with open(p, "rb") as f:
             return hashlib.md5(f.read()).hexdigest()
@@ -332,12 +351,24 @@ def _file_hash(p):
         return None
 
 
+def _dir_hash(d):
+    """目录内容清单哈希（每文件 relpath + 内容哈希）——workspace 就地重生成也让指纹变。"""
+    if not d or not os.path.isdir(d):
+        return None
+    entries = []
+    for root, _dirs, files in os.walk(d):
+        for name in files:
+            fp = os.path.join(root, name)
+            entries.append((os.path.relpath(fp, d).replace(os.sep, "/"), _file_hash(fp)))
+    return hashlib.md5(json.dumps(sorted(entries), ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
 def _config_fingerprint(cfg):
-    """决定任务集 + 判分的配置指纹：课程名/各路径 + **items 内容** + 模型/臂/主次课程 + judge_model。
-    改了任一（含就地编辑 items、换裁判模型）→ 指纹变 → 拒绝复用旧 results_dir。"""
+    """决定任务集 + 判分的配置指纹：课程名 + **items/combined 内容 + raw_ws/skill_ws 目录内容** +
+    模型/臂/主次课程 + judge_model。改了任一（含就地重生成材料/wiki、改题、换裁判）→ 指纹变 → 拒绝复用旧目录。"""
     sig = {
-        "courses": sorted((c["name"], c.get("items"), _file_hash(c.get("items")),
-                           c.get("combined"), c.get("skill_ws"), c.get("raw_ws"))
+        "courses": sorted((c["name"], _file_hash(c.get("items")), _file_hash(c.get("combined")),
+                           _dir_hash(c.get("skill_ws")), _dir_hash(c.get("raw_ws")))
                           for c in cfg["courses"]),
         "models": sorted(cfg["models"]),
         "arms": sorted(cfg["arms"]),
@@ -393,18 +424,17 @@ def run(cfg, mock, limit=0):
     if not mock:
         _preflight_real(cfg)                            # 真跑前校验各臂路径存在（mock 不读）
     os.makedirs(results_dir, exist_ok=True)
-    _assert_run_meta(results_dir, mock, cfg)            # mock/real 不混 + config 指纹不匹配即拒
     ans_path = os.path.join(results_dir, "answers.jsonl")
     score_path = os.path.join(results_dir, "scores.jsonl")
     summary_path = os.path.join(results_dir, "summary.json")
     judge_label = "mock" if mock else (cfg.get("judge_model") or "haiku")
 
-    answered = _load_answers_map(ans_path)              # 已作答（可能没判分）
-    scored = _scored_keys(score_path)                   # 已判分（完全完成）
-
-    tasks = build_tasks(cfg)
+    tasks = build_tasks(cfg)                            # 先建任务（校验 items）——坏 items 在写 .run_meta 前就死，
+    _assert_run_meta(results_dir, mock, cfg)            # 修好后同目录续跑不会被误判成"不同 config"
     if limit:
         tasks = tasks[:limit]
+    answered = _load_answers_map(ans_path)              # 已作答（可能没判分）
+    scored = _scored_keys(score_path)                   # 已判分（完全完成）
     todo = [t for t in tasks if _cache_key(t[0], t[1], t[2], t[3]["id"]) not in scored]
     print("[matrix] 任务 %d，已判分 %d，本次待处理 %d（%s）"
           % (len(tasks), len(tasks) - len(todo), len(todo), "mock 占位" if mock else "real"))
@@ -468,9 +498,10 @@ def run(cfg, mock, limit=0):
               % (cfg["primary_course"], "配额未恢复，稍后再跑 --real 续" if quota_stop else "先补齐作答再聚合"))
         return None
 
-    # 真跑未完成（撞配额 / 有失败跳过，且非 --limit 的有意部分跑）→ 不聚合，别把半截跑伪装成完成的测量
-    if not mock and not limit and (quota_stop or n_skip > 0):
-        print("[matrix] 真跑未完成（%s）——跳过聚合，避免把更小分母伪装成完成的测量；恢复后再跑到 0 剩余再聚合。"
+    # 真跑有 infra 跳过（撞配额 / 生成或判分失败）→ 不聚合，别把缺 score 的更小分母伪装成完成的测量。
+    # 注意：即便 --limit 也要拦——--limit 只允许"干净"的部分冒烟聚合；有 infra 跳过就是缺判分，得续跑。
+    if not mock and (quota_stop or n_skip > 0):
+        print("[matrix] 真跑有未完成任务（%s）——跳过聚合，避免把缺判分的更小分母伪装成完成测量；恢复后跑到 0 剩余再聚合。"
               % ("撞配额停" if quota_stop else "有 %d 个任务失败待重试" % n_skip))
         return None
 
