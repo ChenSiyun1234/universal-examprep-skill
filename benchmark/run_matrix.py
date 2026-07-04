@@ -159,16 +159,12 @@ def load_items(course):
                 _die("课程 %s 的 items 第 %d 行 answerable 但无 gold_answer——金标缺失，无法判分"
                      % (course.get("name"), ln))
             if d.get("answer_type") == "numeric" and d.get("answerable"):
-                # numeric 金标本身必须是**有限**数字，且 tolerance（若给）为非负有限数——否则 check_numeric
-                # 会把每个答案都判错/判对（gold=NaN 任何比较都 False；tol=Infinity 任何答案都在容差内——
-                # json.loads 接受裸 NaN/Infinity 字面量，float() 也不报错，必须显式拦）。都在此 fail-loud。
-                try:
-                    gv = float(d.get("gold_answer"))
-                except (TypeError, ValueError):
-                    _die("课程 %s 的 items 第 %d 行 numeric gold_answer 非数字：%r"
-                         % (course.get("name"), ln, d.get("gold_answer")))
-                if not math.isfinite(gv):
-                    _die("课程 %s 的 items 第 %d 行 numeric gold_answer 非有限数（NaN/Infinity）：%r"
+                # numeric 金标必须能按 judge._to_number 解析（与 check_numeric 同口径——接受千分位逗号
+                # 1,000,000；拒歧义逗号与**非有限数**：json.loads 接受裸 NaN/Infinity 字面量、float() 不报错，
+                # _to_number 的 isfinite 守卫在此显式拦）；tolerance（若给）为非负有限数——否则 check_numeric
+                # 会把每个答案都判错/判对（gold=NaN 任何比较都 False；tol=Infinity 任何答案都在容差内）。
+                if J._to_number(d.get("gold_answer")) is None:
+                    _die("课程 %s 的 items 第 %d 行 numeric gold_answer 非数字/非有限数/歧义逗号：%r"
                          % (course.get("name"), ln, d.get("gold_answer")))
                 if d.get("tolerance") not in (None, ""):
                     try:
