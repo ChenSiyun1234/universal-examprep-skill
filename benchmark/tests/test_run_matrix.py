@@ -713,6 +713,24 @@ class HardeningB4X(unittest.TestCase):
         cfg["judge_model"] = "sonnet"
         self.assertNotEqual(RM._config_fingerprint(cfg), fp_default)
 
+    # ---- 聚合子进程的警告透传 ----
+    def test_ragged_warning_forwarded_through_runner(self):
+        # aggregate 的「答题集不齐平」警告写在子进程 stderr——runner capture 后必须转发，不能吞。
+        # 制造不齐平：给某一格追加一条**不在题集里的**已答+已判行（不进任务表 → resume 不会补平）。
+        self._mock_run()
+        extra = {"course": "minios", "model": "opus", "arm": "skill", "item_id": "extra_x"}
+        with open(os.path.join(self.out, "answers.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps(dict(extra, answerable=True, status="ok",
+                                    answer="a", cost_usd=0.0)) + "\n")
+        with open(os.path.join(self.out, "scores.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps(dict(extra, answerable=True, correct=True, hallucinated=0,
+                                    abstained=0, judge_error=0)) + "\n")
+        r = self._mock_run()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("不齐平", r.stderr)                # 警告透传到 runner 的 stderr
+        with open(os.path.join(self.out, "summary.json"), encoding="utf-8") as f:
+            self.assertTrue(json.load(f)["ragged_matrix"])
+
     # ---- 聚合失败也删陈旧 summary ----
     def test_aggregate_failure_drops_stale_summary(self):
         self._mock_run()

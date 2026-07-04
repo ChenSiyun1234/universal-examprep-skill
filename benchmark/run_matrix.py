@@ -632,6 +632,8 @@ def run(cfg, mock, limit=0):
         # answers/scores 还旧，report_matrix 读它就是读一份对不上的陈旧摘要。
         _drop_stale_summary()
         _die("aggregate_matrix 失败：%s" % (r.stderr or "").strip(), 1)
+    if r.stderr:
+        sys.stderr.write(r.stderr)                     # 聚合子进程的警告（如各格答题集不齐平）别吞掉
     print("[matrix] -> %s（%s）" % (summary_path, "mock 占位摘要，未测量正确率" if mock else "已聚合"))
     return summary_path
 

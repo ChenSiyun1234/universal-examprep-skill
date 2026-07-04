@@ -269,7 +269,10 @@ def main(argv=None):
     if args.source_type is not None:
         if args.source_type.strip().lower() in _MIXED_OVERRIDE:
             source_types = None
-            if (state or {}).get("scope") not in _MIXED_SCOPES:
+            sc = (state or {}).get("scope")
+            # 非字符串 scope（手改/损坏 state，不可哈希）不能进 `in set`——它显然不是混合池，照发覆盖备注；
+            # 这样文档给的恢复出路（--source-type all 覆盖）在坏 state 下也能走通，不再 TypeError 裸崩。
+            if not isinstance(sc, (str, type(None))) or sc not in _MIXED_SCOPES:
                 notes.append("已按显式 --source-type %s 覆盖存档范围为混合池（本轮；A2 越界覆盖须先向学生声明）"
                              % args.source_type.strip())
         else:

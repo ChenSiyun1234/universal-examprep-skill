@@ -588,6 +588,15 @@ class ReportMatrixExplicitSummary(unittest.TestCase):
         self.assertNotIn("98%", html)              # no hard-coded published PSYC conclusion
         self.assertNotIn("kappa", html.lower())    # no published narrative leaks into a custom render
 
+    def test_all_infra_cost_renders_na_not_none(self):
+        # 全 infra 臂的 cost_per_q 是 null → 报告渲染 N/A，绝不出现 "$None"
+        d = tempfile.mkdtemp()
+        self._render(d)
+        with open(os.path.join(d, "report.html"), encoding="utf-8") as f:
+            page = f.read()
+        self.assertNotIn("$None", page)
+        self.assertIn("material=N/A", page)
+
     def test_custom_summary_to_default_outdir_refuses(self):
         # rendering a CUSTOM --summary with no --out-dir would overwrite the committed published
         # results/matrix/report.html — must refuse (exit 2) and leave the published report untouched.

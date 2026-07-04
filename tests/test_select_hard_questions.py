@@ -256,6 +256,16 @@ class CliIO(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertIn("无法自动映射", r.stderr)
 
+    def test_source_type_all_recovers_from_non_string_scope(self):
+        # 文档给的恢复出路：坏 scope（list，不可哈希）+ 显式 --source-type all → 正常出题
+        # （覆盖备注照发），不能在覆盖路径上 TypeError 裸崩把出路堵死
+        self._state({"mode": "查缺补漏", "scope": ["exam", "homework"]})
+        r = self._run("--source-type", "all")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        obj = json.loads(r.stdout)
+        self.assertIsNone(obj["source_types"])
+        self.assertTrue(any("覆盖存档范围为混合池" in n for n in obj["notes"]))
+
     def test_non_string_scope_fails_loud_not_crash(self):
         # 手改/损坏的 state 把 scope 存成 list（不可哈希）→ 以前 `in set` TypeError 裸崩（exit 1 + traceback），
         # 现在按 A2 契约 fail-loud（exit 2 + 出路提示）
