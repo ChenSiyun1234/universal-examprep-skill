@@ -97,6 +97,16 @@ def load_config(path):
     bad = [a for a in cfg["arms"] if a not in KNOWN_ARMS]
     if bad:
         _die("未知 arm: %s（应为 %s 的子集）" % ("/".join(bad), "/".join(sorted(KNOWN_ARMS))))
+    for _k in ("arms", "models"):
+        if len(cfg[_k]) != len(set(cfg[_k])):
+            _die("config.%s 有重复项：%s（重复会造出同 key 的任务、聚合时撞重复）" % (_k, cfg[_k]))
+    # 选了某臂就必须声明对应路径 key（存在性在真跑前 _preflight_real 再查——mock 不读这些）
+    _ARM_PATH = {"rawfiles": "raw_ws", "skill": "skill_ws", "material": "combined"}
+    for c in courses:
+        for arm in cfg["arms"]:
+            k = _ARM_PATH.get(arm)
+            if k and not c.get(k):
+                _die("课程 %s 选了 %s 臂，但缺 %s 路径" % (c["name"], arm, k))
     cfg["results_dir"] = _resolve(base, cfg.get("results_dir") or "results/matrix_run")
     cfg["_courses_by_name"] = {c["name"]: c for c in courses}
     names = list(cfg["_courses_by_name"])
@@ -112,7 +122,7 @@ def load_items(course):
     path = course.get("items")
     if not path or not os.path.isfile(path):
         _die("课程 %s 的 items 找不到: %s" % (course.get("name"), path))
-    items = []
+    items, seen = [], {}
     with open(path, encoding="utf-8") as f:
         for ln, line in enumerate(f, 1):
             s = line.strip()
@@ -122,8 +132,15 @@ def load_items(course):
                 d = json.loads(s)
             except ValueError as e:                    # 坏行明确报 exit-2 + 行号，不抛原生 traceback
                 _die("课程 %s 的 items 第 %d 行不是合法 JSON: %s" % (course.get("name"), ln, e))
-            if isinstance(d, dict) and "id" in d and "question" in d:
-                items.append(d)
+            if not (isinstance(d, dict) and d.get("id") and d.get("question")):
+                # 题集定义评测全集，坏行不能静默丢（会缩小分母、伪装成"看着正常"的更小摘要）
+                _die("课程 %s 的 items 第 %d 行缺 id 或 question——拒绝静默丢弃" % (course.get("name"), ln))
+            rid = str(d["id"])
+            if rid in seen:
+                _die("课程 %s 的 items 第 %d 行 id 重复：%s（首见于第 %d 行）"
+                     % (course.get("name"), ln, rid, seen[rid]))
+            seen[rid] = ln
+            items.append(d)
     return items
 
 
@@ -157,6 +174,22 @@ def real_answer(cfg, course, model, arm, item):
     _die("未知 arm: %s" % arm)
 
 
+def _preflight_real(cfg):
+    """真跑前校验所选臂需要的路径**存在**——否则 material 臂拿空材料作答仍标 material（伪造该臂），
+    或 raw_ws/skill_ws 打错只表现为可重试的 API Error 被无限重试。存在性只对真跑要求（mock 不读）。"""
+    checks = {"material": ("combined", os.path.isfile),
+              "rawfiles": ("raw_ws", os.path.isdir),
+              "skill": ("skill_ws", os.path.isdir)}
+    for c in cfg["courses"]:
+        for arm in cfg["arms"]:
+            if arm not in checks:
+                continue
+            key, exists = checks[arm]
+            p = c.get(key)
+            if not p or not exists(p):
+                _die("课程 %s 的 %s 臂需要 %s 存在，但路径缺失/不存在：%s" % (c["name"], arm, key, p))
+
+
 def build_tasks(cfg):
     """确定性任务序：course × arm × model × item。返回 [(course_name, model, arm, item)]。"""
     tasks = []
@@ -171,8 +204,8 @@ def build_tasks(cfg):
 
 # ---------------- score ----------------
 
-def score_row(course_name, model, arm, item, answer, mock):
-    ask = (lambda p: J.mock_judge(p)) if mock else _real_ask_judge
+def score_row(course_name, model, arm, item, answer, mock, judge_model="haiku"):
+    ask = (lambda p: J.mock_judge(p)) if mock else (lambda p: _real_ask_judge(p, judge_model))
     verdict = J.judge_answer(item, answer, ask, judge_repeats=1)
     f = verdict.get("faithfulness")                     # judge_error 时可能为 None——原样透传（aggregate 接受 None/缺省）
     return {"course": course_name, "model": model, "arm": arm, "item_id": item["id"],
@@ -185,8 +218,8 @@ def score_row(course_name, model, arm, item, answer, mock):
             "scored_by": verdict.get("scored_by", "mock" if mock else "llm")}
 
 
-def _real_ask_judge(prompt):                            # 真跑判分：shell claude（默认 haiku 评判）
-    out, _cost = gen.run_claude(prompt, os.environ.get("JUDGE_MODEL", "haiku"))
+def _real_ask_judge(prompt, judge_model):               # 真跑判分：shell claude（用 config 指定的裁判模型）
+    out, _cost = gen.run_claude(prompt, judge_model)
     return out
 
 
@@ -224,12 +257,29 @@ def _generate_real(cfg, course, model, arm, item):
     return ans, cost or 0.0, _classify(ans)
 
 
-def _existing_keys(ans_path):
-    """已写入 answers.jsonl 的任务 key——与 cache 求并集当 done：防崩溃在写完 answer、还没缓存时留下
-    未缓存行 → resume 重跑 → 追加重复 (course,model,arm,item_id) → aggregate 拒绝、整条管线卡死。"""
-    keys = set()
+def _load_answers_map(ans_path):
+    """已作答的行 {key: row}——崩溃后"有答案没判分"的任务据此**重判**（而非当 judge_error 永久钉死），
+    且重判只写 score 不重写 answer，避免重复 answer 行卡死 aggregate。"""
+    m = {}
     if os.path.isfile(ans_path):
         with open(ans_path, encoding="utf-8") as f:
+            for line in f:
+                s = line.strip()
+                if not s:
+                    continue
+                try:
+                    d = json.loads(s)
+                    m[_cache_key(d["course"], d["model"], d["arm"], d["item_id"])] = d
+                except (ValueError, KeyError):
+                    continue
+    return m
+
+
+def _scored_keys(score_path):
+    """已判分的任务 key —— 完全完成（答案+判分都在）的集合，跳过之。"""
+    keys = set()
+    if os.path.isfile(score_path):
+        with open(score_path, encoding="utf-8") as f:
             for line in f:
                 s = line.strip()
                 if not s:
@@ -240,6 +290,21 @@ def _existing_keys(ans_path):
                 except (ValueError, KeyError):
                     continue
     return keys
+
+
+def _assert_run_mode(results_dir, mock):
+    """同一 results_dir 里 mock 与 real 产物不能混——否则先 --mock 后 --real 同目录，占位答案会被当已完成、
+    真跑 todo=0 不打 claude，还把 scored_by:mock 的占位行按真裁判标签聚合，静默污染基准。"""
+    mode = "mock" if mock else "real"
+    mode_path = os.path.join(results_dir, ".run_mode")
+    if os.path.isfile(mode_path):
+        with open(mode_path, encoding="utf-8") as f:
+            prev = f.read().strip()
+        if prev and prev != mode:
+            _die("results_dir 里已有 %s 运行的产物，拒绝与 %s 混用——请换一个 --results-dir（mock/real 别同目录）"
+                 % (prev, mode))
+    with open(mode_path, "w", encoding="utf-8") as f:
+        f.write(mode)
 
 
 def _answers_has_course(ans_path, course):
@@ -261,40 +326,41 @@ def _answers_has_course(ans_path, course):
 def run(cfg, mock, limit=0):
     results_dir = cfg["results_dir"]
     _assert_not_published(results_dir)
+    if not mock:
+        _preflight_real(cfg)                            # 真跑前校验各臂路径存在（mock 不读）
     os.makedirs(results_dir, exist_ok=True)
+    _assert_run_mode(results_dir, mock)                 # mock/real 产物不混
     ans_path = os.path.join(results_dir, "answers.jsonl")
     score_path = os.path.join(results_dir, "scores.jsonl")
-    cache_path = os.path.join(results_dir, "gen_cache.jsonl")
     summary_path = os.path.join(results_dir, "summary.json")
+    judge_label = "mock" if mock else (cfg.get("judge_model") or "haiku")
 
-    done = _existing_keys(ans_path)                     # answers.jsonl 里已作答的 key（防重复）
-    if os.path.isfile(cache_path):
-        with open(cache_path, encoding="utf-8") as _cf:
-            for line in _cf:
-                s = line.strip()
-                if s:
-                    try:
-                        done.add(json.loads(s)["key"])
-                    except (ValueError, KeyError):
-                        continue
+    answered = _load_answers_map(ans_path)              # 已作答（可能没判分）
+    scored = _scored_keys(score_path)                   # 已判分（完全完成）
 
     tasks = build_tasks(cfg)
     if limit:
         tasks = tasks[:limit]
-    todo = [t for t in tasks if _cache_key(t[0], t[1], t[2], t[3]["id"]) not in done]
-    print("[matrix] 任务 %d，已完成 %d，本次待跑 %d（%s）"
+    todo = [t for t in tasks if _cache_key(t[0], t[1], t[2], t[3]["id"]) not in scored]
+    print("[matrix] 任务 %d，已判分 %d，本次待处理 %d（%s）"
           % (len(tasks), len(tasks) - len(todo), len(todo), "mock 占位" if mock else "real"))
 
     total_cost = 0.0
-    n_ok = n_skip = hard_streak = 0
+    n_ok = n_rescore = n_skip = hard_streak = 0
     t0 = time.time()
     quota_stop = False
-    cf = open(cache_path, "a", encoding="utf-8")
     af = open(ans_path, "a", encoding="utf-8")
     sf = open(score_path, "a", encoding="utf-8")
     try:
-        for i, (cname, model, arm, item) in enumerate(todo, 1):
+        for cname, model, arm, item in todo:
+            key = _cache_key(cname, model, arm, item["id"])
             course = cfg["_courses_by_name"][cname]
+            if key in answered:
+                # 崩溃后"有答案没判分"——只重判、不重新生成、不重写 answer（防重复行）
+                srow = score_row(cname, model, arm, item, answered[key].get("answer", ""), mock, judge_label)
+                sf.write(json.dumps(srow, ensure_ascii=False) + "\n"); sf.flush()
+                n_rescore += 1
+                continue
             if mock:
                 answer, cost = mock_answer(arm, item), 0.0
             else:
@@ -305,41 +371,44 @@ def run(cfg, mock, limit=0):
                         quota_stop = True
                         print("[matrix] 连撞订阅配额上限，停在此（已作答的都存好了）——配额恢复后再跑续。")
                         break
-                    continue                            # 不写不缓存 → 下次续跑重试
+                    continue                            # 不写 → 下次续跑重试
                 hard_streak = 0
                 if kind != "ok" or not (answer or "").strip():
-                    n_skip += 1                         # 瞬时/超时重试后仍失败 → 不写不缓存，下次 resume 重试
+                    n_skip += 1                         # 瞬时/超时重试后仍失败 → 不写，下次 resume 重试
                     continue
-            # 只有 ok 才落 answer+score+cache（镜像 gen.py：失败不写、不缓存、可重试；ok 只写一次→无重复）
+            # ok：写 answer + score（失败不写、可重试；每 key 只写一次 → 无重复行）
             total_cost += cost or 0.0
             arow = {"course": cname, "model": model, "arm": arm, "item_id": item["id"],
                     "answerable": bool(item.get("answerable", True)), "status": "ok",
                     "answer": answer, "cost_usd": cost or 0.0}
             af.write(json.dumps(arow, ensure_ascii=False) + "\n"); af.flush()
-            srow = score_row(cname, model, arm, item, answer, mock)
+            srow = score_row(cname, model, arm, item, answer, mock, judge_label)
             sf.write(json.dumps(srow, ensure_ascii=False) + "\n"); sf.flush()
-            cf.write(json.dumps({"key": _cache_key(cname, model, arm, item["id"])},
-                                ensure_ascii=False) + "\n"); cf.flush()
             n_ok += 1
     finally:
-        cf.close(); af.close(); sf.close()
+        af.close(); sf.close()
 
-    print("[matrix] 作答 %d（本次跳过/待续 %d），累计成本 $%.4f，用时 %ds"
-          % (n_ok, n_skip, total_cost, int(time.time() - t0)))
+    print("[matrix] 新作答 %d（重判 %d，跳过/待续 %d），累计成本 $%.4f，用时 %ds"
+          % (n_ok, n_rescore, n_skip, total_cost, int(time.time() - t0)))
 
-    # 主课程还没有任何作答行（配额未恢复 / 全失败）→ 跳过聚合、报可续、退 0，别把可续状态当硬失败
+    # 主课程还没有任何作答行 → 跳过聚合、报可续、退 0
     if not _answers_has_course(ans_path, cfg["primary_course"]):
         print("[matrix] 主课程 %s 暂无作答行——跳过聚合（%s）。"
               % (cfg["primary_course"], "配额未恢复，稍后再跑 --real 续" if quota_stop else "先补齐作答再聚合"))
         return None
 
+    # 真跑未完成（撞配额 / 有失败跳过，且非 --limit 的有意部分跑）→ 不聚合，别把半截跑伪装成完成的测量
+    if not mock and not limit and (quota_stop or n_skip > 0):
+        print("[matrix] 真跑未完成（%s）——跳过聚合，避免把更小分母伪装成完成的测量；恢复后再跑到 0 剩余再聚合。"
+              % ("撞配额停" if quota_stop else "有 %d 个任务失败待重试" % n_skip))
+        return None
+
     # 桥接到 aggregate_matrix.py（那套 honest 聚合规则的唯一实现）
     agg = [sys.executable, os.path.join(HERE, "aggregate_matrix.py"),
            "--answers", ans_path, "--scores", score_path, "--out", summary_path,
-           "--primary-course", cfg["primary_course"],
-           "--judge-model", ("mock" if mock else (cfg.get("judge_model") or "unknown"))]
-    if cfg.get("secondary_course"):
-        agg += ["--secondary-course", cfg["secondary_course"]]
+           "--primary-course", cfg["primary_course"], "--judge-model", judge_label]
+    if cfg.get("secondary_course") and _answers_has_course(ans_path, cfg["secondary_course"]):
+        agg += ["--secondary-course", cfg["secondary_course"]]   # 有该课作答行才聚合它（部分跑不硬失败）
     r = subprocess.run(agg, capture_output=True, text=True, encoding="utf-8")
     sys.stdout.write(r.stdout)
     if r.returncode != 0:

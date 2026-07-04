@@ -79,7 +79,7 @@ class MockPipeline(unittest.TestCase):
     def test_resumable_second_run_skips(self):
         _run("--mock", "--config", FIXTURE_CFG, "--results-dir", self.out)
         r2 = _run("--mock", "--config", FIXTURE_CFG, "--results-dir", self.out)
-        self.assertIn("本次待跑 0", r2.stdout)
+        self.assertIn("本次待处理 0", r2.stdout)
 
     def test_deterministic(self):
         _run("--mock", "--config", FIXTURE_CFG, "--results-dir", self.out)
@@ -133,11 +133,17 @@ class ConfigValidation(unittest.TestCase):
         self.assertEqual(_run("--mock", "--config", self._cfg(cfg)).returncode, 2)
 
     def test_bad_primary_course_exits_2(self):
-        cfg = {"courses": [{"name": "a", "items": "i.jsonl"}], "primary_course": "nope"}
+        cfg = {"courses": [{"name": "a", "items": "i.jsonl"}], "arms": ["closedbook"],
+               "primary_course": "nope"}
         self.assertEqual(_run("--mock", "--config", self._cfg(cfg)).returncode, 2)
 
     def test_missing_items_file_exits_2(self):
-        cfg = {"courses": [{"name": "a", "items": "does_not_exist.jsonl"}]}
+        cfg = {"courses": [{"name": "a", "items": "does_not_exist.jsonl"}], "arms": ["closedbook"]}
+        self.assertEqual(_run("--mock", "--config", self._cfg(cfg)).returncode, 2)
+
+    def test_arm_missing_workspace_key_exits_2(self):
+        # 选了 rawfiles/skill 臂但没声明 raw_ws/skill_ws → fail-loud
+        cfg = {"courses": [{"name": "a", "items": "i.jsonl"}], "arms": ["rawfiles"]}
         self.assertEqual(_run("--mock", "--config", self._cfg(cfg)).returncode, 2)
 
     def test_relative_paths_resolved_to_config_dir(self):
@@ -145,7 +151,8 @@ class ConfigValidation(unittest.TestCase):
         with open(os.path.join(self.d, "i.jsonl"), "w", encoding="utf-8") as f:
             f.write(json.dumps({"id": "x", "question": "q", "gold_answer": "a",
                                 "answer_type": "factual", "answerable": True}) + "\n")
-        cfg = RM.load_config(self._cfg({"courses": [{"name": "a", "items": "i.jsonl"}]}))
+        cfg = RM.load_config(self._cfg({"courses": [{"name": "a", "items": "i.jsonl"}],
+                                        "arms": ["closedbook"]}))
         self.assertEqual(os.path.normpath(cfg["_courses_by_name"]["a"]["items"]),
                          os.path.normpath(os.path.join(self.d, "i.jsonl")))
 
@@ -173,7 +180,8 @@ class ConfigValidation(unittest.TestCase):
             f.write(json.dumps({"id": "x", "question": "q", "answer_type": "factual",
                                 "answerable": True}) + "\n")
             f.write("{not valid json\n")
-        r = _run("--mock", "--config", self._cfg({"courses": [{"name": "a", "items": "bad.jsonl"}]}))
+        r = _run("--mock", "--config", self._cfg({"courses": [{"name": "a", "items": "bad.jsonl"}],
+                                                  "arms": ["closedbook"]}))
         self.assertEqual(r.returncode, 2)
         self.assertNotIn("Traceback", r.stderr)
         self.assertIn("第 2 行", r.stderr)
@@ -244,6 +252,44 @@ class FixesRegression(unittest.TestCase):
         a = RM._cache_key("a|b", "m", "closedbook", "q")
         b = RM._cache_key("a", "b|m", "closedbook", "q")
         self.assertNotEqual(a, b)
+
+    def test_mock_real_mode_mixing_refused(self):
+        # 先 --mock 后 --real 同 results_dir → 拒绝混用（不静默把占位当真跑）
+        _run("--mock", "--config", FIXTURE_CFG, "--results-dir", self.out)
+        r = _run("--real", "--config", FIXTURE_CFG, "--results-dir", self.out)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("混用", r.stderr)
+
+    def test_resume_rescores_answer_without_score(self):
+        # 崩溃后"有答案没判分"：删掉 scores 模拟 → 续跑重判该题（不重生成、不重复 answer）
+        _run("--mock", "--config", FIXTURE_CFG, "--results-dir", self.out, "--limit", "1")
+        os.remove(os.path.join(self.out, "scores.jsonl"))
+        r = _run("--mock", "--config", FIXTURE_CFG, "--results-dir", self.out, "--limit", "1")
+        self.assertIn("重判 1", r.stdout)
+        with open(os.path.join(self.out, "answers.jsonl"), encoding="utf-8") as f:
+            self.assertEqual(len([l for l in f if l.strip()]), 1)     # answer 不重复
+        with open(os.path.join(self.out, "scores.jsonl"), encoding="utf-8") as f:
+            self.assertEqual(len([l for l in f if l.strip()]), 1)     # 重判补上了 score
+
+    def test_secondary_course_absent_not_demanded(self):
+        # 2 课程配置，--limit 只覆盖课程1 → 聚合不因课程2 缺席而硬失败（finding 5）
+        d = tempfile.mkdtemp(prefix="b4sec_")
+        self.addCleanup(shutil.rmtree, d, True)
+        src = os.path.dirname(FIXTURE_CFG)
+        course = lambda nm: {"name": nm, "items": os.path.join(src, "items.jsonl"),
+                             "combined": os.path.join(src, "materials", "_combined.txt"),
+                             "skill_ws": os.path.join(src, "skill_ws"),
+                             "raw_ws": os.path.join(src, "raw_ws")}
+        cfg = {"courses": [course("c1"), course("c2")], "models": ["opus"], "arms": ["closedbook"],
+               "primary_course": "c1", "secondary_course": "c2", "mock": True}
+        cfgp = os.path.join(d, "config.json")
+        with open(cfgp, "w", encoding="utf-8") as f:
+            json.dump(cfg, f)
+        # c1 有 5 题×1模型×1臂=5 个任务，排在 c2 之前 → --limit 5 只覆盖 c1
+        r = _run("--mock", "--config", cfgp, "--results-dir", self.out, "--limit", "5")
+        self.assertEqual(r.returncode, 0, r.stderr)               # 不因 c2 缺席失败
+        with open(os.path.join(self.out, "summary.json"), encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["courses"], ["c1"])
 
 
 if __name__ == "__main__":
