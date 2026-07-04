@@ -283,20 +283,33 @@ class CliIO(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertIn("符号链接", r.stderr)
 
-    # ---- finding 3: 某章起步补弱 缺 --from-chapter 时默认 current_phase，推不出 fail-loud ----
-    def test_weak_start_mode_defaults_from_current_phase(self):
-        self._state({"mode": "某章起步补弱", "current_phase": 3})
+    def test_md_only_scope_fallback(self):
+        # 无 study_state.json 但 study_progress.md 记了 homework-only → 仍按范围过滤（不静默放宽）
+        self.bank = [
+            {"id": "hw", "chapter": 1, "type": "subjective", "question": "q", "answer": "a",
+             "difficulty": 2, "source_type": "homework"},
+            {"id": "ex", "chapter": 1, "type": "subjective", "question": "q", "answer": "a",
+             "difficulty": 4, "source_type": "exam"},
+        ]
+        with open(os.path.join(self.ws, "references", "quiz_bank.json"), "w", encoding="utf-8") as f:
+            json.dump(self.bank, f, ensure_ascii=False, indent=2)
+        with open(os.path.join(self.ws, "study_progress.md"), "w", encoding="utf-8") as f:
+            f.write("# 学习进度\n\n* **范围/模式**：homework-only ｜ 查缺补漏 ｜ 时间预算 未设定\n")
         obj = json.loads(self._run().stdout)
-        self.assertEqual(obj["from_chapter"], 3)
-        self.assertEqual({it["id"] for it in obj["items"]}, {"mid", "hard"})   # ch3/ch5 ≥ 3
+        self.assertTrue(obj["state_loaded"])                 # md 回落也算已读 state
+        self.assertEqual(obj["source_types"], ["homework"])   # 范围行被尊重
+        self.assertEqual([it["id"] for it in obj["items"]], ["hw"])
 
-    def test_weak_start_mode_fails_without_start(self):
-        self._state({"mode": "某章起步补弱"})               # 无 current_phase
+    # ---- 某章起步补弱：必须显式 --from-chapter，绝不从 current_phase 猜（阶段号≠章号）----
+    def test_weak_start_mode_requires_explicit_from_chapter(self):
+        # 即便 state 带 current_phase 也 fail-loud——不再拿阶段号当章号猜
+        self._state({"mode": "某章起步补弱", "current_phase": 3})
         r = self._run()
         self.assertEqual(r.returncode, 2)
         self.assertIn("起步章", r.stderr)
+        self.assertIn("阶段号未必等于章号", r.stderr)
 
-    def test_weak_start_mode_cli_from_chapter_wins(self):
+    def test_weak_start_mode_cli_from_chapter_works(self):
         self._state({"mode": "某章起步补弱", "current_phase": 1})
         obj = json.loads(self._run("--from-chapter", "5").stdout)
         self.assertEqual(obj["from_chapter"], 5)

@@ -32,7 +32,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import score_difficulty as sd            # noqa: E402  同目录，复用打分与题库加载
 from select_questions import SOURCE_TYPES  # noqa: E402  单一 source_type 词表，与 A2 一致
-from update_progress import _normalize_mode  # noqa: E402  复用 A6 旧模式迁移（panic→零基础 等），口径统一
+from update_progress import _normalize_mode, parse_md as _parse_md, MD_NAME  # noqa: E402  旧模式迁移 + md 回落解析
 
 for _s in ("stdout", "stderr"):
     try:
@@ -83,26 +83,43 @@ def _scope_to_source_types(scope):
          % (scope, "/".join(sorted(SOURCE_TYPES))))
 
 
-def load_state(ws):
-    path = os.path.join(ws, STATE_NAME)
-    # A4 事实源不得为符号链接：断链会被静默当无状态，外指链接会把工作区外的 JSON 当成掌握状态读进来
-    # ——都会悄悄改变出题排序。与 update_progress / 校验器同口径 fail-loud（先于 isfile 判断）。
-    if os.path.islink(path):
-        _die("study_state.json 不得为符号链接（A4 事实源，可能指向工作区外）——拒绝读取")
-    if not os.path.isfile(path):
-        return None
+def _assert_contained(ws, path, name):
     ws_real = os.path.normcase(os.path.realpath(ws))
     real = os.path.normcase(os.path.realpath(path))
     if real != ws_real and not real.startswith(ws_real + os.sep):
-        _die("study_state.json 经符号链接 / 父目录逃出工作区——拒绝读取（realpath 归属校验失败）")
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            st = json.load(f)
-    except ValueError as e:
-        _die("study_state.json 不是合法 JSON: %s" % e)
-    if not isinstance(st, dict):
-        _die("study_state.json 顶层必须是对象")
-    return st
+        _die("%s 经符号链接 / 父目录逃出工作区——拒绝读取（realpath 归属校验失败）" % name)
+
+
+def load_state(ws):
+    """A4 事实源 study_state.json；缺失时回落解析 study_progress.md（未迁移/无-Python 工作区仍合法）——
+    否则 md-only 工作区里记的 范围/模式/错题 会被静默忽略、范围偏好被悄悄放宽（违背 A2）。都无则 None。"""
+    path = os.path.join(ws, STATE_NAME)
+    # 不得为符号链接：断链会被静默当无状态，外指会把工作区外的 JSON 当成掌握状态。fail-loud（先于 isfile）。
+    if os.path.islink(path):
+        _die("study_state.json 不得为符号链接（A4 事实源，可能指向工作区外）——拒绝读取")
+    if os.path.isfile(path):
+        _assert_contained(ws, path, "study_state.json")
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                st = json.load(f)
+        except ValueError as e:
+            _die("study_state.json 不是合法 JSON: %s" % e)
+        if not isinstance(st, dict):
+            _die("study_state.json 顶层必须是对象")
+        return st
+
+    # 回落 study_progress.md（生成视图，但未迁移工作区里它是唯一记录）——提取 范围/模式/错题/疑难/窗口。
+    md = os.path.join(ws, MD_NAME)
+    if os.path.islink(md):
+        _die("study_progress.md 不得为符号链接（可能指向工作区外）——拒绝读取")
+    if not os.path.isfile(md):
+        return None
+    _assert_contained(ws, md, "study_progress.md")
+    with open(md, "r", encoding="utf-8") as f:
+        phase, mistakes, confusions, _checklist, window, prefs = _parse_md(f.read())
+    return {"mode": prefs.get("mode"), "scope": prefs.get("scope"),
+            "current_phase": phase, "mistake_archive": mistakes,
+            "confusion_log": confusions, "knowledge_window": window}
 
 
 def _chapter_key(q):
@@ -254,18 +271,12 @@ def main(argv=None):
         if source_types:
             notes.append("已按存档范围 scope→source_type=%s（未标签项排除）" % "/".join(sorted(source_types)))
 
-    # 某章起步补弱：起步章缺省时从 current_phase 推；推不出且未给 --from-chapter 即 fail-loud（不静默扫全库）。
+    # 某章起步补弱：必须显式传 --from-chapter。绝不再从 current_phase 猜——阶段号未必等于章号
+    # （study_plan.md 可能把 阶段1 映到 ch03），拿阶段号当章号会漏掉/错选章节。
     from_chapter = args.from_chapter
     if mode == "某章起步补弱" and from_chapter is None:
-        cp = (state or {}).get("current_phase")
-        if isinstance(cp, int) and not isinstance(cp, bool):
-            from_chapter = cp
-        elif isinstance(cp, str) and cp.strip().isdigit():
-            from_chapter = int(cp.strip())
-        else:
-            _die("某章起步补弱 需要起步章：请传 --from-chapter <N>，"
-                 "或让 study_state 带数值 current_phase——否则会退化成全库扫描，违背本模式的按章补弱")
-        notes.append("某章起步补弱：起步章默认为 current_phase=%d（可用 --from-chapter 覆盖）" % from_chapter)
+        _die("某章起步补弱 需要显式起步章：请传 --from-chapter <N>。不再从 current_phase 猜——"
+             "阶段号未必等于章号（study_plan 可把阶段映到别的章），猜会漏选/错选章节")
 
     scored = []
     untagged_excluded = 0                                # A2 契约：未标签项被范围排除必须"排除并如实上报"
