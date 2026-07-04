@@ -26,11 +26,13 @@ exit: 0 ok · 2 bad input/usage
 import argparse
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import score_difficulty as sd            # noqa: E402  同目录，复用打分与题库加载
 from select_questions import SOURCE_TYPES  # noqa: E402  单一 source_type 词表，与 A2 一致
+from update_progress import _normalize_mode  # noqa: E402  复用 A6 旧模式迁移（panic→零基础 等），口径统一
 
 for _s in ("stdout", "stderr"):
     try:
@@ -115,6 +117,19 @@ def _chapter_key(q):
 def _chapter_keys(q):
     """匹配用的章号集合：chapter 与 phase 都算（与 A2 select_questions 的 chapter-OR-phase 一致）。"""
     return {str(q.get(k)) for k in ("chapter", "phase") if q.get(k) is not None}
+
+
+def _numeric_chapters(q):
+    """chapter 与 phase 里所有数值章号（--from-chapter 范围用；双标 {chapter:1,phase:3} 两个都算，
+    否则 phase-3 的题会被当成 chapter-1 错误剔除——与 chapter-OR-phase 口径一致）。"""
+    out = set()
+    for k in ("chapter", "phase"):
+        v = q.get(k)
+        if v is not None:
+            m = re.search(r"\d+", str(v))
+            if m:
+                out.add(int(m.group(0)))
+    return out
 
 
 def _item_points(q):
@@ -223,9 +238,10 @@ def main(argv=None):
     bank = sd.load_bank(args.workspace)
     items = [q for q in bank if isinstance(q, dict) and q.get("id") is not None]
     state = load_state(args.workspace)
-    mode = args.mode or (state or {}).get("mode") or "查缺补漏"
+    raw_mode = args.mode or (state or {}).get("mode")
+    mode = _normalize_mode(raw_mode)[0] if raw_mode else "查缺补漏"   # panic→零基础 等旧模式迁移，与 A6 同口径
     if mode not in LEARNING_MODES:
-        mode = "查缺补漏"                                # state 里可能是旧模式串——回落默认，不炸
+        mode = "查缺补漏"                                # 仍非标准（未知串）→ 回落默认，不炸
     idx = build_mastery(state)
     late = sd._late_chapter_cutoff(items)
     notes = []
@@ -257,8 +273,8 @@ def main(argv=None):
         if args.chapter is not None and str(args.chapter) not in _chapter_keys(q):
             continue
         if from_chapter is not None:
-            nc = sd._numeric_chapter(q)
-            if nc is None or nc < from_chapter:
+            nums = _numeric_chapters(q)                   # chapter 与 phase 都算（双标不误剔）
+            if not any(n >= from_chapter for n in nums):
                 continue
         if source_types is not None and q.get("source_type") not in source_types:
             # 只统计"除范围外其余过滤都命中"的未标签题——它们才是被 scope 悄悄藏掉的真实候选

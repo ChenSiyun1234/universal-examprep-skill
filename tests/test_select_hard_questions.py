@@ -149,8 +149,19 @@ class CliIO(unittest.TestCase):
         obj = json.loads(self._run().stdout)
         self.assertEqual(obj["mode"], "零基础从头讲")
 
-    def test_unknown_state_mode_falls_back(self):
-        self._state({"mode": "sprint"})            # 旧模式串 → 回落默认，不炸
+    def test_legacy_panic_mode_migrates_to_beginner(self):
+        # 旧 panic → 零基础从头讲（与 update_progress 迁移同口径，不再误当查缺补漏）
+        self._state({"mode": "panic"})
+        obj = json.loads(self._run().stdout)
+        self.assertEqual(obj["mode"], "零基础从头讲")
+
+    def test_legacy_sprint_mode_migrates_to_review(self):
+        self._state({"mode": "sprint"})            # 旧 sprint → 查缺补漏
+        obj = json.loads(self._run().stdout)
+        self.assertEqual(obj["mode"], "查缺补漏")
+
+    def test_truly_unknown_mode_falls_back(self):
+        self._state({"mode": "乱写的模式"})        # 非标准串 → 回落默认，不炸
         obj = json.loads(self._run().stdout)
         self.assertEqual(obj["mode"], "查缺补漏")
 
@@ -177,6 +188,15 @@ class CliIO(unittest.TestCase):
             json.dump(self.bank, f, ensure_ascii=False, indent=2)
         obj = json.loads(self._run("--chapter", "7").stdout)
         self.assertEqual([it["id"] for it in obj["items"]], ["ph2"])
+
+    def test_from_chapter_matches_phase_tag(self):
+        # 双标 {chapter:1, phase:3} 的题在 --from-chapter 3 时应保留（chapter 与 phase 都算）
+        self.bank.append({"id": "dual", "chapter": 1, "phase": 3, "type": "subjective",
+                          "question": "q", "answer": "a", "difficulty": 2})
+        with open(os.path.join(self.ws, "references", "quiz_bank.json"), "w", encoding="utf-8") as f:
+            json.dump(self.bank, f, ensure_ascii=False, indent=2)
+        obj = json.loads(self._run("--from-chapter", "3").stdout)
+        self.assertIn("dual", [it["id"] for it in obj["items"]])       # phase=3 命中，不因 chapter=1 被剔
 
     def test_from_chapter_numeric(self):
         obj = json.loads(self._run("--from-chapter", "3").stdout)

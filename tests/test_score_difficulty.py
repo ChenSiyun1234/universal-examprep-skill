@@ -172,6 +172,16 @@ class ScoreCliIO(unittest.TestCase):
         self._write({"quiz_bank": []})
         self.assertEqual(self._run().returncode, 2)
 
+    def test_leftover_tmp_directory_exits_1_not_traceback(self):
+        # quiz_bank.json.tmp 是遗留目录 → 文档承诺的 exit 1，而非原生 traceback；原文件不动（finding P3）
+        os.mkdir(self.path + ".tmp")
+        self.addCleanup(shutil.rmtree, self.path + ".tmp", True)
+        before = self._read()
+        r = self._run()
+        self.assertEqual(r.returncode, 1)
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertEqual(self._read(), before)          # 原题库未被破坏
+
     def test_rejects_symlink_escaped_references(self):
         # references/ 是指向工作区外目录的符号链接 → 写前 realpath 归属校验拒绝，外部文件不被改（finding D）
         outside = tempfile.mkdtemp(prefix="a7out_")

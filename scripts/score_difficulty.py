@@ -235,10 +235,12 @@ def _atomic_write_json(path, obj):
     tmp = path + ".tmp"
     if os.path.islink(tmp):
         _die("检测到符号链接临时文件 %s——可能指向工作区外，拒绝写入（请手动清理后重试）" % tmp, 1)
-    if os.path.exists(tmp):
-        os.remove(tmp)
-    fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
     try:
+        # tmp 残留（含遗留目录）与 O_EXCL 创建都放进 try——否则残留目录会让 os.remove/os.open 抛
+        # 原生 traceback，而非文档承诺的 exit 1；原文件始终未动。
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
             f.write(json.dumps(obj, ensure_ascii=False, indent=2))
             f.write("\n")
@@ -248,7 +250,7 @@ def _atomic_write_json(path, obj):
             os.remove(tmp)
         except OSError:
             pass
-        _die("写入题库失败：%s（未破坏原文件）" % e, 1)
+        _die("写入题库失败：%s（未破坏原文件；若为残留 %s 目录请手动清理）" % (e, tmp), 1)
 
 
 # ---------------- main ----------------
