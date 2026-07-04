@@ -332,6 +332,32 @@ class HardeningRound6(unittest.TestCase):
         self.assertEqual(v3["hallucinated"], 0)
 
 
+class HardeningRound7(unittest.TestCase):
+    """第 9 轮评审批次：系数科学计数 2×10^6、引用列表续接 pages 12, 13。（逗号列表 5,3 歧义拒——见注）"""
+
+    def test_coefficient_scientific(self):
+        # 2×10^6 / 2*10^6 / 1.5 x 10^-3 = 系数·10^指数（不再只取末位 10^…）
+        self.assertEqual(J._extract_final_number("2×10^6"), 2e6)
+        self.assertEqual(J._extract_final_number("2*10^6"), 2e6)
+        self.assertAlmostEqual(J._extract_final_number("1.5 x 10^-3"), 0.0015)
+        self.assertEqual(J._extract_final_number("约 1.2×10^3 次"), 1200.0)
+        self.assertTrue(J.check_numeric("2×10^6", "2000000", 0)[0])
+
+    def test_citation_list_continuation(self):
+        # pages 12, 13 / pages 12 and 13 的后续页码同样跳过（区间已在前一轮覆盖）
+        self.assertEqual(J._extract_final_number("answer is 42, see pages 12, 13"), 42.0)
+        self.assertEqual(J._extract_final_number("answer is 42, see pages 12 and 13"), 42.0)
+        self.assertIsNone(J._extract_final_number("see slides 3, 4, 5"))
+        self.assertTrue(J.check_numeric("answer is 42, see pages 12, 13", "42", 0)[0])
+
+    def test_ambiguous_comma_list_stays_rejected(self):
+        # 设计决策（宁拒不猜，防 3,14 欧式假阳）：无空格逗号列表 5,3 / (3,4) → None，不猜末位元素。
+        # 这与「越界弃答」同一诚实取向——标量数值题的金标不该是逗号元组；判不出比猜错安全。
+        self.assertIsNone(J._extract_final_number("roots 5,3"))
+        self.assertIsNone(J._extract_final_number("point (3,4)"))
+        self.assertIsNone(J._extract_final_number("答案约为 3,14"))   # 欧式小数歧义仍拒（防假阳）
+
+
 class ContainsGoldHardening(unittest.TestCase):
     """词法快路加固：ASCII 词边界 + 小句级否定。False 是安全方向（落回 LLM 裁判）。"""
 
