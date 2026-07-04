@@ -28,6 +28,7 @@ Pure stdlib + reuses gen.py (run_claude/classify) and judge.py / aggregate_matri
 import argparse
 import json
 import os
+import hashlib
 import subprocess
 import sys
 import time
@@ -87,8 +88,9 @@ def load_config(path):
         for k in ("combined", "items", "skill_ws", "raw_ws"):
             if c.get(k):
                 c[k] = _resolve(base, c[k])
-    cfg["arms"] = cfg.get("arms") or DEFAULT_ARMS
-    cfg["models"] = cfg.get("models") or DEFAULT_MODELS
+    # 只在 key 缺席时用默认；显式 "arms":[] / "models":[] 不当"缺席"（否则空矩阵会悄悄跑满全默认臂×模型）
+    cfg["arms"] = cfg["arms"] if "arms" in cfg else DEFAULT_ARMS
+    cfg["models"] = cfg["models"] if "models" in cfg else DEFAULT_MODELS
     # arms/models 必须是非空字符串数组——否则 "skill"（漏了方括号）会被逐字符迭代成 s/k/i/l 假臂
     for _k in ("arms", "models"):
         v = cfg[_k]
@@ -135,6 +137,14 @@ def load_items(course):
             if not (isinstance(d, dict) and d.get("id") and d.get("question")):
                 # 题集定义评测全集，坏行不能静默丢（会缩小分母、伪装成"看着正常"的更小摘要）
                 _die("课程 %s 的 items 第 %d 行缺 id 或 question——拒绝静默丢弃" % (course.get("name"), ln))
+            # 必须是**金标**：要有 answer_type + answerable；可答题还要有 gold_answer。
+            # 否则误指到 *_q.jsonl（只 id+question 的盲测题面）会拿空 gold 判分甚至数值题崩。
+            if "answer_type" not in d or "answerable" not in d:
+                _die("课程 %s 的 items 第 %d 行缺 answer_type/answerable——像是问题-only 文件（*_q.jsonl），"
+                     "请指向带金标的 items 文件" % (course.get("name"), ln))
+            if d.get("answerable") is not False and not str(d.get("gold_answer", "")).strip():
+                _die("课程 %s 的 items 第 %d 行 answerable 但无 gold_answer——金标缺失，无法判分"
+                     % (course.get("name"), ln))
             rid = str(d["id"])
             if rid in seen:
                 _die("课程 %s 的 items 第 %d 行 id 重复：%s（首见于第 %d 行）"
@@ -205,17 +215,28 @@ def build_tasks(cfg):
 # ---------------- score ----------------
 
 def score_row(course_name, model, arm, item, answer, mock, judge_model="haiku"):
-    ask = (lambda p: J.mock_judge(p)) if mock else (lambda p: _real_ask_judge(p, judge_model))
+    """返回 (score_row, judge_infra_failed)。judge_infra_failed=True 表示判分侧 claude 撞了配额/超时/API 错
+    （不是裁判真判不了）——这种 score 不该落盘当"已完成"，否则永远不会重判。"""
+    infra = {"failed": False}
+    if mock:
+        ask = lambda p: J.mock_judge(p)
+    else:
+        def ask(p):
+            out = _real_ask_judge(p, judge_model)
+            if _classify(out) != "ok":                  # 判分侧撞配额/超时/API 错
+                infra["failed"] = True
+            return out
     verdict = J.judge_answer(item, answer, ask, judge_repeats=1)
     f = verdict.get("faithfulness")                     # judge_error 时可能为 None——原样透传（aggregate 接受 None/缺省）
-    return {"course": course_name, "model": model, "arm": arm, "item_id": item["id"],
-            "answerable": bool(item.get("answerable", True)),
-            "correct": bool(verdict.get("correct")),
-            "hallucinated": int(verdict.get("hallucinated", 0)),
-            "abstained": bool(verdict.get("abstained")),
-            "judge_error": int(verdict.get("judge_error", 0)),
-            "faithfulness": (None if f is None else float(f)),
-            "scored_by": verdict.get("scored_by", "mock" if mock else "llm")}
+    row = {"course": course_name, "model": model, "arm": arm, "item_id": item["id"],
+           "answerable": bool(item.get("answerable", True)),
+           "correct": bool(verdict.get("correct")),
+           "hallucinated": int(verdict.get("hallucinated", 0)),
+           "abstained": bool(verdict.get("abstained")),
+           "judge_error": int(verdict.get("judge_error", 0)),
+           "faithfulness": (None if f is None else float(f)),
+           "scored_by": verdict.get("scored_by", "mock" if mock else "llm")}
+    return row, infra["failed"]
 
 
 def _real_ask_judge(prompt, judge_model):               # 真跑判分：shell claude（用 config 指定的裁判模型）
@@ -292,19 +313,40 @@ def _scored_keys(score_path):
     return keys
 
 
-def _assert_run_mode(results_dir, mock):
-    """同一 results_dir 里 mock 与 real 产物不能混——否则先 --mock 后 --real 同目录，占位答案会被当已完成、
-    真跑 todo=0 不打 claude，还把 scored_by:mock 的占位行按真裁判标签聚合，静默污染基准。"""
+def _config_fingerprint(cfg):
+    """决定任务集 + 判分的配置指纹：课程名/各路径、模型、臂、主/次课程。改了任一 → 指纹变。"""
+    sig = {
+        "courses": sorted((c["name"], c.get("items"), c.get("combined"),
+                           c.get("skill_ws"), c.get("raw_ws")) for c in cfg["courses"]),
+        "models": sorted(cfg["models"]),
+        "arms": sorted(cfg["arms"]),
+        "primary": cfg["primary_course"],
+        "secondary": cfg.get("secondary_course"),
+    }
+    return hashlib.md5(json.dumps(sig, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _assert_run_meta(results_dir, mock, cfg):
+    """同一 results_dir 的产物必须同 mock/real **且**同 config——否则：
+    ① 先 --mock 后 --real 同目录会把占位当已完成、真跑 todo=0 不打 claude、按真裁判标签聚合占位行；
+    ② 改了 config（课程/题集/模型/臂）复用旧目录，旧 answers/scores 会和新配置混聚出对不上的摘要。"""
     mode = "mock" if mock else "real"
-    mode_path = os.path.join(results_dir, ".run_mode")
-    if os.path.isfile(mode_path):
-        with open(mode_path, encoding="utf-8") as f:
-            prev = f.read().strip()
-        if prev and prev != mode:
-            _die("results_dir 里已有 %s 运行的产物，拒绝与 %s 混用——请换一个 --results-dir（mock/real 别同目录）"
-                 % (prev, mode))
-    with open(mode_path, "w", encoding="utf-8") as f:
-        f.write(mode)
+    fp = _config_fingerprint(cfg)
+    meta_path = os.path.join(results_dir, ".run_meta.json")
+    if os.path.isfile(meta_path):
+        try:
+            with open(meta_path, encoding="utf-8") as f:
+                prev = json.load(f)
+        except ValueError:
+            prev = {}
+        if prev.get("mode") and prev["mode"] != mode:
+            _die("results_dir 已有 %s 运行的产物，拒绝与 %s 混用——请换一个 --results-dir（mock/real 别同目录）"
+                 % (prev["mode"], mode))
+        if prev.get("fingerprint") and prev["fingerprint"] != fp:
+            _die("results_dir 的产物来自**不同的 config**（课程/题集/模型/臂变了）——旧 answers/scores 会和新配置"
+                 "混聚出对不上的摘要；请换一个干净的 --results-dir")
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump({"mode": mode, "fingerprint": fp}, f, ensure_ascii=False)
 
 
 def _answers_has_course(ans_path, course):
@@ -329,7 +371,7 @@ def run(cfg, mock, limit=0):
     if not mock:
         _preflight_real(cfg)                            # 真跑前校验各臂路径存在（mock 不读）
     os.makedirs(results_dir, exist_ok=True)
-    _assert_run_mode(results_dir, mock)                 # mock/real 产物不混
+    _assert_run_meta(results_dir, mock, cfg)            # mock/real 不混 + config 指纹不匹配即拒
     ans_path = os.path.join(results_dir, "answers.jsonl")
     score_path = os.path.join(results_dir, "scores.jsonl")
     summary_path = os.path.join(results_dir, "summary.json")
@@ -357,7 +399,10 @@ def run(cfg, mock, limit=0):
             course = cfg["_courses_by_name"][cname]
             if key in answered:
                 # 崩溃后"有答案没判分"——只重判、不重新生成、不重写 answer（防重复行）
-                srow = score_row(cname, model, arm, item, answered[key].get("answer", ""), mock, judge_label)
+                srow, jf = score_row(cname, model, arm, item, answered[key].get("answer", ""), mock, judge_label)
+                if jf:                                  # 判分侧撞配额/超时 → 不落 score，下次 resume 重判
+                    n_skip += 1
+                    continue
                 sf.write(json.dumps(srow, ensure_ascii=False) + "\n"); sf.flush()
                 n_rescore += 1
                 continue
@@ -367,6 +412,7 @@ def run(cfg, mock, limit=0):
                 answer, cost, kind = _generate_real(cfg, course, model, arm, item)
                 if kind == "hard":
                     hard_streak += 1
+                    n_skip += 1                         # 硬失败也是跳过——计数，让"未完成不聚合"守卫触发
                     if hard_streak >= 6:
                         quota_stop = True
                         print("[matrix] 连撞订阅配额上限，停在此（已作答的都存好了）——配额恢复后再跑续。")
@@ -376,13 +422,16 @@ def run(cfg, mock, limit=0):
                 if kind != "ok" or not (answer or "").strip():
                     n_skip += 1                         # 瞬时/超时重试后仍失败 → 不写，下次 resume 重试
                     continue
-            # ok：写 answer + score（失败不写、可重试；每 key 只写一次 → 无重复行）
+            # 写 answer（真答案不浪费）；判分侧若撞配额/超时则不落 score，下次 resume 重判
             total_cost += cost or 0.0
             arow = {"course": cname, "model": model, "arm": arm, "item_id": item["id"],
                     "answerable": bool(item.get("answerable", True)), "status": "ok",
                     "answer": answer, "cost_usd": cost or 0.0}
             af.write(json.dumps(arow, ensure_ascii=False) + "\n"); af.flush()
-            srow = score_row(cname, model, arm, item, answer, mock, judge_label)
+            srow, jf = score_row(cname, model, arm, item, answer, mock, judge_label)
+            if jf:
+                n_skip += 1
+                continue
             sf.write(json.dumps(srow, ensure_ascii=False) + "\n"); sf.flush()
             n_ok += 1
     finally:

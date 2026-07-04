@@ -146,6 +146,33 @@ class ConfigValidation(unittest.TestCase):
         cfg = {"courses": [{"name": "a", "items": "i.jsonl"}], "arms": ["rawfiles"]}
         self.assertEqual(_run("--mock", "--config", self._cfg(cfg)).returncode, 2)
 
+    def test_explicit_empty_arms_exits_2(self):
+        # 显式 "arms":[] 不当"缺席"回落全默认矩阵 —— fail-loud
+        cfg = {"courses": [{"name": "a", "items": "i.jsonl"}], "arms": []}
+        self.assertEqual(_run("--mock", "--config", self._cfg(cfg)).returncode, 2)
+
+    def test_explicit_empty_models_exits_2(self):
+        cfg = {"courses": [{"name": "a", "items": "i.jsonl"}], "arms": ["closedbook"], "models": []}
+        self.assertEqual(_run("--mock", "--config", self._cfg(cfg)).returncode, 2)
+
+    def test_question_only_items_rejected(self):
+        # 误指到只有 id+question 的盲测题面文件（*_q.jsonl）→ fail-loud（缺金标无法判分）
+        with open(os.path.join(self.d, "q.jsonl"), "w", encoding="utf-8") as f:
+            f.write(json.dumps({"id": "x", "question": "q"}) + "\n")
+        r = _run("--mock", "--config", self._cfg({"courses": [{"name": "a", "items": "q.jsonl"}],
+                                                  "arms": ["closedbook"]}))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("answer_type", r.stderr)
+
+    def test_answerable_without_gold_rejected(self):
+        with open(os.path.join(self.d, "nogold.jsonl"), "w", encoding="utf-8") as f:
+            f.write(json.dumps({"id": "x", "question": "q", "answer_type": "factual",
+                                "answerable": True}) + "\n")
+        r = _run("--mock", "--config", self._cfg({"courses": [{"name": "a", "items": "nogold.jsonl"}],
+                                                  "arms": ["closedbook"]}))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("gold_answer", r.stderr)
+
     def test_relative_paths_resolved_to_config_dir(self):
         # config 里的相对 items 路径按 config 目录解析
         with open(os.path.join(self.d, "i.jsonl"), "w", encoding="utf-8") as f:
@@ -177,8 +204,8 @@ class ConfigValidation(unittest.TestCase):
 
     def test_malformed_items_line_exits_2_with_lineno(self):
         with open(os.path.join(self.d, "bad.jsonl"), "w", encoding="utf-8") as f:
-            f.write(json.dumps({"id": "x", "question": "q", "answer_type": "factual",
-                                "answerable": True}) + "\n")
+            f.write(json.dumps({"id": "x", "question": "q", "gold_answer": "a",
+                                "answer_type": "factual", "answerable": True}) + "\n")
             f.write("{not valid json\n")
         r = _run("--mock", "--config", self._cfg({"courses": [{"name": "a", "items": "bad.jsonl"}],
                                                   "arms": ["closedbook"]}))
@@ -200,8 +227,8 @@ class FixesRegression(unittest.TestCase):
             "id": item["id"], "correct": False, "hallucinated": 0, "abstained": False,
             "judge_error": 1, "faithfulness": None}
         try:
-            row = RM.score_row("c", "m", "closedbook",
-                               {"id": "q", "answerable": True}, "ans", mock=False)
+            row, jf = RM.score_row("c", "m", "closedbook",
+                                   {"id": "q", "answerable": True}, "ans", mock=True)
             self.assertIsNone(row["faithfulness"])
             self.assertEqual(row["judge_error"], 1)
         finally:
@@ -259,6 +286,38 @@ class FixesRegression(unittest.TestCase):
         r = _run("--real", "--config", FIXTURE_CFG, "--results-dir", self.out)
         self.assertEqual(r.returncode, 2)
         self.assertIn("混用", r.stderr)
+
+    def test_changed_config_same_resultsdir_refused(self):
+        # 同 results_dir 换了 config（不同 arms/models）→ 拒绝（旧行会和新配置混聚出错摘要）
+        _run("--mock", "--config", FIXTURE_CFG, "--results-dir", self.out)
+        d = tempfile.mkdtemp(prefix="b4fp_")
+        self.addCleanup(shutil.rmtree, d, True)
+        src = os.path.dirname(FIXTURE_CFG)
+        cfg2 = {"courses": [{"name": "minios", "items": os.path.join(src, "items.jsonl"),
+                             "combined": os.path.join(src, "materials", "_combined.txt"),
+                             "skill_ws": os.path.join(src, "skill_ws"),
+                             "raw_ws": os.path.join(src, "raw_ws")}],
+                "models": ["opus"], "arms": ["closedbook"], "mock": True}   # 与 fixture 不同指纹
+        cfg2p = os.path.join(d, "config.json")
+        with open(cfg2p, "w", encoding="utf-8") as f:
+            json.dump(cfg2, f)
+        r = _run("--mock", "--config", cfg2p, "--results-dir", self.out)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("不同的 config", r.stderr)
+
+    def test_judge_infra_failure_flagged(self):
+        # 判分侧 claude 撞配额/超时 → score_row 标 judge_infra_failed（不落盘、下次重判）
+        import gen
+        orig = gen.run_claude
+        gen.run_claude = lambda prompt, model, **kw: ("hit your limit; resets later", None)
+        try:
+            item = {"id": "q", "question": "?", "gold_answer": "xyz",
+                    "answer_type": "factual", "answerable": True}
+            row, jf = RM.score_row("c", "m", "closedbook", item, "unrelated answer",
+                                   mock=False, judge_model="haiku")
+            self.assertTrue(jf)
+        finally:
+            gen.run_claude = orig
 
     def test_resume_rescores_answer_without_score(self):
         # 崩溃后"有答案没判分"：删掉 scores 模拟 → 续跑重判该题（不重生成、不重复 answer）
