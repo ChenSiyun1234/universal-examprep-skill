@@ -27,6 +27,7 @@ Pure stdlib + reuses gen.py (run_claude/classify) and judge.py / aggregate_matri
 """
 import argparse
 import json
+import math
 import os
 import hashlib
 import subprocess
@@ -158,12 +159,16 @@ def load_items(course):
                 _die("课程 %s 的 items 第 %d 行 answerable 但无 gold_answer——金标缺失，无法判分"
                      % (course.get("name"), ln))
             if d.get("answer_type") == "numeric" and d.get("answerable"):
-                # numeric 金标本身必须是数字，且 tolerance（若给）为非负数——否则 check_numeric 会把每个答案
-                # 都判错（如 gold=5 tol=-1），坏金标静默污染报告。都在此 fail-loud。
+                # numeric 金标本身必须是**有限**数字，且 tolerance（若给）为非负有限数——否则 check_numeric
+                # 会把每个答案都判错/判对（gold=NaN 任何比较都 False；tol=Infinity 任何答案都在容差内——
+                # json.loads 接受裸 NaN/Infinity 字面量，float() 也不报错，必须显式拦）。都在此 fail-loud。
                 try:
-                    float(d.get("gold_answer"))
+                    gv = float(d.get("gold_answer"))
                 except (TypeError, ValueError):
                     _die("课程 %s 的 items 第 %d 行 numeric gold_answer 非数字：%r"
+                         % (course.get("name"), ln, d.get("gold_answer")))
+                if not math.isfinite(gv):
+                    _die("课程 %s 的 items 第 %d 行 numeric gold_answer 非有限数（NaN/Infinity）：%r"
                          % (course.get("name"), ln, d.get("gold_answer")))
                 if d.get("tolerance") not in (None, ""):
                     try:
@@ -171,6 +176,9 @@ def load_items(course):
                     except (TypeError, ValueError):
                         _die("课程 %s 的 items 第 %d 行 numeric tolerance 非数字：%r"
                              % (course.get("name"), ln, d.get("tolerance")))
+                    if not math.isfinite(tol):
+                        _die("课程 %s 的 items 第 %d 行 numeric tolerance 非有限数（NaN/Infinity 会让"
+                             "任何答案都判对/判错）：%r" % (course.get("name"), ln, d.get("tolerance")))
                     if tol < 0:
                         _die("课程 %s 的 items 第 %d 行 numeric tolerance 不能为负：%r"
                              % (course.get("name"), ln, d.get("tolerance")))
@@ -343,39 +351,71 @@ def _generate_real(cfg, course, model, arm, item):
     return "", cost or 0.0, "transient"
 
 
+def _read_ledger(path):
+    """resume 读账本（answers/scores 通用）——runner 与 aggregator 必须对同一批行达成一致：
+    · **中间坏行**（非法 JSON / 缺必备键）→ fail-loud 报行号。以前静默跳过会把该任务当"没做过"
+      重打配额、而 aggregate 又死在同一行上——每次续跑都白做一遍、永远聚合不了的死锁。
+    · **末行无换行且坏** = 崩溃时只写了半行 → 视作未写入：警告 + 续跑前截掉自愈（返回截断偏移）。
+    · **末行无换行但完整** = 崩溃在写 \\n 前 → 行有效，但直接 append 会黏行：返回补换行标记。
+    返回 (rows, fix)；fix = None | ("truncate", 字节偏移) | ("newline",)。"""
+    rows, fix = [], None
+    if not os.path.isfile(path):
+        return rows, fix
+    with open(path, "rb") as f:
+        raw = f.read()
+    nl = raw.rfind(b"\n")
+    body, tail = raw[:nl + 1], raw[nl + 1:]
+    try:
+        body_text = body.decode("utf-8")
+    except UnicodeDecodeError as e:
+        _die("%s 编码损坏（%s）——无法安全续跑，请人工修复该文件" % (os.path.basename(path), e))
+    for ln, line in enumerate(body_text.splitlines(), 1):
+        s = line.strip()
+        if not s:
+            continue
+        try:
+            d = json.loads(s)
+            _cache_key(d["course"], d["model"], d["arm"], d["item_id"])   # 必备键在此验齐
+        except (ValueError, KeyError) as e:
+            _die("%s 第 %d 行坏账本行（%s: %s）——静默跳过会把该任务当未做重打配额、而聚合又死在这行；"
+                 "请人工修复/删除该行后再续跑：\n  %s"
+                 % (os.path.basename(path), ln, type(e).__name__, e, s[:120]))
+        rows.append(d)
+    if tail.strip():
+        try:
+            d = json.loads(tail.decode("utf-8"))
+            _cache_key(d["course"], d["model"], d["arm"], d["item_id"])
+            rows.append(d)
+            fix = ("newline",)                          # 行完整只是缺换行——续写前补一个，防黏行
+        except (ValueError, KeyError, UnicodeDecodeError):
+            sys.stderr.write("[matrix] ⚠️ %s 末行是崩溃残段（无换行且非法）——视作未写入，续跑前截掉自愈\n"
+                             % os.path.basename(path))
+            fix = ("truncate", nl + 1)
+    return rows, fix
+
+
+def _apply_ledger_fix(path, fix):
+    if not fix:
+        return
+    if fix[0] == "truncate":
+        with open(path, "r+b") as f:
+            f.truncate(fix[1])
+    else:                                               # ("newline",)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write("\n")
+
+
 def _load_answers_map(ans_path):
-    """已作答的行 {key: row}——崩溃后"有答案没判分"的任务据此**重判**（而非当 judge_error 永久钉死），
-    且重判只写 score 不重写 answer，避免重复 answer 行卡死 aggregate。"""
-    m = {}
-    if os.path.isfile(ans_path):
-        with open(ans_path, encoding="utf-8") as f:
-            for line in f:
-                s = line.strip()
-                if not s:
-                    continue
-                try:
-                    d = json.loads(s)
-                    m[_cache_key(d["course"], d["model"], d["arm"], d["item_id"])] = d
-                except (ValueError, KeyError):
-                    continue
-    return m
+    """已作答的行 {key: row} + 修复标记——崩溃后"有答案没判分"的任务据此**重判**（而非当 judge_error
+    永久钉死），且重判只写 score 不重写 answer，避免重复 answer 行卡死 aggregate。"""
+    rows, fix = _read_ledger(ans_path)
+    return {_cache_key(d["course"], d["model"], d["arm"], d["item_id"]): d for d in rows}, fix
 
 
 def _scored_keys(score_path):
-    """已判分的任务 key —— 完全完成（答案+判分都在）的集合，跳过之。"""
-    keys = set()
-    if os.path.isfile(score_path):
-        with open(score_path, encoding="utf-8") as f:
-            for line in f:
-                s = line.strip()
-                if not s:
-                    continue
-                try:
-                    d = json.loads(s)
-                    keys.add(_cache_key(d["course"], d["model"], d["arm"], d["item_id"]))
-                except (ValueError, KeyError):
-                    continue
-    return keys
+    """已判分的任务 key + 修复标记——完全完成（答案+判分都在）的集合，跳过之。"""
+    rows, fix = _read_ledger(score_path)
+    return {_cache_key(d["course"], d["model"], d["arm"], d["item_id"]) for d in rows}, fix
 
 
 def _file_hash(p):
@@ -406,15 +446,21 @@ def _config_fingerprint(cfg):
     模型/臂/主次课程 + judge_model。改了任一（含就地重生成材料/wiki、改题、换裁判）→ 指纹变 → 拒绝复用旧目录。"""
     # **保持顺序**（不 sort）——任务序是 course×arm×model×item，--limit 按此切片、resume 跳已判分 key，
     # 所以重排课程/臂/模型对部分跑并不等价，理应算不同配置、不复用同一 results_dir。
+    # 材料/workspace 只在**选了对应臂**时才进指纹——没选 material 臂时改 combined 不影响判分，
+    # 不该拒续跑（判分只读 items 金标）。judge_model 存**判分实际用的**解析值（缺省=haiku），
+    # 事后把默认值写显式不该被当成"换了裁判"。
+    arms = set(cfg["arms"])
     sig = {
-        "courses": [(c["name"], _file_hash(c.get("items")), _file_hash(c.get("combined")),
-                     _dir_hash(c.get("skill_ws")), _dir_hash(c.get("raw_ws")))
+        "courses": [(c["name"], _file_hash(c.get("items")),
+                     _file_hash(c.get("combined")) if "material" in arms else None,
+                     _dir_hash(c.get("skill_ws")) if "skill" in arms else None,
+                     _dir_hash(c.get("raw_ws")) if "rawfiles" in arms else None)
                     for c in cfg["courses"]],
         "models": list(cfg["models"]),
         "arms": list(cfg["arms"]),
         "primary": cfg["primary_course"],
         "secondary": cfg.get("secondary_course"),
-        "judge_model": cfg.get("judge_model"),
+        "judge_model": cfg.get("judge_model") or "haiku",
     }
     return hashlib.md5(json.dumps(sig, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
@@ -442,6 +488,11 @@ def _assert_run_meta(results_dir, mock, cfg):
             _die("results_dir 有 answers/scores 产物但 .run_meta 缺失/损坏——无法核对 mock/real 与 config 一致性，"
                  "请换一个干净的 --results-dir")
     else:
+        if has_artifacts and (not prev.get("mode") or not prev.get("fingerprint")):
+            # meta 是 dict 但缺 mode/fingerprint 键 + 已有产物 → 等同不可核对：拒绝（"缺键=不设限"会让
+            # 不同 config、甚至 mock/real 混目录静默放行）
+            _die("results_dir 有产物但 .run_meta 缺 mode/fingerprint 字段——无法核对 mock/real 与 config"
+                 " 一致性，请换一个干净的 --results-dir")
         if prev.get("mode") and prev["mode"] != mode:
             _die("results_dir 已有 %s 运行的产物，拒绝与 %s 混用——请换一个 --results-dir（mock/real 别同目录）"
                  % (prev["mode"], mode))
@@ -483,8 +534,10 @@ def run(cfg, mock, limit=0):
     _assert_run_meta(results_dir, mock, cfg)            # 修好后同目录续跑不会被误判成"不同 config"
     if limit:
         tasks = tasks[:limit]
-    answered = _load_answers_map(ans_path)              # 已作答（可能没判分）
-    scored = _scored_keys(score_path)                   # 已判分（完全完成）
+    answered, ans_fix = _load_answers_map(ans_path)     # 已作答（可能没判分）
+    scored, score_fix = _scored_keys(score_path)        # 已判分（完全完成）
+    _apply_ledger_fix(ans_path, ans_fix)                # 崩溃残段截掉 / 缺换行补上——再进 append 模式
+    _apply_ledger_fix(score_path, score_fix)
     todo = [t for t in tasks if _cache_key(t[0], t[1], t[2], t[3]["id"]) not in scored]
     print("[matrix] 任务 %d，已判分 %d，本次待处理 %d（%s）"
           % (len(tasks), len(tasks) - len(todo), len(todo), "mock 占位" if mock else "real"))
@@ -575,7 +628,12 @@ def run(cfg, mock, limit=0):
     r = subprocess.run(agg, capture_output=True, text=True, encoding="utf-8")
     sys.stdout.write(r.stdout)
     if r.returncode != 0:
+        # 聚合失败也要删旧 summary（与上面两个跳过分支一致）——否则留下的旧 summary 比当前
+        # answers/scores 还旧，report_matrix 读它就是读一份对不上的陈旧摘要。
+        _drop_stale_summary()
         _die("aggregate_matrix 失败：%s" % (r.stderr or "").strip(), 1)
+    if r.stderr:
+        sys.stderr.write(r.stderr)                     # 聚合子进程的警告（如各格答题集不齐平）别吞掉
     print("[matrix] -> %s（%s）" % (summary_path, "mock 占位摘要，未测量正确率" if mock else "已聚合"))
     return summary_path
 

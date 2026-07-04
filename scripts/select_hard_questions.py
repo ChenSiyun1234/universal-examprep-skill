@@ -71,6 +71,11 @@ def _parse_source_types(raw):
 def _scope_to_source_types(scope):
     """把存档的范围偏好映射到 source_type 集合。返回 None 表示不过滤（混合池）。
     非混合但映射不出干净 source_type 时 fail-loud——绝不静默放宽被记录的范围（A2 契约）。"""
+    if scope is not None and not isinstance(scope, str):
+        # 手改/损坏的 state 可能把 scope 存成 list/dict（不可哈希）——`in set` 会 TypeError 裸崩；
+        # 按 A2 契约同样 fail-loud（exit 2 + 出路），不猜也不裸 traceback。
+        _die("study_state 记录的范围偏好不是字符串（%r）——state 疑被手改/损坏；"
+             "请修复 study_state.json 的 scope 字段，或显式传 --source-type 覆盖" % (scope,))
     if scope in _MIXED_SCOPES:
         return None
     norm = str(scope).strip().lower()
@@ -264,7 +269,10 @@ def main(argv=None):
     if args.source_type is not None:
         if args.source_type.strip().lower() in _MIXED_OVERRIDE:
             source_types = None
-            if (state or {}).get("scope") not in _MIXED_SCOPES:
+            sc = (state or {}).get("scope")
+            # 非字符串 scope（手改/损坏 state，不可哈希）不能进 `in set`——它显然不是混合池，照发覆盖备注；
+            # 这样文档给的恢复出路（--source-type all 覆盖）在坏 state 下也能走通，不再 TypeError 裸崩。
+            if not isinstance(sc, (str, type(None))) or sc not in _MIXED_SCOPES:
                 notes.append("已按显式 --source-type %s 覆盖存档范围为混合池（本轮；A2 越界覆盖须先向学生声明）"
                              % args.source_type.strip())
         else:
