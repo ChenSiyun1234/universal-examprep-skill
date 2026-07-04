@@ -172,6 +172,26 @@ class ScoreCliIO(unittest.TestCase):
         self._write({"quiz_bank": []})
         self.assertEqual(self._run().returncode, 2)
 
+    def test_rejects_symlink_escaped_references(self):
+        # references/ 是指向工作区外目录的符号链接 → 写前 realpath 归属校验拒绝，外部文件不被改（finding D）
+        outside = tempfile.mkdtemp(prefix="a7out_")
+        self.addCleanup(shutil.rmtree, outside, True)
+        outbank = os.path.join(outside, "quiz_bank.json")
+        with open(outbank, "w", encoding="utf-8") as f:
+            json.dump([_item(id="ext", chapter=1)], f, ensure_ascii=False)
+        ws2 = tempfile.mkdtemp(prefix="a7ws2_")
+        self.addCleanup(shutil.rmtree, ws2, True)
+        try:
+            os.symlink(outside, os.path.join(ws2, "references"), target_is_directory=True)
+        except (OSError, NotImplementedError, AttributeError):
+            self.skipTest("平台不支持 symlink")
+        before = open(outbank, encoding="utf-8").read()
+        r = subprocess.run([sys.executable, SCRIPT, "--workspace", ws2],
+                           capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("逃出工作区", r.stderr)
+        self.assertEqual(open(outbank, encoding="utf-8").read(), before)   # 外部文件未被改
+
     def test_rejects_symlink_tmp(self):
         # 预建同名 .tmp 符号链接 → 拒绝写、不改原文件
         tmp = self.path + ".tmp"

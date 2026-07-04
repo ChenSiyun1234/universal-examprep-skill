@@ -65,6 +65,22 @@ class ClassifyUnit(unittest.TestCase):
         idx = shq.build_mastery(None)
         self.assertEqual(shq.classify(_q("a"), idx)[0], "neutral")
 
+    def test_resolved_mistake_not_weak(self):
+        # 已订正/已复盘/已解决 的错题不再算薄弱；待复盘 仍算
+        for done in ("已订正", "已复盘", "已解决"):
+            idx = shq.build_mastery({"mistake_archive": [{"id": "q1", "chapter": 2, "status": done}]})
+            self.assertNotIn("q1", idx["mistake_ids"], done)
+            self.assertNotIn("2", idx["trouble_ch"], done)
+        idx2 = shq.build_mastery({"mistake_archive": [{"id": "q2", "chapter": 3, "status": "待复盘"}]})
+        self.assertIn("q2", idx2["mistake_ids"])
+        self.assertIn("3", idx2["trouble_ch"])
+
+    def test_resolved_confusion_not_weak(self):
+        idx = shq.build_mastery({"confusion_log": [{"chapter": 5, "status": "已回顾"}]})
+        self.assertNotIn("5", idx["trouble_ch"])
+        idx2 = shq.build_mastery({"confusion_log": [{"chapter": 6, "status": "待回顾"}]})
+        self.assertIn("6", idx2["trouble_ch"])
+
 
 class OrderUnit(unittest.TestCase):
     def _mk(self, cls, diff, i):
@@ -211,6 +227,41 @@ class CliIO(unittest.TestCase):
 
     def test_bad_source_type_value_exits_2(self):
         self.assertEqual(self._run("--source-type", "nonsense").returncode, 2)
+
+    def test_empty_source_type_exits_2(self):
+        # '' 或 ',' 的显式空过滤是用法错误，绝不静默退混合池（finding C）
+        self.assertEqual(self._run("--source-type", "").returncode, 2)
+        self.assertEqual(self._run("--source-type", ",").returncode, 2)
+
+    def test_untagged_exclusion_reported(self):
+        # 范围过滤下未标签题被排除必须计数上报（finding B / A2 契约）
+        self.bank = [
+            {"id": "hw", "chapter": 1, "type": "subjective", "question": "q", "answer": "a",
+             "difficulty": 2, "source_type": "homework"},
+            {"id": "untag", "chapter": 1, "type": "subjective", "question": "q", "answer": "a",
+             "difficulty": 3},
+        ]
+        with open(os.path.join(self.ws, "references", "quiz_bank.json"), "w", encoding="utf-8") as f:
+            json.dump(self.bank, f, ensure_ascii=False, indent=2)
+        self._state({"mode": "查缺补漏", "scope": "homework-only"})
+        obj = json.loads(self._run().stdout)
+        self.assertEqual(obj["untagged_excluded"], 1)
+        self.assertEqual([it["id"] for it in obj["items"]], ["hw"])
+        self.assertTrue(any("未标签" in n for n in obj["notes"]))
+
+    def test_symlinked_state_fails_loud(self):
+        # study_state.json 为符号链接 → fail loud（finding E）
+        ext = os.path.join(self.ws, "external_state.json")
+        with open(ext, "w", encoding="utf-8") as f:
+            json.dump({"mode": "查缺补漏"}, f, ensure_ascii=False)
+        link = os.path.join(self.ws, "study_state.json")
+        try:
+            os.symlink(ext, link)
+        except (OSError, NotImplementedError, AttributeError):
+            self.skipTest("平台不支持 symlink")
+        r = self._run()
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("符号链接", r.stderr)
 
     # ---- finding 3: 某章起步补弱 缺 --from-chapter 时默认 current_phase，推不出 fail-loud ----
     def test_weak_start_mode_defaults_from_current_phase(self):

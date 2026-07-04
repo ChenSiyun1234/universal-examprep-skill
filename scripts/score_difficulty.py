@@ -218,6 +218,17 @@ def score_item(q, late_cutoff):
 
 # ---------------- atomic write（照搬 update_progress.py 的 O_EXCL + 拒符号链接） ----------------
 
+def _assert_within_workspace(ws, path):
+    """realpath 归属校验：quiz_bank 经符号链接 / 符号链接父目录（如 references/ 本身是链接）
+    逃出工作区时拒绝写入——否则跑一次评分就会改动工作区外的文件。与校验器同一套 realpath 口径。"""
+    if os.path.islink(path):
+        _die("%s 不得为符号链接（可能指向工作区外）——拒绝写入" % path, 1)
+    ws_real = os.path.normcase(os.path.realpath(ws))
+    real = os.path.normcase(os.path.realpath(path))
+    if real != ws_real and not real.startswith(ws_real + os.sep):
+        _die("quiz_bank.json 经符号链接 / 父目录逃出工作区——拒绝写入（realpath 归属校验失败）", 1)
+
+
 def _atomic_write_json(path, obj):
     if os.path.lexists(path) and not os.path.islink(path) and not os.path.isfile(path):
         _die("%s 已存在但不是常规文件（目录/特殊文件）——拒绝写入，请先手动清理" % path, 1)
@@ -271,6 +282,7 @@ def main(argv=None):
                 diff, reason = score_item(q, late)
                 q["difficulty"] = diff
                 q["difficulty_reason"] = reason
+        _assert_within_workspace(args.workspace, bank_path(args.workspace))
         _atomic_write_json(bank_path(args.workspace), bank)
 
     stats = {

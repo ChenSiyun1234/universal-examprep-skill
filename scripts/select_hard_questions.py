@@ -41,6 +41,10 @@ for _s in ("stdout", "stderr"):
 STATE_NAME = "study_state.json"
 LEARNING_MODES = ("零基础从头讲", "某章起步补弱", "查缺补漏")
 _MIXED_SCOPES = {None, "", "混合题池", "mixed", "混合"}   # 非限制性范围——不过滤
+# 已订正/已解决的错题、已回顾的疑难不再算薄弱——否则查缺补漏会把「已经拿下的」永远顶在最前，
+# 挤掉仍待复盘的真薄弱点（错题走 待复盘→已订正/已复盘/已解决；疑难走 待回顾→已回顾）。
+_MISTAKE_RESOLVED = {"已订正", "已复盘", "已解决"}
+_CONFUSION_RESOLVED = {"已回顾"}
 
 
 def _die(msg, code=2):
@@ -49,8 +53,12 @@ def _die(msg, code=2):
 
 
 def _parse_source_types(raw):
-    """把 '--source-type homework,exam' 解析成校验过的集合（与 A2 select_questions 同语义）。"""
+    """把 '--source-type homework,exam' 解析成校验过的集合（与 A2 select_questions 同语义）。
+    显式空过滤（'' 或 ','）是用法错误——绝不静默退回混合池（引号/模板拼错会整场无题）。"""
     vals = [v.strip() for v in raw.split(",") if v.strip()]
+    if not vals:
+        _die("--source-type 不能为空（'' 或 ','）——显式空过滤视为用法错误，"
+             "不写就是混合池，别用空串静默清空（与 A2 select_questions 一致）")
     bad = [v for v in vals if v not in SOURCE_TYPES]
     if bad:
         _die("非法 source_type: %s（应为 %s）" % (", ".join(bad), sorted(SOURCE_TYPES)))
@@ -75,8 +83,16 @@ def _scope_to_source_types(scope):
 
 def load_state(ws):
     path = os.path.join(ws, STATE_NAME)
+    # A4 事实源不得为符号链接：断链会被静默当无状态，外指链接会把工作区外的 JSON 当成掌握状态读进来
+    # ——都会悄悄改变出题排序。与 update_progress / 校验器同口径 fail-loud（先于 isfile 判断）。
+    if os.path.islink(path):
+        _die("study_state.json 不得为符号链接（A4 事实源，可能指向工作区外）——拒绝读取")
     if not os.path.isfile(path):
         return None
+    ws_real = os.path.normcase(os.path.realpath(ws))
+    real = os.path.normcase(os.path.realpath(path))
+    if real != ws_real and not real.startswith(ws_real + os.sep):
+        _die("study_state.json 经符号链接 / 父目录逃出工作区——拒绝读取（realpath 归属校验失败）")
     try:
         with open(path, "r", encoding="utf-8") as f:
             st = json.load(f)
@@ -113,13 +129,14 @@ def build_mastery(state):
     if not state:
         return idx
     for m in state.get("mistake_archive") or []:
-        if isinstance(m, dict):
+        if isinstance(m, dict) and m.get("status") not in _MISTAKE_RESOLVED:   # 已订正的错题不再算薄弱
             if m.get("id"):
                 idx["mistake_ids"].add(str(m["id"]))
             if m.get("chapter") is not None:
                 idx["trouble_ch"].add(str(m["chapter"]))
     for c in state.get("confusion_log") or []:
-        if isinstance(c, dict) and c.get("chapter") is not None:
+        if (isinstance(c, dict) and c.get("chapter") is not None
+                and c.get("status") not in _CONFUSION_RESOLVED):              # 已回顾的疑难不再算薄弱
             idx["trouble_ch"].add(str(c["chapter"]))
     for w in state.get("knowledge_window") or []:
         if not isinstance(w, dict):
@@ -235,15 +252,20 @@ def main(argv=None):
         notes.append("某章起步补弱：起步章默认为 current_phase=%d（可用 --from-chapter 覆盖）" % from_chapter)
 
     scored = []
+    untagged_excluded = 0                                # A2 契约：未标签项被范围排除必须"排除并如实上报"
     for i, q in enumerate(items):
         if args.chapter is not None and str(args.chapter) not in _chapter_keys(q):
             continue
-        if source_types is not None and q.get("source_type") not in source_types:
-            continue                                     # 未标签(source_type=None)一律排除，绝不静默越界
         if from_chapter is not None:
             nc = sd._numeric_chapter(q)
             if nc is None or nc < from_chapter:
                 continue
+        if source_types is not None and q.get("source_type") not in source_types:
+            # 只统计"除范围外其余过滤都命中"的未标签题——它们才是被 scope 悄悄藏掉的真实候选
+            # （露出摄取/打标缺口，正如 select_questions.py 会上报的那样）。
+            if q.get("source_type") is None:
+                untagged_excluded += 1
+            continue                                     # 未标签一律排除，绝不静默越界
         d = q.get("difficulty")
         if not (isinstance(d, int) and not isinstance(d, bool) and 1 <= d <= 5):
             d = sd.score_item(q, late)[0]                # 题库未评分 → 即时补算，不落盘
@@ -252,6 +274,9 @@ def main(argv=None):
                        "chapter": _chapter_key(q), "orig_idx": i})
 
     ordered = order_items(scored, mode)[: max(args.num, 0)]
+    if source_types is not None and untagged_excluded:
+        notes.append("范围过滤排除了 %d 道未标签(source_type 缺失)题——可能是摄取/打标缺口，"
+                     "别当作没有这些题（A2 契约：排除并上报）" % untagged_excluded)
 
     payload = [{"id": it["id"], "difficulty": it["difficulty"], "class": it["cls"],
                 "chapter": it["chapter"],
@@ -262,6 +287,7 @@ def main(argv=None):
         print(json.dumps({"mode": mode, "count": len(payload),
                           "state_loaded": state is not None,
                           "source_types": sorted(source_types) if source_types else None,
+                          "untagged_excluded": untagged_excluded,
                           "from_chapter": from_chapter, "notes": notes, "items": payload},
                          ensure_ascii=False, indent=2))
     else:
