@@ -131,6 +131,59 @@ class MockPipeline(unittest.TestCase):
         self.assertEqual(_Stub({}, 0.20).answer_for_item({"question": "q"}, ""), B.ABSTAIN)  # <0.25 → 弃答
         self.assertEqual(_Stub({}, 0.30).answer_for_item({"question": "q"}, ""), "GEN")       # ≥0.25 → 生成
 
+    def test_mock_flag_overrides_config_backend(self):
+        # config backend:llamaindex + --mock → 仍走 mock（flag 盖过 config backend）
+        cfgp = os.path.join(self.out, "cfg.json")
+        with open(cfgp, "w", encoding="utf-8") as f:
+            json.dump({"backend": "llamaindex", "mock": False, "results_dir": self.out}, f)
+        self.assertEqual(rag.main(["--mock", "--config", cfgp, "--results-dir", self.out]), 0)
+        s = json.loads(self._read(os.path.join(self.out, "summary.json")))
+        self.assertTrue(s["mock"])
+        self.assertEqual(s["backend"], "mock")
+
+    def test_real_flag_overrides_config_mock_backend(self):
+        # config backend:mock + --real → 走真跑（backend 被 flag 清掉），无 key → fail-loud
+        cfgp = os.path.join(self.out, "cfg.json")
+        with open(cfgp, "w", encoding="utf-8") as f:
+            json.dump({"backend": "mock", "mock": True}, f)
+        with self.assertRaises(SystemExit):
+            rag.main(["--real", "--config", cfgp, "--results-dir", self.out])
+
+    def test_explicit_backend_flag_beats_mode_flag(self):
+        # 显式 --backend mock 优先级最高，即便同时 --real
+        cfgp = os.path.join(self.out, "cfg.json")
+        with open(cfgp, "w", encoding="utf-8") as f:
+            json.dump({"results_dir": self.out}, f)
+        self.assertEqual(rag.main(["--real", "--backend", "mock", "--config", cfgp,
+                                   "--results-dir", self.out]), 0)
+        s = json.loads(self._read(os.path.join(self.out, "summary.json")))
+        self.assertEqual(s["backend"], "mock")
+
+    def test_config_relative_paths_anchored_to_config_dir(self):
+        # config 里的相对路径按 config 文件所在目录解析（不是 cwd）——隔离不被破坏
+        d = tempfile.mkdtemp(prefix="ragcfg_")
+        self.addCleanup(shutil.rmtree, d, True)
+        cfgp = os.path.join(d, "config.json")
+        with open(cfgp, "w", encoding="utf-8") as f:
+            json.dump({"results_dir": "results", "items_path": "fixtures/x.jsonl"}, f)
+        args = rag.build_argparser().parse_args(["--config", cfgp])
+        cfg = contract.load_config(args)
+        self.assertEqual(os.path.normpath(cfg["results_dir"]), os.path.normpath(os.path.join(d, "results")))
+        self.assertEqual(os.path.normpath(cfg["items_path"]),
+                         os.path.normpath(os.path.join(d, "fixtures", "x.jsonl")))
+        self.assertTrue(os.path.isabs(cfg["results_dir"]) and os.path.isabs(cfg["items_path"]))
+
+    def test_cli_results_dir_not_anchored_to_config(self):
+        # CLI --results-dir 按 cwd（标准），不被 config 目录锚定
+        d = tempfile.mkdtemp(prefix="ragcfg2_")
+        self.addCleanup(shutil.rmtree, d, True)
+        cfgp = os.path.join(d, "config.json")
+        with open(cfgp, "w", encoding="utf-8") as f:
+            json.dump({"results_dir": "results"}, f)
+        args = rag.build_argparser().parse_args(["--config", cfgp, "--results-dir", self.out])
+        cfg = contract.load_config(args)
+        self.assertEqual(cfg["results_dir"], self.out)      # CLI 值原样，不锚定到 config 目录
+
 
 if __name__ == "__main__":
     unittest.main()

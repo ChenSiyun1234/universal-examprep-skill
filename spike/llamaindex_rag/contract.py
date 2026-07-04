@@ -45,7 +45,7 @@ DEFAULT_CFG = {
 
 
 def load_config(args):
-    """DEFAULT_CFG ← 可选 config 文件 ← CLI 覆盖。--mock/--real 决定 cfg['mock']（flags 胜过 config）。"""
+    """DEFAULT_CFG ← 可选 config 文件 ← CLI 覆盖。优先级：CLI --backend > CLI --mock/--real > config > 默认。"""
     cfg = dict(DEFAULT_CFG)
     path = getattr(args, "config", None)
     if path:
@@ -54,16 +54,30 @@ def load_config(args):
         if not isinstance(loaded, dict):
             raise SystemExit("[-] config 顶层必须是对象：%s" % path)
         cfg.update(loaded)
+        # config 里的相对路径按 **config 文件所在目录** 解析（不是 cwd）——否则从仓库根跑真跑，
+        # results_dir="results" 会写到未被 gitignore 的仓库根 results/，破坏隔离。
+        cfg_dir = os.path.dirname(os.path.abspath(path))
+        for k in ("items_path", "materials_text", "results_dir"):
+            v = cfg.get(k)
+            if isinstance(v, str) and v and not os.path.isabs(v):
+                cfg[k] = os.path.join(cfg_dir, v)
+    # CLI 覆盖（路径按 cwd，标准）——CLI 显式给的胜过 config。
     for arg_name, cfg_key in (("items", "items_path"), ("materials", "materials_text"),
                               ("results_dir", "results_dir"), ("backend", "backend")):
         v = getattr(args, arg_name, None)
         if v is not None:
             cfg[cfg_key] = v
-    # 解析顺序：--real 先落 mock=False，--mock 再落 mock=True（同时给时 --mock 胜）。
+    # --mock/--real 必须能盖过 config 里的 backend——否则 config backend:llamaindex + --mock 仍走真跑、
+    # config backend:mock + --real 静默跑 mock 却打印 real。显式 --backend 最高优先则保留。
+    backend_from_cli = getattr(args, "backend", None) is not None
     if getattr(args, "real", False):
         cfg["mock"] = False
+        if not backend_from_cli:
+            cfg["backend"] = None
     if getattr(args, "mock", False):
         cfg["mock"] = True
+        if not backend_from_cli:
+            cfg["backend"] = None
     return cfg
 
 
