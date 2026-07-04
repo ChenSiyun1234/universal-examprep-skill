@@ -84,12 +84,19 @@ def _unit_number(tok):
 
 
 def _pow_value(tok):
+    # 一元负号按数学约定**后结合**：-2^2 = -(2^2) = -4；只有带括号的 (-2)^2 才是负底数 = 4。
+    tok = tok.strip()
+    sign = 1.0
+    if tok[:1] in "+-" and not tok[1:].lstrip().startswith("("):
+        if tok[0] == "-":
+            sign = -1.0
+        tok = tok[1:].lstrip()
     base_str, _, exp_str = tok.partition("^")
     base = _unit_number(base_str.strip().lstrip("(").rstrip(")"))   # (-2)^2 的括号剥掉；底数歧义(1,00^2) → None
     if base is None:
         return None
     try:
-        v = base ** float(exp_str.strip())
+        v = sign * (base ** float(exp_str.strip()))
     except (ValueError, OverflowError, ZeroDivisionError):
         return None
     if not isinstance(v, float) or not math.isfinite(v):
@@ -242,13 +249,19 @@ _SCOPE_CUE = re.compile(
     r"|(?<![a-z])(?:all|only|checked|covers?|entire|through)(?![a-z])", re.I)
 
 
-def _incidental_count(answer):
-    """答案里最后一个数字单元是否只是「材料规模」类顺带计数（前有范围提示词 + 后跟量词类别字）。"""
-    u = _extract_final_unit(answer)
+def _incidental_count(answer, u):
+    """答案里最后一个数字单元 u 是否只是「材料规模」类顺带计数（前有范围提示词 + 后跟量词类别字）。"""
     if u is None:
         return False
     return bool(_COUNT_AFTER.match(answer[u[2]:])
                 and _SCOPE_CUE.search(answer[max(0, u[1] - 12):u[1]]))
+
+
+def _hedged_numeric_commit(answer):
+    """弃答文本里是否仍**给出了数字**（对冲）——含解析失败的数字尝试（「可能是 3,14」「maybe 5/0」：
+    模型报了个数字样的东西，判不出值≠没作答）。引用（第20讲）被抽取器跳过、顺带计数被豁免，都不算对冲。"""
+    u = _extract_final_unit(answer)
+    return u is not None and not _incidental_count(answer, u)
 
 
 def check_numeric(answer, gold, tolerance):
@@ -338,8 +351,9 @@ def judge_answer(item, answer, ask_judge, judge_repeats=1):
     if out["answer_type"] == "numeric":
         correct, parsed = check_numeric(answer, item["gold_answer"], item.get("tolerance"))
         out["parsed_number"] = parsed
-        if parsed is not None and out["abstained"] and not _incidental_count(answer):
-            out["abstained"] = False       # 挂着「不确定」却仍报出具体数字 = 已作答；对冲不能把瞎编洗成弃答
+        if out["abstained"] and _hedged_numeric_commit(answer):
+            out["abstained"] = False       # 挂着「不确定」却仍报出数字 = 已作答（含判不出值的数字尝试
+            #                                「可能是 3,14」——报了数≠没作答）；对冲不能把瞎编洗成弃答
         out["faithfulness"] = 1.0 if correct else 0.0
         out["correct"] = correct
         out["hallucinated"] = 0 if (correct or out["abstained"]) else 1

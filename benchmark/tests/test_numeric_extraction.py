@@ -194,9 +194,11 @@ class HardeningRound3(unittest.TestCase):
     """第二轮对抗验证批次：complex 乘方、引用区间/引用分数、逗号后负号、分数带乘方、顺带计数弃答豁免。"""
 
     def test_complex_pow_no_crash(self):
-        # (-2)^0.5 是复数——不崩、拒 None（isfinite(complex) 会 TypeError）
-        self.assertIsNone(J._extract_final_number("-2^0.5"))
-        self.assertEqual(J.check_numeric("答案是 -4^0.5", "2", 0), (False, None))
+        # (-2)^0.5 是复数——不崩、拒 None（isfinite(complex) 会 TypeError）；
+        # 无括号的 -2^0.5 = -(2^0.5)（一元负号后结合），是合法实数
+        self.assertIsNone(J._extract_final_number("(-2)^0.5"))
+        self.assertAlmostEqual(J._extract_final_number("-2^0.5"), -(2 ** 0.5))
+        self.assertEqual(J.check_numeric("答案是 (-4)^0.5", "2", 0), (False, None))
 
     def test_citation_range_skipped(self):
         # page 12-13 / 第7-8章 的区间后半不再漏出来当答案
@@ -272,6 +274,32 @@ class HardeningRound4(unittest.TestCase):
         for ans in ("材料中未涵盖该数值——我查了全部 20 讲都没提。",
                     "无法确定，材料只讨论了 1960 年代的研究",
                     "not covered in the material; I checked all 20 lectures"):
+            v = J.judge_answer(item, ans, None)
+            self.assertTrue(v["abstained"], ans)
+            self.assertEqual(v["hallucinated"], 0, ans)
+
+
+class HardeningRound5(unittest.TestCase):
+    """第 6 轮评审批次：一元负号后结合、解析失败的对冲数字、判定行配不上答案 fail-loud（后者在 calibrate 测）。"""
+
+    def test_unary_minus_binds_after_power(self):
+        # 数学约定：-2^2 = -(2^2) = -4；只有 (-2)^2 才是 4
+        self.assertEqual(J._extract_final_number("-2^2"), -4.0)
+        self.assertEqual(J._extract_final_number("(-2)^2"), 4.0)
+        self.assertFalse(J.check_numeric("-2^2", "4", 0)[0])       # 不再把 -2^2 撞对 gold=4
+        self.assertTrue(J.check_numeric("-2^2", "-4", 0)[0])
+        self.assertTrue(J.check_numeric("结果是 -3^2", "-9", 0)[0])
+
+    def test_unparseable_hedged_guess_still_commit(self):
+        # 「可能是 3,14」「maybe 5/0」：报了个数字样的东西（判不出值）≠ 没作答——弃答豁免不成立
+        item = {"id": "q", "question": "?", "gold_answer": "42",
+                "answer_type": "numeric", "answerable": True, "tolerance": None}
+        for ans in ("无法确定，可能是 3,14", "not sure, maybe 5/0"):
+            v = J.judge_answer(item, ans, None)
+            self.assertFalse(v["abstained"], ans)
+            self.assertEqual(v["hallucinated"], 1, ans)
+        # 纯文字弃答（无数字）与引用型弃答（第20讲被抽取器跳过）仍豁免
+        for ans in ("材料中未涵盖，无法确定", "材料只讲到第 20 讲，未提及该数值"):
             v = J.judge_answer(item, ans, None)
             self.assertTrue(v["abstained"], ans)
             self.assertEqual(v["hallucinated"], 0, ans)

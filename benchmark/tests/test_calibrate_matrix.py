@@ -269,6 +269,30 @@ class CustomPool(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertIn("重复行", r.stderr)
 
+    def test_score_without_answer_fails_loud(self):
+        # scores 有判定但 answers 没对应答案（账本失同步）→ 拒，不静默缩样本偏 kappa
+        with open(os.path.join(self.res, "scores.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps({"course": "c", "model": "opus", "arm": "closedbook",
+                                "item_id": "ghost", "correct": True, "scored_by": "llm",
+                                "judge_error": 0}) + "\n")
+        r = _cm("sample", "--results-dir", self.res, "--config", self.cfgp, "--n", "10")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("失同步", r.stderr)
+
+    def test_score_for_unknown_item_fails_loud(self):
+        # 判定行的 item 不在 config 金标里（config 配错）→ 拒
+        for name in ("answers.jsonl", "scores.jsonl"):
+            with open(os.path.join(self.res, name), "a", encoding="utf-8") as f:
+                row = {"course": "c", "model": "opus", "arm": "closedbook", "item_id": "not_in_items"}
+                if name == "answers.jsonl":
+                    row["answer"] = "a"
+                else:
+                    row.update(correct=True, scored_by="llm", judge_error=0)
+                f.write(json.dumps(row) + "\n")
+        r = _cm("sample", "--results-dir", self.res, "--config", self.cfgp, "--n", "10")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("金标里找不到", r.stderr)
+
     def test_formula_injection_neutralized(self):
         # 模型答案以 = 开头（不可信文本）→ 加 ' 前缀，Excel 不再当公式执行
         ans = os.path.join(self.res, "answers.jsonl")

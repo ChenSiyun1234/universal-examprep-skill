@@ -118,8 +118,15 @@ def build_pool(results_dir, cfg):
                  "无法确定人工该对哪条校准；人工核对去重后再来" % k)
         seen_scores.add(k)
         item = gold.get(sc.get("course"), {}).get(str(sc.get("item_id")))
-        if item is None or k not in answers:
-            continue
+        # 判定行配不上答案/金标 = 账本失同步或 config 配错——静默丢会缩小样本、把 kappa 偏向剩下的行。
+        # 与重复行/坏行同一条 fail-loud 政策：报出 key 和出路，不猜。
+        if k not in answers:
+            _die("scores.jsonl 有判定但 answers.jsonl 里没有对应答案 (course=%s, model=%s, arm=%s, item=%s)"
+                 "——answers/scores 失同步（截断/拼接？），修复账本后再校准" % k)
+        if item is None:
+            _die("scores.jsonl 的判定行在 config 金标里找不到题 (course=%s, item=%s)——config 与该 results_dir"
+                 " 不配套（题集变了/指到错的 items 文件），请用产出该目录的同一 config"
+                 % (sc.get("course"), sc.get("item_id")))
         pool.append({
             "course": sc.get("course"), "model": sc.get("model"), "arm": sc.get("arm"),
             "id": str(sc.get("item_id")),
