@@ -305,6 +305,25 @@ class HardeningRound5(unittest.TestCase):
             self.assertEqual(v["hallucinated"], 0, ans)
 
 
+class HardeningRound6(unittest.TestCase):
+    """第 7 轮评审批次：对冲检查覆盖**所有**数值单元（不只末位）。"""
+
+    def test_mid_text_guess_with_trailing_count(self):
+        # 中间的 999 是猜测，末位 20 lectures 是顺带计数——任一非豁免单元即算对冲
+        item = {"id": "q", "question": "?", "gold_answer": "42",
+                "answer_type": "numeric", "answerable": True, "tolerance": None}
+        v = J.judge_answer(item, "not covered; maybe 999. I checked all 20 lectures", None)
+        self.assertFalse(v["abstained"])
+        self.assertEqual(v["hallucinated"], 1)
+        v2 = J.judge_answer(item, "材料未涵盖——可能是 999。我查了全部 20 讲都没提。", None)
+        self.assertFalse(v2["abstained"])
+        self.assertEqual(v2["hallucinated"], 1)
+        # 只有顺带计数（无猜测单元）仍豁免
+        v3 = J.judge_answer(item, "not covered in the material; I checked all 20 lectures", None)
+        self.assertTrue(v3["abstained"])
+        self.assertEqual(v3["hallucinated"], 0)
+
+
 class ContainsGoldHardening(unittest.TestCase):
     """词法快路加固：ASCII 词边界 + 小句级否定。False 是安全方向（落回 LLM 裁判）。"""
 

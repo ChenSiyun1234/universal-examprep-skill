@@ -240,7 +240,8 @@ def cmd_sample(args):
 
 def _warn_self_preference(results_dir, pool, cfg=None):
     """裁判与生成器同家族 → 自我偏好嫌疑。裁判模型优先从 summary.json 读；summary 缺（infra 跳过的真跑会
-    删掉过期 summary）时退回 config 推断（mock→mock，否则 judge_model 或 run_matrix 默认 haiku）。"""
+    删掉过期 summary）时按**该目录实际跑的模式**（.run_meta 的 mode——config 写着 mock:true 也可能被
+    --real 覆盖跑）推断：mock→mock，real→judge_model 或 run_matrix 默认 haiku。"""
     judge_model = None
     sp = os.path.join(results_dir, "summary.json")
     if os.path.isfile(sp):
@@ -250,7 +251,15 @@ def _warn_self_preference(results_dir, pool, cfg=None):
         except ValueError:
             pass
     if not judge_model and cfg:
-        judge_model = "mock" if cfg.get("mock") else (cfg.get("judge_model") or "haiku")
+        mode = None
+        try:
+            with open(os.path.join(results_dir, ".run_meta.json"), encoding="utf-8") as f:
+                mode = json.load(f).get("mode")
+        except (OSError, ValueError):
+            pass                                        # 无/坏 meta → 退回 config 推断
+        if mode not in ("mock", "real"):
+            mode = "mock" if cfg.get("mock") else "real"
+        judge_model = "mock" if mode == "mock" else (cfg.get("judge_model") or "haiku")
     if not judge_model:
         return
     jf = _model_family(judge_model)

@@ -129,15 +129,16 @@ def _is_citation(text, start, end):
 _CITE_RANGE_GAP = re.compile(r"\s*[-–—~到至]\s*$")     # 引用区间连接符（page 12-13 / 第7-8章 的 -）
 
 
-def _extract_final_unit(text):
-    """返回 (最后一个数值单元的值或 None, 起始偏移, 结束偏移)；全文无数值单元则返回 None。"""
+def _extract_units(text):
+    """按出现顺序返回所有**算数的**数值单元 [(值或 None, 起始, 结束), ...]——
+    符号乘方 / 章节页码引用（含区间后半、引用分数）都已跳过，无效单元值为 None（位置保留）。"""
+    units = []
     if not text:
-        return None
-    last = None
+        return units
     cite_end = None                                    # 上一个被跳过的引用数字的结尾（用于吞掉区间后半）
     for m in _ANY_NUM.finditer(text):
         if m.group("sym") is not None or m.group("sym2") is not None:
-            continue                                   # 含符号的乘方(n^2 / 2^n) 不是数值答案 → 不更新 last
+            continue                                   # 含符号的乘方(n^2 / 2^n) 不是数值答案 → 不计
         if m.group("num") is not None or m.group("frac") is not None:
             if _is_citation(text, m.start(), m.end()):
                 cite_end = m.end()                     # page 3/4 这类引用分数也跳过
@@ -147,12 +148,19 @@ def _extract_final_unit(text):
                 continue
         cite_end = None
         if m.group("pow") is not None:
-            last = (_pow_value(m.group("pow")), m.start(), m.end())   # 末位是坏乘方 → 值 None（不回退）
+            units.append((_pow_value(m.group("pow")), m.start(), m.end()))   # 坏乘方 → 值 None
         elif m.group("frac") is not None:
-            last = (_frac_value(m.group("frac")), m.start(), m.end())  # 分数 → 值（坏分数 None，不回退）
+            units.append((_frac_value(m.group("frac")), m.start(), m.end()))  # 坏分数 → 值 None
         else:
-            last = (_unit_number(m.group("num")), m.start(), m.end())  # 末位歧义/inf → 值 None（不回退）
-    return last
+            units.append((_unit_number(m.group("num")), m.start(), m.end()))  # 歧义/inf → 值 None
+    return units
+
+
+def _extract_final_unit(text):
+    """返回 (最后一个数值单元的值或 None, 起始偏移, 结束偏移)；全文无数值单元则返回 None。
+    末位无效**不回退**到前面的数——最终答案通常在末尾，回退会拿错。"""
+    units = _extract_units(text)
+    return units[-1] if units else None
 
 
 def _extract_final_number(text):
@@ -258,10 +266,11 @@ def _incidental_count(answer, u):
 
 
 def _hedged_numeric_commit(answer):
-    """弃答文本里是否仍**给出了数字**（对冲）——含解析失败的数字尝试（「可能是 3,14」「maybe 5/0」：
-    模型报了个数字样的东西，判不出值≠没作答）。引用（第20讲）被抽取器跳过、顺带计数被豁免，都不算对冲。"""
-    u = _extract_final_unit(answer)
-    return u is not None and not _incidental_count(answer, u)
+    """弃答文本里是否仍**给出了数字**（对冲）——检查**每一个**数值单元，任一非豁免即算对冲：
+    「not covered; maybe 999. I checked all 20 lectures」末位 20 讲是顺带计数、但中间的 999 是猜测。
+    含解析失败的数字尝试（「可能是 3,14」「maybe 5/0」：报了数≠没作答）。引用（第20讲）被抽取器跳过、
+    材料规模顺带计数被豁免，都不算对冲。"""
+    return any(not _incidental_count(answer, u) for u in _extract_units(answer))
 
 
 def check_numeric(answer, gold, tolerance):

@@ -337,6 +337,20 @@ class Units(unittest.TestCase):
             CM._warn_self_preference(out, [{"model": "opus"}], {"mock": True})
         self.assertEqual(buf2.getvalue(), "")
 
+    def test_self_preference_uses_run_meta_mode_over_cfg_mock(self):
+        # config 写着 mock:true 但目录实际是 --real 跑的（.run_meta mode=real）→ 裁判按 real 推断（haiku），
+        # 与 Claude 家族生成器重叠 → 警告照发，不被 cfg 的 mock 标记压掉
+        out = tempfile.mkdtemp(prefix="b5spm_")
+        self.addCleanup(shutil.rmtree, out, True)
+        with open(os.path.join(out, ".run_meta.json"), "w", encoding="utf-8") as f:
+            json.dump({"mode": "real", "fingerprint": "x"}, f)
+        import io as _io
+        from contextlib import redirect_stdout
+        buf = _io.StringIO()
+        with redirect_stdout(buf):
+            CM._warn_self_preference(out, [{"model": "opus"}], {"mock": True})
+        self.assertIn("自我偏好", buf.getvalue())
+
     def test_load_jsonl_tolerates_bom(self):
         # 编辑器重存加了 BOM 的合法 .jsonl 不该被 fail-loud 误杀（utf-8-sig 读）
         d = tempfile.mkdtemp(prefix="b5bom_")
