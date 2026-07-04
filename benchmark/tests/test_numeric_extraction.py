@@ -83,6 +83,40 @@ class ExtractFinalNumber(unittest.TestCase):
         # 科学计数底数的乘方 1e6^2 = (1e6)^2 = 1e12（不再被拆成 1e36.0 落到 0）
         self.assertEqual(J._extract_final_number("1e6^2"), 1e12)
 
+    def test_european_decimal_rejected(self):
+        # 欧式千分位+小数 1.234,56（=1234.56）不是合法美式 → 歧义拒，绝不落尾段 "56"
+        self.assertIsNone(J._extract_final_number("答案是 1.234,56"))
+        self.assertEqual(J.check_numeric("答案是 1.234,56", "56", 0), (False, None))
+        self.assertIsNone(J._extract_final_number("1.234.567,89"))
+
+    def test_us_decimal_with_thousands_kept(self):
+        # 合法美式千分位带小数 1,000.50 仍正常解析（改正则后的回归护栏）
+        self.assertEqual(J._extract_final_number("总计 1,000.50 元"), 1000.50)
+        self.assertEqual(J._extract_final_number("12,345.67"), 12345.67)
+        self.assertTrue(J.check_numeric("是 1,000.50", "1000.5", 0)[0])
+
+    def test_trailing_punctuation_not_eaten(self):
+        # 尾随逗号/句点是标点不是小数分隔 → 42 照常，不被吞成歧义
+        self.assertEqual(J._extract_final_number("答案是 42, 完毕"), 42.0)
+        self.assertEqual(J._extract_final_number("答案是 42。"), 42.0)
+
+    def test_leading_dot_decimal(self):
+        # 无前导零小数 .05 / .32（APA/统计惯例，PSYC 110 常见）：整数部分省略也要抓成 0.05 而非落尾段 5
+        self.assertAlmostEqual(J._extract_final_number("p = .05"), 0.05)
+        self.assertAlmostEqual(J._extract_final_number("r = .32"), 0.32)
+        self.assertAlmostEqual(J._extract_final_number("答案是 .5"), 0.5)
+        self.assertAlmostEqual(J._extract_final_number("温差 -.25 度"), -0.25)
+        # 关键：正确答案不再被 100x 错判
+        self.assertTrue(J.check_numeric("相关系数 r = .32", "0.32", 0.001)[0])
+        self.assertTrue(J.check_numeric("p = .05", "0.05", 0.001)[0])
+
+    def test_numeric_base_symbolic_exp_skipped(self):
+        # 2^n（数值底数、符号指数=复杂度记号）不是数值答案：真答案在前时取真答案，仅 2^n 时 None
+        self.assertEqual(J._extract_final_number("1,000,000 (即 O(2^n))"), 1000000.0)
+        self.assertIsNone(J._extract_final_number("复杂度是 O(2^n)"))
+        self.assertIsNone(J._extract_final_number("指数级 2 ^ n"))
+        self.assertTrue(J.check_numeric("答案 1,000,000（即 O(2^n)）", "1000000", 0)[0])
+
 
 class CheckNumeric(unittest.TestCase):
     def test_comma_gold_and_answer(self):

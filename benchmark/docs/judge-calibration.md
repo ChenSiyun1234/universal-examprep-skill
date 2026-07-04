@@ -42,8 +42,13 @@ python calibrate_matrix.py kappa --results-dir <同上>
 
 裁判和被测生成器**同一模型家族**（都 Claude：opus/sonnet/haiku）时有**自我偏好**嫌疑——模型倾向
 认可自家风格的答案。`calibrate_matrix sample` 会据 `summary.json` 的 `judge_model` 与作答行的生成器家族
-比对，重叠即警告。**建议**：用**不同家族**的裁判（如 Gemini / GPT / DeepSeek，经 `run_matrix` 的
-`judge_model` + OpenAI 兼容 `openai_api_base` 配）重判一遍再校准，或在报告里注明同家族这一局限。
+比对，重叠即警告。
+
+**局限（诚实说明）**：`run_matrix` 的判分路径 `_real_ask_judge` 只走 `gen.run_claude(prompt, judge_model)`
+——即 `claude -p --model <judge_model>`，**只能用 Claude 家族**当裁判；它**不读** `openai_api_base`，
+现阶段**没有**把 Gemini / GPT / DeepSeek 接进来的通路。所以要跨家族裁判，只能**在 run_matrix 之外**另跑
+一个非 Claude 裁判（把 `scores.jsonl` 的判定用别的模型重算后回填），或先在报告里注明「裁判与被测同属
+Claude 家族」这一局限。跨家族裁判接入属**待补**（future work），别照着 `openai_api_base` 去配——配了没用。
 
 ## 4. near-miss 越界探针（出题建议）
 

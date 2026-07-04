@@ -69,6 +69,14 @@ class SampleFromMatrix(unittest.TestCase):
         r = _cm("sample", "--results-dir", empty, "--config", FIX, "--n", "6")
         self.assertEqual(r.returncode, 2)
 
+    def test_malformed_jsonl_fails_loud(self):
+        # answers.jsonl 有半行坏 JSON（中断写/手改）→ 不静默丢，sample 直接失败报行号
+        with open(os.path.join(self.out, "answers.jsonl"), "a", encoding="utf-8") as f:
+            f.write('{"course": "c", "model": "opus"\n')   # 缺闭合括号
+        r = _cm("sample", "--results-dir", self.out, "--config", FIX, "--n", "6")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("坏 JSONL", r.stderr)
+
     def test_config_mismatch_refused(self):
         # results_dir 的 .run_meta 记的是 fixture config；用不同 config（改了 models/arms）sample → 拒
         d = tempfile.mkdtemp(prefix="b5cm_")
@@ -211,6 +219,28 @@ class Units(unittest.TestCase):
         self.assertEqual(CM._model_family("gemini-2.5"), "gemini")
         self.assertEqual(CM._model_family("gpt-4o"), "openai")
         self.assertEqual(CM._model_family("deepseek-chat"), "deepseek")
+
+    def test_load_jsonl_tolerates_bom(self):
+        # 编辑器重存加了 BOM 的合法 .jsonl 不该被 fail-loud 误杀（utf-8-sig 读）
+        d = tempfile.mkdtemp(prefix="b5bom_")
+        self.addCleanup(shutil.rmtree, d, True)
+        p = os.path.join(d, "answers.jsonl")
+        with open(p, "w", encoding="utf-8-sig") as f:    # utf-8-sig 写 → 首行带 BOM
+            f.write(json.dumps({"ref_id": "a", "judge_correct": 1}) + "\n")
+            f.write(json.dumps({"ref_id": "b", "judge_correct": 0}) + "\n")
+        rows = CM._load_jsonl(p)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["ref_id"], "a")
+
+    def test_load_jsonl_still_dies_on_real_garbage(self):
+        # 真坏行仍 fail-loud（BOM 容忍不能顺带放过半行 JSON）
+        d = tempfile.mkdtemp(prefix="b5bad_")
+        self.addCleanup(shutil.rmtree, d, True)
+        p = os.path.join(d, "scores.jsonl")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write('{"ref_id": "a"}\n{"broken\n')
+        with self.assertRaises(SystemExit):
+            CM._load_jsonl(p)
 
     def test_self_preference_warning(self):
         # summary.json judge_model=haiku + pool 有 opus → 同 claude 家族 → 警告

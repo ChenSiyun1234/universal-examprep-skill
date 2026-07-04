@@ -62,16 +62,19 @@ def _model_family(model):
 
 
 def _load_jsonl(path):
+    # 坏行**不静默丢**：中断写/手改导致的半行会缩小样本、把失败/难例排除在外，让 kappa 虚高 → 直接报错行号。
     out = []
     if os.path.isfile(path):
-        with open(path, encoding="utf-8") as f:
-            for line in f:
+        # utf-8-sig：编辑器（记事本/Excel）重存 .jsonl 会加 BOM——用 sig 读会剥掉，别把合法首行误判成坏行 die。
+        with open(path, encoding="utf-8-sig") as f:
+            for ln, line in enumerate(f, 1):
                 s = line.strip()
-                if s:
-                    try:
-                        out.append(json.loads(s))
-                    except ValueError:
-                        continue
+                if not s:
+                    continue
+                try:
+                    out.append(json.loads(s))
+                except ValueError as e:
+                    _die("坏 JSONL 行（第 %d 行，%s）：%s\n  %s" % (ln, os.path.basename(path), e, s[:120]))
     return out
 
 
