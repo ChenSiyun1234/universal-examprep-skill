@@ -71,6 +71,11 @@ def _parse_source_types(raw):
 def _scope_to_source_types(scope):
     """把存档的范围偏好映射到 source_type 集合。返回 None 表示不过滤（混合池）。
     非混合但映射不出干净 source_type 时 fail-loud——绝不静默放宽被记录的范围（A2 契约）。"""
+    if scope is not None and not isinstance(scope, str):
+        # 手改/损坏的 state 可能把 scope 存成 list/dict（不可哈希）——`in set` 会 TypeError 裸崩；
+        # 按 A2 契约同样 fail-loud（exit 2 + 出路），不猜也不裸 traceback。
+        _die("study_state 记录的范围偏好不是字符串（%r）——state 疑被手改/损坏；"
+             "请修复 study_state.json 的 scope 字段，或显式传 --source-type 覆盖" % (scope,))
     if scope in _MIXED_SCOPES:
         return None
     norm = str(scope).strip().lower()

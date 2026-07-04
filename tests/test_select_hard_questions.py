@@ -256,6 +256,20 @@ class CliIO(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertIn("无法自动映射", r.stderr)
 
+    def test_non_string_scope_fails_loud_not_crash(self):
+        # 手改/损坏的 state 把 scope 存成 list（不可哈希）→ 以前 `in set` TypeError 裸崩（exit 1 + traceback），
+        # 现在按 A2 契约 fail-loud（exit 2 + 出路提示）
+        self._state({"mode": "查缺补漏", "scope": ["exam", "homework"]})
+        r = self._run()
+        self.assertEqual(r.returncode, 2)
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertIn("不是字符串", r.stderr)
+        # dict 形态同样拒
+        self._state({"mode": "查缺补漏", "scope": {"type": "exam"}})
+        r2 = self._run()
+        self.assertEqual(r2.returncode, 2)
+        self.assertNotIn("Traceback", r2.stderr)
+
     def test_mixed_scope_no_filter(self):
         self._state({"mode": "查缺补漏", "scope": "混合题池"})
         obj = json.loads(self._run().stdout)
