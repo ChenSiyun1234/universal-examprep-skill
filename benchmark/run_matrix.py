@@ -158,11 +158,10 @@ def load_items(course):
                 _die("课程 %s 的 items 第 %d 行 answerable 但无 gold_answer——金标缺失，无法判分"
                      % (course.get("name"), ln))
             if d.get("answer_type") == "numeric" and d.get("answerable"):
-                # numeric 金标本身必须是数字，且 tolerance（若给）为非负数——否则 check_numeric 会把每个答案
+                # numeric 金标本身必须是数字（用 judge._to_number 与 check_numeric 同口径——接受千分位逗号
+                # 1,000,000，拒歧义/非有限），且 tolerance（若给）为非负数——否则 check_numeric 会把每个答案
                 # 都判错（如 gold=5 tol=-1），坏金标静默污染报告。都在此 fail-loud。
-                try:
-                    float(d.get("gold_answer"))
-                except (TypeError, ValueError):
+                if J._to_number(d.get("gold_answer")) is None:
                     _die("课程 %s 的 items 第 %d 行 numeric gold_answer 非数字：%r"
                          % (course.get("name"), ln, d.get("gold_answer")))
                 if d.get("tolerance") not in (None, ""):

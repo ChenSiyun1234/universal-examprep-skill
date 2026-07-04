@@ -86,9 +86,9 @@ class KappaComputation(unittest.TestCase):
             w.writeheader()
             for i, (h, j) in enumerate(pairs, 1):
                 ref = "cal_%03d" % i
-                w.writerow({"ref_id": ref, "course": "c", "model": "m", "arm": "closedbook",
-                            "answerable": 1, "question": "q", "gold_answer": "g",
-                            "reference_span": "s", "model_answer": "a", "human_correct": str(h)})
+                w.writerow({"ref_id": ref, "course": "c", "answerable": 1, "question": "q",
+                            "gold_answer": "g", "reference_span": "s", "model_answer": "a",
+                            "human_correct": str(h)})
                 kf.write(json.dumps({"ref_id": ref, "judge_correct": j}) + "\n")
 
     def test_perfect_agreement(self):
@@ -115,13 +115,64 @@ class KappaComputation(unittest.TestCase):
         sheet = os.path.join(self.cal, "calibration_sheet.csv")
         with open(sheet, "a", encoding="utf-8-sig", newline="") as f:
             csv.DictWriter(f, fieldnames=CM._FIELDS).writerow(
-                {"ref_id": "cal_999", "course": "c", "model": "m", "arm": "closedbook",
-                 "answerable": 1, "question": "q", "gold_answer": "g", "reference_span": "s",
-                 "model_answer": "a", "human_correct": "1"})
+                {"ref_id": "cal_999", "course": "c", "answerable": 1, "question": "q",
+                 "gold_answer": "g", "reference_span": "s", "model_answer": "a", "human_correct": "1"})
         r = _cm("kappa", "--results-dir", self.out)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("未匹配 1", r.stdout)
         self.assertIn("对不上", r.stderr)
+
+
+class CustomPool(unittest.TestCase):
+    """手写 answers/scores/config，验 judge_error 排除、确定性排除、待填表隐藏 model/arm。"""
+    def setUp(self):
+        self.d = tempfile.mkdtemp(prefix="b5cp_")
+        self.addCleanup(shutil.rmtree, self.d, True)
+        items = os.path.join(self.d, "items.jsonl")
+        with open(items, "w", encoding="utf-8") as f:
+            for iid, at, gold in (("f1", "factual", "g"), ("n1", "numeric", "5"), ("je1", "factual", "g")):
+                f.write(json.dumps({"id": iid, "question": "q", "gold_answer": gold,
+                                    "answer_type": at, "answerable": True}) + "\n")
+        self.cfgp = os.path.join(self.d, "config.json")
+        with open(self.cfgp, "w", encoding="utf-8") as f:
+            json.dump({"courses": [{"name": "c", "items": items}], "models": ["opus"],
+                       "arms": ["closedbook"], "mock": True}, f)
+        self.res = os.path.join(self.d, "res")
+        os.makedirs(self.res)
+
+        def base(iid):
+            return {"course": "c", "model": "opus", "arm": "closedbook", "item_id": iid}
+        with open(os.path.join(self.res, "answers.jsonl"), "w", encoding="utf-8") as f:
+            for iid in ("f1", "n1", "je1"):
+                f.write(json.dumps(dict(base(iid), answer="a")) + "\n")
+        with open(os.path.join(self.res, "scores.jsonl"), "w", encoding="utf-8") as f:
+            f.write(json.dumps(dict(base("f1"), correct=True, scored_by="llm", judge_error=0)) + "\n")
+            f.write(json.dumps(dict(base("n1"), correct=True, scored_by="mock", judge_error=0)) + "\n")
+            f.write(json.dumps(dict(base("je1"), correct=False, scored_by="llm", judge_error=1)) + "\n")
+
+    def test_build_pool_skips_judge_error_carries_type(self):
+        cfg = __import__("run_matrix").load_config(self.cfgp)
+        pool = CM.build_pool(self.res, cfg)
+        ids = {p["id"] for p in pool}
+        self.assertEqual(ids, {"f1", "n1"})              # je1 (judge_error) 排除
+        f1 = next(p for p in pool if p["id"] == "f1")
+        self.assertEqual(f1["answer_type"], "factual")
+        self.assertEqual(f1["scored_by"], "llm")
+
+    def test_sample_excludes_deterministic_and_hides_model_arm(self):
+        r = _cm("sample", "--results-dir", self.res, "--config", self.cfgp, "--n", "10")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("已排除", r.stdout)                 # n1(numeric) 被排除的提示
+        with open(os.path.join(self.res, "calibration", "calibration_sheet.csv"), encoding="utf-8-sig") as f:
+            rows = list(csv.DictReader(f))
+        self.assertEqual(len(rows), 1)                   # 只剩 f1（llm 判的）
+        self.assertNotIn("model", rows[0])               # 待填表不含 model/arm（不带偏标注）
+        self.assertNotIn("arm", rows[0])
+
+    def test_out_dir_preserved_in_followup(self):
+        od = os.path.join(self.d, "myout")
+        r = _cm("sample", "--results-dir", self.res, "--config", self.cfgp, "--n", "10", "--out-dir", od)
+        self.assertIn("--out-dir %s" % od, r.stdout)     # 续跑命令带上自定义 out-dir
 
 
 class Units(unittest.TestCase):

@@ -32,7 +32,8 @@ for _s in ("stdout", "stderr"):
     except Exception:
         pass
 
-_FIELDS = ["ref_id", "course", "model", "arm", "answerable", "question", "gold_answer",
+# 待填表**不含 model/arm**——标注者看到答案来自 skill/closedbook/某模型会带偏判断（隐藏在 key 里，留作后续按臂分析）
+_FIELDS = ["ref_id", "course", "answerable", "question", "gold_answer",
            "reference_span", "model_answer", "human_correct"]
 
 
@@ -90,6 +91,8 @@ def build_pool(results_dir, cfg):
     answers = {key(r): r.get("answer", "") for r in ans_rows}
     pool = []
     for sc in score_rows:
+        if sc.get("judge_error"):                      # 判分失败：没有有效裁判判定，不进校准池
+            continue
         k = key(sc)
         item = gold.get(sc.get("course"), {}).get(str(sc.get("item_id")))
         if item is None or k not in answers:
@@ -98,11 +101,19 @@ def build_pool(results_dir, cfg):
             "course": sc.get("course"), "model": sc.get("model"), "arm": sc.get("arm"),
             "id": str(sc.get("item_id")),
             "answerable": bool(item.get("answerable", True)),
+            "answer_type": item.get("answer_type", "factual"),
+            "scored_by": sc.get("scored_by"),
             "question": item.get("question", ""), "gold_answer": item.get("gold_answer", ""),
             "reference_span": item.get("supporting_span", ""), "answer": answers[k],
             "judge_correct": 1 if sc.get("correct") else 0,
         })
     return pool
+
+
+def _is_deterministic(p):
+    """数值题(check_numeric)与词法快路(scored_by=lexical)是确定性判分——它们天然一致会灌水 kappa，
+    不测被校准的 LLM 裁判，校准时排除。"""
+    return p.get("answer_type") == "numeric" or p.get("scored_by") == "lexical"
 
 
 def _sheet_paths(out_dir):
@@ -115,6 +126,16 @@ def cmd_sample(args):
     pool = build_pool(args.results_dir, cfg)
     if not pool:
         _die("没有可抽样的条目（answers/scores 与 config 金标对不上，或题集为空）")
+
+    # 只校准 LLM 裁判真正判的项——排除确定性判分（numeric/lexical 快路），它们天然一致会灌高 kappa。
+    judged = [p for p in pool if not _is_deterministic(p)]
+    det_n = len(pool) - len(judged)
+    if judged:
+        pool = judged
+        if det_n:
+            print("[i] 已排除 %d 条确定性判分（numeric/词法快路）——它们不测 LLM 裁判、会灌水 kappa。" % det_n)
+    else:
+        print("[i] 池里全是确定性判分（numeric/词法快路），无 LLM 裁判判定可校准——照抽以验流程，但 kappa 对裁判无意义。")
 
     rng = random.Random(args.seed)
     pos = [p for p in pool if p["judge_correct"] == 1]
@@ -137,21 +158,23 @@ def cmd_sample(args):
         for i, p in enumerate(pick, 1):
             ref = "cal_%03d" % i
             note = "" if p["answerable"] else "  ←【越界题：材料无答案，正确=老实弃答】"
-            w.writerow({"ref_id": ref, "course": p["course"], "model": p["model"], "arm": p["arm"],
+            w.writerow({"ref_id": ref, "course": p["course"],
                         "answerable": int(p["answerable"]),
                         "question": _flat(p["question"]) + note, "gold_answer": _flat(p["gold_answer"]),
                         "reference_span": _flat(p["reference_span"]),
                         "model_answer": _flat(p["answer"]), "human_correct": ""})
-            kf.write(json.dumps({"ref_id": ref, "judge_correct": p["judge_correct"]},
-                                ensure_ascii=False) + "\n")
+            # model/arm 藏进 key（不进待填表，避免带偏标注），留作后续按臂/模型分析
+            kf.write(json.dumps({"ref_id": ref, "judge_correct": p["judge_correct"],
+                                 "model": p["model"], "arm": p["arm"]}, ensure_ascii=False) + "\n")
 
     n_pos = sum(1 for p in pick if p["judge_correct"] == 1)   # 实际抽到的判对/判错数（一层空时补满会打破半分）
     print("[+] 抽样 %d 条（裁判判对 %d / 判错 %d），已写待填表：\n    %s"
           % (len(pick), n_pos, len(pick) - n_pos, sheet))
     if n_pos == len(pick) or n_pos == 0:
         print("    注：这批裁判判定全同（分层不成）——真校准需 answers/scores 里判对判错都有（真跑数据）。")
+    tail = "" if not args.out_dir else " --out-dir %s" % args.out_dir   # 自定义 out-dir 也带进续跑命令
     print("    用 Excel/编辑器打开，给 human_correct 列填 1（对/可接受）或 0（错）；填完跑："
-          "python calibrate_matrix.py kappa --results-dir %s" % args.results_dir)
+          "python calibrate_matrix.py kappa --results-dir %s%s" % (args.results_dir, tail))
     _warn_self_preference(args.results_dir, pool)
     return 0
 

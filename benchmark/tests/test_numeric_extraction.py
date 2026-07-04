@@ -64,6 +64,16 @@ class ExtractFinalNumber(unittest.TestCase):
     def test_comma_grouped_caret_base(self):
         self.assertEqual(J._extract_final_number("1,000^2"), 1000000.0)
 
+    def test_ambiguous_final_token_no_fallback(self):
+        # 末位 token 是歧义逗号 → None，绝不回退到前面的 42
+        self.assertIsNone(J._extract_final_number("题号 42，答案是 3,14"))
+        self.assertEqual(J.check_numeric("题号 42，答案是 3,14", "42", 0), (False, None))
+
+    def test_comma_caret_base_rejected(self):
+        # 1,00^2 的底数歧义 → 整个乘方作废（不算成 10000）
+        self.assertIsNone(J._extract_final_number("1,00^2"))
+        self.assertEqual(J.check_numeric("答案 1,00^2", "10000", 0), (False, None))
+
 
 class CheckNumeric(unittest.TestCase):
     def test_comma_gold_and_answer(self):

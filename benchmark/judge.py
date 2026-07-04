@@ -55,20 +55,21 @@ def _extract_final_number(text):
         return None
 
     def _pow(m):
-        try:
-            base = float(m.group(1).replace(",", ""))
-            v = base ** float(m.group(2))
-            return repr(v) if math.isfinite(v) else m.group(0)
-        except (ValueError, OverflowError):
-            return m.group(0)
+        base = _to_number(m.group(1))                  # 走 _to_number：底数歧义(1,00^2)返回 None
+        if base is not None:
+            try:
+                v = base ** float(m.group(2))
+                if math.isfinite(v):
+                    return repr(v)
+            except (ValueError, OverflowError, ZeroDivisionError):
+                pass
+        return " "                                     # 底数歧义/溢出/非有限 → 整个乘方作废，不留残数当答案
     text = _CARET_POW.sub(_pow, text)                  # 数值底数乘方 → 值
     text = _SYM_POW.sub(r"\1", text)                   # 符号底数乘方 → 只留底数（丢掉指数，别被当答案）
-    last = None
-    for m in _NUM_TOKEN.finditer(text):
-        v = _to_number(m.group(0))
-        if v is not None:
-            last = v
-    return last
+    tokens = _NUM_TOKEN.findall(text)
+    if not tokens:
+        return None
+    return _to_number(tokens[-1])                      # 取**最后一个 token**的值：末位歧义就 None，不回退到前面的数
 
 _GOLD_MIN_LEN = 2
 _NEG_TOKENS = ("不是", "并非", "不叫", "不属于", "not", "no", "never", "未", "非")
