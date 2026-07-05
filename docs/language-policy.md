@@ -54,6 +54,23 @@ Root `SKILL.md` stays **Chinese-first** as the compatibility entrypoint, and `pr
 持久化文件与脚本输出在所有模式下保持中文 canonical；向非中文学生转述脚本回执/失败时，引用中文原文
 并附英文复述——**绝不在翻译中丢失 fail-loud 内容**。
 
+### A8c：英文入口面 / English entry surfaces（derived renderings）
+
+- `SKILL.en.md` 与 `prompts/web_prompt.en.md` 是**派生英文渲染（derived renderings）**：行为的
+  **source of truth 是对应的中文文件**（根 `SKILL.md` / `prompts/web_prompt.md`）。两者不一致时
+  **以中文文件为准**；改行为先改 zh，en 随后同步（PR 内同改或紧随其后）。
+- en 面契约（由 `tests/test_language_policy.py` 的 `A8cEnEntrypoints` 钉死）：
+  - **无 YAML frontmatter**——en 文件不是可触发的 skill 入口，是英文操作手册 / 可复制 prompt；
+  - **锚点不变性十类照常适用**：canonical token 逐字节中文，英文 gloss 只在 token 之后/下一行；
+  - **en 面纯度**：除 canonical 锚点白名单、「…」引用与代码 span 外**零 CJK**（不许烂成中英混杂）；
+  - 🟢/🟡/⚠️ 作标签出现的行**同行携带中文 canonical**（防英文竞争标注）；
+  - 视觉资产门禁用 en 渲染 "Before asking, explaining, hinting, or solving"（与 zh 门禁同义同强度）。
+- 这**不是** `locales/` 拆分、也不引入第二套行为——同一仓库、同一安装、同一控制层与状态词汇
+  （持久化 vocab 仍为中文 canonical）。见 [`localization.md`](localization.md) 的 A8c 附记。
+- **唯一例外面**：`prompts/web_prompt.en.md` 因 web 端无持久化 `language`，自声明**默认回复语言为
+  English**（学生可说「中文」/「双语」随时切回）——这是该 en prompt 的既定口径、被测试钉住，
+  不是渲染漂移；学生层「默认简体中文」对本地/有状态形态依旧无条件成立。
+
 ## English control plane（控制层 = 英文优先）
 
 These instructions are read by the agent (Claude / Codex), **not** the student. Prefer English, and keep them **precise, imperative, and testable**:
