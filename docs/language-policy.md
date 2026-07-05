@@ -11,6 +11,13 @@ This skill is **bilingual by design**: an English *control plane* for precision 
 The bilingual split lands in two steps and is now realized:
 1. **Policy + provenance** — establish the language policy and mirror the canonical provenance labels into every entrypoint.
 2. **Control-plane conversion** — the modular `skills/exam-*` files use **English control sections** (Purpose / Activation / Inputs / Workflow / Output Contract / Boundaries) while keeping **Simplified-Chinese student-facing examples** under `Student-facing Output`.
+   (A8a) This is now **lint-enforced zero-CJK**: `tests/test_control_plane_language.py` scans every
+   non-exempt `## ` section of `skills/*/SKILL.md`, the whole `AGENTS.md`, and every script's argparse
+   `description`/`epilog`/`help` contract. Chinese may appear in control text only via three structural
+   escapes: 「…」 (verbatim student-visible phrasing), `…` (code spans / persisted values), or the
+   canonical-token allowlist (`ALLOWED_TOKENS`). Exempt zones stay Chinese by design: YAML frontmatter
+   (trigger surface), `## Student-facing Output` bodies, CJK-headed template sections, the root
+   `SKILL.md`, and `prompts/web_prompt.md`.
 
 Root `SKILL.md` stays **Chinese-first** as the compatibility entrypoint, and `prompts/web_prompt.md` stays Chinese-first — neither is rewritten wholesale.
 
