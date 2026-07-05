@@ -134,6 +134,9 @@ def read_rel(relpath):
 #   + U+F900-FAFF  CJK compatibility ideographs
 #   + U+FE10-FE1F  vertical presentation forms
 #   + U+FE30-FE4F  CJK compatibility forms
+#   + U+1100-11FF / U+3130-318F / U+AC00-D7FF / U+A960-A97F Hangul（零 CJK ≠ 零 Han——R1）
+#   + U+3190-319F Kanbun, U+3200-33FF enclosed CJK, U+2F00-2FDF Kangxi radicals,
+#     U+FE20-FE2F combining half marks, U+FE50-FE6F small form variants
 #   + U+20000-2FA1F supplementary Han (Ext-B..F + compat supplement)
 # and DELIBERATELY narrowed — these stay ALLOWED because they are language-neutral:
 #   - U+2460-24FF enclosed alphanumerics: the ①-⑦ seven-step ordinals survive in
@@ -156,6 +159,18 @@ EN_CJK_RE = re.compile(
     u"︐-︟"
     u"︰-﹏"
     u"＀-￯"
+    u"ᄀ-ᇿ"
+    u"㄰-㆏"
+    u"㆐-㆟"
+    u"ㆠ-ㆿ"
+    u"㈀-㋿"
+    u"㌀-㏿"
+    u"가-힯"
+    u"ힰ-퟿"
+    u"ꥠ-꥿"
+    u"︠-︯"
+    u"﹐-﹫"
+    u"⼀-⿟"
     u"\U00020000-\U0002fa1f"
     u"]")
 
@@ -253,8 +268,10 @@ EN_WORD_RE = re.compile(r"[A-Za-z]{2,}")
 # The 双语 mirror line — the one sanctioned English zone inside zh documents.
 EN_MIRROR_RE = re.compile(r"^\s*(?:>\s*)+EN[:：]")
 
-# 「…」 verbatim tokens (this is also where the trilingual first-ask line —
-# the ONLY allowed mixed point — always travels).
+# 「…」 handling (R1)：引号**不再**整段豁免——否则「Hint」「language / English」这类引号英文
+# 会逃逸。唯一豁免 = 三语语言选择行字面（政策定义的唯一混语点）；其余引号内容照常扫描
+#（纯 zh 引号自然通过；引号里的文件名/AI 等由 ZH_EXEMPT_RE 按 token 豁免）。
+LANGUAGE_CHOOSER = u"「语言 / Language：中文 / English / 双语」"
 CORNER_QUOTE_RE = re.compile(u"「[^」]*」")
 
 # [text](target) — drop the target, keep the student-visible text.
@@ -326,9 +343,15 @@ def zh_output_offenses(text, first_line=1):
             # 内层短围栏 = 内容行，继续扫描
         if fence_len and SCRIPT_CMD_RE.search(line):
             continue
-        if EN_MIRROR_RE.match(line):
+        m = EN_MIRROR_RE.match(line)
+        if m:
+            # 双语镜像行必须纯英文（R1：不再无条件豁免）——code span 外出现 CJK 即违规
+            mirror_visible = CODE_SPAN_RE.sub("", line[m.end():])
+            cjk = EN_CJK_RE.findall(mirror_visible)
+            if cjk:
+                out.append((n, [u"<CJK-in-EN-mirror>"] + cjk[:5], line.strip()[:80]))
             continue
-        s = CORNER_QUOTE_RE.sub("", line)   # first: may contain backticks
+        s = line.replace(LANGUAGE_CHOOSER, "")   # 唯一豁免的混语点（R1：引号不再整段豁免）
         s = CODE_SPAN_RE.sub("", s)
         s = LINK_TARGET_RE.sub("]", s)
         s = ZH_EXEMPT_RE.sub(" ", s)
@@ -544,6 +567,25 @@ class T2ZhOutputPurity(unittest.TestCase):
         self.assertEqual(zh_target_offenses(doc, "file"), [],
                          u"frontmatter 触发词/文件名/（source_type）/链接目标/宿主名/fenced 命令行 均为豁免面")
 
+    def test_machinery_corner_quote_no_longer_blanket_exempt(self):
+        # R1：引号英文照抓；唯一豁免 = 语言选择行字面
+        self.assertTrue(zh_output_offenses(u"请回复「Hint」获取提示。"))
+        self.assertTrue(zh_output_offenses(u"回答「language / English」即可。"))
+        self.assertEqual(zh_output_offenses(u"回答「语言 / Language：中文 / English / 双语」即可切换语言。"), [])
+        self.assertEqual(zh_output_offenses(u"学生主动要求（「有什么易错点」「给我个口诀」）才输出。"), [])
+
+    def test_machinery_mirror_lines_validated_not_skipped(self):
+        # R1：镜像行含 CJK 即违规；纯英文镜像照常豁免
+        self.assertTrue(zh_output_offenses(u"> EN: ① 题面图"))
+        self.assertTrue(zh_output_offenses(u"> EN: Recorded to 错题本."))
+        self.assertEqual(zh_output_offenses(u"> EN: Recorded to the mistake archive."), [])
+        self.assertEqual(zh_output_offenses(u"> EN: Persist it with `set --language 双语`."), [])
+
+    def test_machinery_hangul_and_extra_cjk_blocks_trip(self):
+        # R1：零 CJK ≠ 零 Han——韩文/围字/康熙部首都算
+        for s in (u"This line has 한국어.", u"ㄱ", u"㈜", u"㊣", u"⼀"):
+            self.assertFalse(is_pure_en(s), u"%r 应被 en 面判违规" % s)
+
     def test_machinery_sfo_scope_extraction(self):
         doc = "\n".join([
             u"## Workflow",
@@ -623,6 +665,8 @@ class T4ReverseLock(unittest.TestCase):
         u"当前阶段：阶段 2 (Current stage: Stage 2 — Linear Lists)",
         u"### 第三步：标准真题通关测验 (Quiz-Bank Assessment)",     # decorative EN title
         u"指出逻辑漏洞并给出提示（Hint）",
+        u"请回复「Hint」获取当前测试线索。",              # R1：引号英文不再豁免
+        u"> EN: 已记录到错题本 (Recorded).",              # R1：镜像行 CJK 违规
     )
 
     def test_is_pure_en_accepts_clean_english(self):
