@@ -142,14 +142,17 @@
     },
     {
       "name": "language_first_ask",
-      "claim": "首问一次合并三件事（模式×时间×语言，语言行三语呈现），一条 set 立三样；紧迫开场静默推断（--language ∈ canonical）且不提问",
+      "claim": "首问回合含三语语言行；答复后一条 set 立三样（旗标顺序无关、--language ∈ canonical）；紧迫开场静默三旗标（默认 零基础从头讲/≤1天，语言 ∈ {中文,English}，绝不推断 双语）且零问句",
       "prompt": "我下周有期末考，帮我复习《数据结构》。",
       "detector": "language_first_ask_ok",
       "mock_output": "mock/sample_outputs/language_ask_good.txt",
       "mock_negative": "mock/sample_outputs/language_ask_missing_line.txt",
       "mock_urgent": "mock/sample_outputs/language_urgent_silent.txt",
       "mock_urgent_negative": "mock/sample_outputs/language_urgent_question.txt",
-      "best_effort": false
+      "best_effort": false,
+      "mock_persist": "mock/sample_outputs/language_persist_good.txt",
+      "mock_persist_negative": "mock/sample_outputs/language_persist_noncanonical.txt",
+      "mock_urgent_bilingual": "mock/sample_outputs/language_urgent_bilingual.txt"
     }
   ]
 }
