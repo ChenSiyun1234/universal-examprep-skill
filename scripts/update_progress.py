@@ -88,6 +88,27 @@ def _normalize_tier(v):
                % (v, "/".join(TIME_TIERS)))
 
 
+# A8b：回复语言偏好（chat 层渲染语言；持久化文件与脚本输出在任何模式下都保持中文 canonical）
+LANGUAGES = ("中文", "English", "双语")
+_LANG_ALIASES = {
+    "zh": "中文", "zh-cn": "中文", "chinese": "中文", "简体中文": "中文", "汉语": "中文", "中": "中文",
+    "en": "English", "english": "English", "英文": "English", "英语": "English",
+    "bilingual": "双语", "bi": "双语", "zh+en": "双语", "中英": "双语", "中英双语": "双语",
+}
+
+
+def _normalize_language(v):
+    """→ (canonical_language 或原值, warning 或 None)。ASCII 别名不区分大小写；未知值原样保留并告警。"""
+    v = (v or "").strip()
+    if v in LANGUAGES:
+        return v, None
+    key = v.lower()
+    if key in _LANG_ALIASES:
+        return _LANG_ALIASES[key], None
+    return v, ("非标准语言偏好「%s」——canonical 仅 %s；已按原值保留，请确认是否规范化"
+               % (v, "/".join(LANGUAGES)))
+
+
 def _die(msg, code=2):
     sys.stderr.write("update_progress: " + msg + "\n")
     raise SystemExit(code)
@@ -439,6 +460,10 @@ def cmd_init(ws, args):
         prefs["time_budget"], _tw = _normalize_tier(prefs["time_budget"])
         if _tw:
             sys.stderr.write("update_progress[warn]: " + _tw + "\n")
+    if prefs.get("language"):
+        prefs["language"], _lw = _normalize_language(prefs["language"])
+        if _lw:
+            sys.stderr.write("update_progress[warn]: " + _lw + "\n")
     for k in ("scope", "mode", "time_budget", "language"):   # A2 范围/模式/语言偏好随迁移带走
         if prefs.get(k):
             st[k] = prefs[k]
@@ -570,11 +595,19 @@ def cmd_set(ws, args):
             changed.append("time_budget=%s" % ctier)
             if twarn:
                 sys.stderr.write("update_progress[warn]: " + twarn + "\n")
-    for k in ("scope", "language"):
-        v = getattr(args, k)
-        if v is not None:
-            st[k] = v or None
-            changed.append("%s=%s" % (k, v or "（清除）"))
+    if args.scope is not None:
+        st["scope"] = args.scope or None
+        changed.append("scope=%s" % (args.scope or "（清除）"))
+    if args.language is not None:
+        if not args.language:
+            st["language"] = None
+            changed.append("language=（清除）")
+        else:
+            clang, lwarn = _normalize_language(args.language)
+            st["language"] = clang
+            changed.append("language=%s" % clang)
+            if lwarn:
+                sys.stderr.write("update_progress[warn]: " + lwarn + "\n")
     for kv in (args.pref or []):
         if "=" not in kv:
             _die("--pref 需要 key=value 形式，当前 %r" % kv)

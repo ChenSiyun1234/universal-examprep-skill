@@ -589,6 +589,51 @@ class Mutations(unittest.TestCase):
 
     # ---- regression guards for Codex round-10 (5 findings) ----
 
+    def test_language_aliases_normalize(self):
+        # A8b：--language 别名归一到 canonical（中文/English/双语）；ASCII 不区分大小写
+        ws = self._ready()
+        for alias, canon in (("zh", "中文"), ("EN", "English"), ("english", "English"),
+                             ("bilingual", "双语"), ("中英", "双语"), ("简体中文", "中文")):
+            r = _up(ws, ["set", "--language", alias])
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(_state(ws)["language"], canon, alias)
+
+    def test_language_unknown_preserved_with_warning(self):
+        # 未知值原样保留 + stderr 告警（绝不静默改写）
+        ws = self._ready()
+        r = _up(ws, ["set", "--language", "Klingon"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(_state(ws)["language"], "Klingon")
+        self.assertIn("非标准语言偏好", r.stderr)
+
+    def test_language_clear_and_one_call_set(self):
+        # 一次 set 同时立三样（A6+A8b 合并首问的持久化形态）；--language "" 清除
+        ws = self._ready()
+        r = _up(ws, ["set", "--mode", "查缺补漏", "--time-budget", "1-3天", "--language", "English"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        st = _state(ws)
+        self.assertEqual((st["mode"], st["time_budget"], st["language"]),
+                         ("查缺补漏", "1-3天", "English"))
+        md = open(os.path.join(ws, "study_progress.md"), encoding="utf-8").read()
+        self.assertIn("语言偏好", md)
+        self.assertIn("English", md)
+        r2 = _up(ws, ["set", "--language", ""])
+        self.assertEqual(r2.returncode, 0, r2.stderr)
+        self.assertIsNone(_state(ws)["language"])
+
+    def test_language_alias_in_md_normalized_on_init(self):
+        # 手写 md 里的别名语言值在 init --force 迁移时归一
+        ws = self._ready()
+        _up(ws, ["set", "--language", "English"])
+        mdp = os.path.join(ws, "study_progress.md")
+        md = open(mdp, encoding="utf-8").read()
+        self.assertIn("English", md)
+        with open(mdp, "w", encoding="utf-8") as f:
+            f.write(md.replace("**语言偏好**：English", "**语言偏好**：zh-CN"))
+        r = _up(ws, ["init", "--force"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(_state(ws)["language"], "中文")          # zh-CN → canonical 中文
+
     def test_language_survives_forced_rebuild(self):
         ws = self._ready()
         _up(ws, ["set", "--language", "English"])
