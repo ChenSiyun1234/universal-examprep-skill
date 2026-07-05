@@ -180,13 +180,13 @@ class A8bLanguageDispatch(unittest.TestCase):
         self.assertIn("已记录到错题本 (recorded to the mistake archive)", t)
         self.assertIn("### English rendering", t)
 
-    def test_policy_carries_anchor_invariance(self):
-        t = self._read("docs", "language-policy.md")
-        self.assertIn("ANCHOR-INVARIANCE PRINCIPLE", t)
-        self.assertIn("Language state & dispatch", t)
-
-
-
+    def test_policy_carries_single_language_purity(self):
+        # 阶段 6：锚点不变性已废除——政策必须携带新原则与词汇表（旧名只允许出现在废除说明里）
+        p = read("docs", "language-policy.md")
+        self.assertIn("SINGLE-LANGUAGE PURITY", p, "缺单语言纯净原则")
+        self.assertIn("PERSISTED / JUDGING-LAYER VOCABULARY", p, "缺持久化/判分层词汇表")
+        self.assertIn("EN CANONICAL VOCABULARY", p, "缺 EN canonical 词表")
+        self.assertNotIn("### ANCHOR-INVARIANCE PRINCIPLE", p, "旧锚点不变性小节不应复活")
 class A8cEnEntrypoints(unittest.TestCase):
     """A8c：英文发布形态的两个派生入口（SKILL.en.md / prompts/web_prompt.en.md）。
     zh 为行为事实源，en 为派生渲染；十类锚点逐字节中文 + gloss；en 面须真英文（另有纯度测试）。"""
