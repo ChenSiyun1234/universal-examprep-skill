@@ -227,7 +227,7 @@ class A8cEnEntrypoints(unittest.TestCase):
         codespan = _re.compile(r"`[^`\n]*`")   # 代码 span 里提及的 zh canonical 形不算标签用法
         req = (("🟢", ("From your materials",)),
                ("🟡", ("AI-supplemented",)),
-               ("⚠️", ("AI-generated answer", "Temporarily overriding", "warning", "Warning")))
+               ("⚠️", ("AI-generated answer", "Temporarily overriding")))
         for parts in self.EN_FILES:
             for ln in self._read(parts).splitlines():
                 s = setref.sub("", codespan.sub("", ln))
@@ -259,6 +259,15 @@ class A8cEnEntrypoints(unittest.TestCase):
                     "select_questions.py", "select_hard_questions.py"):
             self.assertIn(tok, zh, tok)
             self.assertIn(tok, en, tok)
+
+    def test_en_surfaces_are_discoverable(self):
+        # A8c-2：英文用户必须能从 README/兼容矩阵/portability/AGENTS 找到 en 入口面
+        #（C2b 保留此契约——文件名不变、发现路径不能丢）
+        readme = self._read(("README.md",))
+        self.assertIn("SKILL.en.md", readme)
+        self.assertIn("prompts/web_prompt.en.md", readme)
+        self.assertIn("web_prompt.en.md", self._read(("docs", "agent-portability.md")))
+        self.assertIn("web_prompt.en.md", self._read(("AGENTS.md",)))
 
 
 if __name__ == "__main__":
