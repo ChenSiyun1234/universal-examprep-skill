@@ -1892,22 +1892,22 @@ def _read_text_file_pages(path, rel, report=None):
 
 def build_arg_parser():
     p = argparse.ArgumentParser(
-        description="官方课程材料 → raw_input.json（+ 可选页面图 assets + 解析报告），供 ingest.py 使用。",
-        epilog="可选依赖：文本 pip install pypdf；渲染 pip install pymupdf（自带 PNG）或 pypdfium2 Pillow。"
-               "（.txt/.md 材料无需任何依赖。）")
-    p.add_argument("--materials", required=True, help="课程材料文件夹（含 PDF / txt / md）")
-    p.add_argument("--out", default="raw_input.json", help="输出 raw_input.json 路径")
-    p.add_argument("--report", default="parse_report.json", help="解析报告 JSON 路径")
+        description="Official course materials -> raw_input.json (+ optional page-image assets + parse report), consumed by ingest.py.",
+        epilog="Optional deps: text extraction pip install pypdf; rendering pip install pymupdf (bundles PNG) or pypdfium2 Pillow. "
+               "(.txt/.md materials need none.)")
+    p.add_argument("--materials", required=True, help="course materials folder (PDF / txt / md)")
+    p.add_argument("--out", default="raw_input.json", help="output raw_input.json path")
+    p.add_argument("--report", default="parse_report.json", help="parse report JSON path")
     p.add_argument("--asset-root", default=None,
-                   help="渲染页图写入目录，应指向 <workspace>/references/assets。"
-                        "渲染开启而未指定时：auto 跳过渲染并告警，required 报错")
+                   help="directory for rendered page images; should point at <workspace>/references/assets. "
+                        "with rendering on but unset: auto skips with a warning, required errors out")
     p.add_argument("--render-pages", choices=["never", "auto", "required"], default="auto",
-                   help="渲染依赖图的页面：never/auto/required（required 时无渲染后端/无 --asset-root 则报错）")
+                   help="render figure-dependent pages: never/auto/required (required errors out without a rendering backend / --asset-root)")
     p.add_argument("--extract-lecture-questions", choices=["never", "auto"], default="auto",
-                   help="是否抽取讲义 Example/Quiz 题：never/auto")
+                   help="extract lecture Example/Quiz items: never/auto")
     p.add_argument("--extract-homework", choices=["never", "auto"], default="auto",
-                   help="是否抽取作业题（含题答分离 PDF 的自动配对与 inline Solution）：never/auto")
-    p.add_argument("--course-name", default=None, help="科目名称（默认取材料目录名）")
+                   help="extract homework items (incl. auto-pairing of split question/answer PDFs and inline Solutions): never/auto")
+    p.add_argument("--course-name", default=None, help="subject name (defaults to the materials directory name)")
     return p
 
 
