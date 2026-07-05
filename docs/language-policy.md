@@ -30,30 +30,102 @@ Root `SKILL.md` stays **Chinese-first** as the compatibility entrypoint, and `pr
 
 - 持久化：`study_state.json.language`，canonical `中文` / `English` / `双语`（别名经 `update_progress.py`
   `--language` 归一；未知值保留 + 告警）。缺省/为空 = `中文`（所有旧工作区行为逐字节不变）。
-- 首问：并入 A6 的**一次合并首问**（模式 × 时间宽裕度 × 语言，语言行三语呈现）；紧迫开场按学生开场语言
-  静默推断，**绝不推断 `双语`**。会话中途 `set --language <值>` 随时切换，下一条回复生效。
-- `双语` 是**组合规则**而非第三套模板：逐块 zh 在前、`> EN:` 镜像随后；锚点只出现一次（token+gloss 形态）。
+- 首问：并入 A6 的**一次合并首问**（模式 × 时间宽裕度 × 语言）。语言行三语呈现——
+  「语言 / Language：中文 / English / 双语」——这是学生可见输出里**唯一允许的混语言点**。
+  紧迫开场按学生开场语言静默推断，**绝不推断 `双语`**。会话中途 `set --language <值>` 随时切换，
+  下一条回复生效。
 
-### ANCHOR-INVARIANCE PRINCIPLE（锚点不变性，MUST）
+### 单语言纯净（SINGLE-LANGUAGE PURITY，MUST）
 
-以下十类 canonical 字面在**任何语言模式下逐字节原样输出**（英文/双语模式在 token **之后或下一行**加
-英文 gloss，绝不改写 token 内部——它们被 behavior_smoke / drift 从 transcript 解析、被测试钉死、
-或持久化在学生工作区里）：
+学生可见 prose **严格单语言**——按模式派发：
+
+- **`中文` 模式**：学生可见 prose 零英文，全部固定话术用本文下方「常用中文标签」与
+  「来源标注用词」的 zh canonical 词表。
+- **`English` 模式**：学生可见 prose 零 CJK，全部固定话术用下方 **EN canonical 词表**——
+  不再是 token+gloss（中文锚点 + 英文括注）形态，而是整句纯英文输出。
+- **`双语` 模式**：组合规则（见下），每一侧各自单语言纯净。
+
+**永久豁免（任何模式都不算违规）**：代码 span `…` 内容、文件名/路径、命令行、JSON 键值、
+CLI flag、emoji 与圈号（🟢🟡⚠️①…⑦✅❌📊 等）、数学/单位记号与单 token 术语符号
+（O(n)、DNA、pH 这类按符号对待，不算 prose）。
+
+### EN CANONICAL VOCABULARY（`English` 模式词表，MUST 逐字）
+
+`language=English` 时，下列固定话术**逐字**使用 EN canonical（en 面测试/lint 以此为钉；
+不许自创同义改写）。zh 列即「持久化/判分层词汇表」（见下节）里的对应中文字面：
+
+| 类别 | zh canonical | EN canonical |
+| --- | --- | --- |
+| 来源标签 ×3 | 🟢 来自资料 | 🟢 From your materials |
+| | 🟡 AI补充，可能与你老师讲的不完全一致 | 🟡 AI-supplemented — may differ from what your teacher taught |
+| | ⚠️ AI生成答案，非老师/教材提供 | ⚠️ AI-generated answer — not from your teacher or textbook |
+| 七步块标 | ① 题面图 | ① Question figure |
+| | ② 这题在问什么 | ② What's being asked |
+| | ③ 图里要读的量 | ③ What to read off the figure |
+| | ④ 核心公式 | ④ Core formula |
+| | ⑤ 逐步演算 | ⑤ Step-by-step solution |
+| | ⑥ 答案自检 | ⑥ Answer self-check |
+| | ⑦ 知识点溯源 | ⑦ Source trace |
+| 来源块行 | 题目来源：…｜答案来源：…｜<标签> | `Question source: … \| Answer source: … \| <label>` |
+| 来源未知形态 | 来源未知 ／ 来源页未知 | Source unknown ／ Source page unknown |
+| 收尾块 ×3 | 易错点 / 3分钟速记 / 现在轮到你 | Common pitfalls / 3-minute mnemonic / Your turn |
+| 回执 ×2 | 已记录到错题本 / 已记录到疑难点 | Recorded to the mistake archive / Recorded to the confusion log |
+| 阶段引用 | 阶段 N ／ 从 阶段 N 继续 | Stage N ／ Resuming from Stage N |
+| 弃答句 | 资料里没有这道题的答案 | The materials do not contain an answer to this question. |
+| 范围覆盖声明 | ⚠️ 临时覆盖你的 \<scope\> 范围偏好 | ⚠️ Temporarily overriding your \<scope\> scope preference |
+| 资产标签 ×2 | 题面图 ／ 答案图 | Question-side asset ／ Answer-side asset |
+| 进度面板标签 ×4 | 备考科目 / 当前复习 / 进度打卡 / 错题累积 | Subject / Now studying / Progress / Mistake log |
+
+词表使用规则：
+
+- **来源块行**：`English` 模式用 ASCII `|` 分隔（`中文` 模式保持全角 ｜）。`<label>` 段必须是
+  三个来源标签的**全文之一，绝不允许只写 emoji**——该禁令在 zh/en 两侧同强度。
+  来源未知时对应段写 Source unknown（元数据整体缺失）或 Source page unknown（知道文件、缺页码）。
+- **收尾块**：EN 名称照旧**默认不输出**——触发条件与 zh 完全一致（学生主动要求，或已存
+  收尾块偏好）。
+- **弃答**：弃答句为完整句子；其后如补一句诚实说明（如建议问老师），说明也必须纯英文。
+- **窗口复核提示**（zh 的 还记得/复述/做题实测 类）无逐字 EN 钉：用自然、简短、祈使的英文表达
+  同一动作（如 Do you still remember … / Say it back in your own words / Prove it on a problem），
+  不得夹中文。
+- 面板数值、进度条、题号等非语言成分照常输出（豁免区）。
+
+### `双语` composition rule（组合结构不变）
+
+`双语` 仍是**组合规则**而非第三套模板：逐块 zh 在前、`> EN:` 镜像随后。新口径下的唯一变化：
+**废除 token+gloss 混排**——zh 行用 zh canonical 词表、`> EN:` 行用上表 EN canonical 词表，
+两侧各自单语言纯净；同一锚点在每侧各出现一次（各说各的语言），不再在英文句里内嵌中文 token。
+### PERSISTED / JUDGING-LAYER VOCABULARY（持久化/判分层词汇表，MUST）
+
+> 本节**取代**旧的 ANCHOR-INVARIANCE PRINCIPLE（锚点不变性）。旧原则要求十类中文字面在任何
+> 语言模式下逐字节输出（英文模式加 gloss）；该要求已废除。十类字面的新身份如下。
+
+以下十类中文字面是**持久化状态与 zh 模式 transcript 判分的 canonical 词汇**。学生可见输出
+**按语言模式渲染**它们：`中文` 模式逐字输出中文；`English` 模式输出上节 EN canonical 词表的
+对应句；`双语` 模式 zh 行 + `> EN:` 镜像各出现一次：
 
 1. 三个来源标注 canonical 标签（🟢/🟡/⚠️ 全文）
-2. 范围覆盖声明 「⚠️ 临时覆盖你的 <scope> 范围偏好」
+2. 范围覆盖声明 「⚠️ 临时覆盖你的 \<scope\> 范围偏好」
 3. 七步模板块标（圈号 + canonical 中文名：① 题面图 … ⑦ 知识点溯源）
 4. 来源块行 `题目来源：…｜答案来源：…` 与 来源未知/来源页未知
 5. 收尾块名 易错点 / 3分钟速记 / 现在轮到你
 6. 错题本/错题档案 与回执 已记录到错题本 / 已记录到疑难点
 7. 阶段引用 `阶段 N`
 8. 窗口复核提示语（还记得 / 复述 / 做题实测 类）
-9. 双语资产标签 题面图 / question-side asset、答案图 / answer-side asset
+9. 资产标签 题面图 / 答案图
 10. 弃答 canonical 资料里没有这道题的答案（及其变体）
 
-持久化文件与脚本输出在所有模式下保持中文 canonical；向非中文学生转述脚本回执/失败时，引用中文原文
-并附英文复述——**绝不在翻译中丢失 fail-loud 内容**。
+这份中文词汇在两层**保持不变、与回复语言模式无关**：
 
+- **持久化层**：`study_state.json` / `study_progress.md` / 全部脚本输出（`update_progress.py`
+  回执、`ingest.py` 报告等）在**所有语言模式**下保持中文 canonical——机器词汇不随学生语言漂移。
+  持久化 **VALUES**（`零基础从头讲` / `查缺补漏` / `≤1天` / `1-3天` / `中文` / `双语` / `在窗口`、
+  偏好值 `七步精讲` / `文科变体` / `收尾块=…` 等）**永远中文**；`English` 模式的 prose 提到它们时
+  **只进代码 span**、周围用英文转述（如 your mode `零基础从头讲` (teach from scratch)）。
+- **判分层**：benchmark / behavior_smoke / drift 探测器**只解析 zh 模式 transcript**，钉的就是
+  这份中文词汇；en 输出不喂 zh 探测器（en 形态由 en 词表测试覆盖，见 `test_en_mode_shapes`）。
+
+向非中文学生转述脚本回执/失败时，引用中文原文（代码 span 或「…」）并附英文复述——
+**绝不在转述中丢失 fail-loud 内容**。
 ### A8c：英文入口面 / English entry surfaces（derived renderings）
 
 - `SKILL.en.md` 与 `prompts/web_prompt.en.md` 是**派生英文渲染（derived renderings）**：行为的
@@ -61,12 +133,15 @@ Root `SKILL.md` stays **Chinese-first** as the compatibility entrypoint, and `pr
   **以中文文件为准**；改行为先改 zh，en 随后同步（PR 内同改或紧随其后）。
 - en 面契约（由 `tests/test_language_policy.py` 的 `A8cEnEntrypoints` 钉死）：
   - **无 YAML frontmatter**——en 文件不是可触发的 skill 入口，是英文操作手册 / 可复制 prompt；
-  - **锚点不变性十类照常适用**：canonical token 逐字节中文，英文 gloss 只在 token 之后/下一行；
-  - **en 面纯度**：除 canonical 锚点白名单、「…」引用与代码 span 外**零 CJK**（不许烂成中英混杂）；
-  - 🟢/🟡/⚠️ 作标签出现的行**同行携带中文 canonical**（防英文竞争标注）；
-  - 视觉资产门禁用 en 渲染 "Before asking, explaining, hinting, or solving"（与 zh 门禁同义同强度）。
+  - **零 CJK（zero-CJK purity）**：prose 与标题**零 CJK**；唯一豁免是代码 span——持久化中文
+    VALUES / 中文文件名 / 命令示例可在代码 span 内出现。原「…」引用豁免与
+    `EN_SURFACE_TOKENS` 锚点白名单**废除**：原先靠中文锚点 + gloss 表达的固定话术，改用
+    上文 EN canonical 词表整句给出（三标签、七步块标、来源块行 shape、never-emoji-alone、
+    弃答句、范围覆盖行等）；
+  - 视觉资产门禁用 en 渲染 "Before asking, explaining, hinting, or solving"（与 zh 门禁
+    同义同强度）。
 - 这**不是** `locales/` 拆分、也不引入第二套行为——同一仓库、同一安装、同一控制层与状态词汇
-  （持久化 vocab 仍为中文 canonical）。见 [`localization.md`](localization.md) 的 A8c 附记。
+  （持久化 vocab 仍为中文 canonical，见上节）。见 [`localization.md`](localization.md) 的 A8c 附记。
 - **唯一例外面**：`prompts/web_prompt.en.md` 因 web 端无持久化 `language`，自声明**默认回复语言为
   English**（学生可说「中文」/「双语」随时切回）——这是该 en prompt 的既定口径、被测试钉住，
   不是渲染漂移；学生层「默认简体中文」对本地/有状态形态依旧无条件成立。
