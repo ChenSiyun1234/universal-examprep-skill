@@ -1304,7 +1304,7 @@ class Contract(unittest.TestCase):
 
     def test_agents_md_bootstraps_state(self):
         txt = open(os.path.join(ROOT, "AGENTS.md"), encoding="utf-8").read()
-        self.assertIn('init' + chr(96) + ' 建立事实源', txt)       # 通用代理契约也先建 state
+        self.assertIn('init' + chr(96) + ' to establish the source of truth', txt)   # 通用代理契约也先建 state
 
     def test_root_skill_bootstraps_state_when_python_available(self):
         txt = open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8").read()
@@ -1312,7 +1312,7 @@ class Contract(unittest.TestCase):
 
     def test_agents_md_prefers_state(self):
         txt = open(os.path.join(ROOT, "AGENTS.md"), encoding="utf-8").read()
-        self.assertIn("存在 `study_state.json` 时从它恢复", txt)   # 先读进度条目对齐事实源
+        self.assertIn("restore from `study_state.json` when it exists", txt)   # 先读进度条目对齐事实源
         self.assertIn("add-mistake/add-confusion", txt)             # 记录条目走官方路径
 
     def test_cram_restore_prefers_state(self):
