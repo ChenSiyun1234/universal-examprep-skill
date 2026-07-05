@@ -25,9 +25,9 @@ Root `SKILL.md` stays **Chinese-first** as the compatibility entrypoint, and `pr
 - 根目录 `SKILL.md` / `prompts/web_prompt.md`：维持**中文优先**，不整体改写。
 
 > **阶段 6 rollout（active 入口对齐进行中）**：下文的单语言纯净与 EN 词表是**目标契约**，正在
-> 分批落到各入口——`SKILL.en.md` / `prompts/web_prompt.en.md` 已零 CJK（C2b）；`SKILL.md` /
-> `prompts/web_prompt.md` 的散英清理（C2b）、`AGENTS.md` 语言条目与 `skills/exam-*` 的 SFO
-> 英文渲染块（C2c）随后。在对应入口对齐前，其旧的 token+gloss 文字仍可能存在——以本文件为准。
+> 分批落到各入口——C2b 把 `SKILL.en.md` / `prompts/web_prompt.en.md` 重写为零 CJK、清理 `SKILL.md` /
+> `prompts/web_prompt.md` 的散英并对齐 `AGENTS.md` 语言条目；C2c 把 `skills/exam-*` 的 SFO 英文渲染块
+> 改为纯英文。在对应入口对齐前，其旧的 token+gloss 文字仍可能存在——一律以本文件为准。
 
 ---
 

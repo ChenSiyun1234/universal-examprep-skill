@@ -137,7 +137,7 @@ def read_rel(relpath):
 #   + U+1100-11FF / U+3130-318F / U+AC00-D7FF / U+A960-A97F Hangul（零 CJK ≠ 零 Han——R1）
 #   + U+3190-319F Kanbun, U+3200-33FF enclosed CJK, U+2F00-2FDF Kangxi radicals,
 #     U+FE20-FE2F combining half marks, U+FE50-FE6F small form variants
-#   + U+20000-2FA1F supplementary Han (Ext-B..F + compat supplement)
+#   + U+20000-3FFFF supplementary Han (Ext-B..I + compat supplement, all of Plane 2-3)
 # and DELIBERATELY narrowed — these stay ALLOWED because they are language-neutral:
 #   - U+2460-24FF enclosed alphanumerics: the ①-⑦ seven-step ordinals survive in
 #     EN output ("① Question figure"), so unlike the control-plane lint we do NOT
@@ -171,7 +171,7 @@ EN_CJK_RE = re.compile(
     u"︠-︯"
     u"﹐-﹫"
     u"⼀-⿟"
-    u"\U00020000-\U0002fa1f"
+    u"\U00020000-\U0003ffff"
     u"]")
 
 CODE_SPAN_RE = re.compile(r"`[^`\n]*`")
@@ -300,10 +300,17 @@ _EXEMPT_PATTERNS = [
     # source_type enum values, ONLY in their source-block slot （<source_type>）
     # — machine vocab persisted in quiz_bank.json; bare occurrences stay flagged
     u"(?<=页)（(?:homework|exam|lecture|textbook|notes|slides)）",   # D3：仅来源块「第N页（…）」槽位
-    # single-token technical notation (policy: O(n)/DNA/pH「按符号对待，不算 prose」):
-    # standalone ALL-CAPS acronyms (DNA, RNA, ATP, GDP, ID…) + a few mixed-case unit tokens.
-    r"(?<![A-Za-z])[A-Z]{2,}\d*(?![A-Za-z])",
-    _latin_token("pH"), _latin_token("pKa"), _latin_token("Hz"), _latin_token("Pa"),
+    # single-token technical notation (policy: O(n)/DNA/pH「按符号对待，不算 prose」).
+    # CURATED allowlist only — NOT a blanket all-caps rule (that would exempt English prose
+    # like "NEVER ASK QUESTIONS"). Any acronym not listed here goes in a code span in zh output.
+    _latin_token("DNA"), _latin_token("RNA"), _latin_token("mRNA"), _latin_token("tRNA"),
+    _latin_token("ATP"), _latin_token("ADP"), _latin_token("NADH"), _latin_token("PCR"),
+    _latin_token("GDP"), _latin_token("GNP"), _latin_token("CPI"), _latin_token("IS"), _latin_token("LM"),
+    _latin_token("CPU"), _latin_token("GPU"), _latin_token("RAM"), _latin_token("ROM"),
+    _latin_token("API"), _latin_token("URL"), _latin_token("SQL"), _latin_token("XML"),
+    _latin_token("CSS"), _latin_token("UML"), _latin_token("FSM"), _latin_token("BFS"),
+    _latin_token("DFS"), _latin_token("LIFO"), _latin_token("FIFO"), _latin_token("NP"),
+    _latin_token("pH"), _latin_token("pKa"), _latin_token("Hz"), _latin_token("Pa"), _latin_token("Kb"),
     # format / notation names (language-neutral tech nouns)
     _latin_token("JSON"), _latin_token("Markdown"), _latin_token("Mermaid"),
     _latin_token("ASCII"), _latin_token("YAML"), _latin_token("UTF-8"),
@@ -324,7 +331,7 @@ _EXEMPT_PATTERNS = [
 ZH_EXEMPT_RE = re.compile("|".join("(?:%s)" % p for p in _EXEMPT_PATTERNS))
 
 
-def zh_output_offenses(text, first_line=1):
+def zh_output_offenses(text, first_line=1, allow_mirror=True):
     """[(lineno, [words], snippet)] — English prose found in prescribed zh output.
 
     Per-line pipeline: fence tracking (marker lines skipped; fenced script
@@ -349,6 +356,10 @@ def zh_output_offenses(text, first_line=1):
             continue
         m = EN_MIRROR_RE.match(line)
         if m:
+            if not allow_mirror:
+                # mono 中文 模式：不该出现 `> EN:` 镜像行本身
+                out.append((n, [u"<mirror-in-mono-zh>"], line.strip()[:80]))
+                continue
             # 双语镜像行必须纯英文（R1：不再无条件豁免）——code span 外出现 CJK 即违规
             mirror_visible = CODE_SPAN_RE.sub("", line[m.end():])
             cjk = EN_CJK_RE.findall(mirror_visible)
@@ -366,9 +377,12 @@ def zh_output_offenses(text, first_line=1):
 
 
 def is_pure_zh_output(output_text):
-    """True iff a zh-mode student-visible transcript carries zero English prose
-    (after the structural exemptions above). (T4 reverse lock helper.)"""
-    return not zh_output_offenses(output_text)
+    """True iff a **mono `中文`-mode** student-visible transcript carries zero English prose
+    (T4 reverse lock helper). A `> EN:` mirror line is ITSELF a violation here — pure 中文
+    mode has no bilingual mirrors (those belong to 双语 composition, validated by T5). File
+    scanning uses zh_output_offenses(allow_mirror=True) instead, which tolerates a mirror line
+    but still requires it to be pure English."""
+    return not zh_output_offenses(output_text, allow_mirror=False)
 
 
 def split_frontmatter(text):
@@ -663,7 +677,6 @@ class T4ReverseLock(unittest.TestCase):
         u"进度打卡：[██░░░░░░] 25%（第 2/8 阶段已通关）",
         u"存在 `study_state.json` 时一律经 `update_progress.py` 更新进度。",
         u"回答「语言 / Language：中文 / English / 双语」即可切换语言。",  # the ONLY mixed point, inside 「…」
-        u"> EN: Bilingual mode mirrors each zh block in English on this line.",  # 双语 mirror
     )
     ZH_BAD = (
         u"这里有一个 question-side asset 需要先展示。",             # retired bilingual label
@@ -673,6 +686,7 @@ class T4ReverseLock(unittest.TestCase):
         u"### 第三步：标准真题通关测验 (Quiz-Bank Assessment)",     # decorative EN title
         u"指出逻辑漏洞并给出提示（Hint）",
         u"请回复「Hint」获取当前测试线索。",              # R1：引号英文不再豁免
+        u"> EN: This should not appear in a mono 中文 transcript.",   # R3/T4：mono-zh 拒镜像
         u"> EN: 已记录到错题本 (Recorded).",              # R1：镜像行 CJK 违规
     )
 
@@ -730,12 +744,19 @@ class T5BilingualComposition(unittest.TestCase):
 """
 
     def test_each_side_is_pure(self):
-        self.assertTrue(is_pure_zh_output(self.BI_SEVEN_STEP),
-                        repr(zh_output_offenses(self.BI_SEVEN_STEP)))
+        # zh 侧：用 allow_mirror=True 扫描（镜像行须纯英文，零 CJK-in-mirror）
+        self.assertEqual(zh_output_offenses(self.BI_SEVEN_STEP, allow_mirror=True), [],
+                         repr(zh_output_offenses(self.BI_SEVEN_STEP, allow_mirror=True)))
+        mirrors = 0
         for ln in self.BI_SEVEN_STEP.splitlines():
             if EN_MIRROR_RE.match(ln):
+                mirrors += 1
                 mirror = re.sub(u"^\\s*(?:>\\s*)+EN[:：]\\s*", "", ln)
                 self.assertTrue(is_pure_en(mirror), mirror)
+        # 防退化：双语组合每个编号块后都要有 `> EN:` 镜像——至少 7 条（七步块）
+        self.assertGreaterEqual(mirrors, 7, u"双语组合镜像数退化——每块须跟一条 `> EN:` 镜像")
+        for tok in (u"① 题面图", u"② 这题在问什么", u"⑦ 知识点溯源"):
+            self.assertEqual(self.BI_SEVEN_STEP.count(tok), 1, tok)   # 锚点每侧一次、不双份
 
     def test_zh_detector_still_parses_bilingual(self):
         sys.path.insert(0, os.path.join(ROOT, "benchmark", "behavior_smoke"))
