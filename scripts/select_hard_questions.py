@@ -239,17 +239,17 @@ def order_items(scored, mode):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="按难度 × 掌握状态 × A6 模式出题（A7）")
+    ap = argparse.ArgumentParser(description="Select questions by difficulty x mastery x A6 mode (A7)")
     ap.add_argument("--workspace", required=True)
-    ap.add_argument("-n", "--num", type=int, default=10, help="出题数量（默认 10）")
+    ap.add_argument("-n", "--num", type=int, default=10, help="number of questions (default 10)")
     ap.add_argument("--mode", choices=LEARNING_MODES, default=None,
-                    help="A6 学习模式；缺省时读 study_state.mode，再缺省按 查缺补漏")
-    ap.add_argument("--chapter", default=None, help="只出该章（chapter 或 phase 精确匹配）")
+                    help="A6 learning mode; defaults to study_state.mode, else 查缺补漏")
+    ap.add_argument("--chapter", default=None, help="only this chapter (exact chapter-or-phase match)")
     ap.add_argument("--from-chapter", type=int, default=None,
-                    help="只出该数值章号及之后（某章起步补弱用）；不从 current_phase 猜，缺省即不按此过滤")
+                    help="only numeric chapter numbers >= N (for 某章起步补弱); never guessed from current_phase - unset means no such filter")
     ap.add_argument("--source-type", default=None,
-                    help="按来源类型过滤（逗号分隔，与 A2 一致）；缺省读 study_state.scope，未标签项一律排除；"
-                         "传 all/mixed/* 显式覆盖为混合池（本轮，A2 越界须先声明）")
+                    help="filter by source type (comma-separated, A2-consistent); defaults to study_state.scope, untagged items always excluded; "
+                         "pass all/mixed/* to explicitly override to the mixed pool (this turn; announce the A2 boundary override first)")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
 

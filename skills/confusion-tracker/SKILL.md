@@ -7,7 +7,7 @@ tags: [teaching, tracking, review]
 status: stable
 ---
 
-# confusion-tracker — 概念疑难点追踪
+# confusion-tracker — concept-confusion tracking
 
 ## Purpose
 Capture the learner's concept-level confusions (why / what / how-derived questions — not quiz answers) during tutoring and record them into the 「概念疑难点记录」 section of `study_progress.md`, building a pre-exam review list. Used by `exam-tutor` (while teaching) and `exam-review` (during the final sweep).
@@ -23,12 +23,12 @@ Capture the learner's concept-level confusions (why / what / how-derived questio
 ## Workflow
 1. **Detect** — decide whether the follow-up is a concept question (not a quiz item or its answer).
 2. **Answer** — give a concise, clear explanation grounded in the current wiki chapter. Label the source: 🟢 来自资料 for material-sourced content, 🟡 AI补充，可能与你老师讲的不完全一致 for AI-supplied background. Never present AI-added content as the teacher's.
-3. **Record** — persist the confusion: 关联章节 / 疑难点 (one line) / 解答要点 (≤2 sentences) / 状态 (default 待回顾). When `study_state.json` exists (A4), the ONLY valid write path is `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> add-confusion --chapter <ch> --note <疑难点/解答要点>` — the md table is a generated view and a hand-appended row is lost on the next render. Without state (no-Python fallback), append to the 「## 💡 概念疑难点记录」 table in `study_progress.md` directly, auto-incrementing 序号.
+3. **Record** — persist the confusion: `关联章节` / `疑难点` (one line) / `解答要点` (≤2 sentences) / `状态` (default 待回顾). When `study_state.json` exists (A4), the ONLY valid write path is `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> add-confusion --chapter <ch> --note <疑难点/解答要点>` — the md table is a generated view and a hand-appended row is lost on the next render. Without state (no-Python fallback), append to the 「## 💡 概念疑难点记录」 table in `study_progress.md` directly, auto-incrementing the `序号` column.
 4. **Confirm** — tell the learner it was logged (e.g. 「已记录到疑难点」) in one short line, without breaking the teaching flow.
 
 ## Output Contract
-- Persist one confusion record (关联章节 / 疑难点 / 解答要点 / 状态): with `study_state.json`, the output contract IS the `update_progress.py add-confusion` call (the md table regenerates from state); without state, append one row to the 「## 💡 概念疑难点记录」 table in `study_progress.md` (序号 auto-increment).
-- During the final sweep, read the confusion records and have the learner restate each: update 状态 **in place** — 待回顾 → 已回顾 when explained correctly; keep 待回顾 and re-explain otherwise. Never overwrite other skills' writes.
+- Persist one confusion record (`关联章节` / `疑难点` / `解答要点` / `状态`): with `study_state.json`, the output contract IS the `update_progress.py add-confusion` call (the md table regenerates from state); without state, append one row to the 「## 💡 概念疑难点记录」 table in `study_progress.md` (`序号` auto-increments).
+- During the final sweep, read the confusion records and have the learner restate each: update `状态` **in place** — 待回顾 → 已回顾 when explained correctly; keep 待回顾 and re-explain otherwise. Never overwrite other skills' writes.
 - Student-facing output defaults to Simplified Chinese unless the user asks otherwise.
 
 ## Student-facing Output

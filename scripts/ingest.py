@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""一键解析并生成备考 LLM Wiki 目录结构与进度文件。
+"""One-shot parse and generate the cram LLM wiki directory structure and progress files。
 
 依赖：Python 3.7+ 标准库，无需 pip 安装。
 设计原则：发现问题就大声报错并停下，绝不静默产出残缺文件。
@@ -167,10 +167,10 @@ def render_template(template_name, replacements, markers):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="一键解析并生成备考 LLM Wiki 目录结构与进度文件")
-    parser.add_argument("--input", "-i", type=str, default="raw_input.json", help="输入的结构化大纲 JSON 文件路径")
-    parser.add_argument("--output-dir", "-o", type=str, default=".", help="输出的目标工作区路径 (默认为当前目录)")
-    parser.add_argument("--force", action="store_true", help="允许覆盖已存在的 study_progress.md（会先自动备份）")
+    parser = argparse.ArgumentParser(description="One-shot parse and generate the cram LLM wiki directory structure and progress files")
+    parser.add_argument("--input", "-i", type=str, default="raw_input.json", help="input structured-outline JSON path")
+    parser.add_argument("--output-dir", "-o", type=str, default=".", help="target workspace path (default: current directory)")
+    parser.add_argument("--force", action="store_true", help="allow overwriting an existing study_progress.md (auto-backup first)")
     args = parser.parse_args()
 
     if not os.path.exists(args.input):

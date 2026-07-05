@@ -17,8 +17,8 @@ signals (all bank-intrinsic):
   · 题型         subjective / diagram / code 等开放题比 choice / true_false 略难
 
     python scripts/score_difficulty.py --workspace <ws>            # 回写 difficulty + difficulty_reason
-    python scripts/score_difficulty.py --workspace <ws> --dry-run  # 只预览分布，不落盘
-    python scripts/score_difficulty.py --workspace <ws> --force    # 连未变化的项也重写（默认只写有变动的）
+    python scripts/score_difficulty.py --workspace <ws> --dry-run  # preview the distribution only; no write
+    python scripts/score_difficulty.py --workspace <ws> --force    # rewrite items even when unchanged（默认只写有变动的）
 
 exit: 0 ok · 2 bad input/usage · 1 write failure
 """
@@ -256,11 +256,11 @@ def _atomic_write_json(path, obj):
 # ---------------- main ----------------
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="确定性难度评分（A7）：回写 difficulty 1-5 + difficulty_reason")
-    ap.add_argument("--workspace", required=True, help="工作区根（含 references/quiz_bank.json）")
-    ap.add_argument("--dry-run", action="store_true", help="只预览分布，不落盘")
-    ap.add_argument("--force", action="store_true", help="连未变化的项也重写")
-    ap.add_argument("--json", action="store_true", help="以 JSON 打印统计")
+    ap = argparse.ArgumentParser(description="Deterministic difficulty scoring (A7): writes back difficulty 1-5 + difficulty_reason")
+    ap.add_argument("--workspace", required=True, help="workspace root (contains references/quiz_bank.json)")
+    ap.add_argument("--dry-run", action="store_true", help="preview the distribution only; no write")
+    ap.add_argument("--force", action="store_true", help="rewrite items even when unchanged")
+    ap.add_argument("--json", action="store_true", help="print stats as JSON")
     args = ap.parse_args(argv)
 
     bank = load_bank(args.workspace)

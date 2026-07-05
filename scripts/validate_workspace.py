@@ -124,7 +124,7 @@ def validate(ws):
         warnings.append({"level": "warning", "msg": msg})
 
     if not os.path.isdir(ws):
-        err(f"工作区目录不存在或不可读: {ws}", level="fatal")
+        err(f"workspace directory不存在或不可读: {ws}", level="fatal")
         return errors, warnings, stats
 
     # ---- structure ----
@@ -515,9 +515,9 @@ def _exit_code(errors):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="校验一个备考工作区是否符合 docs/file-format.md")
-    ap.add_argument("workspace", help="工作区目录")
-    ap.add_argument("--json", action="store_true", help="以 JSON 输出 errors/warnings/stats")
+    ap = argparse.ArgumentParser(description="Validate a cram workspace against docs/file-format.md")
+    ap.add_argument("workspace", help="workspace directory")
+    ap.add_argument("--json", action="store_true", help="output errors/warnings/stats as JSON")
     args = ap.parse_args(argv)
     try:
         sys.stdout.reconfigure(encoding="utf-8")
