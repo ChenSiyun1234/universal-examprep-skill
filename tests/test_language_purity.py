@@ -10,7 +10,8 @@ Doctrine (Phase 6 — user override of the old anchor-invariance design):
       - 双语 mode  → zh block first + a `> EN:` mirror line per block (the mirror
         line is the sanctioned English zone inside zh-canonical documents).
   * The trilingual first-ask language line 「语言 / Language：中文 / English / 双语」
-    is the ONLY allowed mixed point — and it always travels inside 「…」.
+    is the ONLY allowed mixed point — in zh output it travels inside 「…」; on en
+    surfaces 「…」 is NOT exempt: quote the zh option values in code spans instead.
   * Persisted files / script output stay Chinese-canonical (machine vocabulary);
     English mode PARAPHRASES them in English, it never mutates them on disk.
   * Always exempt in every mode: inline code spans, filenames, commands,
@@ -70,6 +71,15 @@ EXISTING-TEST SURGERY LIST — what C2b/C2c must edit or retire
   6. tests/test_localization_boundary.py (+ docs/localization.md) —
      REQUIRED_LABELS entries get language-attribution comments (which surface
      owns which language) — no behavioral change.
+  7b. tests/test_language_policy.py class A8bLanguageDispatch — pins the ABOLISHED
+     token+gloss literals ("① 题面图 (Question figure)" in exam-tutor SFO,
+     "已记录到错题本 (recorded to the mistake archive)" in exam-quiz SFO,
+     "LANGUAGE-INVARIANT" in exam-cram): C2c must rewrite these pins in the same
+     commit that cleans each SFO — otherwise T2 registration and these pins are
+     mutually unsatisfiable.
+  7c. AGENTS.md language bullet ("…stay verbatim with a trailing gloss") + root
+     SKILL.md dispatch line — C2b rewrites both to the single-language doctrine.
+  7d. README.md 「锚点与防编题规则同款」 wording — C2b sync.
   7. tests/test_behavior_smoke.py — scenario mocks only: update en/双语 sample
      transcripts (language_persist_ok expected_lang=English path, urgent-opening
      mock wording). The detectors themselves DO NOT change (zh-only, benchmark
@@ -151,18 +161,14 @@ EN_CJK_RE = re.compile(
 
 CODE_SPAN_RE = re.compile(r"`[^`\n]*`")
 FENCE_RE = re.compile(r"^\s*```")
+_FENCE_LINE_RE = re.compile(r"^\s*(`{3,})")   # D4：记录围栏长度，同长或更长才收栏
 
-# Fenced-code-block command lines that invoke official scripts stay exempt in
-# BOTH directions (they are machine surface: e.g. `... set --language 双语` in an
-# en file, or an English-flagged command inside a zh file). Roster = scripts/*.py.
-_SCRIPT_NAMES = (
-    "ingest", "update_progress", "select_questions", "select_hard_questions",
-    "score_difficulty", "validate_workspace", "show_question_assets",
-    "build_knowledge_index", "build_raw_input_from_workspace",
-    "build_visual_index", "list_figure_pages", "list_image_questions",
-)
-SCRIPT_CMD_RE = re.compile(
-    r"(?:^\s*(?:\$ ?)?python(?:3)?\b)|(?:\b(?:%s)\.py\b)" % "|".join(_SCRIPT_NAMES))
+# Fenced-code-block COMMAND lines stay exempt in both directions (machine surface,
+# e.g. `python … set --language 双语` in an en file). Only true command lines qualify
+# (python-invocations); a fenced PROSE line that merely MENTIONS a script filename is
+# NOT exempt (D2) — on the zh side script names are token-exempted by ZH_EXEMPT_RE's
+# filename pattern while the surrounding prose is still scanned.
+SCRIPT_CMD_RE = re.compile(r"^\s*(?:\$ ?)?python(?:3)?\b")
 
 
 # =============================================================================
@@ -190,12 +196,19 @@ def en_purity_offenses(text):
     block, which is PROSE by doctrine — is scanned.
     """
     out = []
-    in_fence = False
+    fence_len = 0
     for n, line in enumerate(text.splitlines(), 1):
-        if FENCE_RE.match(line):
-            in_fence = not in_fence
-            continue
-        if in_fence and SCRIPT_CMD_RE.search(line):
+        f = _FENCE_LINE_RE.match(line)
+        if f:
+            ticks = len(f.group(1))
+            if fence_len == 0:
+                fence_len = ticks           # 开栏（info string 不算 prose）
+                continue
+            if ticks >= fence_len:
+                fence_len = 0               # 收栏（CommonMark：同长或更长才关）
+                continue
+            # 更短的内层围栏行 = 外层块的内容行，落到下方照常扫描
+        if fence_len and SCRIPT_CMD_RE.search(line):
             continue
         visible = CODE_SPAN_RE.sub("", line)
         hits = EN_CJK_RE.findall(visible)
@@ -269,7 +282,7 @@ _EXEMPT_PATTERNS = [
     r"\$\{?[A-Za-z_]+\}?",
     # source_type enum values, ONLY in their source-block slot （<source_type>）
     # — machine vocab persisted in quiz_bank.json; bare occurrences stay flagged
-    u"（(?:homework|exam|lecture|textbook|notes|slides)）",
+    u"(?<=页)（(?:homework|exam|lecture|textbook|notes|slides)）",   # D3：仅来源块「第N页（…）」槽位
     # format / notation names (language-neutral tech nouns)
     _latin_token("JSON"), _latin_token("Markdown"), _latin_token("Mermaid"),
     _latin_token("ASCII"), _latin_token("YAML"), _latin_token("UTF-8"),
@@ -299,12 +312,19 @@ def zh_output_offenses(text, first_line=1):
     markdown link targets → strip ZH_EXEMPT_RE → flag [A-Za-z]{2,} runs.
     """
     out = []
-    in_fence = False
+    fence_len = 0
     for n, line in enumerate(text.splitlines(), first_line):
-        if FENCE_RE.match(line):
-            in_fence = not in_fence
-            continue
-        if in_fence and SCRIPT_CMD_RE.search(line):
+        f = _FENCE_LINE_RE.match(line)
+        if f:
+            ticks = len(f.group(1))
+            if fence_len == 0:
+                fence_len = ticks
+                continue
+            if ticks >= fence_len:
+                fence_len = 0
+                continue
+            # 内层短围栏 = 内容行，继续扫描
+        if fence_len and SCRIPT_CMD_RE.search(line):
             continue
         if EN_MIRROR_RE.match(line):
             continue
@@ -341,14 +361,28 @@ NEXT_H2_RE = re.compile(r"(?m)^## ")
 
 
 def sfo_section(text):
-    """(body, first_line) of the '## Student-facing Output' section, else (None, 0)."""
+    """(body, first_line) of the '## Student-facing Output' section, else (None, 0).
+    Fence-aware (D1): a literal '## ' line INSIDE a fenced example (e.g. confusion-tracker's
+    study_progress.md table header) is content, not the next heading."""
     m = SFO_HEADING_RE.search(text)
     if not m:
         return None, 0
     start = m.end()
-    nxt = NEXT_H2_RE.search(text, start)
-    end = nxt.start() if nxt else len(text)
-    return text[start:end], text.count("\n", 0, start) + 1
+    first = text.count("\n", 0, start) + 1
+    fence_len = 0
+    pos = 0
+    for ln in text[start:].splitlines(keepends=True):
+        f = _FENCE_LINE_RE.match(ln)
+        if f:
+            ticks = len(f.group(1))
+            if fence_len == 0:
+                fence_len = ticks
+            elif ticks >= fence_len:
+                fence_len = 0
+        elif fence_len == 0 and ln.startswith("## "):
+            break
+        pos += len(ln)
+    return text[start:start + pos], first
 
 
 def zh_target_offenses(text, scope):
@@ -406,7 +440,7 @@ EN_CANONICAL_VOCAB = (
     ("asset-answer", u"Answer-side asset"),
     # progress panel field names
     ("panel-subject", u"Subject"),
-    ("panel-now", u"Now studying"),
+    ("panel-now", u"Current stage"),
     ("panel-progress", u"Progress"),
     ("panel-mistakes", u"Mistake log"),
 )

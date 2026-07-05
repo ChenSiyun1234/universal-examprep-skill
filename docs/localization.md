@@ -33,11 +33,11 @@
 A8b 补充：第二语言层目前以 **en 平行块**形式内联在各子技能的 `## Student-facing Output`
 （`skills/exam-tutor` / `exam-quiz` 的 English rendering 块 + 其余子技能的 dispatch 指针）；
 回复语言由 `study_state.json.language` 派发（`中文`/`English`/`双语`，见
-[`language-policy.md`](language-policy.md) 的 Language state & dispatch 与锚点不变性原则）。
+[`language-policy.md`](language-policy.md) 的 Language state & dispatch 与 持久化/判分层词汇表）。
 拆分 `locales/` 目录仍**暂不**做。
 
 A8c 附记（**撤回旧口径**）：A8c 已落地为**同仓同装的英文入口面**——`SKILL.en.md` +
-`prompts/web_prompt.en.md`，均为**锚点保持的派生渲染**（source of truth 仍是对应中文文件，
+`prompts/web_prompt.en.md`，均为**派生英文渲染**（阶段 6 起为零 CJK 口径、source of truth 仍是对应中文文件，
 见 [`language-policy.md`](language-policy.md) 的 A8c 小节）。它**不是**第二个打包 locale、
 **不**触发 `locales/` 拆分；拆分留待真正的**第二**种打包语言（完整 anchor-free 第二语言层）
 出现时再做，届时内联 en 块与 en 入口面即拆分素材源。
