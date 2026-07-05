@@ -139,6 +139,17 @@
       "prompt": "（前情：学生已说只做作业题）给我找几道 lecture 里的图片题。",
       "mock_output": "mock/sample_outputs/scope_override_good.txt",
       "mock_negative": "mock/sample_outputs/scope_override_missing.txt"
+    },
+    {
+      "name": "language_first_ask",
+      "claim": "首问一次合并三件事（模式×时间×语言，语言行三语呈现），一条 set 立三样；紧迫开场静默推断（--language ∈ canonical）且不提问",
+      "prompt": "我下周有期末考，帮我复习《数据结构》。",
+      "detector": "language_first_ask_ok",
+      "mock_output": "mock/sample_outputs/language_ask_good.txt",
+      "mock_negative": "mock/sample_outputs/language_ask_missing_line.txt",
+      "mock_urgent": "mock/sample_outputs/language_urgent_silent.txt",
+      "mock_urgent_negative": "mock/sample_outputs/language_urgent_question.txt",
+      "best_effort": false
     }
   ]
 }

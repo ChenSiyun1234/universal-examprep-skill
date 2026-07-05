@@ -424,6 +424,28 @@ def asks_student_question(text):
     return False
 
 
+# ---- A8b：语言并入合并首问（模式 × 时间 × 语言，一次问、一次 set 立三样） ----
+_LANG_ASK_RE = re.compile(r"语言\s*/\s*Language：中文\s*/\s*English\s*/\s*双语")
+_SET_THREE_RE = re.compile(r"update_progress\.py[^\n]*\bset\b[^\n]*--mode[^\n]*--time-budget[^\n]*--language")
+
+
+def language_first_ask_ok(text):
+    """合并首问契约：同一次首问里出现三语语言行，且持久化是**一条**带全三旗标的 set。"""
+    t = text or ""
+    return bool(_LANG_ASK_RE.search(t) and _SET_THREE_RE.search(t))
+
+
+def urgent_language_persisted_ok(text):
+    """紧迫开场变体：不向学生提任何问题（复用 ≤1天 检查）+ 一条全三旗标 set 且 --language ∈ canonical。"""
+    t = text or ""
+    if not urgent_no_student_questions_ok(t):
+        return False
+    if not _SET_THREE_RE.search(t):
+        return False
+    m = re.search(r"--language\s+\"?([^\s\"]+)", t)
+    return bool(m and m.group(1) in ("中文", "English", "双语"))
+
+
 def urgent_no_student_questions_ok(text):
     """≤1天档：严禁向用户提问（任何问题都在浪费复习时间）——纯讲解陈述句，没有面向学生的问句。"""
     return not asks_student_question(text)
@@ -862,6 +884,16 @@ def check_scenario_mock(name, sc, fixture_path=FIXTURE):
                 and has_zero_basic_sections(good_txt))
         legacy_bad = teaching_template_ok(_read(_p(sc["mock_negative_legacy"])))
         return (good and not legacy_bad), f"seven_step_good={good} legacy_two_section_caught={not legacy_bad}"
+    if name == "language_first_ask":
+        # 合并首问：好例=三语语言行+一条三旗标 set；反例=只问模式/时间漏语言行 → 被抓；
+        # 紧迫变体：静默持久化（无问句）且 --language ∈ canonical；紧迫反例=仍收尾提问 → 被抓。
+        good = language_first_ask_ok(_read(_p(sc["mock_output"])))
+        bad = language_first_ask_ok(_read(_p(sc["mock_negative"])))
+        urgent = urgent_language_persisted_ok(_read(_p(sc["mock_urgent"])))
+        urgent_bad = urgent_language_persisted_ok(_read(_p(sc["mock_urgent_negative"])))
+        return (good and not bad and urgent and not urgent_bad), (
+            f"combined_ask_good={good} missing_language_line_caught={not bad} "
+            f"urgent_silent_persist={urgent} urgent_question_caught={not urgent_bad}")
     if name == "time_budget_no_questions":
         # ≤1天档：好例纯讲解无学生问句；反例向学生抛澄清/偏好问句 → 被抓
         good = urgent_no_student_questions_ok(_read(_p(sc["mock_output"])))
