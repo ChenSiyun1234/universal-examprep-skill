@@ -7,7 +7,7 @@ description: >
 license: MIT
 ---
 
-# exam-cheatsheet — 考前小抄
+# exam-cheatsheet — pre-exam cheatsheet
 
 ## Purpose
 Compress everything already mastered into a one-to-two-page, printable, copy-by-hand cram sheet, written to `walkthrough.md` in the workspace. Summarize only mastered content. Do not teach new material and do not invent new questions.

@@ -6,7 +6,7 @@ description: >
 license: MIT
 ---
 
-# exam-help — 速查卡
+# exam-help — quick-reference card
 
 ## Purpose
 Render a single-screen reference card for the exam-cram skill suite: the four-step workflow, four modes, workspace file conventions, six quiz types, anti-hallucination and provenance rules, and when to use each subskill. Read-only.
