@@ -28,7 +28,7 @@ None. Take no files, no arguments, no workspace state. Emit the static card belo
 - Mutate no state: write/create/delete no files; do not touch `study_progress.md` or any workspace artifact.
 - Do not teach, quiz, grade, or initialize a workspace.
 - Preserve provenance markers verbatim where shown: 🟢 来自资料 / 🟡 AI补充，可能与你老师讲的不完全一致 / ⚠️ AI生成答案，非老师/教材提供.
-- Student-facing output defaults to Simplified Chinese unless the user asks otherwise.
+- Student-facing output defaults to Simplified Chinese; a persisted `study_state.json` `language` (`English`/`双语`) switches the card's rendering per exam-cram's dispatch rule, and an explicit ad-hoc request is honored when no workspace is in play.
 
 ## Student-facing Output
 一屏看懂这套备考技能。详细规则见根目录 `SKILL.md` 与各子技能。
@@ -60,7 +60,7 @@ None. Take no files, no arguments, no workspace state. Emit the static card belo
 `exam-ingest` 建库 · `exam-tutor` 讲 · `exam-quiz` 测 · `exam-review` 复盘 · `exam-cheatsheet` 小抄 · `exam-audit` 只读体检 · `exam-cram` 总编排。
 
 ### 语言 / Language
-Student-facing output defaults to Simplified Chinese unless the user asks otherwise.（学生可见的讲解 / 判分 / 复盘 / 小抄默认简体中文；控制指令保持英文 / 精确。详见 [`docs/language-policy.md`](../../docs/language-policy.md)。）
+Student-facing output defaults to Simplified Chinese; a persisted `language` switches it per the dispatch rule.（学生可见输出默认简体中文；工作区存了 `language`=English/双语 时按派发规则切换；控制指令保持英文 / 精确。详见 [`docs/language-policy.md`](../../docs/language-policy.md)。）
 
 ## Boundaries
 This card is read-only and executes no teaching action. To start reviewing, tell `exam-cram` your subject and remaining time.

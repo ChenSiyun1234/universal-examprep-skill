@@ -447,9 +447,13 @@ def language_first_ask_ok(text):
     t = text or ""
     if not _LANG_ASK_RE.search(t):
         return False
-    if not all(m in t for m in ("零基础从头讲", "某章起步补弱", "查缺补漏")):
+    # 每个模式选项须带英文 gloss（同行括注、以拉丁字母开头）——语言未定前英文学生也能读懂
+    for m in ("零基础从头讲", "某章起步补弱", "查缺补漏"):
+        if not re.search(re.escape(m) + r"[^\n]{0,8}[（(]\s*[A-Za-z]", t):
+            return False
+    if not all(x in t for x in ("≤1天", "1-3天", "3-7天", ">7天")):
         return False
-    return all(x in t for x in ("≤1天", "1-3天", "3-7天", ">7天"))
+    return bool(re.search(r"[天y][^\n]{0,8}[（(]\s*[A-Za-z<≤>]", t))   # 档位行至少一处 gloss
 
 
 def language_persist_ok(text, urgent=False, expected_lang=None):
@@ -915,6 +919,7 @@ def check_scenario_mock(name, sc, fixture_path=FIXTURE):
         # 反例①静默推断 双语 → 被抓；反例②收尾仍提问 → 被抓。
         ask = language_first_ask_ok(_read(_p(sc["mock_output"])))
         ask_bad = language_first_ask_ok(_read(_p(sc["mock_negative"])))
+        ask_unglossed = language_first_ask_ok(_read(_p(sc["mock_negative_unglossed"])))
         persist = language_persist_ok(_read(_p(sc["mock_persist"])))
         persist_bad = language_persist_ok(_read(_p(sc["mock_persist_negative"])))
         exp = sc.get("urgent_expected_language")
@@ -923,9 +928,10 @@ def check_scenario_mock(name, sc, fixture_path=FIXTURE):
         urgent_mm = language_persist_ok(_read(_p(sc["mock_urgent_wrong_language"])), urgent=True,
                                         expected_lang=exp)
         urgent_q = language_persist_ok(_read(_p(sc["mock_urgent_negative"])), urgent=True, expected_lang=exp)
-        return (ask and not ask_bad and persist and not persist_bad
+        return (ask and not ask_bad and not ask_unglossed and persist and not persist_bad
                 and urgent and not urgent_bi and not urgent_mm and not urgent_q), (
             f"ask_good={ask} missing_language_line_caught={not ask_bad} "
+            f"unglossed_options_caught={not ask_unglossed} "
             f"persist_orderfree={persist} noncanonical_caught={not persist_bad} "
             f"urgent_defaults_ok={urgent} inferred_bilingual_caught={not urgent_bi} "
             f"opening_language_mismatch_caught={not urgent_mm} urgent_question_caught={not urgent_q}")

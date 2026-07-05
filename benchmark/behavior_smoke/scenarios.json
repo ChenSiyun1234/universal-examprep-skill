@@ -154,7 +154,8 @@
       "mock_persist_negative": "mock/sample_outputs/language_persist_noncanonical.txt",
       "mock_urgent_bilingual": "mock/sample_outputs/language_urgent_bilingual.txt",
       "mock_urgent_wrong_language": "mock/sample_outputs/language_urgent_wrong_language.txt",
-      "urgent_expected_language": "中文"
+      "urgent_expected_language": "中文",
+      "mock_negative_unglossed": "mock/sample_outputs/language_ask_unglossed.txt"
     }
   ]
 }
