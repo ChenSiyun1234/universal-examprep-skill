@@ -62,6 +62,16 @@ Pull chapter/phase-scoped items from `references/quiz_bank.json`, present one it
 - **连错两次**：要不要 ① 查看提示　② 跳过并归档错题　③ 再想想？选 ② 我就「已记录到错题本」，考前再扫雷。
 - **题/答为 AI 生成**：⚠️ AI生成答案，非老师/教材提供，仅供参考，请和老师/教材核对。
 
+### English rendering (`language=English`)
+
+Grade in English around the LANGUAGE-INVARIANT anchors: the receipt keeps its canonical form with a
+trailing gloss — 已记录到错题本 (recorded to the mistake archive)；the escape-hatch option ② keeps the
+错题本/归档 tokens (e.g. "② skip & archive to 错题本"); the scope-override marker is emitted verbatim
+BEFORE any out-of-scope item, gloss after: 「⚠️ 临时覆盖你的 <scope> 范围偏好」 (temporarily overriding
+your <scope> scope preference); the per-item source block line stays 100% verbatim Chinese with its
+`> EN:` gloss on the following line. ✅/🟡/❌ feedback prose is English. For `language=双语`, apply
+[`exam-cram`](../exam-cram/SKILL.md)'s composition rule (zh unit first, `> EN:` mirror, anchors once).
+
 ## Boundaries
 - **Structured progress state (A4)**: when `study_state.json` exists it is the SINGLE SOURCE OF TRUTH — update it via `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> set/add-mistake/add-confusion/render` (script path resolves from the skill package root); `study_progress.md` is a GENERATED view (hand edits are lost on the next render — never hand-patch it). If a state write fails, TELL the user; never continue as if it saved. Without `study_state.json` (no-Python fallback), a hand-maintained md stays valid.
 

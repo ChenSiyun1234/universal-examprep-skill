@@ -42,6 +42,9 @@ Activate when the workspace is missing — that is, any of `references/wiki/`, `
   `已初始化备考空间：3 章 wiki + 18 道题（含 2 道 ⚠️ AI生成答案，非老师/教材提供），进度已建。下一步开讲第 1 章。`
   然后交回 `exam-cram` 进入第二步授课。
 
+
+Render per the persisted `study_state.json` `language` (`中文` default / `English` / `双语`); canonical tokens stay verbatim with a trailing gloss — see [`exam-cram`](../exam-cram/SKILL.md) Output Contract for the dispatch and composition rules.
+
 ## Boundaries
 - `scripts/ingest.py` and `templates/` live at the package root, not inside `skills/exam-ingest/`. If this subskill is installed alone (`CLAUDE_SKILL_DIR` points only at `skills/exam-ingest/`), the script and templates are unavailable — install the whole package (including root `scripts/` and `templates/`), or use the step-4 no-Python fallback to build the workspace by hand.
 - Do not modify the logic of `scripts/ingest.py`; only call it.

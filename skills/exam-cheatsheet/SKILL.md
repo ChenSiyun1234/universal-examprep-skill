@@ -56,6 +56,9 @@ Trigger when all study phases are basically cleared and review is wrapping up, O
 - 错题：……　疑难点：……
 ```
 
+
+Render per the persisted `study_state.json` `language` (`中文` default / `English` / `双语`); canonical tokens stay verbatim with a trailing gloss — see [`exam-cram`](../exam-cram/SKILL.md) Output Contract for the dispatch and composition rules.
+
 ## Boundaries
 - Do not put content into the cram sheet that the materials do not cover unless it is tagged 🟡 or ⚠️.
 - The cram sheet is a compression, not a replacement for systematic review, and not a shortcut around the source-labeling and quiz_bank-only rules.

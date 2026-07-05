@@ -93,6 +93,35 @@ Teach exactly one current wiki chapter. Explain concepts with real-life metaphor
 - **无教材答案时**：⑤ 标题写成 `⑤ 逐步演算（⚠️ AI生成答案，非老师/教材提供）`，来源块末尾标签用 ⚠️ AI生成答案，非老师/教材提供。
 - 零基础重点题精讲对每道重点题都走同一份七步模板（旧版「考点拆解/标准答题步骤」已并入 ②/④⑤，不再单列）。
 
+### English rendering (`language=English`)
+
+Same seven blocks, same order, same anchors — English prose around LANGUAGE-INVARIANT canonical tokens
+(circled digit + canonical Chinese block name, with the gloss in parentheses AFTER the token; the source
+block line stays 100% verbatim Chinese with its gloss on the FOLLOWING line):
+
+```text
+当前阶段：阶段 2 (Current stage: Stage 2 — Linear Lists)　｜　讲解模板：七步精讲
+
+① 题面图 (Question figure):
+![题面图 / question-side asset](references/assets/ch02_p12_fig.png)
+(For a no-figure item write: 本题无图，直接看题干条件。 This question has no figure — read the given conditions.)
+
+② 这题在问什么 (What is being asked): one or two plain sentences in English…
+③ 图里要读的量 (What to read off the figure): …
+④ 核心公式 (Core formula): …
+⑤ 逐步演算 (Step-by-step work): …
+⑥ 答案自检 (Answer self-check): …
+⑦ 知识点溯源 (Source trace): 第 2 章《线性表》 · references/wiki/ch02_linear_list.md · 原文 [lecture03.pdf 第 12 页](../lecture03.pdf#page=12)
+
+题目来源：lecture03.pdf 第 12 页（lecture）｜答案来源：老师·教材提供｜🟢 来自资料
+> EN: Question from lecture03.pdf p.12 (lecture) | answer from the teacher/textbook | 🟢 from the materials
+```
+
+Closers keep their Chinese canonical names when requested: 易错点 (Common pitfalls) / 3分钟速记 (3-minute
+mnemonic) / 现在轮到你 (Your turn). A resume echoes the stage anchor verbatim: 从 阶段 N 继续 (resuming from
+Stage N). For `language=双语`, apply the composition rule in [`exam-cram`](../exam-cram/SKILL.md): zh unit
+first, `> EN:` mirror after, anchors once.
+
 ## Boundaries
 - **Structured progress state (A4)**: when `study_state.json` exists it is the SINGLE SOURCE OF TRUTH — update it via `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> set/add-mistake/add-confusion/render`; `study_progress.md` is a GENERATED view (hand edits are lost on the next render — never hand-patch it). If a state write fails, TELL the user; never continue as if it saved. Without `study_state.json` (no-Python fallback), a hand-maintained md stays valid.
 

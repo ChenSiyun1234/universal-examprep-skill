@@ -44,6 +44,9 @@ Capture the learner's concept-level confusions (why / what / how-derived questio
 
 记录完后给一句简短回执（如「已记录到疑难点」），不打断教学节奏。
 
+
+Render per the persisted `study_state.json` `language` (`中文` default / `English` / `双语`); canonical tokens stay verbatim with a trailing gloss — see [`exam-cram`](../exam-cram/SKILL.md) Output Contract for the dispatch and composition rules.
+
 ## Boundaries
 - **Structured progress state (A4)**: when `study_state.json` exists it is the SINGLE SOURCE OF TRUTH — record via `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> add-confusion`, update review status via `set-confusion-status --id <qid>|--index <N> --status 已回顾/待回顾`; never hand-patch the generated `study_progress.md`. If the state write fails, TELL the user; never continue as if it saved.
 - Only record concept questions; never quiz or grade (that is `exam-quiz`).
