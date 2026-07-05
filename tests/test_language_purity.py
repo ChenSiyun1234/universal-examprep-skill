@@ -300,6 +300,10 @@ _EXEMPT_PATTERNS = [
     # source_type enum values, ONLY in their source-block slot （<source_type>）
     # — machine vocab persisted in quiz_bank.json; bare occurrences stay flagged
     u"(?<=页)（(?:homework|exam|lecture|textbook|notes|slides)）",   # D3：仅来源块「第N页（…）」槽位
+    # single-token technical notation (policy: O(n)/DNA/pH「按符号对待，不算 prose」):
+    # standalone ALL-CAPS acronyms (DNA, RNA, ATP, GDP, ID…) + a few mixed-case unit tokens.
+    r"(?<![A-Za-z])[A-Z]{2,}\d*(?![A-Za-z])",
+    _latin_token("pH"), _latin_token("pKa"), _latin_token("Hz"), _latin_token("Pa"),
     # format / notation names (language-neutral tech nouns)
     _latin_token("JSON"), _latin_token("Markdown"), _latin_token("Mermaid"),
     _latin_token("ASCII"), _latin_token("YAML"), _latin_token("UTF-8"),
@@ -454,6 +458,9 @@ EN_CANONICAL_VOCAB = (
     ("receipt-mistake", u"Recorded to the mistake archive"),
     ("receipt-confusion", u"Recorded to the confusion log"),
     ("stage-anchor", u"Stage N"),
+    ("stage-resume", u"Resuming from Stage N"),
+    ("source-unknown", u"Source unknown"),
+    ("source-page-unknown", u"Source page unknown"),
     # abstention
     ("abstention", u"The materials do not contain an answer to this question."),
     # scope override
