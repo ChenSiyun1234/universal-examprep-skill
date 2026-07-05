@@ -28,7 +28,7 @@ This is a **last-minute exam cram coach**: it builds the student's uploaded slid
 ## File conventions
 - `references/wiki/chN_*.md` = the only knowledge source · `references/quiz_bank.json` = the only answer source (items carry `source`: teacher / ai_generated)
 - `study_plan.md` = the phase plan · `study_state.json` = the structured progress source of truth (read/write it first when present, via update_progress.py) · `study_progress.md` = progress + mistakes + confusions (the read/write target without state; a generated view with state)
-- Pure web clients with no local disk: use `prompts/web_prompt.md` (it already carries the source-labeling and anti-fabrication rules); quizzes still draw only from the user-mounted bank, and answers carry the 🟢/🟡/⚠️ provenance labels. End every turn with a copyable progress Summary as the breakpoint.
+- Pure web clients with no local disk: use `prompts/web_prompt.md` (English edition: `prompts/web_prompt.en.md`; it already carries the source-labeling and anti-fabrication rules); quizzes still draw only from the user-mounted bank, and answers carry the 🟢/🟡/⚠️ provenance labels. End every turn with a copyable progress Summary as the breakpoint.
 
 ## Language
 Student-visible output (teaching / grading / review / cheatsheet / progress) defaults to **Simplified Chinese**; a persisted `study_state.json` `language` switches replies to English or bilingual, while canonical tokens (provenance labels, source-block line, override marker, seven-step markers, receipts) stay verbatim with a trailing gloss. Control-plane directives stay English / precise. See `docs/language-policy.md`.

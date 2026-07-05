@@ -280,6 +280,14 @@ class A8cEnEntrypoints(unittest.TestCase):
         self.assertIn("Before asking, explaining, hinting, or solving", t)
         self.assertIn("SKILL.md", t)                              # 指回 zh 事实源
 
+    def test_en_surfaces_are_discoverable(self):
+        # A8c-2：英文用户必须能从 README/兼容矩阵/portability/AGENTS 找到 en 入口面
+        readme = self._read(("README.md",))
+        self.assertIn("SKILL.en.md", readme)
+        self.assertIn("prompts/web_prompt.en.md", readme)
+        self.assertIn("web_prompt.en.md", self._read(("docs", "agent-portability.md")))
+        self.assertIn("web_prompt.en.md", self._read(("AGENTS.md",)))
+
     def test_machine_token_parity_with_zh_root(self):
         zh = self._read(("SKILL.md",))
         en = self._read(("SKILL.en.md",))
