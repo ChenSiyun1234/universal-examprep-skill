@@ -31,7 +31,7 @@ This is a **last-minute exam cram coach**: it builds the student's uploaded slid
 - Pure web clients with no local disk: use `prompts/web_prompt.md` (English edition: `prompts/web_prompt.en.md`; it already carries the source-labeling and anti-fabrication rules); quizzes still draw only from the user-mounted bank, and answers carry the 🟢/🟡/⚠️ provenance labels. End every turn with a copyable progress Summary as the breakpoint.
 
 ## Language
-Student-visible output (teaching / grading / review / cheatsheet / progress) defaults to **Simplified Chinese**; a persisted `study_state.json` `language` switches replies to English or bilingual, while canonical tokens (provenance labels, source-block line, override marker, seven-step markers, receipts) stay verbatim with a trailing gloss. Control-plane directives stay English / precise. See `docs/language-policy.md`.
+Language dispatch: student-visible output follows the persisted `study_state.json` `language` with SINGLE-LANGUAGE purity — `中文` (default, zero English prose) / `English` (zero CJK, EN canonical vocabulary) / `双语` (`中文` block + `> EN:` mirror per block, each side pure). Persisted files and script output stay Chinese-canonical in every mode. Control-plane directives stay English / precise. See `docs/language-policy.md`.
 
 ## Full rules
 Read `skills/exam-cram/SKILL.md` (the main skill) plus the other `skills/*/SKILL.md` subskills (ingest / tutor / quiz / review / cheatsheet / audit / help / confusion-tracker), or the root `SKILL.md`. This file is their aligned condensation; keep its wording consistent with them.
