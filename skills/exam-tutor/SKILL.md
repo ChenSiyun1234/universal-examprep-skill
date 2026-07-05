@@ -53,7 +53,7 @@ Teach exactly one current wiki chapter. Explain concepts with real-life metaphor
 - After each learning or checkpoint event, update the chapter checkpoint status (state-backed: `update_progress.py set`/`set-check`; fallback: `study_progress.md`).
 - Do not quiz or score; for practice questions, delegate to `exam-quiz` (which draws only from `references/quiz_bank.json`).
 - Limit wiki reads to the single current `references/wiki/chN_*.md` chapter (not other chapters, not the whole book); validate that path. Reading and updating `study_progress.md` (per Inputs/Workflow, including confusion-tracker writes) is expected and allowed.
-- Student-facing output defaults to Simplified Chinese unless the user asks otherwise. Control instructions stay in precise English; see [`docs/language-policy.md`](../../docs/language-policy.md).
+- Student-facing output defaults to Simplified Chinese; a persisted `study_state.json` `language` (`English`/`双语`) switches it per exam-cram's dispatch rule (canonical tokens verbatim). Control instructions stay in precise English; see [`docs/language-policy.md`](../../docs/language-policy.md).
 
 ## Student-facing Output
 讲题用七步模板的紧凑中文格式（具体、应试，别写翻译腔/长篇大论）。①-⑦ 七个编号块一个都不能少、顺序不能乱：

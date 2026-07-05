@@ -434,7 +434,7 @@ def _set_flags(text):
     flags = {}
     for m in _SET_LINE_RE.finditer(text or ""):
         cur = {}
-        for fm in re.finditer(r"--(mode|time-budget|language)\s+\"?([^\s\"]+)", m.group(0)):
+        for fm in re.finditer(r"--(mode|time-budget|language)[=\s]\s*\"?([^\s\"]+)", m.group(0)):
             cur[fm.group(1)] = fm.group(2)
         if cur:
             flags = cur
@@ -475,9 +475,16 @@ def language_persist_ok(text, urgent=False, expected_lang=None):
             return False
         if not (f["mode"] == "零基础从头讲" and f["time-budget"] == "≤1天"):
             return False
-        # 显式双语开场（set 行之前文本里已出现「双语」，如「明天就考，直接双语讲」）= 显式选择而非推断 → 放行
+        # 显式双语开场 = 显式选择而非推断 → 放行；但必须是**肯定式**请求——
+        # 「不要双语，直接中文讲」里的 双语 是否定式提及，不算同意（否定词贴邻前缀即拒）
         first_set = _SET_LINE_RE.search(text or "")
-        explicit_bi = bool(first_set and "双语" in (text or "")[:first_set.start()])
+        pre = (text or "")[:first_set.start()] if first_set else ""
+        explicit_bi = False
+        for bm in re.finditer("双语", pre):
+            ctx = pre[max(0, bm.start() - 4):bm.start()]
+            if not any(neg in ctx for neg in ("不要", "别", "不用", "无需", "非")):
+                explicit_bi = True
+                break
         if f["language"] == "双语":
             return explicit_bi
         if f["language"] not in ("中文", "English"):
@@ -939,17 +946,20 @@ def check_scenario_mock(name, sc, fixture_path=FIXTURE):
         urgent_bi = language_persist_ok(_read(_p(sc["mock_urgent_bilingual"])), urgent=True, expected_lang=exp)
         urgent_bi_explicit = language_persist_ok(_read(_p(sc["mock_urgent_bilingual_explicit"])),
                                                  urgent=True, expected_lang=exp)
+        urgent_bi_negated = language_persist_ok(_read(_p(sc["mock_urgent_bilingual_negated"])),
+                                                urgent=True, expected_lang=exp)
         urgent_mm = language_persist_ok(_read(_p(sc["mock_urgent_wrong_language"])), urgent=True,
                                         expected_lang=exp)
         urgent_q = language_persist_ok(_read(_p(sc["mock_urgent_negative"])), urgent=True, expected_lang=exp)
         return (ask and not ask_bad and not ask_unglossed and persist and not persist_bad
-                and urgent and not urgent_bi and urgent_bi_explicit
+                and urgent and not urgent_bi and urgent_bi_explicit and not urgent_bi_negated
                 and not urgent_mm and not urgent_q), (
             f"ask_good={ask} missing_language_line_caught={not ask_bad} "
             f"unglossed_options_caught={not ask_unglossed} "
             f"persist_orderfree={persist} noncanonical_caught={not persist_bad} "
             f"urgent_defaults_ok={urgent} inferred_bilingual_caught={not urgent_bi} "
             f"explicit_bilingual_allowed={urgent_bi_explicit} "
+            f"negated_bilingual_caught={not urgent_bi_negated} "
             f"opening_language_mismatch_caught={not urgent_mm} urgent_question_caught={not urgent_q}")
     if name == "time_budget_no_questions":
         # ≤1天档：好例纯讲解无学生问句；反例向学生抛澄清/偏好问句 → 被抓

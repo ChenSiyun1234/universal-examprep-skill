@@ -49,7 +49,7 @@ Pull chapter/phase-scoped items from `references/quiz_bank.json`, present one it
 - Present one item at a time; grade as pass/not-pass plus key-point feedback; refresh the progress panel at the end.
 - Each graded item's feedback ends with the one-line source block `题目来源：…｜答案来源：…｜<🟢/🟡/⚠️>` (Workflow step 5); an AI-supplied answer carries ⚠️ in both the `解析/参考答案` block title and the source label.
 - Update the check-in log and wrong-item archive — via `update_progress.py` (add-mistake / set-check) when `study_state.json` exists, else in `study_progress.md` — then hand control back to `exam-cram`.
-- Student-facing output defaults to Simplified Chinese unless the user asks otherwise. (See [`docs/language-policy.md`](../../docs/language-policy.md).)
+- Student-facing output defaults to Simplified Chinese; a persisted `study_state.json` `language` (`English`/`双语`) switches it per exam-cram's dispatch rule (canonical tokens verbatim). (See [`docs/language-policy.md`](../../docs/language-policy.md).)
 - Provenance labels in feedback are verbatim student-facing markers: 🟢 来自资料 / 🟡 AI补充，可能与你老师讲的不完全一致 / ⚠️ AI生成答案，非老师/教材提供.
 
 ## Student-facing Output
