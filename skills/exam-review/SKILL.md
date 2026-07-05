@@ -25,7 +25,7 @@ Run when the student enters the final review stage, or asks to 「复盘错题 /
 2. If the student answers a replayed item correctly, mark it 已订正 in the record. If still wrong, re-explain using the item's `explanation` field and keep it in the record.
 3. Reload the confusion-tracker entries — from `study_state.json`'s `confusion_log` when it exists, else from `study_progress.md`. Read each entry aloud and have the student restate it in their own words (what it is, why it works that way).
 4. If the student restates an entry correctly, set its status to 已回顾. If still vague, re-explain once and keep its status 待回顾.
-5. Compile the open list: items still marked wrong plus entries still 待回顾. Hand this list to the final sprint and to `exam-cheatsheet` as priority input.
+5. Compile the open list: items still marked wrong plus entries still 待回顾. Hand this list to the final sprint and to `exam-cheatsheet` as priority input (it biases which knowledge points get the hard worked examples).
 6. Write results back: with `study_state.json`, update statuses via `update_progress.py set-mistake-status`/`set-confusion-status` and add rows via `add-mistake`/`add-confusion` (md regenerates); without state, update each `study_progress.md` row **in place** (已订正 / 已回顾 / 待回顾) and append only genuinely new records. Never leave a mastered item as a stale wrong/待回顾 row. Do not overwrite other skills' writes.
 
 ## Output Contract
@@ -36,7 +36,7 @@ Run when the student enters the final review stage, or asks to 「复盘错题 /
 ## Student-facing Output
 - **错题重做**：这道你上次错在「……」。同一道题再做一遍——这次盯住 ……。做对了我就把它从错题本划掉（标「已订正」）。
 - **疑难复述**：你之前卡在「……」这个概念。用你自己的话讲一遍：它是什么、为什么这样。讲清楚 → 标「已回顾」；还含糊 → 我再讲一次，保留「待回顾」。
-- **缺口小结**：还没拿下的——错题：……；疑难点：……。这几条留到 `exam-cheatsheet` 重点列。
+- **缺口小结**：还没拿下的——错题：……；疑难点：……。这几条会让 `exam-cheatsheet` 的「例题」优先选它们对应的知识点。
 
 
 Render per the persisted `study_state.json` `language` (`中文` default / `English` / `双语`); canonical tokens stay verbatim with a trailing gloss — see [`exam-cram`](../exam-cram/SKILL.md) Output Contract for the dispatch and composition rules.

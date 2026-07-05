@@ -85,7 +85,7 @@ Window state persists in `study_state.json.knowledge_window` (via `window-add` /
 
 ## Student-facing Output
 
-Use the canonical Chinese vocabulary on the student side (当前阶段 / 这题考什么 / 标准答题步骤 / 易错点 / 3分钟速记 / 现在轮到你 / 已记录到错题本 / 必背 / 老师强调 / 错题重做 / 疑难复述 / 已初始化备考空间). Provenance markers are student-facing Chinese and must appear verbatim:
+Use the canonical Chinese vocabulary on the student side (当前阶段 / 这题考什么 / 标准答题步骤 / 易错点 / 3分钟速记 / 现在轮到你 / 已记录到错题本 / 必背 / 例题 / 例题解答 / 要点解释 / 错题重做 / 疑难复述 / 已初始化备考空间). Provenance markers are student-facing Chinese and must appear verbatim:
 
 - 🟢 **来自资料**：直接源自学生上传内容，可信度高。
 - 🟡 **AI 补充**：资料未覆盖、AI 用自身知识补的，标注「🟡 AI补充，可能与你老师讲的不完全一致」（以老师为准）。

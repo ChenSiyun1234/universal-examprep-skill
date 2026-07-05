@@ -66,7 +66,7 @@ class LocalizationBoundaryTest(unittest.TestCase):
         for label in ("已记录到错题本", "这题考什么", "标准答题步骤", "题目来源"):
             self.assertIn(label, quiz, f"exam-quiz 丢失学生侧标签: {label}")
         cheat = read("skills", "exam-cheatsheet", "SKILL.md")
-        for label in ("必背", "老师强调"):
+        for label in ("必背", "例题解答"):
             self.assertIn(label, cheat, f"exam-cheatsheet 丢失小抄栏目: {label}")
 
     def test_locales_dir_not_created_yet(self):
