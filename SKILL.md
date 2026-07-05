@@ -31,7 +31,7 @@ metadata:
 1. **首次对话用一次合并提问问清三件事并存进 `study_state.json`**（一条命令：`update_progress.py set --mode <模式> --time-budget <档> --language <语言>`）：
    * **学习模式**（存 `mode`）：`零基础从头讲`（从第一章第一个知识点顺讲，讲完即把该点全部关联题从易到难讲透）/ `某章起步补弱`（已会章节罗列知识点各配一道较难题、不会的按零基础展开）/ `查缺补漏`（全章知识点各一道较难题，困惑再展开）。
    * **时间宽裕度**（存 `time_budget`，叠加在模式上，决定提问节奏）：`≤1天` / `1-3天` / `3-7天` / `>7天`。
-   * **回复语言**（存 `language`）：`中文`（缺省）/ `English` / `双语`——提问时语言行三语呈现「语言 / Language：中文 / English / 双语」，模式/档位选项在语言确定前随三语首问行一并呈现；别名（`zh`/`en`/`bilingual` 等）由脚本归一。
+   * **回复语言**（存 `language`）：`中文`（缺省）/ `English` / `双语`——提问时语言行三语呈现「语言 / Language：中文 / English / 双语」，模式/档位选项在语言确定前**附英文对照**（首问是唯一允许的混语言点——语言未定时英文学生也要能读懂选项）；别名（`zh`/`en`/`bilingual` 等）由脚本归一。
 2. **≤1天 / 紧迫开场例外——严禁反而去问**：若用户开场已表明紧迫（如「明天就考」「别问我」「直接讲重点」），**不要停下来问模式/时间/语言**——直接**推断并静默持久化**（默认 `零基础从头讲` + `≤1天` + 学生开场所用语言；**绝不推断 `双语`**——双语只能显式选择或会话中 `set --language 双语` 切换）后立即开讲。在 ≤1天 档，向用户提任何澄清/偏好问题本身就是违约（浪费复习时间）。
 3. **各档提问节奏**：≤1天 严禁提问；1-3天 讲完几点后随机回问此前复杂/多次困惑的点，忘了就重讲；3-7天 用**知识点窗口**（近期讲过的默认还会=窗口内；窗口外的先问是否记得，记得则挪回窗口——`update_progress.py window-add` / `window-set-status`，存 `knowledge_window`）；>7天 窗口外的点用对应难题实测（会→归窗口、不会→重讲）。
 4. **旧四模式已废弃**：`normal`/`sprint`/`panic`/`mock` 由 `set --mode` 自动迁移并警告（`panic`→零基础从头讲＋≤1天、`sprint`→查缺补漏＋1-3天、`normal`/`mock`→查缺补漏）。模式/宽裕度显示在进度面板，与「讲解模板」偏好（`preferences`）分离。
@@ -53,7 +53,7 @@ metadata:
 
 ### 第三步：标准真题通关测验
 1. **标准抽题**：从 `references/quiz_bank.json` 中过滤并提取属于当前章节的题目。**禁止**现场随机编造不符合大纲的题目。
-   * **依赖图的题视觉优先 + `fail-closed`**：题项可带 `requires_assets` / `maybe_requires_assets` / `assets` / `question_text_status`（见 [`docs/file-format.md`](docs/file-format.md) §4）。出 `requires_assets=true` 或 `maybe_requires_assets=true` 的题前，必须先**把所有题面侧图片（`question_context`/`figure`/`diagram`/`table`）真正渲染/显示出来给学生看**，并标成「题面图」；只打印路径不算。**不得先显示答案侧图片（`answer_context`/`worked_solution`）**，答案侧图片只能在解答/复盘阶段、题面图已显示之后再展示，并标成「答案图」。**图缺失/不可读、Markdown 链接不渲染、路径写成斜杠开头的盘符伪路径这类无法显示格式、或网页端无法显示图时，绝不出这道题**，改从题库另选 `full` 全文题；不得假装图片已经展示。`stub`/`page_reference` 题须先呈现原页/资源上下文，无法呈现则跳过。
+   * **依赖图的题视觉优先 + `fail-closed`**：题项可带 `requires_assets` / `maybe_requires_assets` / `assets` / `question_text_status`（见 [`docs/file-format.md`](docs/file-format.md) §4）。出 `requires_assets=true` 或 `maybe_requires_assets=true` 的题前，必须先**把所有题面侧图片（`question_context`/`figure`/`diagram`/`table`）真正渲染/显示出来给学生看**，并标注（Markdown 图片的替代文本固定用 `题面图 / question-side asset`——机器判分面；图周围的可见说明只写「题面图」）；只打印路径不算。**不得先显示答案侧图片（`answer_context`/`worked_solution`）**，答案侧图片只能在解答/复盘阶段、题面图已显示之后再展示，并标注（替代文本固定 `答案图 / answer-side asset`，可见说明只写「答案图」）。**图缺失/不可读、Markdown 链接不渲染、路径写成斜杠开头的盘符伪路径这类无法显示格式、或网页端无法显示图时，绝不出这道题**，改从题库另选 `full` 全文题；不得假装图片已经展示。`stub`/`page_reference` 题须先呈现原页/资源上下文，无法呈现则跳过。
 - 范围过滤契约：默认混合题池；学生限定范围（如只做作业题）后即为已记录的范围过滤器，越范围出题前必须先输出「⚠️ 临时覆盖你的 <范围> 范围偏好」，未标 `source_type` 的题在限定范围内一律排除并报告数量（官方选题工具 `scripts/select_questions.py`）。
 - 难度×掌握出题：针对性/检查点练习用官方选题器 `scripts/select_hard_questions.py`——按 难度（`scripts/score_difficulty.py` 的结构启发式下界，非语义）× 错题/疑难/知识点窗口掌握状态 × 学习模式 确定性排序（查缺补漏 薄弱点先易后难→已掌握点先难；零基础全局先易后难）；默认全库，**检查点务必带 `--chapter <当前章>`**（`--from-chapter N` 是「≥N 的所有章」，只给「某章起步补弱」用，别拿来做检查点）；范围/越界声明照常生效（`--source-type all` 可一次性覆盖为混合池，须先声明）。
 - 结构化进度契约：存在 `study_state.json` 时它是唯一事实源——一律经 `scripts/update_progress.py` 更新（`set`/`add-mistake`/`add-confusion`/`render`），`study_progress.md` 是生成视图、严禁手改（下次渲染即丢）；状态写入失败必须告知用户，绝不当作已保存继续。状态文件缺失时先分辨两种情况：Python 可用（新建工作区尚未初始化）→ 先跑 `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> init` 建立事实源再更新（脚本按技能包根解析——学生工作区里没有 scripts/），别停在手改 `study_progress.md` 的路径；真无法运行 Python 才降级为手写 `study_progress.md`（照常有效）。
