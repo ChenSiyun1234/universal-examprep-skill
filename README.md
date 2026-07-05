@@ -167,6 +167,7 @@ python scripts/validate_workspace.py path/to/workspace
 这是一个结构完备的备考智能体技能包，包含以下核心文件：
 
 * 📄 **`SKILL.md`**：**【智能体技能核心 / 兼容入口】** —— 承载完整防编题与来源标注规则，Cursor / VS Code / Claude Code / Windsurf 等工具自动读取。已安装的用户无需做任何改动。
+* 📄 **`SKILL.en.md`**：**【英文操作手册（派生渲染）】** —— 根 `SKILL.md` 的英文版说明，供英文用户阅读；行为以中文 `SKILL.md` 为事实源，本文件非触发入口（无 frontmatter）。
 * 📄 **`AGENTS.md`**：**【通用代理一屏兜底契约】** —— 给不读完整 SKILL.md 的通用代理（Codex、Cursor 规则、Antigravity 等）的防幻觉核心浓缩版。
 * 📂 **`skills/`**：**【模块化技能集合】** —— 按职责拆分的可移植子技能，支持技能集合的 host 可用 `skills/exam-cram/SKILL.md` 作主入口。
   * 📂 `exam-cram/`：主协调器（编排四步工作流 + 模式路由）
@@ -191,6 +192,7 @@ python scripts/validate_workspace.py path/to/workspace
   * 📄 `localization.md`：本地化边界——当前学生侧中文模板与控制逻辑同文件、暂不拆 `locales/`，及将来加第二语言时的拆分规则。
 * 📂 **`prompts/`**：存放提示词。
   * 📄 `web_prompt.md`：**【网页端一键平替提示词】** —— 专为不支持本地写盘的网页版 AI（ChatGPT / DeepSeek 网页端 / 豆包）准备，复制直接用。
+  * 📄 `web_prompt.en.md`：**【英文版网页提示词（派生渲染）】** —— 上者的英文版，默认英文回复（可说「中文」/「双语」切换），锚点与防编题规则同款。
 * 📂 **`templates/`**：备考基准模板文件。
   * 📄 `study_plan_template.md`：复习计划表模板。
   * 📄 `study_progress_template.md`：进度追踪与错题打卡表模板。
@@ -216,7 +218,7 @@ python scripts/validate_workspace.py path/to/workspace
    > **“这是我的【马原】复习大纲，请遵循刚才安装的 `universal-exam-cram-coach` 技能，在后台解析大纲并自动初始化我的备考 Wiki 空间。”**
    * *AI 行为：AI 将自动大纲解析、完成 Wiki 物理切片和进度计划生成。你只需要跟着 AI 的节奏答题复习即可！*
 
-> **📌 多入口说明**：本技能提供多个入口文件适配不同代理——根 `SKILL.md`（默认兼容入口）、`skills/exam-cram/SKILL.md`（模块化主入口，与根 SKILL.md 描述同一行为）、`AGENTS.md`（一屏兜底契约）。详见 [`docs/agent-portability.md`](docs/agent-portability.md)。
+> **📌 多入口说明**：本技能提供多个入口文件适配不同代理——根 `SKILL.md`（默认兼容入口）、`skills/exam-cram/SKILL.md`（模块化主入口，与根 SKILL.md 描述同一行为）、`AGENTS.md`（一屏兜底契约）；英文用户另有派生英文面 `SKILL.en.md` / `prompts/web_prompt.en.md`（行为以中文文件为准）。详见 [`docs/agent-portability.md`](docs/agent-portability.md)。
 
 ---
 
@@ -239,7 +241,7 @@ python scripts/validate_workspace.py path/to/workspace
 | **Cursor / VS Code / Windsurf** | 指令层 | `AGENTS.md`（或未来项目规则） | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | AI 在侧边栏直接写盘，文件结构清晰可见。`AGENTS.md` 作防幻觉规则兜底。 |
 | **Codex** | 技能/指令层 | `AGENTS.md` / `skills/*` | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | `AGENTS.md` 作指令兜底，或作为技能包加载 `skills/`。 |
 | **Devin / Antigravity** | 技能/指令层 | `AGENTS.md` / `skills/*` | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | 自主文件修改与工具执行权限强，克隆项目、运行脚本极快。 |
-| **网页端 AI (ChatGPT / Claude / Gemini / 豆包等)** | 提示词 | [`prompts/web_prompt.md`](prompts/web_prompt.md) | ⭐⭐☆☆☆ | ❌ | 网页端无法修改本地文件。**强烈推荐直接复制使用网页端平替备考提示词**，已含来源标注与防编题规则。 |
+| **网页端 AI (ChatGPT / Claude / Gemini / 豆包等)** | 提示词 | [`prompts/web_prompt.md`](prompts/web_prompt.md)（英文版 [`prompts/web_prompt.en.md`](prompts/web_prompt.en.md)） | ⭐⭐☆☆☆ | ❌ | 网页端无法修改本地文件。**强烈推荐直接复制使用网页端平替备考提示词**，已含来源标注与防编题规则。 |
 | **其他通用代理** | 指令层 | `AGENTS.md` | 视 host | 视 host | 一屏浓缩兜底契约，适配任意支持项目规则/指令的代理。 |
 
 ---
