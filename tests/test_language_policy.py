@@ -128,7 +128,7 @@ class LanguagePolicyTest(unittest.TestCase):
 
     def test_cheatsheet_required_sections(self):
         c = read("skills", "exam-cheatsheet", "SKILL.md")
-        for sec in ("必背", "老师强调", "易错", "3分钟速记"):
+        for sec in ("必背", "例题", "例题解答", "要点解释"):
             self.assertIn(sec, c, f"小抄缺少栏目: {sec}")
 
     # ---- root SKILL.md: source-labeling rules preserved + language policy mirrored ----

@@ -84,8 +84,8 @@ ALLOWED_TOKENS = (
     "❌ 错题档案", "💡 概念疑难点记录", "错题档案", "概念疑难点记录",
     # abstention canon
     "资料里没有这道题的答案",
-    # cheatsheet canonical columns
-    "必背", "老师强调",
+    # cheatsheet canonical columns (C1 four-section layout)
+    "必背",
     # bare circled digits = seven-step block references in control prose (structural, no translation)
     "①", "②", "③", "④", "⑤", "⑥", "⑦",
 )
@@ -190,7 +190,7 @@ class ControlPlaneLanguageTest(unittest.TestCase):
 
     def test_cheatsheet_chinese_sections_preserved(self):
         c = read("skills", "exam-cheatsheet", "SKILL.md")
-        for sec in ("必背", "老师强调", "易错点"):
+        for sec in ("必背", "例题", "要点解释"):
             self.assertIn(sec, c, f"exam-cheatsheet 丢失中文小抄栏目: {sec}")
 
     def test_no_vague_english_control_wording(self):
