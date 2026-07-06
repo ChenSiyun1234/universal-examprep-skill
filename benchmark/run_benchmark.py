@@ -345,8 +345,12 @@ def _resolve_results_dir(cfg_default, results_dir_arg, mock, force):
     is refused unless --force."""
     rd = results_dir_arg or ("results_mock" if mock else cfg_default)
     pub = os.path.realpath(os.path.join(HERE, "results"))
-    if mock and os.path.realpath(os.path.join(HERE, rd)) == pub and not force:
-        sys.exit("[-] 拒绝用 mock 覆盖已发布结果目录 results/（含已提交的真实试点报告）——"
+    rd_real = os.path.realpath(os.path.join(HERE, rd))
+    # refuse mock writes to the published results/ tree — the dir ITSELF or ANY subdir under it
+    # (e.g. --results-dir results/matrix would clobber the committed matrix report).
+    inside = rd_real == pub or rd_real.startswith(pub + os.sep)
+    if mock and inside and not force:
+        sys.exit("[-] 拒绝用 mock 覆盖已发布结果目录 results/（含 results/matrix 等已提交的真实产物）——"
                  "mock 默认写 results_mock/；要覆盖真目录须显式 --force。")
     return rd
 

@@ -28,6 +28,18 @@ class ResultsDirGuard(unittest.TestCase):
         with self.assertRaises(SystemExit):
             RB._resolve_results_dir("results", "results", True, False)
 
+    def test_mock_published_SUBDIR_is_refused(self):
+        # the real hole: a subdir INSIDE results/ (results/matrix, results/convergence*) must also
+        # be refused — a mock run there would clobber a committed real artifact.
+        for sub in ("results/matrix", os.path.join("results", "matrix"), "results/_x"):
+            with self.assertRaises(SystemExit):
+                RB._resolve_results_dir("results", sub, True, False)
+
+    def test_lookalike_sibling_dir_is_allowed(self):
+        # results_mock / results_x are siblings, NOT inside results/ — must NOT be blocked
+        self.assertEqual(RB._resolve_results_dir("results", "results_mock", True, False), "results_mock")
+        self.assertEqual(RB._resolve_results_dir("results", "results_x", True, False), "results_x")
+
     def test_mock_explicit_published_dir_allowed_with_force(self):
         self.assertEqual(RB._resolve_results_dir("results", "results", True, True), "results")
 

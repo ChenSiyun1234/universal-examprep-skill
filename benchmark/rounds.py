@@ -9,7 +9,7 @@
   又能用一张图说清"加了反馈后指标怎么一路逼近上限"。
 
 本模块负责可视化（折线图 + 表）。单独演示（mock 多轮数据）：
-    python rounds.py        # 生成 results/convergence.html
+    python rounds.py        # 生成 results/_demo/convergence.html（mock 演示，不覆盖真图 results/convergence.html）
 """
 
 import os
