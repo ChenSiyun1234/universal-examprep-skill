@@ -116,7 +116,7 @@ For any item with `requires_assets=true` or `maybe_requires_assets=true`:
 3. Label each displayed prompt image PER THE REPLY-LANGUAGE MODE, and include its role/caption when available: in `中文` (and `双语`) sessions the image ALT text is the bilingual composite `题面图 / question-side asset` — the judging-layer surface behavior probes parse (probes only run on zh-mode transcripts) — with visible prose label 题面图; in `English` sessions both the ALT text and the visible label are `Question-side asset` (zero-CJK transcripts, screen-reader visible). See docs/language-policy.md.
 4. Do not show answer-side assets (`answer_context` / `worked_solution`) before all question-side assets have already been shown.
 5. If the asset file is missing/unreadable, the UI cannot render it, or the runtime can only print an unrenderable path, **skip the item or stop with a clear explanation**. Do not proceed as if the image was shown.
-6. Show answer-side assets only during solution/review, after the question-side asset display has happened, and label them `答案图 / answer-side asset`.
+6. Show answer-side assets only during solution/review, after the question-side asset display has happened, and label them per the reply-language mode: `中文`/`双语` → ALT `答案图 / answer-side asset` (visible prose 答案图), `English` → `Answer-side asset`.
 
 `stub` / `page_reference` items follow the same principle: the visible prompt context must appear before teaching, quizzing, hinting, or solving. If the original page/resource is not renderable in the current UI, the item is not safe to ask or explain as a complete prompt.
 
