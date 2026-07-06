@@ -263,7 +263,8 @@ class OfficialTools(unittest.TestCase):
         ws, _m, _rc = _build(tmp, apply=True)
         rc, out = self._capture(SQA.run, ["--workspace", ws, "--id", "suspect_1"])
         self.assertEqual(rc, 0)
-        self.assertIn("![题面图 / question-side asset:", out)     # canonical label (docs/file-format §4)
+        self.assertIn("![题面图:", out)                          # default zh label (docs/file-format §4)
+        self.assertNotIn("question-side asset", out)             # 默认 zh 模式=纯 题面图，非复合形
         self.assertIn("references/assets/", out)
         self.assertNotIn("\\", out.split("(")[1].split(")")[0])   # renderable POSIX path
         # a visual item whose asset file is deleted → fail-closed exit 1

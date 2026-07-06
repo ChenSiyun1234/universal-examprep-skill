@@ -48,7 +48,11 @@ def run(argv=None):
     ap.add_argument("--workspace", required=True)
     ap.add_argument("--id", required=True, help="question id")
     ap.add_argument("--with-answer", action="store_true", help="append answer-side assets afterwards (hidden by default)")
+    ap.add_argument("--lang", choices=("zh", "en"), default="zh",
+                    help="reply-language mode for the visible asset label (zh=题面图/答案图, en=Question-side/Answer-side asset)")
     args = ap.parse_args(argv)
+    q_label = "题面图" if args.lang == "zh" else "Question-side asset"
+    a_label = "答案图" if args.lang == "zh" else "Answer-side asset"
 
     bank_path = os.path.join(args.workspace, "references", "quiz_bank.json")
     if not os.path.isfile(bank_path):
@@ -88,15 +92,15 @@ def run(argv=None):
         raise SystemExit(1)
 
     for a in prompt:                                   # POSIX relative paths → renderable Markdown,
-        rel = str(a["path"]).replace("\\", "/")        # canonical label per docs/file-format.md §4
-        print("![题面图 / question-side asset: %s](%s)" % (a.get("caption") or args.id, rel))
+        rel = str(a["path"]).replace("\\", "/")        # label per reply language (docs/file-format.md §4)
+        print("![%s: %s](%s)" % (q_label, a.get("caption") or args.id, rel))
     if not prompt:
         print("（该题不依赖图片，无题面 asset）")
     if args.with_answer and answer:
         print("\n---（以下为答案/解析侧图片，讲解或复盘时才展示）---")
         for a in answer:
-            print("![答案图 / answer-side asset: %s](%s)"
-                  % (a.get("caption") or args.id, str(a["path"]).replace("\\", "/")))
+            print("![%s: %s](%s)"
+                  % (a_label, a.get("caption") or args.id, str(a["path"]).replace("\\", "/")))
     return 0
 
 
