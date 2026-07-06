@@ -58,5 +58,5 @@ RUN_SKILL_BEHAVIOR_LLM=1 python benchmark/behavior_smoke/run_behavior_smoke.py -
 
 - 这**不是**完整 benchmark，**不替代** Tier 3（完整矩阵）/ Tier 4（长程漂移）。
 - 默认路径**不**跑模型、**不**联网、**不**读 API key、**不**产生费用。
-- `--llm` 是 skeleton：本 PR 只交付 harness 与确定性层，不接入付费真跑。
+- `--llm` 已接通（B2）：单轮驱动真 agent（`claude -p`，或 `--agent-cmd` 传任意/stub 命令），对每个 reply-可验场景套用与 `--mock` **相同**的探测器、写 transcript、输出 metrics；opt-in、默认关闭、不进 CI。接线由 `tests/test_behavior_smoke_live.py` 用 stub agent 确定性验证（状态/文件类场景一次性 `-p` 不可验、诚实 SKIP）。
 - 产物写入 `results/`（已 gitignore），fixture 在改动前会先复制到临时目录。

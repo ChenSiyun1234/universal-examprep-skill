@@ -5,6 +5,7 @@
 **图例**：✅ 覆盖　🟡 部分（结构/schema 层，**或** Tier 2 的确定性 mock 探测——非真 LLM 行为）　❌ 未覆盖　— 不适用
 
 > **Tier 2 列说明**：🟡 = 本 PR（T2）的**确定性 mock 探测器**已覆盖该行为的产物断言（进 CI、零成本）；它**不等于**真 LLM 行为已验证——真 agent 冒烟是 opt-in、不进 CI（见 [`../behavior_smoke/`](../behavior_smoke/)）。
+> **B2 已接通**：`behavior_smoke --llm` 单轮真 agent 冒烟不再是 skeleton——逐场景驱动 `claude -p`（或 `--agent-cmd` stub），对回复套用与 `--mock` **相同**的探测器、写 transcript、输出 metrics（状态/文件类场景一次性 `-p` 不可验、诚实 SKIP）；opt-in、默认关闭、不进 CI，接线由 `tests/test_behavior_smoke_live.py` 用 stub agent 确定性验证。矩阵各行「真 LLM …未验（opt-in）」备注即指该路径。
 >
 > **Tier 4 列说明**：🟡 = PR T4 的**确定性 replay harness** [`../drift/`](../drift/) 在**多轮长会话**维度上覆盖该行为（回放脚本化 transcript + 快照，进根级测试、零成本）；同样**不等于**真 LLM 长会话已验证——真 agent 长会话是 opt-in、未实现、不进 CI。
 

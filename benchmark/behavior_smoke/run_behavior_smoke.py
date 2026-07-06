@@ -8,7 +8,7 @@ This harness tests the skill as a *tutoring workflow*, not just as static files.
   python benchmark/behavior_smoke/run_behavior_smoke.py --mock            # run detectors on mock outputs
 
 The --mock / --check-fixture paths are stdlib-only, no network, no LLM, no API key — safe for CI.
-Real-agent smoke is gated behind BOTH a flag and an env opt-in and never runs by default:
+Real-agent smoke (single-turn per scenario, reusing the SAME detectors as --mock) is WIRED but gated behind BOTH a flag and an env opt-in and never runs by default (its wiring is tested deterministically against a stub agent in tests/test_behavior_smoke_live.py):
 
   RUN_SKILL_BEHAVIOR_LLM=1 python benchmark/behavior_smoke/run_behavior_smoke.py --llm
 
@@ -1078,20 +1078,123 @@ def check_fixture(verbose=True):
     return clean
 
 
-def run_llm():
-    """OPT-IN skeleton: real `claude -p` smoke. Never runs in CI, never reads API keys."""
-    if os.environ.get("RUN_SKILL_BEHAVIOR_LLM") != "1":
-        print("LLM behavioral smoke is OPT-IN and disabled by default.")
-        print("To enable you must set env RUN_SKILL_BEHAVIOR_LLM=1 AND pass --llm. Refusing to run.")
-        return 2
-    # Skeleton only — T2 ships the harness, not the paid runs. The real path would, per scenario:
-    #   1) copy FIXTURE into a tempdir, 2) run `claude -p <scenario.prompt>` (subscription, no API key),
-    #   3) capture output/files into RESULTS_DIR, 4) apply the SAME deterministic detectors as --mock.
-    print("RUN_SKILL_BEHAVIOR_LLM=1 detected, but the real-agent smoke is NOT YET WIRED in this PR.")
-    print("This is a skeleton: it does not run `claude`, capture output, or apply any detector.")
-    print("Scenarios it WILL drive once implemented:",
-          ", ".join(s["name"] for s in load_scenarios()["scenarios"]))
-    return 3   # NOT 0 — a no-op must not be recorded as a passing smoke run
+DEFAULT_AGENT_CMD = "claude -p {prompt}"
+
+
+def _live_prompt(fixture_path, sc):
+    """Build a single-turn prompt from the fixture (bank + plan + progress) plus the scenario's
+    student turn. The reply is fed to the SAME detectors as --mock."""
+    bank = json.loads(_read(os.path.join(fixture_path, "references", "quiz_bank.json")))
+    lines = ["题库（只能从这里出题，出题必须带 [#题号]；判分以下面的标准答案为准）："]
+    for q in bank:
+        if isinstance(q, dict) and q.get("id") is not None:
+            e = "- [#%s] (阶段%s) %s" % (q["id"], q.get("phase", q.get("chapter", "?")),
+                                        str(q.get("question", "")))
+            if q.get("options"):
+                e += " 选项: " + " / ".join(str(o) for o in q["options"])
+            lines.append(e)
+    digest = "\n".join(lines)
+    plan = ""
+    plan_p = os.path.join(fixture_path, "study_plan.md")
+    if os.path.isfile(plan_p):
+        plan = "\n【复习计划】\n" + _read(plan_p)
+    return ("你是「期末极速备考教练」skill。严格按其防幻觉/分章/关卡契约输出。" + plan
+            + "\n【" + digest + "】\n\n学生：" + sc["prompt"] + "\n辅导：")
+
+
+def live_reply_check(name, sc, reply, fixture_path):
+    """Apply the scenario's POSITIVE detector to a LIVE reply (the SAME functions --mock uses, so
+    no logic drift). Returns (ok, detail) for reply-verifiable scenarios, or None for scenarios whose
+    contract is about WRITTEN state/files — a one-shot `claude -p` can only TALK, so those are skipped."""
+    if name == "quiz_bank_only":
+        qmap = load_quiz_bank_map(fixture_path)
+        ch = sc.get("chapter")
+        scoped = {i: v["question"] for i, v in qmap.items()
+                  if ch is None or str(v.get("chapter")) == str(ch) or str(v.get("phase")) == str(ch)}
+        n = len(set(extract_question_ids(reply)))
+        ok = assert_quiz_ids_in_bank(reply, scoped) and n >= sc.get("min_questions", 1)
+        return ok, f"ids_in_bank={ok} n={n}"
+    if name == "scope_override":
+        ok = scope_override_declared(reply)
+        return ok, f"override_declared_before_first_item={ok}"
+    if name == "provenance_labels":
+        ok = has_canonical_provenance_labels(reply)
+        return ok, f"canonical_labels={ok}"
+    if name == "zero_basic_key_question":
+        ok = (teaching_template_ok(reply) and question_source_block_ok(reply)
+              and has_zero_basic_sections(reply))
+        return ok, f"seven_step+source+sections={ok}"
+    if name == "teaching_template":
+        ok = teaching_template_ok(reply) and question_source_block_ok(reply)
+        return ok, f"seven_step+source_block={ok}"
+    if name == "time_budget_no_questions":
+        ok = urgent_no_student_questions_ok(reply)
+        return ok, f"no_student_questions_in_1day={ok}"
+    if name == "knowledge_window_recheck":
+        ok = window_out_rechecked(reply)
+        return ok, f"out_of_window_rechecked={ok}"
+    if name == "language_first_ask":
+        ok = language_first_ask_ok(reply)
+        return ok, f"trilingual_first_ask={ok}"
+    if name == "visual_first_assets":
+        ok = visual_first_asset_display_ok(reply, fixture_path)
+        return ok, f"prompt_asset_first={ok}"
+    return None   # state/file-mutation or best-effort scenario → not reply-verifiable one-shot
+
+
+def run_llm(argv=None):
+    """OPT-IN single-turn live smoke: drive a real agent per scenario, apply the SAME deterministic
+    detectors as --mock to each reply, write transcripts, report metrics. Never in CI.
+
+    Two ways to run:
+      * real agent (subscription, no API key): set RUN_SKILL_BEHAVIOR_LLM=1 (default cmd `claude -p {prompt}`);
+      * any agent / a stub (also how the wiring is tested deterministically): pass --agent-cmd "<cmd {prompt}>".
+    """
+    ap = argparse.ArgumentParser(description="behavior_smoke live (opt-in)")
+    ap.add_argument("--agent-cmd", help="agent 命令模板，含 {prompt}（给了就跑，用于真跑或 stub 测试）")
+    ap.add_argument("--out-dir", default=RESULTS_DIR, help="transcript 输出目录（默认 gitignored results/）")
+    ap.add_argument("--timeout", type=int, default=180)
+    ap.add_argument("--max-out", type=int, default=200000)
+    args, _ = ap.parse_known_args(argv)
+
+    if not args.agent_cmd:
+        if os.environ.get("RUN_SKILL_BEHAVIOR_LLM") != "1":
+            print("LLM behavioral smoke is OPT-IN and disabled by default.")
+            print("Enable a real run: set RUN_SKILL_BEHAVIOR_LLM=1 (uses `claude -p`), "
+                  "or pass --agent-cmd \"<cmd containing {prompt}>\".")
+            return 2
+        args.agent_cmd = DEFAULT_AGENT_CMD
+
+    sys.path.insert(0, os.path.join(ROOT, "benchmark", "drift"))
+    import run_live_smoke as _LS   # reuse its hardened call_agent (timeout / output cap / kill-tree)
+
+    spec = load_scenarios()
+    fixture_path = os.path.join(HERE, spec.get("fixture", "fixtures/mini_course"))
+    out_dir = args.out_dir
+    os.makedirs(out_dir, exist_ok=True)
+    results = []
+    for sc in spec["scenarios"]:
+        name = sc["name"]
+        probe = live_reply_check(name, sc, "", fixture_path)
+        if probe is None:      # not reply-verifiable via a one-shot call — honestly skip
+            results.append((name, "state/file-mutation 或 best-effort，一次性 `-p` 不可验（如需请用 drift live）",
+                            "SKIP"))
+            continue
+        prompt = _live_prompt(fixture_path, sc)
+        reply = _LS.call_agent(args.agent_cmd, prompt, args.timeout, args.max_out, cwd=fixture_path)
+        with open(os.path.join(out_dir, "live_%s.md" % name), "w", encoding="utf-8") as f:
+            f.write("# scenario: %s\n\n## prompt\n%s\n\n## reply\n%s\n" % (name, prompt, reply))
+        ok, detail = live_reply_check(name, sc, reply, fixture_path)
+        results.append((name, detail, "PASS" if ok else "FAIL"))
+
+    n_pass = sum(1 for _, _, s in results if s == "PASS")
+    n_skip = sum(1 for _, _, s in results if s == "SKIP")
+    n_fail = sum(1 for _, _, s in results if s == "FAIL")
+    for nm, detail, status in results:
+        print(f"  [{status}] {nm}: {detail}")
+    print(f"  live smoke: {n_pass} passed, {n_skip} skipped, {n_fail} failed "
+          f"(transcripts → {out_dir}/live_*.md)")
+    return 1 if n_fail else 0
 
 
 def main(argv=None):
@@ -1103,14 +1206,14 @@ def main(argv=None):
                     help="validate the mini-course fixture workspace (Tier 1)")
     ap.add_argument("--llm", action="store_true",
                     help="real claude -p smoke; requires RUN_SKILL_BEHAVIOR_LLM=1 (off in CI)")
-    args = ap.parse_args(argv)
+    args, _rest = ap.parse_known_args(argv)   # --llm sub-flags (--agent-cmd …) parsed inside run_llm
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
         pass
 
     if args.llm:
-        return run_llm()
+        return run_llm(argv)
     if args.check_fixture:
         return 0 if check_fixture() else 1
     if args.mock:
