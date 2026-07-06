@@ -15,7 +15,22 @@ import report_matrix as RM          # noqa: E402
 
 
 class ResultsDirGuard(unittest.TestCase):
-    """_resolve_results_dir: mock → results_mock/ by default; mock → results/ refused w/o --force."""
+    """_resolve_results_dir: mock → results_mock/ by default; mock → results/ refused w/o --force.
+    The guard resolves against the CWD (matching where writes go), so tests pin the CWD to benchmark/."""
+
+    def setUp(self):
+        self._cwd = os.getcwd()
+        os.chdir(HERE)          # benchmark/ — 'results' now realpaths to the published dir
+
+    def tearDown(self):
+        os.chdir(self._cwd)
+
+    def test_guard_resolves_against_cwd_not_here(self):
+        # P1 regression: from the REPO ROOT, `--results-dir benchmark/results/matrix` writes into the
+        # published tree, so it must be refused — even though joining under HERE would miss it.
+        os.chdir(os.path.dirname(HERE))     # repo root
+        with self.assertRaises(SystemExit):
+            RB._resolve_results_dir("results", os.path.join("benchmark", "results", "matrix"), True, False)
 
     def test_real_run_defaults_to_results(self):
         self.assertEqual(RB._resolve_results_dir("results", None, False, False), "results")
