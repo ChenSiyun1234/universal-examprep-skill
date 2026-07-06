@@ -337,11 +337,28 @@ def make_judge(cfg):
         return lambda prompt: run_claude(prompt, ".", cfg["judge_cmd"], cfg["judge_model"], "")[0]
 
 
+# ---------------- results-dir resolution + overwrite guard (B8) ----------------
+def _resolve_results_dir(cfg_default, results_dir_arg, mock, force):
+    """Resolve the output dir and fail-loud if mock would clobber the published results/.
+    Real runs default to cfg's dir (results/); mock defaults to results_mock/ so the documented
+    smoke command never overwrites the committed real pilot report. An explicit mock → results/
+    is refused unless --force."""
+    rd = results_dir_arg or ("results_mock" if mock else cfg_default)
+    pub = os.path.realpath(os.path.join(HERE, "results"))
+    if mock and os.path.realpath(os.path.join(HERE, rd)) == pub and not force:
+        sys.exit("[-] 拒绝用 mock 覆盖已发布结果目录 results/（含已提交的真实试点报告）——"
+                 "mock 默认写 results_mock/；要覆盖真目录须显式 --force。")
+    return rd
+
+
 # ---------------- main ----------------
 def main():
     ap = argparse.ArgumentParser(description="exam-cram skill 防幻觉 benchmark 运行器")
     ap.add_argument("--config", default=os.path.join(HERE, "config.json"))
     ap.add_argument("--mock", action="store_true", help="不调用 Claude，用占位答案跑通全流程")
+    ap.add_argument("--results-dir", help="输出目录（默认 real=results/，mock=results_mock/）")
+    ap.add_argument("--force", action="store_true",
+                    help="允许 mock 覆盖已发布的真实报告目录（默认拒绝）")
     ap.add_argument("--items", default=None, help="覆盖 items_path")
     args = ap.parse_args()
 
@@ -355,6 +372,10 @@ def main():
         cfg["mock"] = True
     if args.items:
         cfg["items_path"] = args.items
+
+    # 覆盖守卫：mock 默认写 results_mock/，绝不静默覆盖已提交的真实试点报告 results/
+    cfg["results_dir"] = _resolve_results_dir(
+        cfg.get("results_dir") or "results", args.results_dir, bool(cfg.get("mock")), args.force)
 
     items = load_jsonl(cfg["items_path"])
     generate, ask_judge = make_generator(cfg), make_judge(cfg)

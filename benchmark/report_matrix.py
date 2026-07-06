@@ -240,9 +240,18 @@ def block_generic(lang, S):
     OWN `models`/`arms` as plain tables, with NO hard-coded MIT 6.006 / PSYC narrative or numbers."""
     en = lang == "en"
     tr = lambda zh, e: e if en else zh
-    arms = [a for a in S.get("arms", [])]
-    models = [m for m in S.get("models", [])]
     mx = S.get("matrix", {})
+    models = [m for m in S.get("models", [])]
+    # arms：以声明列表为序，再并入 matrix 单元键里出现但未声明的臂（防 summary 的
+    # top-level arms 漏列 rawfiles 时 block_generic 静默丢列）——扫 "<model>|<arm>" 键。
+    arms = [a for a in S.get("arms", [])]
+    _seen = set(arms)
+    for _k in mx:
+        if "|" in _k:
+            _a = _k.rsplit("|", 1)[1]
+            if _a not in _seen:
+                arms.append(_a); _seen.add(_a)
+                sys.stderr.write("report_matrix: summary top-level arms 未声明 %r（从 matrix 键补入）\n" % _a)
     o = [f'<div id="{lang}">']
     o.append(f'<h1>{tr("矩阵 summary（显式渲染）", "Matrix summary (explicit render)")}</h1>')
     o.append('<p class="muted">' + tr(

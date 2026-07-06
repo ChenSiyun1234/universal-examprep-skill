@@ -201,5 +201,6 @@ if __name__ == "__main__":
         {"round": 4, "faithfulness": .935, "correctness": .92, "abstention": .97, "hallucination": .04, "missing": 1},
         {"round": 5, "faithfulness": .945, "correctness": .93, "abstention": 1.0, "hallucination": .03, "missing": 0},
     ]
-    render_convergence(demo, "results", mock=True)
-    print("生成: results/convergence.html （浏览器打开看「迭代逼近」图 + 轮次表）")
+    # demo 写独立子目录，绝不覆盖已提交的真实收敛图 results/convergence.*
+    render_convergence(demo, os.path.join("results", "_demo"), mock=True)
+    print("生成: results/_demo/convergence.html （mock 演示；真实收敛图在 results/convergence.html）")
