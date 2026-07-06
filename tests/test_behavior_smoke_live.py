@@ -231,5 +231,34 @@ class LiveRoundTwoFixes(unittest.TestCase):
         self.assertNotIn("answer_sol.png", prompt, "answer-side asset path must NOT leak into the prompt")
 
 
+class LiveRoundThreeFixes(unittest.TestCase):
+    """Regressions for the Codex round-3 findings."""
+
+    def test_T1_scope_override_rejects_invented_id(self):
+        sc = _BY_NAME["scope_override"]
+        # override declared + an INVENTED id (not in the bank) must FAIL live (bank-only violation)
+        invented = "⚠️ 临时覆盖你的 homework-only 范围偏好\n\n题目 [#INVENTED_999] 看图？"
+        self.assertFalse(B.live_reply_check("scope_override", sc, invented, FIXTURE)[0])
+
+    def test_T2_negative_budget_flag_rejected(self):
+        with self.assertRaises(SystemExit):
+            B.run_llm(["--llm", "--agent-cmd", "echo {prompt}", "--max-out", "-2000"])
+        with self.assertRaises(SystemExit):
+            B.run_llm(["--llm", "--agent-cmd", "echo {prompt}", "--timeout", "0"])
+
+    def test_T4_ai_answer_title_warning_enforced_live(self):
+        # a teaching reply whose source block uses the ⚠️ AI-generated label but whose ⑤ title lacks the
+        # full warning must FAIL live (ai_answer mode), same as --mock's ai variant.
+        sc = _BY_NAME["teaching_template"]
+        ai_good = _read(sc["mock_ai_answer"]) if sc.get("mock_ai_answer") else None
+        if ai_good:
+            self.assertTrue(B.live_reply_check("teaching_template", sc, ai_good, FIXTURE)[0],
+                            "the AI-answer golden (⚠️ in both ⑤ title and source label) should pass")
+        warn_missing = _read(sc["mock_negative_warn_title"]) if sc.get("mock_negative_warn_title") else None
+        if warn_missing:
+            self.assertFalse(B.live_reply_check("teaching_template", sc, warn_missing, FIXTURE)[0],
+                             "an AI answer missing the ⚠️ title warning must fail live too")
+
+
 if __name__ == "__main__":
     unittest.main()

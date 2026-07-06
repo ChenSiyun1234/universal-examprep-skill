@@ -1115,6 +1115,13 @@ def _live_prompt(fixture_path, sc):
             + "\n【" + digest + "】\n\n学生：" + sc["prompt"] + "\n辅导：")
 
 
+def _reply_has_ai_generated_label(reply):
+    """True if the reply's provenance uses the AI-generated answer label (zh or en canonical) — then
+    the source-block/⑤ title must carry the full warning (question_source_block_ok ai_answer mode)."""
+    return ("AI生成答案，非老师/教材提供" in reply
+            or "AI-generated answer — not from your teacher or textbook" in reply)
+
+
 def live_reply_check(name, sc, reply, fixture_path):
     """Apply the scenario's POSITIVE detector to a LIVE reply (the SAME functions --mock uses, so
     no logic drift). Returns (ok, detail) for reply-verifiable scenarios, or None for scenarios whose
@@ -1129,23 +1136,34 @@ def live_reply_check(name, sc, reply, fixture_path):
         return ok, f"ids_in_bank={ok} n={n}"
     if name == "scope_override":
         # scope_override_declared treats "no item served" as vacuously OK, so a reply that prints only
-        # the override warning and serves nothing would falsely PASS live — also require ≥1 served item.
-        served = len(extract_question_ids(reply))
-        ok = scope_override_declared(reply) and served >= 1
-        return ok, f"override_before_first_item={scope_override_declared(reply)} items_served={served}"
+        # the override warning and serves nothing would falsely PASS live — also require ≥1 served item
+        # AND that every served [#id] is a REAL bank id (an invented id here is a bank-only violation
+        # this scenario's own prompt must catch, not just quiz_bank_only's different prompt).
+        # pass a SET of ids (not a dict) so this is an ID-only check — invented ids fail, but we don't
+        # content-match the whole question body (the scope_override reply is not a full quiz listing).
+        allids = set(load_quiz_bank_map(fixture_path).keys())
+        ids = extract_question_ids(reply)
+        ok = (scope_override_declared(reply) and len(ids) >= 1
+              and assert_quiz_ids_in_bank(reply, allids))
+        return ok, (f"override_before_first_item={scope_override_declared(reply)} "
+                    f"items_served={len(ids)} all_ids_in_bank={assert_quiz_ids_in_bank(reply, allids)}")
     if name == "provenance_labels":
         ok = has_canonical_provenance_labels(reply)
         return ok, f"canonical_labels={ok}"
     if name == "zero_basic_key_question":
-        ok = (teaching_template_ok(reply) and question_source_block_ok(reply)
+        ai = _reply_has_ai_generated_label(reply)
+        ok = (teaching_template_ok(reply) and question_source_block_ok(reply, ai_answer=ai)
               and has_zero_basic_sections(reply))
-        return ok, f"seven_step+source+sections={ok}"
+        return ok, f"seven_step+source(ai={ai})+sections={ok}"
     if name == "teaching_template":
         # T2: mirror --mock — the default output ENDS at the source block, so unsolicited closers
         # (易错点 / 3分钟速记 / 现在轮到你) after it are a contract violation.
-        ok = (teaching_template_ok(reply) and question_source_block_ok(reply)
+        # R3: when the reply's source block carries the AI-generated label, the ⑤/解析 title must too —
+        # so switch question_source_block_ok to ai_answer mode (like --mock's ai variant).
+        ai = _reply_has_ai_generated_label(reply)
+        ok = (teaching_template_ok(reply) and question_source_block_ok(reply, ai_answer=ai)
               and no_unsolicited_closing_blocks(reply))
-        return ok, f"seven_step+source_block+no_unsolicited_closers={ok}"
+        return ok, f"seven_step+source_block(ai={ai})+no_unsolicited_closers={ok}"
     if name == "time_budget_no_questions":
         ok = urgent_no_student_questions_ok(reply)
         return ok, f"no_student_questions_in_1day={ok}"
@@ -1183,6 +1201,10 @@ def run_llm(argv=None):
     args, rest = ap.parse_known_args(argv)
     if rest:
         ap.error("unrecognized live-smoke arguments: " + " ".join(rest))
+    # budget caps must be positive — a negative --max-out would turn call_agent's guarded stdout read
+    # into an unbounded read, defeating the very budget guard this path exists to enforce.
+    if args.timeout <= 0 or args.max_out <= 0:
+        ap.error("--timeout 和 --max-out 必须为正整数（预算上限，不能 ≤0）")
 
     if not args.agent_cmd:
         if os.environ.get("RUN_SKILL_BEHAVIOR_LLM") != "1":

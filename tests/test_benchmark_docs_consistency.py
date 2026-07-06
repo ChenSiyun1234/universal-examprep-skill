@@ -10,9 +10,10 @@ WITHOUT running any paid benchmark:
 2. Benchmark docs must consistently name the primary matrix arms: closedbook / rawfiles / skill.
 3. Benchmark docs must describe material / dump-all as a legacy/stress/footnote arm,
    not the primary fair control.
-4. The audit doc must honestly state: Tier 2 behavioral smoke is not implemented yet; the published
-   summary.json is a precomputed artifact; T3 added the committed aggregator (aggregate_matrix.py),
-   while the full published MIT/PSYC matrix still needs private/intermediate artifacts + paid runs.
+4. The audit doc must honestly state: Tier 2 behavioral smoke's real-model run is opt-in / not yet
+   performed (B2 wired the --llm harness, but no paid run has happened); the published summary.json is
+   a precomputed artifact; T3 added the committed aggregator (aggregate_matrix.py), while the full
+   published MIT/PSYC matrix still needs private/intermediate artifacts + paid runs.
 
 This is a doc/test consistency guard only — it adds no Tier 2, no benchmark run, no LLM/paid run.
 """
@@ -63,7 +64,10 @@ TIER_FILES = [
 ]
 TIERS_DOC = os.path.join("benchmark", "docs", "test_tiers.md")
 BEHAVIORAL_SMOKE = "行为冒烟"
-NOT_IMPLEMENTED = ["未实现", "尚未实现", "not implemented"]
+# B2 wired the behavior_smoke --llm harness, so the honest Tier-2 status is no longer "unimplemented"
+# but "the real PAID model-validation run is opt-in and has not been performed yet". Accept either
+# framing so the doc must still flag that no real model run has happened.
+REAL_RUN_PENDING = ["未实现", "尚未实现", "not implemented", "尚未实际跑过", "opt-in"]
 # the retired Tier-2 definition ("3–5 题" benchmark-pipeline smoke) must not come back:
 OLD_TIER2_ITEMS = re.compile(r"3\s*[-–—]\s*5\s*题")
 
@@ -129,8 +133,8 @@ class BenchmarkDocsConsistencyTest(unittest.TestCase):
         t2_lines = [ln for ln in a.splitlines() if "Tier 2" in ln and BEHAVIORAL_SMOKE in ln]
         self.assertTrue(t2_lines, "审计文档无「Tier 2 … 行为冒烟」行")
         self.assertTrue(
-            any(any(m in ln for m in NOT_IMPLEMENTED) for ln in t2_lines),
-            "审计文档未在 Tier 2 行为冒烟处声明尚未实现（不能靠文档别处的『未实现』蒙混）",
+            any(any(m in ln for m in REAL_RUN_PENDING) for ln in t2_lines),
+            "审计文档未在 Tier 2 行为冒烟处标明真实模型跑仍 opt-in/尚未实际跑过（不能靠文档别处蒙混）",
         )
 
     def test_audit_states_summary_is_precomputed(self):
@@ -168,8 +172,8 @@ class BenchmarkDocsConsistencyTest(unittest.TestCase):
         t2_lines = [ln for ln in t.splitlines() if "Tier 2" in ln and BEHAVIORAL_SMOKE in ln]
         self.assertTrue(t2_lines, "test_tiers.md 无「Tier 2 … 行为冒烟」行（Tier 2 应定义为行为冒烟）")
         self.assertTrue(
-            any(any(m in ln for m in NOT_IMPLEMENTED) for ln in t2_lines),
-            "test_tiers.md 未在 Tier 2 行为冒烟处声明尚未实现",
+            any(any(m in ln for m in REAL_RUN_PENDING) for ln in t2_lines),
+            "test_tiers.md 未在 Tier 2 行为冒烟处标明真实模型跑仍 opt-in/尚未实际跑过",
         )
 
     def test_test_tiers_tier2_is_not_the_old_pipeline_item_smoke(self):
