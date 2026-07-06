@@ -48,11 +48,20 @@ def run(argv=None):
     ap.add_argument("--workspace", required=True)
     ap.add_argument("--id", required=True, help="question id")
     ap.add_argument("--with-answer", action="store_true", help="append answer-side assets afterwards (hidden by default)")
-    ap.add_argument("--lang", choices=("zh", "en"), default="zh",
-                    help="reply-language mode for the visible asset label (zh=题面图/答案图, en=Question-side/Answer-side asset)")
+    ap.add_argument("--lang", default="zh",
+                    help="reply-language mode for the visible asset label. Accepts zh/en or the "
+                         "persisted study_state.json values `中文`/`English`/`双语` (`中文` and `双语` "
+                         "map to zh labels `题面图`/`答案图`; `English` maps to en labels "
+                         "Question-side/Answer-side asset). The `双语` caller emits the zh labels and "
+                         "adds its own `> EN:` mirror.")
     args = ap.parse_args(argv)
-    q_label = "题面图" if args.lang == "zh" else "Question-side asset"
-    a_label = "答案图" if args.lang == "zh" else "Answer-side asset"
+    _LANG = {"zh": "zh", "en": "en", "中文": "zh", "english": "en", "双语": "zh"}
+    _key = str(args.lang).strip()
+    lang = _LANG.get(_key) or _LANG.get(_key.lower())
+    if lang is None:
+        _die("--lang 只接受 zh/en 或持久化值 中文/English/双语，收到: %r" % args.lang)
+    q_label = "题面图" if lang == "zh" else "Question-side asset"
+    a_label = "答案图" if lang == "zh" else "Answer-side asset"
 
     bank_path = os.path.join(args.workspace, "references", "quiz_bank.json")
     if not os.path.isfile(bank_path):
@@ -93,17 +102,22 @@ def run(argv=None):
 
     for a in prompt:                                   # POSIX relative paths → renderable Markdown,
         rel = str(a["path"]).replace("\\", "/")        # label per reply language (docs/file-format.md §4)
-        print("![%s: %s](%s)" % (q_label, a.get("caption") or args.id, rel))
+        cap = a.get("caption") or args.id
+        if lang == "en" and not str(cap).isascii():   # 中文素材 caption 不进 en 输出
+            cap = args.id
+        print("![%s: %s](%s)" % (q_label, cap, rel))
     if not prompt:
-        print("（该题不依赖图片，无题面 asset）" if args.lang == "zh"
+        print("（该题不依赖图片，无题面 asset）" if lang == "zh"
               else "(this item needs no figure — no question-side asset)")
     if args.with_answer and answer:
-        sep = ("（以下为答案/解析侧图片，讲解或复盘时才展示）" if args.lang == "zh"
+        sep = ("（以下为答案/解析侧图片，讲解或复盘时才展示）" if lang == "zh"
                else "(answer/solution-side images below — shown only during solution or review)")
         print("\n--- %s ---" % sep)
         for a in answer:
-            print("![%s: %s](%s)"
-                  % (a_label, a.get("caption") or args.id, str(a["path"]).replace("\\", "/")))
+            acap = a.get("caption") or args.id
+            if lang == "en" and not str(acap).isascii():
+                acap = args.id
+            print("![%s: %s](%s)" % (a_label, acap, str(a["path"]).replace("\\", "/")))
     return 0
 
 
