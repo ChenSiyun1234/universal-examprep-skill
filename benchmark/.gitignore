@@ -20,6 +20,7 @@ config.json
 # 真实金标集：放行「仅题面」题集(_q)做公开可见的测试集；含答案 key 的完整金标本地保留（可能逐字引用讲义）
 items/items.jsonl
 items/items_*_full.jsonl
+items/items_*_hard.jsonl
 
 # 你的课件/作业 —— 可能含版权或隐私，绝不提交到公开仓库
 materials/*

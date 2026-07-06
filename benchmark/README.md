@@ -54,7 +54,9 @@
 
 5. **真跑**：
 
-   - **用你自己的课程跑（目前唯一能一键端到端跑通的脚本）**：
+   - 📖 **完整操作手册见 [`docs/running-real-runs.md`](docs/running-real-runs.md)**（真·付费 LLM 跑：三臂矩阵 `run_matrix.py --real` + 判分/聚合/报告 + behavior_smoke/drift 冒烟 + 配额/成本/诚实口径 + 更难金标）。下面是简版。
+   - **配置驱动的三臂矩阵（现推荐，从干净 checkout 可跑）** `run_matrix.py`：先 `python run_matrix.py --config config.matrix.example.json --mock --limit 6` 免费验证管线，再 `cp config.matrix.example.json config.json`（改 `judge_model` 为 `sonnet`）后 `python run_matrix.py --config config.json --real`（resumable、配额感知、判分内联）。它读你的 `config.json`（课程×模型×臂），**取代**下面只跑 MIT/PSYC 的 `gen.py`。
+   - **用你自己的课程跑（较早的两臂脚手架）**：
      ```
      python run_benchmark.py --config config.json
      ```
