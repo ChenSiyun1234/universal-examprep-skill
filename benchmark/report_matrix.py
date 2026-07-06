@@ -207,8 +207,8 @@ def block(lang, S):
          "The full-materials arm dumps the whole course and frequently hits subscription-quota / context limits; its error replies are excluded and it is scored on real answers only (sample sizes above) — which itself shows dumping a whole course is operationally impractical."),
         ("幻觉/忠实度以整篇讲义为依据，会把“正确但讲义没写”的展开也算作不忠实——对 grounding 基准是合理口径，但解读时需知晓。",
          "Faithfulness is judged against the full lecture, so correct-but-unsourced elaboration counts as unfaithful — a reasonable grounding criterion, but worth knowing."),
-        ("本报告只针对该 skill 本身、与任何未来平台无关。数据与脚本可复现。",
-         "This report concerns the skill itself only, independent of any future platform. Data and code are reproducible."),
+        ("本报告只针对该 skill 本身、与任何未来平台无关。脚本与流水线机制（fixture 空跑）可复现；已发布的真实付费跑数字依赖私有中间产物，不完全可复现（见 matrix_pipeline.md 诚实边界）。",
+         "This report concerns the skill itself only, independent of any future platform. The scripts and the pipeline mechanism (fixture dry-run) are reproducible; the published paid-run numbers depend on private intermediate artifacts and are not fully reproducible (see matrix_pipeline.md)."),
     ]
     for zh, eng in cav:
         o.append(f"<li>{tr(zh, eng)}</li>")

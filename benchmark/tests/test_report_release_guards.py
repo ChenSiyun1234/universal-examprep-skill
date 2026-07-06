@@ -83,5 +83,24 @@ class BlockGenericArms(unittest.TestCase):
         self.assertLess(html_zh.index("closedbook"), html_zh.index("rawfiles"))
 
 
+class ReportNarrativeMatchesCalibration(unittest.TestCase):
+    """The report's hard-coded kappa narrative must match the committed calibration summary —
+    a guard so the release number can't silently drift from its data source."""
+
+    def test_report_kappa_matches_n24_summary(self):
+        import json
+        summ = json.load(io.open(os.path.join(HERE, "calibration", "kappa_n24_summary.json"),
+                                 encoding="utf-8"))
+        self.assertAlmostEqual(summ["cohen_kappa"], 0.8333, places=4)
+        self.assertEqual(summ["n"], 24)
+        # render the published matrix report and confirm both kappa figures appear verbatim
+        S = json.load(io.open(os.path.join(HERE, "results", "matrix", "summary.json"),
+                              encoding="utf-8"))
+        html_en = "".join(RM.block("en", S))
+        self.assertIn("kappa = 0.833", html_en)       # n=24 blind calibration
+        self.assertIn("kappa = 0.875", html_en)       # n=16 spot-check
+        self.assertIn("24-item", html_en)
+
+
 if __name__ == "__main__":
     unittest.main()
