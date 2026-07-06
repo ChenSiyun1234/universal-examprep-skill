@@ -49,10 +49,11 @@ def load_quiz_bank_ids(workspace):
 
 
 def load_quiz_bank_map(workspace):
-    """{id: {'question', 'chapter', 'phase'}} — used for content-match + chapter/phase-scope checks."""
+    """{id: {'question', 'answer', 'chapter', 'phase'}} — used for content-match, answer-leak guard,
+    and chapter/phase-scope checks."""
     data = json.loads(_read(os.path.join(workspace, "references", "quiz_bank.json")))
-    return {str(q["id"]): {"question": q.get("question", ""), "chapter": q.get("chapter"),
-                           "phase": q.get("phase")}
+    return {str(q["id"]): {"question": q.get("question", ""), "answer": q.get("answer"),
+                           "chapter": q.get("chapter"), "phase": q.get("phase")}
             for q in data if isinstance(q, dict) and q.get("id") is not None}
 
 
@@ -888,18 +889,29 @@ def check_scenario_mock(name, sc, fixture_path=FIXTURE):
     if name == "quiz_bank_only":
         qmap = load_quiz_bank_map(fixture_path)
         ch = sc.get("chapter")
-        scoped = {i: v["question"] for i, v in qmap.items()
-                  if ch is None or str(v.get("chapter")) == str(ch) or str(v.get("phase")) == str(ch)}
+        in_scope = {i: v for i, v in qmap.items()
+                    if ch is None or str(v.get("chapter")) == str(ch) or str(v.get("phase")) == str(ch)}
+        scoped = {i: v["question"] for i, v in in_scope.items()}
         min_q = sc.get("min_questions", 1)
         good_txt = _read(_p(sc["mock_output"]))
         n_good = len(set(extract_question_ids(good_txt)))
-        good = assert_quiz_ids_in_bank(good_txt, scoped) and n_good >= min_q
+        # R5 T1 (parity): run the SAME answer-leak guard live uses — the authored golden must not leak.
+        no_leak = not _reply_leaks_answer_key(good_txt, [v.get("answer") for v in in_scope.values()])
+        good = assert_quiz_ids_in_bank(good_txt, scoped) and n_good >= min_q and no_leak
         bad = assert_quiz_ids_in_bank(_read(_p(sc["mock_negative"])), scoped)
-        return (good and not bad), f"good={good} n={n_good}>={min_q} invented/oos_caught={not bad} ch/phase={ch}"
+        return (good and not bad), (f"good={good} n={n_good}>={min_q} no_leak={no_leak} "
+                                    f"invented/oos_caught={not bad} ch/phase={ch}")
     if name == "scope_override":
-        good = scope_override_declared(_read(_p(sc["mock_output"])))
+        # R5 T2: the good golden must declare the override AND serve a REAL bank item (content-matched),
+        # so a valid-ID sticker on invented text can't pass — the SAME contract live enforces.
+        # R5 T1 (parity): also run the answer-leak guard the live path uses.
+        bank = load_quiz_bank_map(fixture_path)
+        qmap = {i: v["question"] for i, v in bank.items()}
+        good_txt = _read(_p(sc["mock_output"]))
+        no_leak = not _reply_leaks_answer_key(good_txt, [v.get("answer") for v in bank.values()])
+        good = (scope_override_declared(good_txt) and assert_quiz_ids_in_bank(good_txt, qmap) and no_leak)
         bad = scope_override_declared(_read(_p(sc["mock_negative"])))
-        return (good and not bad), f"declared={good} undeclared_caught={not bad}"
+        return (good and not bad), f"declared+bankmatch+no_leak={good} undeclared_caught={not bad}"
     if name == "provenance_labels":
         ok = has_canonical_provenance_labels(_read(_p(sc["mock_output"])))
         return ok, f"all_canonical_labels={ok}"
@@ -1083,22 +1095,32 @@ def check_fixture(verbose=True):
 DEFAULT_AGENT_CMD = "claude -p {prompt}"
 
 
+# scenarios where the agent must PRODUCE a worked answer — only these get the standard answer in the
+# prompt digest. Serve-only quiz scenarios (quiz_bank_only / scope_override) are deliberately EXCLUDED
+# so the agent is never handed an answer key it could echo to the student (R5 T1: answer-leak source).
+_ANSWER_DEPENDENT_SCENARIOS = {"zero_basic_key_question", "teaching_template"}
+
+
 def _live_prompt(fixture_path, sc):
     """Build a single-turn prompt from the fixture (bank + plan + progress) plus the scenario's
     student turn. The reply is fed to each scenarios PRIMARY positive detector — the SAME functions --mock uses (mocks extra negative/variant assertions validate the detectors and are not re-run live)."""
     bank = json.loads(_read(os.path.join(fixture_path, "references", "quiz_bank.json")))
-    lines = ["题库（只能从这里出题，出题必须带 [#题号]；判分以下面的标准答案为准）："]
+    answer_dependent = sc.get("name") in _ANSWER_DEPENDENT_SCENARIOS
+    header = ("题库（只能从这里出题，出题必须带 [#题号]；判分以下面的标准答案为准）：" if answer_dependent
+              else "题库（只能从这里出题，出题必须带 [#题号]；只发题面，不要泄露/展示标准答案给学生）：")
+    lines = [header]
     for q in bank:
         if isinstance(q, dict) and q.get("id") is not None:
             e = "- [#%s] (阶段%s) %s" % (q["id"], q.get("phase", q.get("chapter", "?")),
                                         str(q.get("question", "")))
             if q.get("options"):
                 e += " 选项: " + " / ".join(str(o) for o in q["options"])
-            # T2 (R4): include the standard answer / keywords so answer-dependent scenarios exercise the
-            # bank-backed answer contract instead of the agent solving from prior knowledge (same as
-            # drift/run_live_smoke.bank_digest). The prompt is hidden context, so this is not answer-leak.
+            # R4 T2 / R5 T1: include the standard answer / keywords ONLY for answer-dependent scenarios,
+            # so they exercise the bank-backed answer contract instead of solving from prior knowledge
+            # (same as drift/run_live_smoke.bank_digest). Serve-only quiz scenarios get NO answer in the
+            # prompt — the agent cannot leak a key it was never given (leak-guard below is defense-in-depth).
             key = q.get("answer") if q.get("answer") not in (None, "", []) else q.get("answer_keywords")
-            if key not in (None, "", []):
+            if answer_dependent and key not in (None, "", []):
                 e += "（标准答案: %s）" % key
             # visual-required items must expose their asset paths + roles so a real agent knows
             # WHICH image to render first (the detector expects the exact fixture path back).
@@ -1128,6 +1150,40 @@ def _reply_has_ai_generated_label(reply):
             or "AI-generated answer — not from your teacher or textbook" in reply)
 
 
+# phrases that INTRODUCE a revealed answer (NOT the bare word 答案, which also appears in benign
+# 「回复答案」 instructions). Used to tell a leaked short key from the same token merely occurring as an
+# option label / in the question body. Mirrors the contract of drift/run_live_smoke.py's quiz leak check.
+_ANSWER_REVEAL_SRC = r"标准答案|参考答案|正确答案|正确选项|正确的?是|答案速查|答案[:：是为]|应选|应填|正解|参考解|解析"
+
+
+def _leak_norm(text):
+    # strip whitespace AND markdown emphasis (* _ ~ `) so an answer mangled with **bold** / `code`
+    # can't dodge the verbatim check
+    return re.sub(r"[\s*_~`]+", "", text or "")
+
+
+def _reply_leaks_answer_key(reply, answers):
+    """A student-facing quiz-SERVE reply must not reveal a served item's standard answer. Two leak forms
+    are caught: (1) a DISTINCTIVE full answer (normalized len >= 8 — a worked solution / code block)
+    dumped verbatim; (2) ANY answer, INCLUDING short keys ('A' / 'FIFO' / 'True'), sitting next to an
+    answer-reveal marker (标准答案 / 正确答案 / 答案速查 / 正解 …). The marker requirement for short keys
+    separates a LEAKED key from the same token appearing as an option label, inside the question body, or
+    in a 「回复答案」 instruction. Paraphrased answers are inherently beyond a string check (same limit as
+    the sibling drift/run_live_smoke.py leak oracle)."""
+    r = _leak_norm(reply)
+    for a in answers:
+        s = _leak_norm(str(a)) if a not in (None, "", []) else ""
+        if not s:
+            continue
+        if len(s) >= 8 and s in r:
+            return True
+        esc = re.escape(s)
+        if re.search(r"(?:" + _ANSWER_REVEAL_SRC + r").{0,12}" + esc, r) \
+                or re.search(esc + r".{0,12}(?:" + _ANSWER_REVEAL_SRC + r")", r):
+            return True
+    return False
+
+
 def live_reply_check(name, sc, reply, fixture_path):
     """Apply the scenario's POSITIVE detector to a LIVE reply (the SAME functions --mock uses, so
     no logic drift). Returns (ok, detail) for reply-verifiable scenarios, or None for scenarios whose
@@ -1135,24 +1191,28 @@ def live_reply_check(name, sc, reply, fixture_path):
     if name == "quiz_bank_only":
         qmap = load_quiz_bank_map(fixture_path)
         ch = sc.get("chapter")
-        scoped = {i: v["question"] for i, v in qmap.items()
-                  if ch is None or str(v.get("chapter")) == str(ch) or str(v.get("phase")) == str(ch)}
+        in_scope = {i: v for i, v in qmap.items()
+                    if ch is None or str(v.get("chapter")) == str(ch) or str(v.get("phase")) == str(ch)}
+        scoped = {i: v["question"] for i, v in in_scope.items()}
         n = len(set(extract_question_ids(reply)))
-        ok = assert_quiz_ids_in_bank(reply, scoped) and n >= sc.get("min_questions", 1)
-        return ok, f"ids_in_bank={ok} n={n}"
+        # R5 T1: a serve-only quiz reply must not dump the served items' answer key to the student.
+        leaked = _reply_leaks_answer_key(reply, [v.get("answer") for v in in_scope.values()])
+        ok = assert_quiz_ids_in_bank(reply, scoped) and n >= sc.get("min_questions", 1) and not leaked
+        return ok, f"ids_in_bank={assert_quiz_ids_in_bank(reply, scoped)} n={n} answer_leak={leaked}"
     if name == "scope_override":
         # scope_override_declared treats "no item served" as vacuously OK, so a reply that prints only
-        # the override warning and serves nothing would falsely PASS live — also require ≥1 served item
-        # AND that every served [#id] is a REAL bank id (an invented id here is a bank-only violation
-        # this scenario's own prompt must catch, not just quiz_bank_only's different prompt).
-        # pass a SET of ids (not a dict) so this is an ID-only check — invented ids fail, but we don't
-        # content-match the whole question body (the scope_override reply is not a full quiz listing).
-        allids = set(load_quiz_bank_map(fixture_path).keys())
+        # the override warning and serves nothing would falsely PASS live — also require ≥1 served item.
+        # R5 T2: content-match the served items against the bank (pass a {id: question} DICT, not a set)
+        # so a valid-ID sticker on invented/mismatched text FAILS — mirrors the strengthened --mock check.
+        # R5 T1: also forbid leaking the answer key of any served item.
+        qmap = {i: v["question"] for i, v in load_quiz_bank_map(fixture_path).items()}
         ids = extract_question_ids(reply)
-        ok = (scope_override_declared(reply) and len(ids) >= 1
-              and assert_quiz_ids_in_bank(reply, allids))
+        matched = assert_quiz_ids_in_bank(reply, qmap)
+        leaked = _reply_leaks_answer_key(
+            reply, [v.get("answer") for v in load_quiz_bank_map(fixture_path).values()])
+        ok = scope_override_declared(reply) and len(ids) >= 1 and matched and not leaked
         return ok, (f"override_before_first_item={scope_override_declared(reply)} "
-                    f"items_served={len(ids)} all_ids_in_bank={assert_quiz_ids_in_bank(reply, allids)}")
+                    f"items_served={len(ids)} bank_content_match={matched} answer_leak={leaked}")
     if name == "provenance_labels":
         ok = has_canonical_provenance_labels(reply)
         return ok, f"canonical_labels={ok}"

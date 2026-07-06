@@ -105,7 +105,7 @@ A 线各阶段又新增 **5 个 Tier 2 确定性行为场景**（`behavior_smoke
 ## PR 路线（T-track）
 
 - **T1** ✅：审计文档 + 覆盖矩阵 + benchmark 文档一致性守卫（零成本，纯文档/测试）。
-- **T2** ✅（确定性层）：Tier 2 行为冒烟——自撰非版权 fixture + harness + 确定性探测器（进 CI）；**真 LLM 行为冒烟为 opt-in、未进 CI、尚未实现**。
+- **T2** ✅（确定性层）：Tier 2 行为冒烟——自撰非版权 fixture + harness + 确定性探测器（进 CI）；`--llm` 单轮真 agent 冒烟**接线已接通（B2，stub 确定性测试）**，**真实付费跑仍 opt-in、未进 CI、尚未实际跑过真模型**。
 - **T3** ✅（聚合层）：提交版 `summary.json` 聚合器 [`aggregate_matrix.py`](matrix_pipeline.md) + fixture 级可复现流水线 + `report_matrix.py --summary`。**完整发布矩阵仍依赖私有/付费产物**；benchmark 缓存/续跑/成本日志为后续增量。
 - **T4** ✅（确定性 replay 层）：Tier 4 长程漂移 [`drift/`](../drift/)——回放脚本化 transcript + 快照的自撰非版权 fixture，确定性测量目标保持/计划遵守/编题率/断点恢复/来源标注/进度持久性/wiki 越章读（进根级测试）；**真 LLM 长会话为 opt-in、未进 CI、尚未实现**。
 - **T5**：判分校准（扩 kappa 样本、加 near-miss 越界探针、跨家族裁判、修正数值抽取）。

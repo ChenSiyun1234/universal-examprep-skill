@@ -11,9 +11,11 @@ WITHOUT running any paid benchmark:
 3. Benchmark docs must describe material / dump-all as a legacy/stress/footnote arm,
    not the primary fair control.
 4. The audit doc must honestly state: Tier 2 behavioral smoke's real-model run is opt-in / not yet
-   performed (B2 wired the --llm harness, but no paid run has happened); the published summary.json is
-   a precomputed artifact; T3 added the committed aggregator (aggregate_matrix.py), while the full
-   published MIT/PSYC matrix still needs private/intermediate artifacts + paid runs.
+   performed. Because B2 WIRED the --llm harness, the Tier-2 real-LLM line must use a NOT-YET-RUN
+   phrasing (opt-in / 尚未实际跑过) and must NOT keep the stale "未实现/尚未实现/not implemented"
+   wording (which would contradict the wired harness). The published summary.json is a precomputed
+   artifact; T3 added the committed aggregator (aggregate_matrix.py), while the full published
+   MIT/PSYC matrix still needs private/intermediate artifacts + paid runs.
 
 This is a doc/test consistency guard only — it adds no Tier 2, no benchmark run, no LLM/paid run.
 """
@@ -64,12 +66,22 @@ TIER_FILES = [
 ]
 TIERS_DOC = os.path.join("benchmark", "docs", "test_tiers.md")
 BEHAVIORAL_SMOKE = "行为冒烟"
-# B2 wired the behavior_smoke --llm harness, so the honest Tier-2 status is no longer "unimplemented"
-# but "the real PAID model-validation run is opt-in and has not been performed yet". Accept either
-# framing so the doc must still flag that no real model run has happened.
-REAL_RUN_PENDING = ["未实现", "尚未实现", "not implemented", "尚未实际跑过", "opt-in"]
+# B2 wired the behavior_smoke --llm harness, so the honest Tier-2 status is NO LONGER "unimplemented"
+# (the harness exists) but "the real PAID model-validation run is opt-in and has not run yet". The
+# Tier-2 real-LLM status line must therefore use a NOT-YET-RUN phrasing (ACCEPT) and must NOT keep the
+# stale UNIMPLEMENTED phrasing (STALE) — which would contradict B2's wired harness.
+REAL_RUN_ACCEPT = ["尚未实际跑过", "opt-in", "未实际跑过", "尚未付费"]
+STALE_UNIMPL = ["未实现", "尚未实现", "not implemented"]
 # the retired Tier-2 definition ("3–5 题" benchmark-pipeline smoke) must not come back:
 OLD_TIER2_ITEMS = re.compile(r"3\s*[-–—]\s*5\s*题")
+
+
+def _tier2_real_llm_lines(text):
+    """Lines describing Tier 2's real-LLM / behavioral-smoke status, EXCLUDING lines that also discuss
+    Tier 4 / long-session (a mixed line's 未实现 belongs to Tier 4, not Tier 2 — don't false-positive)."""
+    return [ln for ln in text.splitlines()
+            if "Tier 2" in ln and BEHAVIORAL_SMOKE in ln
+            and "Tier 4" not in ln and "长会话" not in ln]
 
 
 def read(rel):
@@ -129,12 +141,20 @@ class BenchmarkDocsConsistencyTest(unittest.TestCase):
     def test_audit_states_tier2_not_implemented(self):
         a = read(AUDIT)
         self.assertIn("Tier 2", a, "审计文档未提 Tier 2")
-        # tie the not-implemented claim to the Tier 2 + 行为冒烟 line, so a Tier-4-only「未实现」别处出现不能蒙混
-        t2_lines = [ln for ln in a.splitlines() if "Tier 2" in ln and BEHAVIORAL_SMOKE in ln]
+        # tie the status claim to the Tier 2 + 行为冒烟 line, so a Tier-4-only「未实现」别处出现不能蒙混
+        t2_lines = _tier2_real_llm_lines(a)
         self.assertTrue(t2_lines, "审计文档无「Tier 2 … 行为冒烟」行")
+        # (a) at least one Tier-2 line must carry a NOT-YET-RUN status (opt-in / 尚未实际跑过)
         self.assertTrue(
-            any(any(m in ln for m in REAL_RUN_PENDING) for ln in t2_lines),
+            any(any(m in ln for m in REAL_RUN_ACCEPT) for ln in t2_lines),
             "审计文档未在 Tier 2 行为冒烟处标明真实模型跑仍 opt-in/尚未实际跑过（不能靠文档别处蒙混）",
+        )
+        # (b) NO Tier-2 line may still call it unimplemented — B2 wired the --llm harness
+        stale = [ln for ln in t2_lines if any(s in ln for s in STALE_UNIMPL)]
+        self.assertEqual(
+            stale, [],
+            "B2 已接通 --llm harness，Tier 2 行为冒烟不能再写「未实现/尚未实现」"
+            "（应改为「opt-in/尚未实际跑过真模型」）: " + "; ".join(stale),
         )
 
     def test_audit_states_summary_is_precomputed(self):
@@ -168,12 +188,39 @@ class BenchmarkDocsConsistencyTest(unittest.TestCase):
 
     def test_test_tiers_defines_tier2_as_unimplemented_behavioral_smoke(self):
         t = read(TIERS_DOC)
-        # the Tier 2 row itself must name 行为冒烟 AND its not-implemented status (not a whole-doc search)
-        t2_lines = [ln for ln in t.splitlines() if "Tier 2" in ln and BEHAVIORAL_SMOKE in ln]
+        # the Tier 2 row itself must name 行为冒烟 AND its not-yet-run status (not a whole-doc search)
+        t2_lines = _tier2_real_llm_lines(t)
         self.assertTrue(t2_lines, "test_tiers.md 无「Tier 2 … 行为冒烟」行（Tier 2 应定义为行为冒烟）")
         self.assertTrue(
-            any(any(m in ln for m in REAL_RUN_PENDING) for ln in t2_lines),
+            any(any(m in ln for m in REAL_RUN_ACCEPT) for ln in t2_lines),
             "test_tiers.md 未在 Tier 2 行为冒烟处标明真实模型跑仍 opt-in/尚未实际跑过",
+        )
+        stale = [ln for ln in t2_lines if any(s in ln for s in STALE_UNIMPL)]
+        self.assertEqual(
+            stale, [],
+            "B2 已接通 --llm harness，test_tiers.md 的 Tier 2 行为冒烟行不能再写「未实现/尚未实现」: "
+            + "; ".join(stale),
+        )
+
+    def test_tier2_stale_wording_guard_is_scoped(self):
+        # guardrail on the guard: a Tier-2 real-LLM line that still says 尚未实现 MUST be caught; a
+        # compliant opt-in line must pass; a Tier-4 「未实现」 on a mixed line must NOT be attributed to Tier 2.
+        stale_line = "- Tier 2 行为冒烟的真 LLM 行为验证尚未实现。"
+        ok_line = "- Tier 2 行为冒烟真实付费跑仍 opt-in、尚未实际跑过真模型。"
+        mixed_t4 = "- Tier 2 行为冒烟确定性层已落地；Tier 4 真 LLM 长会话仍未实现。"
+        self.assertTrue(
+            _tier2_real_llm_lines(stale_line)
+            and any(s in _tier2_real_llm_lines(stale_line)[0] for s in STALE_UNIMPL),
+            "守卫漏掉了仍写「尚未实现」的 Tier 2 行",
+        )
+        self.assertTrue(
+            _tier2_real_llm_lines(ok_line)
+            and any(m in _tier2_real_llm_lines(ok_line)[0] for m in REAL_RUN_ACCEPT),
+            "守卫误判了合规的「opt-in/尚未实际跑过」Tier 2 行",
+        )
+        self.assertEqual(
+            _tier2_real_llm_lines(mixed_t4), [],
+            "Tier 4 的「未实现」不应被当成 Tier 2 的过时措辞（混合行须排除）",
         )
 
     def test_test_tiers_tier2_is_not_the_old_pipeline_item_smoke(self):

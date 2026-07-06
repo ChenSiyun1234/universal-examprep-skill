@@ -10,6 +10,7 @@ Opt-in gating stays: no env + no --agent-cmd → refuses (returns 2), never runs
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -262,14 +263,97 @@ class LiveRoundThreeFixes(unittest.TestCase):
 
 class LiveRoundFourFixes(unittest.TestCase):
     def test_T2_live_prompt_includes_standard_answers(self):
-        # answer-dependent scenarios must hand the agent the bank's standard answers (hidden context),
-        # so it grades against the bank instead of prior knowledge (same as drift/run_live_smoke).
-        prompt = B._live_prompt(FIXTURE, {"prompt": "出一题"})
+        # answer-dependent scenarios (teaching_template / zero_basic) must hand the agent the bank's
+        # standard answers as hidden context, so it grades against the bank instead of prior knowledge.
+        # Check the ACTUAL embedding token「（标准答案:」— the guard header for serve-only scenarios also
+        # contains the bare word「标准答案」, so a substring check would false-pass (R5 T1 regression).
+        prompt = B._live_prompt(FIXTURE, {"name": "teaching_template", "prompt": "精讲这题"})
         bank = json.loads(_read(os.path.join(os.path.relpath(FIXTURE, BS), "references", "quiz_bank.json")))
         keyed = [q for q in bank if isinstance(q, dict)
                  and (q.get("answer") not in (None, "", []) or q.get("answer_keywords") not in (None, "", []))]
         self.assertTrue(keyed, "fixture should have items with answers/keywords")
-        self.assertIn("标准答案", prompt, "the hidden live prompt must expose the bank's standard answers")
+        self.assertIn("（标准答案:", prompt,
+                      "an answer-dependent live prompt must EMBED the bank's standard answers")
+
+
+class LiveRoundFiveFixes(unittest.TestCase):
+    """Regressions for the Codex round-5 findings: (T1) serve-only quiz turns must not be handed / must
+    not leak the answer key; (T2) scope_override must content-match, not accept a valid-ID sticker."""
+
+    def test_T1_serve_only_prompt_omits_answer_key(self):
+        # a serve-only quiz scenario must NOT receive the standard answers in its prompt — the agent
+        # cannot leak a key it was never given (the leak source is removed at the prompt layer).
+        p = B._live_prompt(FIXTURE, {"name": "quiz_bank_only", "prompt": "出题", "chapter": 1})
+        self.assertNotIn("（标准答案:", p,
+                         "serve-only quiz prompt must not embed the answer key")
+        self.assertIn("不要泄露", p, "serve-only prompt should instruct the agent not to reveal answers")
+
+    def test_T1_quiz_serve_answer_leak_is_caught(self):
+        sc = _BY_NAME["quiz_bank_only"]
+        qmap = B.load_quiz_bank_map(FIXTURE)
+        ch = sc.get("chapter")
+        ch1 = [(i, v) for i, v in qmap.items()
+               if ch is None or str(v.get("chapter")) == str(ch) or str(v.get("phase")) == str(ch)]
+        need = max(sc.get("min_questions", 1), 3)
+        served = "\n".join("题目 [#%s] %s" % (i, v["question"]) for i, v in ch1[:need])
+        # a clean serve (questions only, no key) PASSES
+        self.assertTrue(B.live_reply_check("quiz_bank_only", sc, served, FIXTURE)[0],
+                        "a clean serve of >= min_questions bank items must pass")
+        # the SAME serve that also dumps a distinctive answer key to the student FAILS (answer_leak)
+        leak = next(str(v["answer"]) for i, v in ch1
+                    if v.get("answer") and len(re.sub(r"\s+", "", str(v["answer"]))) >= 8)
+        leaked = served + "\n参考答案：" + leak
+        ok, detail = B.live_reply_check("quiz_bank_only", sc, leaked, FIXTURE)
+        self.assertFalse(ok, "dumping a served item's answer key must fail the quiz-serve smoke")
+        self.assertIn("answer_leak=True", detail)
+
+    def test_T1_short_answer_key_with_marker_is_caught(self):
+        # a dumped answer key of SHORT keys ('A' / 'FIFO') next to a reveal marker must be caught,
+        # even though each key on its own is < 8 chars (the earlier len>=8-only guard missed this).
+        qmap = B.load_quiz_bank_map(FIXTURE)
+        ch1_ans = [v.get("answer") for i, v in qmap.items() if str(v.get("chapter")) == "1"]
+        leak = "答案速查：mc_q1 选 A；mc_q3 填 FIFO。"
+        self.assertTrue(B._reply_leaks_answer_key(leak, ch1_ans),
+                        "short-key answer dump next to a reveal marker must be flagged")
+
+    def test_T1_markdown_mangled_answer_is_caught(self):
+        # a long answer mangled with **bold** must not dodge the verbatim check (normalization strips md)
+        qmap = B.load_quiz_bank_map(FIXTURE)
+        mc_q2 = qmap["mc_q2"]["answer"]
+        mangled = "参考答案：" + mc_q2.replace("先进先出", "先进**先出**", 1)
+        self.assertNotEqual(mangled, "参考答案：" + mc_q2)  # it really is mangled
+        self.assertTrue(B._reply_leaks_answer_key(mangled, [mc_q2]),
+                        "a markdown-mangled long answer must still be caught")
+
+    def test_T1_option_labels_and_instruction_not_flagged(self):
+        # a legit serve that shows mc_q1's options (which contain 'FIFO'/'LIFO', == mc_q3's answer token)
+        # plus a benign 「回复答案」 instruction must NOT be flagged (marker requirement kills the collision)
+        qmap = B.load_quiz_bank_map(FIXTURE)
+        ch1_ans = [v.get("answer") for i, v in qmap.items() if str(v.get("chapter")) == "1"]
+        legit = ("1. [#mc_q1] 栈的存取顺序？\n"
+                 "   A. 先进后出（LIFO） B. 先进先出（FIFO） C. 随机存取 D. 优先级最高先出\n"
+                 "3. [#mc_q3] 队列的存取顺序简称是____（英文缩写）。\n"
+                 "请直接回复你的答案。")
+        self.assertFalse(B._reply_leaks_answer_key(legit, ch1_ans),
+                         "option labels / question body / a 「回复答案」 instruction must not false-positive")
+
+    def test_T2_scope_override_rejects_valid_id_wrong_body(self):
+        sc = _BY_NAME["scope_override"]
+        # a VALID bank id (mc_q1 = a stack MCQ) stuck on a MISMATCHED body (a Venn-figure prompt):
+        # content-match must reject it even though the id + override line are present.
+        wrong = ("⚠️ 临时覆盖你的 homework-only 范围偏好\n\n"
+                 "题目 [#mc_q1] 请根据题面图判断阴影区域表示哪一个集合关系。")
+        self.assertFalse(B.live_reply_check("scope_override", sc, wrong, FIXTURE)[0],
+                         "a valid ID on a mismatched question body must fail content-match")
+        # the corrected golden (real [#vis_q1] + its own body) still passes
+        self.assertTrue(B.live_reply_check("scope_override", sc, _read(sc["mock_output"]), FIXTURE)[0])
+
+    def test_T2_mock_scope_override_content_matches_bank(self):
+        # the strengthened --mock check now content-matches the served item too (mock↔live parity)
+        sc = _BY_NAME["scope_override"]
+        ok, detail = B.check_scenario_mock("scope_override", sc, FIXTURE)
+        self.assertTrue(ok, "strengthened mock scope_override must pass on the corrected golden: " + detail)
+        self.assertIn("bankmatch", detail)
 
 
 if __name__ == "__main__":
