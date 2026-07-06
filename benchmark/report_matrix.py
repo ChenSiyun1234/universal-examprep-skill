@@ -207,8 +207,8 @@ def block(lang, S):
          "The full-materials arm dumps the whole course and frequently hits subscription-quota / context limits; its error replies are excluded and it is scored on real answers only (sample sizes above) — which itself shows dumping a whole course is operationally impractical."),
         ("幻觉/忠实度以整篇讲义为依据，会把“正确但讲义没写”的展开也算作不忠实——对 grounding 基准是合理口径，但解读时需知晓。",
          "Faithfulness is judged against the full lecture, so correct-but-unsourced elaboration counts as unfaithful — a reasonable grounding criterion, but worth knowing."),
-        ("本报告只针对该 skill 本身、与任何未来平台无关。数据与脚本可复现。",
-         "This report concerns the skill itself only, independent of any future platform. Data and code are reproducible."),
+        ("本报告只针对该 skill 本身、与任何未来平台无关。脚本与流水线机制（fixture 空跑）可复现；已发布的真实付费跑数字依赖私有中间产物，不完全可复现（见 matrix_pipeline.md 诚实边界）。",
+         "This report concerns the skill itself only, independent of any future platform. The scripts and the pipeline mechanism (fixture dry-run) are reproducible; the published paid-run numbers depend on private intermediate artifacts and are not fully reproducible (see matrix_pipeline.md)."),
     ]
     for zh, eng in cav:
         o.append(f"<li>{tr(zh, eng)}</li>")
@@ -240,9 +240,18 @@ def block_generic(lang, S):
     OWN `models`/`arms` as plain tables, with NO hard-coded MIT 6.006 / PSYC narrative or numbers."""
     en = lang == "en"
     tr = lambda zh, e: e if en else zh
-    arms = [a for a in S.get("arms", [])]
-    models = [m for m in S.get("models", [])]
     mx = S.get("matrix", {})
+    models = [m for m in S.get("models", [])]
+    # arms：以声明列表为序，再并入 matrix 单元键里出现但未声明的臂（防 summary 的
+    # top-level arms 漏列 rawfiles 时 block_generic 静默丢列）——扫 "<model>|<arm>" 键。
+    arms = [a for a in S.get("arms", [])]
+    _seen = set(arms)
+    for _k in mx:
+        if "|" in _k:
+            _a = _k.rsplit("|", 1)[1]
+            if _a not in _seen:
+                arms.append(_a); _seen.add(_a)
+                sys.stderr.write("report_matrix: summary top-level arms 未声明 %r（从 matrix 键补入）\n" % _a)
     o = [f'<div id="{lang}">']
     o.append(f'<h1>{tr("矩阵 summary（显式渲染）", "Matrix summary (explicit render)")}</h1>')
     o.append('<p class="muted">' + tr(

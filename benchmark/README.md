@@ -42,7 +42,7 @@
    cd benchmark
    python run_benchmark.py --mock --items items/items.example.jsonl
    ```
-   用浏览器打开 `results/report.html` 看看产物长什么样（**中英双语、带图表和指标出处引用**；数字是占位的，仅验证管线）。
+   用浏览器打开 `results_mock/report.html` 看看产物长什么样（mock 默认写 `results_mock/`，绝不覆盖已提交的真报告 `results/`；**中英双语、带图表和指标出处引用**；数字是占位的，仅验证管线）。
 
 1. **放材料**：把课件/作业丢进 `materials/<课程>/`；如要跑遗留/压力臂，再生成 `materials/_combined.txt`（**仅 `material`/dump-all 脚注臂读它**；主对照三臂 `closedbook`/`rawfiles`/`skill` 都不读它）。见 `materials/README.md`。
 
