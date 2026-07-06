@@ -1,4 +1,4 @@
-【重点题精讲】[#mc_q1] 顺序表 vs 链表随机访问
+【重点题精讲】[#mc_q7] 顺序表 vs 链表随机访问
 
 ① 题面图：
 ![题面图 / question-side asset](references/assets/ch02_p12_fig.png)

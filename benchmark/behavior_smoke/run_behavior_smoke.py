@@ -8,7 +8,7 @@ This harness tests the skill as a *tutoring workflow*, not just as static files.
   python benchmark/behavior_smoke/run_behavior_smoke.py --mock            # run detectors on mock outputs
 
 The --mock / --check-fixture paths are stdlib-only, no network, no LLM, no API key — safe for CI.
-Real-agent smoke is gated behind BOTH a flag and an env opt-in and never runs by default:
+Real-agent smoke (single-turn per scenario, reusing the SAME detector FUNCTIONS as --mock — each scenarios primary positive check, applied to the one live reply) is WIRED but gated behind BOTH a flag and an env opt-in and never runs by default (its wiring is tested deterministically against a stub agent in tests/test_behavior_smoke_live.py):
 
   RUN_SKILL_BEHAVIOR_LLM=1 python benchmark/behavior_smoke/run_behavior_smoke.py --llm
 
@@ -18,13 +18,14 @@ import os
 import re
 import sys
 import json
+import shutil
+import tempfile
 import argparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))           # repo root
 FIXTURE = os.path.join(HERE, "fixtures", "mini_course")
 SCENARIOS = os.path.join(HERE, "scenarios.json")
-RESULTS_DIR = os.path.join(HERE, "results")             # gitignored output dir
 
 # canonical provenance labels — single source of truth is docs/language-policy.md
 CANON_LABELS = [
@@ -46,11 +47,26 @@ def load_quiz_bank_ids(workspace):
     return {str(q.get("id")) for q in data if isinstance(q, dict) and q.get("id") is not None}
 
 
+def _q_is_visual(q):
+    """A lecture/figure item: it carries (or may carry) a question-side visual asset."""
+    if q.get("requires_assets") or q.get("maybe_requires_assets"):
+        return True
+    if q.get("question_text_status") in ("stub", "page_reference"):
+        return True
+    for a in (q.get("assets") or []):
+        if isinstance(a, dict) and a.get("role") in ("question_context", "figure", "diagram", "table"):
+            return True
+    return False
+
+
 def load_quiz_bank_map(workspace):
-    """{id: {'question', 'chapter', 'phase'}} — used for content-match + chapter/phase-scope checks."""
+    """{id: {'question','answer','source','ai_generated','visual','chapter','phase'}} — used for
+    content-match, answer-leak guard, bank-derived provenance/visual checks, and chapter/phase scoping."""
     data = json.loads(_read(os.path.join(workspace, "references", "quiz_bank.json")))
-    return {str(q["id"]): {"question": q.get("question", ""), "chapter": q.get("chapter"),
-                           "phase": q.get("phase")}
+    return {str(q["id"]): {"question": q.get("question", ""), "answer": q.get("answer"),
+                           "source": q.get("source"), "ai_generated": q.get("ai_generated"),
+                           "visual": _q_is_visual(q),
+                           "chapter": q.get("chapter"), "phase": q.get("phase")}
             for q in data if isinstance(q, dict) and q.get("id") is not None}
 
 
@@ -886,18 +902,30 @@ def check_scenario_mock(name, sc, fixture_path=FIXTURE):
     if name == "quiz_bank_only":
         qmap = load_quiz_bank_map(fixture_path)
         ch = sc.get("chapter")
-        scoped = {i: v["question"] for i, v in qmap.items()
-                  if ch is None or str(v.get("chapter")) == str(ch) or str(v.get("phase")) == str(ch)}
+        in_scope = {i: v for i, v in qmap.items()
+                    if ch is None or str(v.get("chapter")) == str(ch) or str(v.get("phase")) == str(ch)}
+        scoped = {i: v["question"] for i, v in in_scope.items()}
         min_q = sc.get("min_questions", 1)
         good_txt = _read(_p(sc["mock_output"]))
         n_good = len(set(extract_question_ids(good_txt)))
-        good = assert_quiz_ids_in_bank(good_txt, scoped) and n_good >= min_q
+        # R5 T1 (parity): run the SAME answer-leak guard live uses — the authored golden must not leak.
+        no_leak = not _reply_leaks_answer_key(good_txt, [v.get("answer") for v in in_scope.values()])
+        good = assert_quiz_ids_in_bank(good_txt, scoped) and n_good >= min_q and no_leak
         bad = assert_quiz_ids_in_bank(_read(_p(sc["mock_negative"])), scoped)
-        return (good and not bad), f"good={good} n={n_good}>={min_q} invented/oos_caught={not bad} ch/phase={ch}"
+        return (good and not bad), (f"good={good} n={n_good}>={min_q} no_leak={no_leak} "
+                                    f"invented/oos_caught={not bad} ch/phase={ch}")
     if name == "scope_override":
-        good = scope_override_declared(_read(_p(sc["mock_output"])))
+        # R5 T2: the good golden must declare the override AND serve a REAL bank item (content-matched),
+        # so a valid-ID sticker on invented text can't pass — the SAME contract live enforces.
+        # R5 T1 (parity): also run the answer-leak guard the live path uses.
+        # R6 U2 (parity): content-match against the VISUAL subset only (the scenario asked for figure items).
+        bank = load_quiz_bank_map(fixture_path)
+        vmap = {i: v["question"] for i, v in bank.items() if v.get("visual")}
+        good_txt = _read(_p(sc["mock_output"]))
+        no_leak = not _reply_leaks_answer_key(good_txt, [v.get("answer") for v in bank.values()])
+        good = (scope_override_declared(good_txt) and assert_quiz_ids_in_bank(good_txt, vmap) and no_leak)
         bad = scope_override_declared(_read(_p(sc["mock_negative"])))
-        return (good and not bad), f"declared={good} undeclared_caught={not bad}"
+        return (good and not bad), f"declared+visualmatch+no_leak={good} undeclared_caught={not bad}"
     if name == "provenance_labels":
         ok = has_canonical_provenance_labels(_read(_p(sc["mock_output"])))
         return ok, f"all_canonical_labels={ok}"
@@ -928,11 +956,15 @@ def check_scenario_mock(name, sc, fixture_path=FIXTURE):
     if name == "zero_basic_key_question":
         # A5 起零基础/panic 模式对每道重点题都走七步模板——好例须过 seven-step + 来源块 + 结构小节；
         # 旧的「考点拆解 + 标准答题步骤」两段式（无 ①-⑦）现在必须被判不合格（QR_8）。
+        bank = load_quiz_bank_map(fixture_path)
         good_txt = _read(_p(sc["mock_output"]))
-        good = (teaching_template_ok(good_txt) and question_source_block_ok(good_txt)
+        # R6 U3 (parity): the good golden must tag a REAL bank id AND teach its topic (same as live).
+        grounded = _served_bank_items(good_txt, fixture_path)[1] and _reply_teaches_bank_topic(good_txt, bank)
+        good = (grounded and teaching_template_ok(good_txt) and question_source_block_ok(good_txt)
                 and has_zero_basic_sections(good_txt))
         legacy_bad = teaching_template_ok(_read(_p(sc["mock_negative_legacy"])))
-        return (good and not legacy_bad), f"seven_step_good={good} legacy_two_section_caught={not legacy_bad}"
+        return (good and not legacy_bad), (f"grounded={grounded} seven_step_good={good} "
+                                           f"legacy_two_section_caught={not legacy_bad}")
     if name == "language_first_ask":
         # 首问回合：好例=三语语言行；反例漏语言行 → 被抓（首问回合不要求 set——还没等到学生答复）。
         # 持久化回合：好例=一条 set 三旗标（**乱序**也认）；反例 --language 非 canonical → 被抓。
@@ -983,9 +1015,15 @@ def check_scenario_mock(name, sc, fixture_path=FIXTURE):
         liberal_txt = _read(_p(sc["mock_liberal"]))
         ai_txt = _read(_p(sc["mock_ai_answer"]))
         no_source_txt = _read(_p(sc["mock_negative_no_source"]))
-        good = teaching_template_ok(good_txt) and question_source_block_ok(good_txt)
-        liberal = teaching_template_ok(liberal_txt) and question_source_block_ok(liberal_txt)
-        ai_good = teaching_template_ok(ai_txt) and question_source_block_ok(ai_txt, ai_answer=True)
+        # R6 U3 (parity): each POSITIVE golden must tag a REAL bank id AND teach its topic (same as live).
+        bank = load_quiz_bank_map(fixture_path)
+        def _grounded(txt):
+            return _served_bank_items(txt, fixture_path)[1] and _reply_teaches_bank_topic(txt, bank)
+        good = _grounded(good_txt) and teaching_template_ok(good_txt) and question_source_block_ok(good_txt)
+        liberal = (_grounded(liberal_txt) and teaching_template_ok(liberal_txt)
+                   and question_source_block_ok(liberal_txt))
+        ai_good = (_grounded(ai_txt) and teaching_template_ok(ai_txt)
+                   and question_source_block_ok(ai_txt, ai_answer=True))
         skip_ask = teaching_template_ok(_read(_p(sc["mock_negative_skip_ask"])))
         formula_first = teaching_template_ok(_read(_p(sc["mock_negative_formula_first"])))
         # 来源块缺失的反例：七步模板本身合格（证明两只探测器职责正交），只有来源块探测器抓它
@@ -1078,20 +1116,323 @@ def check_fixture(verbose=True):
     return clean
 
 
-def run_llm():
-    """OPT-IN skeleton: real `claude -p` smoke. Never runs in CI, never reads API keys."""
-    if os.environ.get("RUN_SKILL_BEHAVIOR_LLM") != "1":
-        print("LLM behavioral smoke is OPT-IN and disabled by default.")
-        print("To enable you must set env RUN_SKILL_BEHAVIOR_LLM=1 AND pass --llm. Refusing to run.")
-        return 2
-    # Skeleton only — T2 ships the harness, not the paid runs. The real path would, per scenario:
-    #   1) copy FIXTURE into a tempdir, 2) run `claude -p <scenario.prompt>` (subscription, no API key),
-    #   3) capture output/files into RESULTS_DIR, 4) apply the SAME deterministic detectors as --mock.
-    print("RUN_SKILL_BEHAVIOR_LLM=1 detected, but the real-agent smoke is NOT YET WIRED in this PR.")
-    print("This is a skeleton: it does not run `claude`, capture output, or apply any detector.")
-    print("Scenarios it WILL drive once implemented:",
-          ", ".join(s["name"] for s in load_scenarios()["scenarios"]))
-    return 3   # NOT 0 — a no-op must not be recorded as a passing smoke run
+DEFAULT_AGENT_CMD = "claude -p {prompt}"
+
+
+# scenarios where the agent must PRODUCE a worked answer — only these get the standard answer in the
+# prompt digest. Serve-only quiz scenarios (quiz_bank_only / scope_override) are deliberately EXCLUDED
+# so the agent is never handed an answer key it could echo to the student (R5 T1: answer-leak source).
+_ANSWER_DEPENDENT_SCENARIOS = {"zero_basic_key_question", "teaching_template"}
+
+
+def _live_prompt(fixture_path, sc):
+    """Build a single-turn prompt from the fixture (bank + plan + progress) plus the scenario's
+    student turn. The reply is fed to each scenarios PRIMARY positive detector — the SAME functions --mock uses (mocks extra negative/variant assertions validate the detectors and are not re-run live)."""
+    bank = json.loads(_read(os.path.join(fixture_path, "references", "quiz_bank.json")))
+    answer_dependent = sc.get("name") in _ANSWER_DEPENDENT_SCENARIOS
+    header = ("题库（只能从这里出题，出题必须带 [#题号]；判分以下面的标准答案为准）：" if answer_dependent
+              else "题库（只能从这里出题，出题必须带 [#题号]；只发题面，不要泄露/展示标准答案给学生）：")
+    lines = [header]
+    for q in bank:
+        if isinstance(q, dict) and q.get("id") is not None:
+            e = "- [#%s] (阶段%s) %s" % (q["id"], q.get("phase", q.get("chapter", "?")),
+                                        str(q.get("question", "")))
+            if q.get("options"):
+                e += " 选项: " + " / ".join(str(o) for o in q["options"])
+            # R4 T2 / R5 T1: include the standard answer / keywords ONLY for answer-dependent scenarios,
+            # so they exercise the bank-backed answer contract instead of solving from prior knowledge
+            # (same as drift/run_live_smoke.bank_digest). Serve-only quiz scenarios get NO answer in the
+            # prompt — the agent cannot leak a key it was never given (leak-guard below is defense-in-depth).
+            key = q.get("answer") if q.get("answer") not in (None, "", []) else q.get("answer_keywords")
+            if answer_dependent and key not in (None, "", []):
+                e += "（标准答案: %s）" % key
+            # visual-required items must expose their asset paths + roles so a real agent knows
+            # WHICH image to render first (the detector expects the exact fixture path back).
+            if q.get("requires_assets") or q.get("maybe_requires_assets") \
+                    or q.get("question_text_status") in ("stub", "page_reference"):
+                for a in (q.get("assets") or []):
+                    # ONLY question-side assets go in the prompt — never answer_context/worked_solution
+                    # (emitting those would leak the answer / tell the agent to show it before solving).
+                    if (isinstance(a, dict) and a.get("path")
+                            and a.get("role") in ("question_context", "figure", "diagram", "table")):
+                        e += "\n    题面侧图（先真实展示、标「题面图」）: %s（role=%s）" % (
+                            str(a["path"]).replace("\\", "/"), a.get("role"))
+            lines.append(e)
+    digest = "\n".join(lines)
+    plan = ""
+    plan_p = os.path.join(fixture_path, "study_plan.md")
+    if os.path.isfile(plan_p):
+        plan = "\n【复习计划】\n" + _read(plan_p)
+    return ("你是「期末极速备考教练」skill。严格按其防幻觉/分章/关卡契约输出。" + plan
+            + "\n【" + digest + "】\n\n学生：" + sc["prompt"] + "\n辅导：")
+
+
+def _reply_has_ai_generated_label(reply):
+    """True if the reply's provenance uses the AI-generated answer label (zh or en canonical) — then
+    the source-block/⑤ title must carry the full warning (question_source_block_ok ai_answer mode)."""
+    return ("AI生成答案，非老师/教材提供" in reply
+            or "AI-generated answer — not from your teacher or textbook" in reply)
+
+
+# phrases that INTRODUCE a revealed answer (NOT the bare word 答案, which also appears in benign
+# 「回复答案」 instructions). Used to tell a leaked short key from the same token merely occurring as an
+# option label / in the question body. Mirrors the contract of drift/run_live_smoke.py's quiz leak check.
+_ANSWER_REVEAL_SRC = r"标准答案|参考答案|正确答案|正确选项|正确的?是|答案速查|答案[:：是为]|应选|应填|正解|参考解|解析"
+
+
+def _leak_norm(text):
+    # strip whitespace AND markdown emphasis (* _ ~ `) so an answer mangled with **bold** / `code`
+    # can't dodge the verbatim check
+    return re.sub(r"[\s*_~`]+", "", text or "")
+
+
+def _reply_leaks_answer_key(reply, answers):
+    """A student-facing quiz-SERVE reply must not reveal a served item's standard answer. Two leak forms
+    are caught: (1) a DISTINCTIVE full answer (normalized len >= 8 — a worked solution / code block)
+    dumped verbatim; (2) ANY answer, INCLUDING short keys ('A' / 'FIFO' / 'True'), sitting next to an
+    answer-reveal marker (标准答案 / 正确答案 / 答案速查 / 正解 …). The marker requirement for short keys
+    separates a LEAKED key from the same token appearing as an option label, inside the question body, or
+    in a 「回复答案」 instruction. Paraphrased answers are inherently beyond a string check (same limit as
+    the sibling drift/run_live_smoke.py leak oracle)."""
+    r = _leak_norm(reply)
+    for a in answers:
+        s = _leak_norm(str(a)) if a not in (None, "", []) else ""
+        if not s:
+            continue
+        if len(s) >= 8 and s in r:
+            return True
+        esc = re.escape(s)
+        if re.search(r"(?:" + _ANSWER_REVEAL_SRC + r").{0,12}" + esc, r) \
+                or re.search(esc + r".{0,12}(?:" + _ANSWER_REVEAL_SRC + r")", r):
+            return True
+    return False
+
+
+def _served_bank_items(reply, fixture_path):
+    """For a template reply that tags [#id]s: (ids, all_in_bank, any_ai_generated).
+    all_in_bank is False for an empty or any-invented tag set (R6 U3 — a fabricated [#FAKE_999] must not
+    pass). any_ai_generated flags a served item the bank marks source=ai_generated (R6 U6)."""
+    bank = load_quiz_bank_map(fixture_path)
+    ids = extract_question_ids(reply)
+    in_bank = [i for i in ids if i in bank]
+    all_in_bank = bool(ids) and len(in_bank) == len(ids)
+    any_ai = any(bank[i].get("ai_generated") or bank[i].get("source") == "ai_generated" for i in in_bank)
+    return ids, all_in_bank, any_ai
+
+
+def _reply_teaches_bank_topic(reply, bank):
+    """R6 U3: each served [#id]'s segment must actually TEACH that bank item's topic — require a
+    distinctive >=4-char CJK n-gram of the bank question to appear in the id's segment (its tag line +
+    following lines up to the next tag). This TOLERATES pedagogical retitling / paraphrase / dropped
+    parentheticals (only ONE shared 4-gram is needed) but REJECTS a real id stuck on a wholly fabricated
+    off-bank question (a real citation on invented content — the exact hallucination the skill forbids).
+    An id whose question has no >=4-char CJK run imposes no anchor (can't be gamed by content there)."""
+    lines = (reply or "").splitlines()
+    for idx, ln in enumerate(lines):
+        lids = extract_question_ids(ln)
+        if not lids:
+            continue
+        item = bank.get(lids[0])
+        q = item.get("question", "") if isinstance(item, dict) else ""
+        grams = set()
+        for run in re.findall(r"[一-鿿]{4,}", re.sub(r"\s+", "", q)):
+            for i in range(len(run) - 3):
+                grams.add(run[i:i + 4])
+        if not grams:
+            continue
+        seg = re.sub(r"\[#[^\]]+\]", "", ln)
+        for nxt in lines[idx + 1:]:
+            if extract_question_ids(nxt):
+                break
+            seg += nxt
+        seg = re.sub(r"\s+", "", seg)
+        if not any(g in seg for g in grams):
+            return False
+    return True
+
+
+def live_reply_check(name, sc, reply, fixture_path):
+    """Apply the scenario's POSITIVE detector to a LIVE reply (the SAME functions --mock uses, so
+    no logic drift). Returns (ok, detail) for reply-verifiable scenarios, or None for scenarios whose
+    contract is about WRITTEN state/files — a one-shot `claude -p` can only TALK, so those are skipped."""
+    if name == "quiz_bank_only":
+        qmap = load_quiz_bank_map(fixture_path)
+        ch = sc.get("chapter")
+        in_scope = {i: v for i, v in qmap.items()
+                    if ch is None or str(v.get("chapter")) == str(ch) or str(v.get("phase")) == str(ch)}
+        scoped = {i: v["question"] for i, v in in_scope.items()}
+        n = len(set(extract_question_ids(reply)))
+        # R5 T1: a serve-only quiz reply must not dump the served items' answer key to the student.
+        leaked = _reply_leaks_answer_key(reply, [v.get("answer") for v in in_scope.values()])
+        ok = assert_quiz_ids_in_bank(reply, scoped) and n >= sc.get("min_questions", 1) and not leaked
+        return ok, f"ids_in_bank={assert_quiz_ids_in_bank(reply, scoped)} n={n} answer_leak={leaked}"
+    if name == "scope_override":
+        # scope_override_declared treats "no item served" as vacuously OK, so a reply that prints only
+        # the override warning and serves nothing would falsely PASS live — also require ≥1 served item.
+        # R5 T2: content-match the served items against the bank (pass a {id: question} DICT, not a set)
+        # so a valid-ID sticker on invented/mismatched text FAILS — mirrors the strengthened --mock check.
+        # R6 U2: the scenario asked for lecture VISUAL/figure items — restrict the acceptable map to the
+        # visual subset, so serving a non-visual bank item (e.g. the stack MCQ) after the override FAILS.
+        # R5 T1: also forbid leaking the answer key of any served item.
+        bank = load_quiz_bank_map(fixture_path)
+        vmap = {i: v["question"] for i, v in bank.items() if v.get("visual")}
+        ids = extract_question_ids(reply)
+        matched = assert_quiz_ids_in_bank(reply, vmap)
+        leaked = _reply_leaks_answer_key(reply, [v.get("answer") for v in bank.values()])
+        ok = scope_override_declared(reply) and len(ids) >= 1 and matched and not leaked
+        return ok, (f"override_before_first_item={scope_override_declared(reply)} "
+                    f"items_served={len(ids)} visual_content_match={matched} answer_leak={leaked}")
+    if name == "provenance_labels":
+        ok = has_canonical_provenance_labels(reply)
+        return ok, f"canonical_labels={ok}"
+    if name == "zero_basic_key_question":
+        # R6 U3: the served [#id] must be a REAL bank item (a fabricated [#FAKE_999] must not pass) AND
+        # the taught content must match that item's topic (a real id on a fabricated off-bank question
+        # must not pass). R6 U6: force AI-answer mode when the BANK marks the served item ai_generated —
+        # so a bank ai_generated item can't be mislabeled 🟢; also honor the reply's own ⚠️ label.
+        bank = load_quiz_bank_map(fixture_path)
+        _ids, all_in_bank, bank_ai = _served_bank_items(reply, fixture_path)
+        on_topic = _reply_teaches_bank_topic(reply, bank)
+        ai = _reply_has_ai_generated_label(reply) or bank_ai
+        ok = (all_in_bank and on_topic and teaching_template_ok(reply)
+              and question_source_block_ok(reply, ai_answer=ai) and has_zero_basic_sections(reply))
+        return ok, f"ids_in_bank={all_in_bank} on_topic={on_topic} seven_step+source(ai={ai})+sections={ok}"
+    if name == "teaching_template":
+        # T2: mirror --mock — the default output ENDS at the source block, so unsolicited closers
+        # (易错点 / 3分钟速记 / 现在轮到你) after it are a contract violation.
+        # R3: when the reply's source block carries the AI-generated label, the ⑤/解析 title must too.
+        # R6 U3: served [#id] must be a REAL bank item AND teach its topic. R6 U6: bank ai_generated
+        # forces ⚠️ mode.
+        bank = load_quiz_bank_map(fixture_path)
+        _ids, all_in_bank, bank_ai = _served_bank_items(reply, fixture_path)
+        on_topic = _reply_teaches_bank_topic(reply, bank)
+        ai = _reply_has_ai_generated_label(reply) or bank_ai
+        ok = (all_in_bank and on_topic and teaching_template_ok(reply)
+              and question_source_block_ok(reply, ai_answer=ai) and no_unsolicited_closing_blocks(reply))
+        return ok, f"ids_in_bank={all_in_bank} on_topic={on_topic} seven_step+source(ai={ai})+no_closers={ok}"
+    if name == "time_budget_no_questions":
+        ok = urgent_no_student_questions_ok(reply)
+        return ok, f"no_student_questions_in_1day={ok}"
+    if name == "knowledge_window_recheck":
+        ok = window_out_rechecked(reply)
+        return ok, f"out_of_window_rechecked={ok}"
+    if name == "language_first_ask":
+        ok = language_first_ask_ok(reply)
+        return ok, f"trilingual_first_ask={ok}"
+    if name == "visual_first_assets":
+        ok = visual_first_asset_display_ok(reply, fixture_path)
+        return ok, f"prompt_asset_first={ok}"
+    if name == "checkpoint_recovery":
+        # R6 U4: reply-verifiable — the resume message must point at the CURRENT phase and not restart at
+        # phase 1. The fixture's phase is a static precondition (checked in --mock); the drift-catching
+        # signal (does the agent resume from phase N vs restart?) lives in the assistant text, so DON'T
+        # group this with the file-mutation SKIP cases.
+        ok = resume_refers_to_phase(reply, sc["expected_phase"])
+        return ok, f"resume_refers_to_phase({sc['expected_phase']})={ok}"
+    return None   # state/file-mutation or best-effort scenario → not reply-verifiable one-shot
+
+
+# the repo's skill-contract surface — copied into every live sandbox so a paid `--llm` run exercises
+# THIS skill, not a generic agent guessing from the prompt stub (R6 U1). Only paths that exist are copied.
+_SKILL_CONTRACT_PATHS = ("SKILL.md", "SKILL.en.md", "AGENTS.md", "skills", "prompts", "scripts", "docs")
+
+
+def _prepare_live_sandbox(fixture_path):
+    """Throwaway sandbox = a COPY of the fixture workspace (the agent's cwd) PLUS the repo's skill
+    contract. Returns (sandbox_root, agent_cwd). The detector ORACLE always reads the pristine original
+    fixture_path, so a misbehaving agent can neither dirty the repo nor poison later checks (R6 U1)."""
+    sandbox = tempfile.mkdtemp(prefix="bsmoke_")
+    agent_cwd = os.path.join(sandbox, "ws")
+    shutil.copytree(fixture_path, agent_cwd)
+    for rel in _SKILL_CONTRACT_PATHS:
+        src = os.path.join(ROOT, rel)
+        if not os.path.exists(src):
+            continue
+        dst = os.path.join(agent_cwd, rel)
+        if os.path.isdir(src):
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+        else:
+            shutil.copy2(src, dst)
+    return sandbox, agent_cwd
+
+
+def run_llm(argv=None):
+    """OPT-IN single-turn live smoke: drive a real agent per scenario, apply each scenarios PRIMARY positive detector — the SAME deterministic
+    detectors as --mock to each reply, write transcripts, report metrics. Never in CI.
+
+    Two ways to run:
+      * real agent (subscription, no API key): set RUN_SKILL_BEHAVIOR_LLM=1 (default cmd `claude -p {prompt}`);
+      * any agent / a stub (also how the wiring is tested deterministically): pass --agent-cmd "<cmd {prompt}>".
+    """
+    ap = argparse.ArgumentParser(description="behavior_smoke live (opt-in)")
+    ap.add_argument("--agent-cmd", help="agent 命令模板，含 {prompt}（给了就跑，用于真跑或 stub 测试）")
+    ap.add_argument("--out-dir", default=None,
+                    help="transcript 输出目录（默认写到仓库外的系统临时目录，避免含答案键的 transcript 落进工作树；"
+                         "R6 U5）")
+    ap.add_argument("--timeout", type=int, default=180)
+    ap.add_argument("--max-out", type=int, default=200000)
+    # main-level flags reach here in the forwarded argv — declare them as harmless so ONLY genuine
+    # typos land in the remainder, which we then reject (a paid run must not silently proceed on
+    # `--timeot 5` with the default timeout).
+    ap.add_argument("--llm", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--mock", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--check-fixture", action="store_true", help=argparse.SUPPRESS)
+    args, rest = ap.parse_known_args(argv)
+    if rest:
+        ap.error("unrecognized live-smoke arguments: " + " ".join(rest))
+    # budget caps must be positive — a negative --max-out would turn call_agent's guarded stdout read
+    # into an unbounded read, defeating the very budget guard this path exists to enforce.
+    if args.timeout <= 0 or args.max_out <= 0:
+        ap.error("--timeout 和 --max-out 必须为正整数（预算上限，不能 ≤0）")
+
+    if not args.agent_cmd:
+        if os.environ.get("RUN_SKILL_BEHAVIOR_LLM") != "1":
+            print("LLM behavioral smoke is OPT-IN and disabled by default.")
+            print("Enable a real run: set RUN_SKILL_BEHAVIOR_LLM=1 (uses `claude -p`), "
+                  "or pass --agent-cmd \"<cmd containing {prompt}>\".")
+            return 2
+        args.agent_cmd = DEFAULT_AGENT_CMD
+
+    sys.path.insert(0, os.path.join(ROOT, "benchmark", "drift"))
+    import run_live_smoke as _LS   # reuse its hardened call_agent (timeout / output cap / kill-tree)
+
+    spec = load_scenarios()
+    fixture_path = os.path.join(HERE, spec.get("fixture", "fixtures/mini_course"))
+    # R6 U5: default the transcript dir OUTSIDE the repo. A naive `--llm` run then never writes prompt/
+    # reply transcripts (which embed answer keys for answer-dependent scenarios) into the worktree.
+    out_dir = args.out_dir or tempfile.mkdtemp(prefix="bsmoke_out_")
+    os.makedirs(out_dir, exist_ok=True)
+    results = []
+    for sc in spec["scenarios"]:
+        name = sc["name"]
+        probe = live_reply_check(name, sc, "", fixture_path)
+        if probe is None:      # not reply-verifiable via a one-shot call — honestly skip
+            results.append((name, "state/file-mutation 或 best-effort，一次性 `-p` 不可验（如需请用 drift live）",
+                            "SKIP"))
+            continue
+        prompt = _live_prompt(fixture_path, sc)
+        # T1/U1: run the agent inside a THROWAWAY sandbox = fixture copy + the repo's skill contract
+        # (SKILL.md / skills/ / …). The agent has filesystem access and could mutate quiz_bank.json /
+        # progress, but the detector ORACLE always reads the pristine original fixture_path, so a
+        # misbehaving agent can neither dirty the repo nor poison later checks.
+        sandbox, agent_cwd = _prepare_live_sandbox(fixture_path)
+        try:
+            reply = _LS.call_agent(args.agent_cmd, prompt, args.timeout, args.max_out, cwd=agent_cwd)
+        finally:
+            shutil.rmtree(sandbox, ignore_errors=True)
+        with open(os.path.join(out_dir, "live_%s.md" % name), "w", encoding="utf-8") as f:
+            f.write("# scenario: %s\n\n## prompt\n%s\n\n## reply\n%s\n" % (name, prompt, reply))
+        ok, detail = live_reply_check(name, sc, reply, fixture_path)
+        results.append((name, detail, "PASS" if ok else "FAIL"))
+
+    n_pass = sum(1 for _, _, s in results if s == "PASS")
+    n_skip = sum(1 for _, _, s in results if s == "SKIP")
+    n_fail = sum(1 for _, _, s in results if s == "FAIL")
+    for nm, detail, status in results:
+        print(f"  [{status}] {nm}: {detail}")
+    print(f"  live smoke: {n_pass} passed, {n_skip} skipped, {n_fail} failed "
+          f"(transcripts → {out_dir}/live_*.md)")
+    return 1 if n_fail else 0
 
 
 def main(argv=None):
@@ -1103,14 +1444,18 @@ def main(argv=None):
                     help="validate the mini-course fixture workspace (Tier 1)")
     ap.add_argument("--llm", action="store_true",
                     help="real claude -p smoke; requires RUN_SKILL_BEHAVIOR_LLM=1 (off in CI)")
-    args = ap.parse_args(argv)
+    args, _rest = ap.parse_known_args(argv)   # --llm sub-flags (--agent-cmd …) parsed inside run_llm
+    # T3: leftover args are ONLY legitimate for the --llm runner (--agent-cmd/--out-dir/…). Outside it,
+    # an unknown/misspelled flag must FAIL loudly, not silently make a --mock/--check-fixture run green.
+    if _rest and not args.llm:
+        ap.error("unrecognized arguments: " + " ".join(_rest))
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
         pass
 
     if args.llm:
-        return run_llm()
+        return run_llm(argv)
     if args.check_fixture:
         return 0 if check_fixture() else 1
     if args.mock:

@@ -756,16 +756,14 @@ class BehaviorSmokeTest(unittest.TestCase):
 
     # 15
     def test_llm_is_refused_without_env_optin(self):
+        # opt-in gate: with NEITHER the env flag NOR --agent-cmd, --llm must refuse (return 2) and never
+        # invoke `claude`. The real wiring (driving an agent + applying the same detectors) is now
+        # exercised deterministically against a stub agent in tests/test_behavior_smoke_live.py.
         saved = os.environ.pop("RUN_SKILL_BEHAVIOR_LLM", None)
         try:
-            self.assertEqual(_silent(H.main, ["--llm"]), 2, "未设置 env 时 --llm 应被拒绝（返回 2）")
-            os.environ["RUN_SKILL_BEHAVIOR_LLM"] = "1"
-            # even WITH the env opt-in the skeleton must NOT return 0 (a no-op must not record success)
-            rc = _silent(H.main, ["--llm"])
-            self.assertNotEqual(rc, 0, "未实现的 LLM skeleton 不能返回 0（避免把空跑记成通过）")
-            self.assertEqual(rc, 3)
+            self.assertEqual(_silent(H.main, ["--llm"]), 2,
+                             "未设置 env 且未给 --agent-cmd 时 --llm 应被拒绝（返回 2）")
         finally:
-            os.environ.pop("RUN_SKILL_BEHAVIOR_LLM", None)
             if saved is not None:
                 os.environ["RUN_SKILL_BEHAVIOR_LLM"] = saved
 

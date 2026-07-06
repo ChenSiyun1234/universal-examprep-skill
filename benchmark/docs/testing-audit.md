@@ -1,7 +1,7 @@
 # 测试与 Benchmark 审计 (Testing & Benchmark Audit)
 
 > 这是一份**诚实的现状快照**，用来在投入昂贵测试之前，把「我们到底测了什么、没测什么」说清楚。
-> 非营销文档。结论指向 PR 路线（见文末）。当前进度：**T1**（审计文档 + 一致性守卫）、**T2**（Tier 2 确定性行为冒烟层）、**T3/T3.1**（提交版聚合器 `aggregate_matrix.py` + fixture 流水线 + 判分↔聚合桥）、**T4**（Tier 4 长程漂移**确定性 replay harness** [`drift/`](../drift/)）已落地；T2 的**真 LLM 行为**、T4 的**真 LLM 长会话**与 **T5** 仍待做（完整发布矩阵仍需私有/付费产物）。本文件是跨 PR 维护的活快照，不跑付费 benchmark。
+> 非营销文档。结论指向 PR 路线（见文末）。当前进度：**T1**（审计文档 + 一致性守卫）、**T2**（Tier 2 确定性行为冒烟层）、**T3/T3.1**（提交版聚合器 `aggregate_matrix.py` + fixture 流水线 + 判分↔聚合桥）、**T4**（Tier 4 长程漂移**确定性 replay harness** [`drift/`](../drift/)）已落地；T2 的**真 LLM 行为冒烟接线已接通**（B2，behavior_smoke `--llm` 单轮 + stub 确定性测试）、T4 的**真 LLM 长会话** runner 亦就绪；真付费跑与 **T5** 仍 opt-in（完整发布矩阵仍需私有/付费产物）。本文件是跨 PR 维护的活快照，不跑付费 benchmark。
 
 ---
 
@@ -11,7 +11,7 @@
 | :-- | :-- | :--: | :-- | :-- |
 | **Tier 0** | `python -m unittest discover -s tests`（stdlib 单元/静态测试套件） | ✅ Ubuntu + Windows × Py 3.8 + 3.12 | $0，纯标准库、无网络、无 API key | CI **唯一**实际运行的一层 |
 | **Tier 1** | `python scripts/validate_workspace.py <工作区>`（已建工作区结构/schema/来源标注/路径安全） | 🟡 集成测试随 Tier 0 进 CI | $0 | 校验器逻辑由 Tier 0 单测覆盖；**B6 起**另有确定性 `ingest → validate` 集成测试（`tests/test_ingest_validate_integration.py`：真跑两个 CLI，真实 ingest 产物必须过校验、篡改/缺图/坏 JSON 必须 1/2 退出）——经根测试进 CI，无独立 Actions 步骤（刻意不加 CI 配置） |
-| **Tier 2** | **行为冒烟**：确定性 mock 层（见 [`behavior_smoke/`](../behavior_smoke/)） | ✅ mock 进 CI | 近 $0 | 确定性层已落地；**T5c 起有 opt-in 真 agent 冒烟 runner**（[`drift/run_live_smoke.py`](../drift/run_live_smoke.py)：驱动→记录→T4 判分一条命令，env 门控、不进 CI）；**真实模型的验证运行尚未实现（未实际跑过真模型）**，见 §4 |
+| **Tier 2** | **行为冒烟**：确定性 mock 层（见 [`behavior_smoke/`](../behavior_smoke/)） | ✅ mock 进 CI | 近 $0 | 确定性层已落地；**T5c 起有 opt-in 真 agent 冒烟 runner**（[`drift/run_live_smoke.py`](../drift/run_live_smoke.py)：驱动→记录→T4 判分一条命令，env 门控、不进 CI）；**behavior_smoke `--llm` 单轮已接通（B2）、接线由 stub 确定性测试；真实付费跑仍 opt-in、尚未实际跑过**，见 §4 |
 | **Tier 3** | 完整 benchmark（`gen.py` → 判分 → 矩阵报告） | ❌ | **昂贵**：单轮矩阵约几十美元 / 数小时 | 手动、临时触发 |
 | **Tier 4** | 长程漂移（long-horizon drift） | 🟡 replay 层进（根级）测试 | replay $0；真 LLM 以天计额度 | **确定性 replay harness 已落地**（[`drift/`](../drift/)，回放脚本化 transcript，纯 stdlib、零成本）；**真 LLM 长会话仍 opt-in、未实现、不进 CI** |
 
@@ -57,7 +57,7 @@ A 线各阶段又新增 **5 个 Tier 2 确定性行为场景**（`behavior_smoke
 
 另有 **1 个 Tier 4 长会话 replay 场景**（`benchmark/drift/scenarios/mode_urgent_no_questions.json`，**不是** Tier 2 smoke）：模式漂移——≤1天零提问 `urgent_mode_questions` + 紧迫开场推断并落盘 `urgent_mode_persisted`。
 
-**仍诚实**：确定性层只证明探测器对**预期产物**成立，**不证明真 LLM agent 一定产出这些行为**。**真 LLM 行为验证仍 opt-in、不进 CI、尚未实现**（`--llm` 仅 skeleton，需 `RUN_SKILL_BEHAVIOR_LLM=1`）；**LLM Wiki 惰性加载**与**画图先跑算法再画**仍为 best-effort / 未覆盖。详见 [`../behavior_smoke/README.md`](../behavior_smoke/README.md) 与 [`coverage-matrix.md`](coverage-matrix.md)。
+**仍诚实**：确定性层只证明探测器对**预期产物**成立，**不证明真 LLM agent 一定产出这些行为**。**behavior_smoke `--llm` 单轮真 agent 冒烟已接通**（B2：逐场景驱动、套用与 `--mock` 相同的探测器、状态类场景诚实 SKIP，接线由 `tests/test_behavior_smoke_live.py` 用 stub 确定性验证）；真付费跑仍 opt-in、不进 CI（`RUN_SKILL_BEHAVIOR_LLM=1` 或 `--agent-cmd`）、尚未实际跑过真模型；**LLM Wiki 惰性加载**与**画图先跑算法再画**仍为 best-effort / 未覆盖。详见 [`../behavior_smoke/README.md`](../behavior_smoke/README.md) 与 [`coverage-matrix.md`](coverage-matrix.md)。
 
 ## 5. Tier 3 完整 benchmark：手动、昂贵
 
@@ -105,7 +105,7 @@ A 线各阶段又新增 **5 个 Tier 2 确定性行为场景**（`behavior_smoke
 ## PR 路线（T-track）
 
 - **T1** ✅：审计文档 + 覆盖矩阵 + benchmark 文档一致性守卫（零成本，纯文档/测试）。
-- **T2** ✅（确定性层）：Tier 2 行为冒烟——自撰非版权 fixture + harness + 确定性探测器（进 CI）；**真 LLM 行为冒烟为 opt-in、未进 CI、尚未实现**。
+- **T2** ✅（确定性层）：Tier 2 行为冒烟——自撰非版权 fixture + harness + 确定性探测器（进 CI）；`--llm` 单轮真 agent 冒烟**接线已接通（B2，stub 确定性测试）**，**真实付费跑仍 opt-in、未进 CI、尚未实际跑过真模型**。
 - **T3** ✅（聚合层）：提交版 `summary.json` 聚合器 [`aggregate_matrix.py`](matrix_pipeline.md) + fixture 级可复现流水线 + `report_matrix.py --summary`。**完整发布矩阵仍依赖私有/付费产物**；benchmark 缓存/续跑/成本日志为后续增量。
 - **T4** ✅（确定性 replay 层）：Tier 4 长程漂移 [`drift/`](../drift/)——回放脚本化 transcript + 快照的自撰非版权 fixture，确定性测量目标保持/计划遵守/编题率/断点恢复/来源标注/进度持久性/wiki 越章读（进根级测试）；**真 LLM 长会话为 opt-in、未进 CI、尚未实现**。
 - **T5**：判分校准（扩 kappa 样本、加 near-miss 越界探针、跨家族裁判、修正数值抽取）。
