@@ -62,7 +62,7 @@ Teach exactly one current wiki chapter. Explain concepts with real-life metaphor
 当前阶段：阶段 2：线性表　｜　讲解模板：七步精讲（存在 ⚙️ 偏好里，随时可改）
 
 ① 题面图：
-![题面图 / question-side asset](references/assets/ch02_p12_fig.png)
+![题面图](references/assets/ch02_p12_fig.png)
 （无图题这里写：本题无图，直接看题干条件。）
 
 ② 这题在问什么：

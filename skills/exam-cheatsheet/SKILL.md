@@ -47,7 +47,7 @@ Trigger when all study phases are basically cleared and review is wrapping up, O
 
 【例题】（每个重点知识点配一道有难度的例题；依赖图的题必须先真实展示题面图，展示不了就换题面自足的题）
 - 例：……
-  ![题面图 / question-side asset](references/assets/chNN_pXX_fig.png)
+  ![题面图](references/assets/chNN_pXX_fig.png)
 
 【例题解答】（把公式代入计算：可省略中间计算步骤，但必须保留基础过程——用哪条公式、代什么数、得出什么）
 - ……（老师/资料没给答案时标 ⚠️ AI生成答案，非老师/教材提供）

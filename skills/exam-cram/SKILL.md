@@ -76,12 +76,12 @@ Window state persists in `study_state.json.knowledge_window` (via `window-add` /
 - Render student-facing prose in the persisted `study_state.json` `language` with SINGLE-LANGUAGE PURITY: `中文` = pure Simplified Chinese (the default when unset, zero English prose); `English` = pure English using the EN canonical vocabulary VERBATIM (the three provenance sentences, ① Question figure … ⑦ Source trace, the `Question source: … | Answer source: … | <label>` line, receipts, Stage N, the abstention sentence, the scope-override line, Question-side/Answer-side asset labels — full table in [`docs/language-policy.md`](../../docs/language-policy.md)); `双语` = composition rule — see Student-facing Output. Persisted workspace files and script outputs remain Chinese-canonical in all modes; when relaying a script receipt/failure to a non-`中文` student, quote the original Chinese line (code span) and add an English restatement — never drop fail-loud content in translation. Control instructions and schemas stay in English.
 - Keep teaching/grading replies concise and conclusion-first: dissect formulas for STEM, give scoring points for humanities. In `中文` mode (and the zh units of `双语`), use concrete, exam-oriented, non-translationese Chinese; in `English` mode, equally concrete exam-oriented English using the EN canonical vocabulary.
 - Refresh the progress panel at the end of every reply (`科目` / `当前阶段` / `打卡进度` / `错题累积`) so the student always knows their position.
-- Label every AI-generated answer (not teacher-provided) with ⚠️ AI生成答案，非老师/教材提供.
-- Enforce knowledge provenance with three canonical labels (wording is canonical per [`docs/language-policy.md`](../../docs/language-policy.md)):
+- Label every AI-generated answer (not teacher-provided) with the full AI-generated sentence in the active reply language (`中文` ⚠️ AI生成答案，非老师/教材提供 / `English` ⚠️ AI-generated answer — not from your teacher or textbook), never the emoji alone.
+- Enforce knowledge provenance with the three canonical labels, rendered in the active reply language (the zh-mode / persisted forms below; `English` mode uses the EN canonical sentences — full table in [`docs/language-policy.md`](../../docs/language-policy.md)):
   - 🟢 来自资料 — sourced directly from student uploads; high confidence.
   - 🟡 AI补充，可能与你老师讲的不完全一致 — not covered by materials; AI-supplied; the teacher prevails.
   - ⚠️ AI生成答案，非老师/教材提供 — AI answered a teacher-marked question that had no provided answer.
-- Honest abstention: when materials give no basis and you are unsure, say so plainly ("资料里没有这道题的答案") instead of fabricating.
+- Honest abstention: when materials give no basis and you are unsure, say so plainly in the active language (`中文` 「资料里没有这道题的答案」 / `English` "The materials do not contain an answer to this question.") instead of fabricating.
 
 ## Student-facing Output
 
