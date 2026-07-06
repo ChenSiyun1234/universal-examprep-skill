@@ -8,7 +8,7 @@ This harness tests the skill as a *tutoring workflow*, not just as static files.
   python benchmark/behavior_smoke/run_behavior_smoke.py --mock            # run detectors on mock outputs
 
 The --mock / --check-fixture paths are stdlib-only, no network, no LLM, no API key — safe for CI.
-Real-agent smoke (single-turn per scenario, reusing the SAME detectors as --mock) is WIRED but gated behind BOTH a flag and an env opt-in and never runs by default (its wiring is tested deterministically against a stub agent in tests/test_behavior_smoke_live.py):
+Real-agent smoke (single-turn per scenario, reusing the SAME detector FUNCTIONS as --mock — each scenarios primary positive check, applied to the one live reply) is WIRED but gated behind BOTH a flag and an env opt-in and never runs by default (its wiring is tested deterministically against a stub agent in tests/test_behavior_smoke_live.py):
 
   RUN_SKILL_BEHAVIOR_LLM=1 python benchmark/behavior_smoke/run_behavior_smoke.py --llm
 
@@ -1085,7 +1085,7 @@ DEFAULT_AGENT_CMD = "claude -p {prompt}"
 
 def _live_prompt(fixture_path, sc):
     """Build a single-turn prompt from the fixture (bank + plan + progress) plus the scenario's
-    student turn. The reply is fed to the SAME detectors as --mock."""
+    student turn. The reply is fed to each scenarios PRIMARY positive detector — the SAME functions --mock uses (mocks extra negative/variant assertions validate the detectors and are not re-run live)."""
     bank = json.loads(_read(os.path.join(fixture_path, "references", "quiz_bank.json")))
     lines = ["题库（只能从这里出题，出题必须带 [#题号]；判分以下面的标准答案为准）："]
     for q in bank:
@@ -1094,7 +1094,13 @@ def _live_prompt(fixture_path, sc):
                                         str(q.get("question", "")))
             if q.get("options"):
                 e += " 选项: " + " / ".join(str(o) for o in q["options"])
-            # T4: visual-required items must expose their asset paths + roles so a real agent knows
+            # T2 (R4): include the standard answer / keywords so answer-dependent scenarios exercise the
+            # bank-backed answer contract instead of the agent solving from prior knowledge (same as
+            # drift/run_live_smoke.bank_digest). The prompt is hidden context, so this is not answer-leak.
+            key = q.get("answer") if q.get("answer") not in (None, "", []) else q.get("answer_keywords")
+            if key not in (None, "", []):
+                e += "（标准答案: %s）" % key
+            # visual-required items must expose their asset paths + roles so a real agent knows
             # WHICH image to render first (the detector expects the exact fixture path back).
             if q.get("requires_assets") or q.get("maybe_requires_assets") \
                     or q.get("question_text_status") in ("stub", "page_reference"):
@@ -1180,7 +1186,7 @@ def live_reply_check(name, sc, reply, fixture_path):
 
 
 def run_llm(argv=None):
-    """OPT-IN single-turn live smoke: drive a real agent per scenario, apply the SAME deterministic
+    """OPT-IN single-turn live smoke: drive a real agent per scenario, apply each scenarios PRIMARY positive detector — the SAME deterministic
     detectors as --mock to each reply, write transcripts, report metrics. Never in CI.
 
     Two ways to run:

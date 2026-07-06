@@ -260,5 +260,17 @@ class LiveRoundThreeFixes(unittest.TestCase):
                              "an AI answer missing the ⚠️ title warning must fail live too")
 
 
+class LiveRoundFourFixes(unittest.TestCase):
+    def test_T2_live_prompt_includes_standard_answers(self):
+        # answer-dependent scenarios must hand the agent the bank's standard answers (hidden context),
+        # so it grades against the bank instead of prior knowledge (same as drift/run_live_smoke).
+        prompt = B._live_prompt(FIXTURE, {"prompt": "出一题"})
+        bank = json.loads(_read(os.path.join(os.path.relpath(FIXTURE, BS), "references", "quiz_bank.json")))
+        keyed = [q for q in bank if isinstance(q, dict)
+                 and (q.get("answer") not in (None, "", []) or q.get("answer_keywords") not in (None, "", []))]
+        self.assertTrue(keyed, "fixture should have items with answers/keywords")
+        self.assertIn("标准答案", prompt, "the hidden live prompt must expose the bank's standard answers")
+
+
 if __name__ == "__main__":
     unittest.main()
