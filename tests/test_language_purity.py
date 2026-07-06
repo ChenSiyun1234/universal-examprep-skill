@@ -778,7 +778,7 @@ class T5BilingualComposition(unittest.TestCase):
 # map lives there), CHANGELOG.md, benchmark/. Digit is REQUIRED so 「B 树」/「A.」 option
 # labels do not false-positive.
 _CODENAME_RE = re.compile(
-    r"(?<![A-Za-z0-9_./-])(A[1-9][a-z]?|B[1-9]x?|C[0-5][a-z]?|D[1-5]|P[0-3]|T[1-5][a-z]?)"
+    r"(?<![A-Za-z0-9_./-])(A[1-9][a-z]?|B[1-9]x?|C[0-5][a-z]?|D[1-5]|P[0-3][A-Za-z]?|T[1-5][a-z]?)"
     r"(?![A-Za-z0-9_])")   # C 系列（C0-C5/C2c…）是阶段6自身的路标，必须钉
 
 _RUNTIME_CODENAME_FILES = (
@@ -806,6 +806,7 @@ class C3NoStageCodenames(unittest.TestCase):
             return [m.group(1) for m in _CODENAME_RE.finditer(CODE_SPAN_RE.sub("", s))]
         self.assertEqual(hits(u"范围过滤契约（A2）：默认混合池"), ["A2"])
         self.assertEqual(hits(u"见 C2c 语言分离、C3 去代号"), ["C2c", "C3"])   # C 系列被抓
+        self.assertEqual(hits(u"P0A / P0D 阶段"), ["P0A", "P0D"])   # P 字母后缀被抓
         self.assertEqual(hits(u"存在 `A4 结构化状态` 时"), [])          # 代码 span 豁免
         self.assertEqual(hits(u"二叉树/B 树、AVL 旋转"), [])            # 无数字不误伤
         self.assertEqual(hits(u"选项 A. 与 B. 二选一"), [])            # 选项标签不误伤

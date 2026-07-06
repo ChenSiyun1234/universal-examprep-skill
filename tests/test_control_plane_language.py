@@ -60,7 +60,7 @@ ALLOWED_TOKENS = (
     "⚠️ AI生成答案，非老师/教材提供", "🟡 AI补充，可能与你老师讲的不完全一致", "🟢 来自资料",
     CANON_AMBER, CANON_YELLOW, CANON_GREEN,
     # bilingual asset labels (docs/file-format.md §4)
-    "题面图 / question-side asset", "题面图", "答案图",
+    "题面图", "答案图",   # 复合形 题面图 / question-side asset 已移出控制文本（改语言参数化）
     # seven-step template labels (exam-tutor canon; behavior_smoke parses transcripts for these)
     "① 题面图", "② 这题在问什么", "③ 图里要读的量", "④ 核心公式",
     "⑤ 逐步演算", "⑥ 答案自检", "⑦ 知识点溯源",
