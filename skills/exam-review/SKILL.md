@@ -16,7 +16,7 @@ Clear the backlog of recorded mistakes and confusions before the exam. Replay on
 Run when the student enters the final review stage, or asks to 「复盘错题 / 查漏补缺 / 考前过一遍」 (replay mistakes / find gaps / final pass).
 
 ## Inputs
-- Review backlog source: `study_state.json` (`mistake_archive` / `confusion_log`) when it exists — the A4 source of truth; otherwise `study_progress.md`'s ❌ 错题档案 and 💡 概念疑难点记录 (the md is a generated view that may be stale).
+- Review backlog source: `study_state.json` (`mistake_archive` / `confusion_log`) when it exists — the structured-state source of truth; otherwise `study_progress.md`'s ❌ 错题档案 and 💡 概念疑难点记录 (the md is a generated view that may be stale).
 - `references/quiz_bank.json`: source items, keyed by id, re-fetched for each recorded mistake.
 
 ## Workflow
@@ -31,7 +31,7 @@ Run when the student enters the final review stage, or asks to 「复盘错题 /
 ## Output Contract
 - Produce one not-yet-mastered list (「还没拿下的清单」): recorded mistakes plus confusion entries, each with its current status (已订正 / 已回顾 / 待回顾). End with a refreshed progress panel.
 - Persist each mistake/confusion status update — with `study_state.json`, via `update_progress.py set-mistake-status`/`set-confusion-status` (and `add-*` for genuinely new records; the md regenerates); without state, update each existing `study_progress.md` row **in place** (已订正 / 已回顾 / 待回顾) and append only genuinely new records. Never leave a mastered item still marked wrong/待回顾. Then return control to `exam-cram`.
-- Student-facing output defaults to Simplified Chinese; a persisted `study_state.json` `language` (`English`/`双语`) switches it per exam-cram's dispatch rule (canonical tokens verbatim). (See [`docs/language-policy.md`](../../docs/language-policy.md).)
+- Student-facing output defaults to Simplified Chinese; a persisted `study_state.json` `language` (`English`/`双语`) switches it per exam-cram's dispatch rule with single-language purity. (See [`docs/language-policy.md`](../../docs/language-policy.md).)
 
 ## Student-facing Output
 - **错题重做**：这道你上次错在「……」。同一道题再做一遍——这次盯住 ……。做对了我就把它从错题本划掉（标「已订正」）。
@@ -39,12 +39,12 @@ Run when the student enters the final review stage, or asks to 「复盘错题 /
 - **缺口小结**：还没拿下的——错题：……；疑难点：……。这几条会让 `exam-cheatsheet` 的「例题」优先选它们对应的知识点。
 
 
-Render per the persisted `study_state.json` `language` (`中文` default / `English` / `双语`); canonical tokens stay verbatim with a trailing gloss — see [`exam-cram`](../exam-cram/SKILL.md) Output Contract for the dispatch and composition rules.
+Render per the persisted `study_state.json` `language` (`中文` default / `English` / `双语`) with single-language purity — `中文` output stays pure Chinese, `English` output uses the EN canonical vocabulary, `双语` composes the zh unit first + a `> EN:` mirror per block; see [`exam-cram`](../exam-cram/SKILL.md) Output Contract and [`docs/language-policy.md`](../../docs/language-policy.md).
 
 ## Boundaries
-- **Structured progress state (A4)**: when `study_state.json` exists it is the SINGLE SOURCE OF TRUTH — update it via `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> set/add-mistake/add-confusion/set-mistake-status/set-confusion-status/set-check/render` (marking a replayed row 已订正/已回顾 goes through `set-mistake-status`/`set-confusion-status --id <qid> --status <状态>`; ticking a `知识点打卡` item goes through `set-check --match <文本>|--index <N>`); `study_progress.md` is a GENERATED view (hand edits are lost on the next render — never hand-patch it). If a state write fails, TELL the user; never continue as if it saved. Without `study_state.json` (no-Python fallback), a hand-maintained md stays valid.
+- **Structured progress state**: when `study_state.json` exists it is the SINGLE SOURCE OF TRUTH — update it via `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> set/add-mistake/add-confusion/set-mistake-status/set-confusion-status/set-check/render` (marking a replayed row 已订正/已回顾 goes through `set-mistake-status`/`set-confusion-status --id <qid> --status <状态>`; ticking a `知识点打卡` item goes through `set-check --match <文本>|--index <N>`); `study_progress.md` is a GENERATED view (hand edits are lost on the next render — never hand-patch it). If a state write fails, TELL the user; never continue as if it saved. Without `study_state.json` (no-Python fallback), a hand-maintained md stays valid.
 
-- **Scope filter & override (A2)**: default question pool is mixed; a student-restricted range (e.g. homework-only) is a recorded scope filter — serving items outside it requires the verbatim announcement 「⚠️ 临时覆盖你的 <scope> 范围偏好」 first, and untagged (`source_type` missing) items are excluded from restricted scopes with their count reported. Official selector: `scripts/select_questions.py`.
+- **Scope filter & override**: default question pool is mixed; a student-restricted range (e.g. homework-only) is a recorded scope filter — serving items outside it requires the verbatim announcement 「⚠️ 临时覆盖你的 <scope> 范围偏好」 first, and untagged (`source_type` missing) items are excluded from restricted scopes with their count reported. Official selector: `scripts/select_questions.py`.
 
 - Replay only recorded items. Never add a question that is not already in the records or the quiz bank.
 - Share the progress record with `confusion-tracker`: in state-backed workspaces both skills go through `update_progress.py` (append via `add-confusion`, status via `set-confusion-status`); only in md-only workspaces append/update `study_progress.md` rows in place. Never overwrite another skill's writes.

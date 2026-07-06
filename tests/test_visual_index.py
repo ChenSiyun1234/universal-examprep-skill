@@ -768,7 +768,7 @@ class OfficialTools(unittest.TestCase):
         src = open(os.path.join(ROOT, "skills", "exam-ingest", "SKILL.md"), encoding="utf-8").read()
         self.assertIn("AFTER ingest has created the workspace", src)
         # the cross-check instruction must appear AFTER the ingest.py step, not under the builder step
-        self.assertLess(src.index("scripts/ingest.py"), src.index("Recall cross-check (P0-V2)"))
+        self.assertLess(src.index("scripts/ingest.py"), src.index("Recall cross-check"))
 
     def test_figref_regex_has_token_boundary(self):
         self.assertFalse(BVI.classify_page("It is comfortable 1 and profitable 2024.")["has_visual"])
