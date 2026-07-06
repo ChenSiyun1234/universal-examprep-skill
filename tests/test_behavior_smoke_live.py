@@ -25,7 +25,7 @@ FIXTURE = os.path.join(BS, SCEN.get("fixture", "fixtures/mini_course"))
 _BY_NAME = {s["name"]: s for s in SCEN["scenarios"]}
 REPLY_VERIFIABLE = ["quiz_bank_only", "scope_override", "provenance_labels", "zero_basic_key_question",
                     "teaching_template", "time_budget_no_questions", "knowledge_window_recheck",
-                    "language_first_ask", "visual_first_assets"]
+                    "language_first_ask", "visual_first_assets", "checkpoint_recovery"]
 
 
 def _read(rel):
@@ -53,9 +53,9 @@ class LiveReplyCheckReusesMockDetectors(unittest.TestCase):
             self.assertFalse(ok, f"{name}: negative reply must fail the live detector")
 
     def test_state_mutation_scenarios_are_skipped_not_faked(self):
-        # a one-shot `claude -p` can only TALK — file/state scenarios must return None (SKIP), never PASS
-        for name in ("hint_skip_mistake_archive", "confusion_tracking", "checkpoint_recovery",
-                     "no_python_fallback"):
+        # a one-shot `claude -p` can only TALK — file-mutation scenarios must return None (SKIP), never
+        # PASS. checkpoint_recovery is NOT here: its resume message is reply-verifiable (R6 U4).
+        for name in ("hint_skip_mistake_archive", "confusion_tracking", "no_python_fallback"):
             self.assertIsNone(B.live_reply_check(name, _BY_NAME[name], "anything", FIXTURE), name)
 
 
@@ -353,7 +353,124 @@ class LiveRoundFiveFixes(unittest.TestCase):
         sc = _BY_NAME["scope_override"]
         ok, detail = B.check_scenario_mock("scope_override", sc, FIXTURE)
         self.assertTrue(ok, "strengthened mock scope_override must pass on the corrected golden: " + detail)
-        self.assertIn("bankmatch", detail)
+        self.assertIn("visualmatch", detail)
+
+
+class LiveRoundSixFixes(unittest.TestCase):
+    """Regressions for the Codex round-6 findings — the paid live path must not pass vacuously."""
+
+    def test_U1_sandbox_exposes_skill_contract_and_workspace(self):
+        # the live sandbox must contain BOTH the fixture workspace AND the repo's skill contract, so a
+        # paid run exercises THIS skill instead of a generic agent guessing from the prompt stub.
+        sandbox, cwd = B._prepare_live_sandbox(FIXTURE)
+        try:
+            self.assertTrue(os.path.isfile(os.path.join(cwd, "SKILL.md")), "SKILL.md must be in the sandbox")
+            self.assertTrue(os.path.isdir(os.path.join(cwd, "skills")), "skills/ must be in the sandbox")
+            self.assertTrue(os.path.isfile(os.path.join(cwd, "references", "quiz_bank.json")),
+                            "the fixture workspace must still be present")
+        finally:
+            import shutil
+            shutil.rmtree(sandbox, ignore_errors=True)
+
+    def test_U2_scope_override_rejects_nonvisual_bank_item(self):
+        sc = _BY_NAME["scope_override"]
+        # a VALID, content-matching bank item that is NOT a lecture visual (mc_q1 = the stack MCQ) must
+        # FAIL: the scenario asked for figure items, so serving a non-visual item ignores the request.
+        bank = B.load_quiz_bank_map(FIXTURE)
+        nonvis = ("⚠️ 临时覆盖你的 homework-only 范围偏好\n\n题目 [#mc_q1] " + bank["mc_q1"]["question"])
+        self.assertFalse(B.live_reply_check("scope_override", sc, nonvis, FIXTURE)[0],
+                         "serving a non-visual bank item after the override must fail (visual-only map)")
+        # the corrected golden (visual [#vis_q1]) still passes
+        self.assertTrue(B.live_reply_check("scope_override", sc, _read(sc["mock_output"]), FIXTURE)[0])
+
+    def test_U3_template_scenarios_reject_invented_ids(self):
+        # a seven-step/source-structured reply that tags a FABRICATED id must FAIL both template scenarios
+        for name in ("teaching_template", "zero_basic_key_question"):
+            sc = _BY_NAME[name]
+            good = _read(sc["mock_output"])
+            tag_id = B.extract_question_ids(good)[0]
+            faked = good.replace("[#" + tag_id + "]", "[#FAKE_999]")
+            self.assertNotEqual(faked, good, name + ": fixture golden should tag a bank id to rewrite")
+            self.assertFalse(B.live_reply_check(name, sc, faked, FIXTURE)[0],
+                             name + ": a fabricated [#id] must fail the live template check")
+            self.assertTrue(B.live_reply_check(name, sc, good, FIXTURE)[0],
+                            name + ": the real-id golden must still pass")
+
+    def test_U4_checkpoint_recovery_is_live_verifiable(self):
+        sc = _BY_NAME["checkpoint_recovery"]
+        # it must NOT be skipped, the resume golden passes, and a restart-at-phase-1 reply fails
+        res = B.live_reply_check("checkpoint_recovery", sc, _read(sc["mock_output"]), FIXTURE)
+        self.assertIsNotNone(res, "checkpoint_recovery must be reply-verifiable, not skipped")
+        self.assertTrue(res[0], "the resume golden (refers to current phase) must pass")
+        restart = "欢迎回来！我们从阶段 1 重新开始复习吧。"
+        self.assertFalse(B.live_reply_check("checkpoint_recovery", sc, restart, FIXTURE)[0],
+                         "a reply that restarts at phase 1 must fail")
+
+    # a fully self-contained seven-step reply tagged with a REAL teacher id (mc_q1 = stack) but teaching a
+    # WHOLLY fabricated off-bank topic (Dijkstra) — a real citation on invented content.
+    _FABRICATED_ON_REAL_ID = (
+        "【重点题精讲】[#mc_q1] Dijkstra 最短路径\n\n"
+        "① 题面图：\n本题无图。\n\n"
+        "② 这题在问什么：\n求二叉堆实现的 Dijkstra 单源最短路径的时间复杂度。\n\n"
+        "③ 图里要读的量：\n顶点数 V、边数 E。\n\n"
+        "④ 核心公式：\n每次取最小 O(logV)，松弛 E 次 → O((V+E)logV)。\n\n"
+        "⑤ 逐步演算：\n1. 初始化距离。\n2. 反复取堆顶最小并松弛邻边。\n3. 得 O((V+E)logV)。\n\n"
+        "⑥ 答案自检：\n稠密图约 O(V^2 logV)，结论合理。\n\n"
+        "⑦ 知识点溯源：\n第 7 章《图》 · references/wiki/ch07_graph.md · 原文 [lecture12.pdf 第 3 页](../lecture12.pdf#page=3)\n\n"
+        "题目来源：hw07.pdf 第 1 页（homework）｜答案来源：hw07_sol.pdf 第 1 页｜🟢 来自资料\n")
+
+    def test_U3_real_id_on_fabricated_question_fails(self):
+        # the sharper hole: a real bank id on a WHOLLY fabricated off-bank question must FAIL.
+        bank = B.load_quiz_bank_map(FIXTURE)
+        self.assertFalse(B._reply_teaches_bank_topic(self._FABRICATED_ON_REAL_ID, bank),
+                         "a real id ([#mc_q1]=stack) on a Dijkstra body must fail the topic anchor")
+        sc = _BY_NAME["teaching_template"]
+        self.assertFalse(B.live_reply_check("teaching_template", sc, self._FABRICATED_ON_REAL_ID, FIXTURE)[0],
+                         "teaching_template must reject a real id on a fabricated question")
+        self.assertTrue(B.live_reply_check("teaching_template", sc, _read(sc["mock_output"]), FIXTURE)[0],
+                        "the on-topic golden must still pass")
+
+    def test_U5_default_out_dir_is_outside_repo(self):
+        # a naive --llm run (no --out-dir) must not write transcripts (which embed answer keys) into the
+        # worktree — the default must resolve to a dir OUTSIDE the repo tree. Behavioral, not a source grep.
+        tmp = tempfile.mkdtemp()
+        stub = os.path.join(tmp, "noop_agent.py")
+        with io.open(stub, "w", encoding="utf-8") as f:
+            f.write("import sys\nsys.stdout.write('noop')\n")  # ASCII, non-compliant is fine here
+        agent_cmd = json.dumps([sys.executable, stub, "{prompt}"])
+        buf = io.StringIO()
+        old = sys.stdout
+        sys.stdout = buf
+        try:
+            B.run_llm(["--llm", "--agent-cmd", agent_cmd, "--timeout", "60"])  # NO --out-dir
+        finally:
+            sys.stdout = old
+        report = buf.getvalue()
+        m = re.search(r"transcripts → (.+?)/live_\*\.md", report)
+        self.assertTrue(m, "run_llm must report the chosen transcript dir\n" + report)
+        out_dir = os.path.abspath(m.group(1))
+        try:
+            inside = os.path.commonpath([out_dir, B.ROOT]) == B.ROOT
+        except ValueError:
+            inside = False  # different drive on Windows → definitely outside the repo
+        self.assertFalse(inside, "default transcript dir %r must be OUTSIDE the repo %r" % (out_dir, B.ROOT))
+
+    def test_U6_bank_ai_item_labeled_green_fails(self):
+        # a served item the BANK marks ai_generated (mc_q8) must be forced into ⚠️ mode: relabeling it 🟢
+        # must FAIL even though the reply's own label now says 🟢 (bank metadata overrides the self-label).
+        sc = _BY_NAME["teaching_template"]
+        bank = B.load_quiz_bank_map(FIXTURE)
+        self.assertEqual(bank["mc_q8"]["source"], "ai_generated", "precondition: mc_q8 is ai_generated")
+        ai_good = _read(sc["mock_ai_answer"])  # a compliant [#mc_q8] reply WITH the ⚠️ AI-answer label
+        self.assertTrue(B.live_reply_check("teaching_template", sc, ai_good, FIXTURE)[0],
+                        "the ⚠️-labeled ai_generated golden must pass")
+        # strip the ⚠️ warning to a 🟢 label; on-topic + template stay intact, so the ONLY change is the
+        # provenance mode — which the bank now forces to ⚠️, so this must FAIL (U6 closes this false pass).
+        greened = ai_good.replace("⚠️ AI生成答案，非老师/教材提供", "🟢 来自资料")
+        self.assertNotIn("⚠️", greened)
+        self.assertFalse(B._reply_has_ai_generated_label(greened), "reply no longer self-labels AI")
+        self.assertFalse(B.live_reply_check("teaching_template", sc, greened, FIXTURE)[0],
+                         "a bank ai_generated item relabeled 🟢 must fail (bank forces the ⚠️ contract)")
 
 
 if __name__ == "__main__":

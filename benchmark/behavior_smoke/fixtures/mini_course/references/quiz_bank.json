@@ -62,6 +62,36 @@
     "explanation": "AI 生成的参考实现，需与老师/教材实现核对。"
   },
   {
+    "id": "mc_q7",
+    "chapter": 2,
+    "type": "subjective",
+    "question": "顺序表与链表在随机访问第 i 个元素时的代价有何区别？",
+    "answer": "顺序表随机访问 O(1)（按地址直接定位），链表 O(n)（从头结点逐个跳到第 i 个）。",
+    "keywords": ["随机访问", "O(1)", "O(n)"],
+    "explanation": "顺序表连续存储可按地址直接定位，链表须顺链遍历。",
+    "source": "teacher"
+  },
+  {
+    "id": "mc_q8",
+    "chapter": 2,
+    "type": "subjective",
+    "question": "高度为 h 的二叉树最多有多少个结点？（老师未提供答案）",
+    "answer": "2^h − 1（把根记为第 1 层，h 为层数）",
+    "keywords": ["二叉树", "结点数"],
+    "ai_generated": true,
+    "source": "ai_generated",
+    "explanation": "AI 依据满二叉树逐层等比求和推导，需与老师/教材核对。"
+  },
+  {
+    "id": "mc_q9",
+    "chapter": 5,
+    "type": "subjective",
+    "question": "概括启蒙运动的核心主张，并结合材料说明其对法国大革命的影响。",
+    "answer": "核心主张：崇尚理性、天赋人权、社会契约，反对蒙昧与专制；影响：为法国大革命提供思想武器。",
+    "keywords": ["启蒙运动", "理性", "社会契约"],
+    "source": "material"
+  },
+  {
     "id": "vis_q1",
     "chapter": 1,
     "type": "choice",
