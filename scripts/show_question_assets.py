@@ -100,12 +100,17 @@ def run(argv=None):
                             if broken else "没有任何可展示的题面侧 asset", pointer))
         raise SystemExit(1)
 
-    for a in prompt:                                   # POSIX relative paths → renderable Markdown,
-        rel = str(a["path"]).replace("\\", "/")        # label per reply language (docs/file-format.md §4)
+    def _cap(a, idx, kind):
+        # zh keeps the raw caption; en must stay ASCII-safe (captions AND ids built from Chinese
+        # material stems are commonly CJK), so fall back id → ASCII index placeholder.
         cap = a.get("caption") or args.id
-        if lang == "en" and not str(cap).isascii():   # 中文素材 caption 不进 en 输出
-            cap = args.id
-        print("![%s: %s](%s)" % (q_label, cap, rel))
+        if lang == "en" and not str(cap).isascii():
+            cap = args.id if str(args.id).isascii() else "%s %d" % (kind, idx)
+        return cap
+
+    for i, a in enumerate(prompt, 1):                  # POSIX relative paths → renderable Markdown,
+        rel = str(a["path"]).replace("\\", "/")        # label per reply language (docs/file-format.md §4)
+        print("![%s: %s](%s)" % (q_label, _cap(a, i, "question-side asset"), rel))
     if not prompt:
         print("（该题不依赖图片，无题面 asset）" if lang == "zh"
               else "(this item needs no figure — no question-side asset)")
@@ -113,11 +118,9 @@ def run(argv=None):
         sep = ("（以下为答案/解析侧图片，讲解或复盘时才展示）" if lang == "zh"
                else "(answer/solution-side images below — shown only during solution or review)")
         print("\n--- %s ---" % sep)
-        for a in answer:
-            acap = a.get("caption") or args.id
-            if lang == "en" and not str(acap).isascii():
-                acap = args.id
-            print("![%s: %s](%s)" % (a_label, acap, str(a["path"]).replace("\\", "/")))
+        for i, a in enumerate(answer, 1):
+            print("![%s: %s](%s)" % (a_label, _cap(a, i, "answer-side asset"),
+                                     str(a["path"]).replace("\\", "/")))
     return 0
 
 
