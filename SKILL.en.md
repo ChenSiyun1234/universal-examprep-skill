@@ -87,7 +87,7 @@ This skill enforces physical-file locking rules built on the **LLM Wiki** to era
 
 The anti-hallucination foundation of this skill is locking the AI inside the wiki files. But wiki and answer content can come from two origins: the **student's uploaded materials**, or **background knowledge the AI adds on its own**. Left unmarked, students will mistake AI-authored content for the teacher's key points — which is itself a hallucination. The agent therefore MUST mark the origin of every piece of knowledge and every answer:
 
-1. **Mark origin when generating wiki content / answers**:
+1. **Mark origin when generating wiki content / answers.** Marks WRITTEN INTO the workspace (wiki chapter files, `quiz_bank.json`) always use the persisted zh-canonical forms — `🟢 来自资料`, `🟡 AI补充，可能与你老师讲的不完全一致`, `⚠️ AI生成答案，非老师/教材提供` — in every language mode (persisted files never drift with the reply language). The English sentences below are the STUDENT-VISIBLE REPLY renderings used in `English` mode:
    * 🟢 From your materials — content taken directly from the student's uploads: teacher-marked key points, textbook pages, past papers, or lecture transcripts. High confidence.
    * 🟡 AI-supplemented — may differ from what your teacher taught — background the materials did not cover, filled in from the AI's own knowledge; mark it on that paragraph or answer, and the teacher prevails.
 2. **Wiki chapter files may mark provenance at paragraph level** (e.g. `[来自教材]` (from the textbook) / `[AI补充]` (AI-supplemented)), so the student can tell at a glance what must be trusted and what needs double-checking.
