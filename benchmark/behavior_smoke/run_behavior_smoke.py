@@ -1099,9 +1099,12 @@ def _live_prompt(fixture_path, sc):
             if q.get("requires_assets") or q.get("maybe_requires_assets") \
                     or q.get("question_text_status") in ("stub", "page_reference"):
                 for a in (q.get("assets") or []):
-                    if isinstance(a, dict) and a.get("path"):
+                    # ONLY question-side assets go in the prompt — never answer_context/worked_solution
+                    # (emitting those would leak the answer / tell the agent to show it before solving).
+                    if (isinstance(a, dict) and a.get("path")
+                            and a.get("role") in ("question_context", "figure", "diagram", "table")):
                         e += "\n    题面侧图（先真实展示、标「题面图」）: %s（role=%s）" % (
-                            str(a["path"]).replace("\\", "/"), a.get("role", "?"))
+                            str(a["path"]).replace("\\", "/"), a.get("role"))
             lines.append(e)
     digest = "\n".join(lines)
     plan = ""
@@ -1125,8 +1128,11 @@ def live_reply_check(name, sc, reply, fixture_path):
         ok = assert_quiz_ids_in_bank(reply, scoped) and n >= sc.get("min_questions", 1)
         return ok, f"ids_in_bank={ok} n={n}"
     if name == "scope_override":
-        ok = scope_override_declared(reply)
-        return ok, f"override_declared_before_first_item={ok}"
+        # scope_override_declared treats "no item served" as vacuously OK, so a reply that prints only
+        # the override warning and serves nothing would falsely PASS live — also require ≥1 served item.
+        served = len(extract_question_ids(reply))
+        ok = scope_override_declared(reply) and served >= 1
+        return ok, f"override_before_first_item={scope_override_declared(reply)} items_served={served}"
     if name == "provenance_labels":
         ok = has_canonical_provenance_labels(reply)
         return ok, f"canonical_labels={ok}"
@@ -1168,7 +1174,15 @@ def run_llm(argv=None):
     ap.add_argument("--out-dir", default=RESULTS_DIR, help="transcript 输出目录（默认 gitignored results/）")
     ap.add_argument("--timeout", type=int, default=180)
     ap.add_argument("--max-out", type=int, default=200000)
-    args, _ = ap.parse_known_args(argv)
+    # main-level flags reach here in the forwarded argv — declare them as harmless so ONLY genuine
+    # typos land in the remainder, which we then reject (a paid run must not silently proceed on
+    # `--timeot 5` with the default timeout).
+    ap.add_argument("--llm", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--mock", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--check-fixture", action="store_true", help=argparse.SUPPRESS)
+    args, rest = ap.parse_known_args(argv)
+    if rest:
+        ap.error("unrecognized live-smoke arguments: " + " ".join(rest))
 
     if not args.agent_cmd:
         if os.environ.get("RUN_SKILL_BEHAVIOR_LLM") != "1":

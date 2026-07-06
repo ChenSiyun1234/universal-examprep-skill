@@ -200,5 +200,36 @@ class LiveRoundOneFixes(unittest.TestCase):
                                   "the live prompt must expose each visual item's asset path")
 
 
+class LiveRoundTwoFixes(unittest.TestCase):
+    """Regressions for the Codex round-2 findings."""
+
+    def test_T1_run_llm_rejects_typo_subflag(self):
+        # a typo'd live sub-flag must fail loudly (a paid run must not proceed on the default timeout)
+        with self.assertRaises(SystemExit):
+            B.run_llm(["--llm", "--agent-cmd", "echo {prompt}", "--timeot", "5"])
+
+    def test_T2_scope_override_requires_a_served_item(self):
+        sc = _BY_NAME["scope_override"]
+        # a reply that prints ONLY the override warning and serves no question must FAIL live
+        only_warn = "⚠️ 临时覆盖你的 homework-only 范围偏好。"
+        self.assertFalse(B.live_reply_check("scope_override", sc, only_warn, FIXTURE)[0])
+        # the committed golden (override + a served [#id]) still passes
+        self.assertTrue(B.live_reply_check("scope_override", sc, _read(sc["mock_output"]), FIXTURE)[0])
+
+    def test_T3_live_prompt_omits_answer_side_asset_paths(self):
+        # a synthetic fixture item carrying BOTH a question-side figure and an answer-side worked_solution:
+        # the prompt must expose the question-side path but NEVER the answer-side one (no answer leak).
+        tmp = tempfile.mkdtemp()
+        os.makedirs(os.path.join(tmp, "references"))
+        bank = [{"id": "vq", "question": "看图求解", "chapter": 1, "requires_assets": True,
+                 "assets": [{"role": "figure", "path": "references/assets/prompt_fig.png"},
+                            {"role": "worked_solution", "path": "references/assets/answer_sol.png"}]}]
+        with io.open(os.path.join(tmp, "references", "quiz_bank.json"), "w", encoding="utf-8") as f:
+            json.dump(bank, f, ensure_ascii=False)
+        prompt = B._live_prompt(tmp, {"prompt": "出这题"})
+        self.assertIn("references/assets/prompt_fig.png", prompt)
+        self.assertNotIn("answer_sol.png", prompt, "answer-side asset path must NOT leak into the prompt")
+
+
 if __name__ == "__main__":
     unittest.main()
