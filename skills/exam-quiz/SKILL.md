@@ -79,7 +79,7 @@ For `language=双语`, apply [`exam-cram`](../exam-cram/SKILL.md)'s composition 
 first, then a `> EN:` mirror per block — each side single-language pure (no token+gloss mixing).
 
 ## Boundaries
-- **Structured progress state**: when `study_state.json` exists it is the SINGLE SOURCE OF TRUTH — update it via `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> set/add-mistake/add-confusion/render` (script path resolves from the skill package root); `study_progress.md` is a GENERATED view (hand edits are lost on the next render — never hand-patch it). If a state write fails, TELL the user; never continue as if it saved. Without `study_state.json` (no-Python fallback), a hand-maintained md stays valid.
+- **Structured progress state**: when `study_state.json` exists it is the SINGLE SOURCE OF TRUTH — update it via `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> set/add-mistake/add-confusion/render` (script path resolves from the skill package root); `study_progress.md` is a GENERATED view (hand edits are lost on the next render — never hand-patch it). If a state write fails, TELL the user; never continue as if it saved. Without `study_state.json` but WITH Python (a fresh, uninitialized workspace), run `update_progress.py --workspace <ws> init` to create the source of truth FIRST — do not stop at hand-editing `study_progress.md`; only when Python truly cannot run does a hand-maintained md stay valid.
 
 - When the bank holds relevant items, do not write your own. With no stored answer, do not force a verdict — mark ⚠️ or state the limitation plainly.
 - Do not judge diagram items from memory — the algorithm-derived standard structure is the reference.

@@ -6,3 +6,6 @@ __pycache__/
 # 构建产物（真实材料的解析报告/接管清单，不入库）
 parse_report.json
 ai_review_manifest.json
+
+# local RAG experiment scratch (not shippable)
+spike/

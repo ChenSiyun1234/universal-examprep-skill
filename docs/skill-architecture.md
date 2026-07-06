@@ -23,7 +23,7 @@ skills/
   exam-help/        # 子：速查卡
   confusion-tracker/  # 子：概念疑难点追踪（写 study_progress.md），被 exam-tutor / exam-review 调用
 ```
-每个子技能**单一职责**、各自有 frontmatter（`name` / `description` / `license`）与「触发 / 输入 / 工作流 / 输出 / 边界」五段；彼此**交叉引用而非复制**。
+每个子技能**单一职责**、各自有 frontmatter（`name` / `description` / `license`）与「Purpose / Activation / Inputs / Workflow / Output Contract / Boundaries」六段；彼此**交叉引用而非复制**。
 
 ## 3. 子技能 ↔ 备考生命周期
 | 阶段 | 子技能 |

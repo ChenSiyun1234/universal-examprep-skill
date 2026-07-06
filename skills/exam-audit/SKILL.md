@@ -19,7 +19,8 @@ Activate when the user suspects the workspace is broken (missing chapters, ungra
 - `references/wiki/` — chapter knowledge files (`chN_*.md`).
 - `references/quiz_bank.json` — quiz items.
 - `study_plan.md` — phase plan with chapter anchors.
-- `study_progress.md` — rendered phase checkpoints and recorded wrong-question IDs.
+- `study_state.json` — the structured progress state (the SINGLE SOURCE OF TRUTH when present: `phase_checklist`, `mistake_archive`, `confusion_log`).
+- `study_progress.md` — a GENERATED VIEW of the state (rendered phase checkpoints and recorded wrong-question IDs); stale/hand-edited when it drifts from `study_state.json`.
 
 ## Workflow
 Inspect read-only. Open and parse files; never write, rename, or delete. Check each item below and record every failure as a concrete issue (file path + what is wrong).
@@ -27,7 +28,7 @@ Inspect read-only. Open and parse files; never write, rename, or delete. Check e
 1. **Structure.** For each phase listed in `study_plan.md`, confirm a matching `references/wiki/chN_*.md` file exists. Flag orphan chapters (wiki files no phase references) and broken links (phases pointing to absent chapters).
 2. **Quiz bank.** For each item in `references/quiz_bank.json`: confirm `type` is one of the six allowed types (choice / subjective / diagram / fill_blank / true_false / code); confirm `choice` items carry `options`; confirm `subjective` items carry `keywords`; confirm any item missing `answer` carries the ⚠️ marker or `source: ai_generated`.
 3. **Provenance honesty.** Flag any AI-generated answer presented as the teacher's standard answer (missing the ⚠️ marker). Flag any AI-supplement wiki passage that should carry 🟡 but does not.
-4. **Plan/progress consistency.** Confirm each rendered phase-checkpoint line in `study_progress.md` maps to a phase in `study_plan.md`. Confirm every wrong-question ID in `study_progress.md` exists in `references/quiz_bank.json`. Note: the template anchor `<!-- PHASE_CHECKLIST -->` is replaced by `scripts/ingest.py` at generation time and is absent from a correct finished workspace — do NOT report its absence as a problem.
+4. **Plan/progress consistency.** When `study_state.json` exists, treat it as the source of truth: confirm `study_progress.md` is a faithful render of it (flag drift / stale hand-edits where the md disagrees with the state), and check the state's `phase_checklist` phases map to `study_plan.md`. When no `study_state.json` exists, audit `study_progress.md` directly. Either way, confirm each rendered phase-checkpoint line maps to a phase in `study_plan.md` and every wrong-question ID exists in `references/quiz_bank.json`. Note: the template anchor `<!-- PHASE_CHECKLIST -->` is replaced by `scripts/ingest.py` at generation time and is absent from a correct finished workspace — do NOT report its absence as a problem.
 5. **Path safety.** Flag suspicious writes outside `references/wiki/` and any residual `../` or absolute paths.
 
 ## Output Contract

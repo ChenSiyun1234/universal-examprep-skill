@@ -1,7 +1,7 @@
 ---
 name: exam-help
 description: >
-  备考教练的速查卡：一屏列出工作流四步、四种模式、工作区文件约定、6 大题型、防幻觉与来源标注规则，
+  备考教练的速查卡：一屏列出工作流四步、3 学习模式 × 4 时间宽裕度、工作区文件约定、6 大题型、防幻觉与来源标注规则，
   以及各子技能何时用。当用户问「这个技能怎么用 / 有哪些模式 / 文件都是干嘛的 / 支持什么题型」时使用。
 license: MIT
 ---
@@ -9,7 +9,7 @@ license: MIT
 # exam-help — quick-reference card
 
 ## Purpose
-Render a single-screen reference card for the exam-cram skill suite: the four-step workflow, four modes, workspace file conventions, six quiz types, anti-hallucination and provenance rules, and when to use each subskill. Read-only.
+Render a single-screen reference card for the exam-cram skill suite: the four-step workflow, 3 learning modes and 4 time tiers, workspace file conventions, six quiz types, anti-hallucination and provenance rules, and when to use each subskill. Read-only.
 
 ## Activation
 Activate when the user asks how this skill works, what modes exist, what each workspace file is for, or which quiz types are supported (e.g. 「这个技能怎么用 / 有哪些模式 / 文件都是干嘛的 / 支持什么题型」).
