@@ -134,5 +134,71 @@ class RunLlmEndToEndWithStubAgent(unittest.TestCase):
         self.assertEqual(rc, 1, "a non-compliant agent must make the live smoke FAIL, not pass")
 
 
+class LiveRoundOneFixes(unittest.TestCase):
+    """Regressions for the Codex round-1 findings on the live wiring."""
+
+    def test_T1_agent_runs_in_throwaway_copy_pristine_fixture_untouched(self):
+        # a MUTATING stub agent (appends an invented item to the bank in its cwd) must neither dirty
+        # the tracked fixture nor make quiz_bank_only pass off the altered bank.
+        tmp = tempfile.mkdtemp()
+        agent = os.path.join(tmp, "mutating_agent.py")
+        with io.open(agent, "w", encoding="utf-8") as f:
+            f.write("import sys, json, io, os\n"
+                    "sys.stdout.reconfigure(encoding='utf-8')\n"
+                    "bank = os.path.join(os.getcwd(), 'references', 'quiz_bank.json')\n"
+                    "with io.open(bank, encoding='utf-8') as _f:\n"
+                    "    d = json.load(_f)\n"
+                    "d.append({'id': 'INVENTED_999', 'question': 'x', 'chapter': 1})\n"
+                    "with io.open(bank, 'w', encoding='utf-8') as _f:\n"
+                    "    json.dump(d, _f)\n"
+                    "sys.stdout.write('题目 [#INVENTED_999] x？')\n")
+        fixture_bank = os.path.join(FIXTURE, "references", "quiz_bank.json")
+        with io.open(fixture_bank, encoding="utf-8") as f:
+            before = f.read()
+        agent_cmd = json.dumps([sys.executable, agent, "{prompt}"])
+        buf = io.StringIO()
+        old = sys.stdout
+        sys.stdout = buf
+        try:
+            B.run_llm(["--llm", "--agent-cmd", agent_cmd, "--out-dir", os.path.join(tmp, "o"),
+                       "--timeout", "60"])
+        finally:
+            sys.stdout = old
+        # the tracked fixture bank is byte-identical after the run (agent mutated only its sandbox copy)
+        with io.open(fixture_bank, encoding="utf-8") as f:
+            after = f.read()
+        self.assertEqual(before, after, "live agent must NOT mutate the tracked fixture")
+        self.assertNotIn("INVENTED_999", after)
+        # quiz_bank_only reports FAIL against the pristine oracle (INVENTED_999 not in the real bank)
+        self.assertIn("[FAIL] quiz_bank_only", buf.getvalue())
+
+    def test_T2_live_teaching_template_catches_unsolicited_closers(self):
+        # golden passes; the golden + an appended closer block must FAIL the live check
+        sc = _BY_NAME["teaching_template"]
+        good = _read(sc["mock_output"])
+        self.assertTrue(B.live_reply_check("teaching_template", sc, good, FIXTURE)[0])
+        with_closer = good + "\n\n【易错点】：注意别漏条件。\n【3分钟速记】：口诀……"
+        self.assertFalse(B.live_reply_check("teaching_template", sc, with_closer, FIXTURE)[0],
+                         "unsolicited 收尾块 after the source block must fail live too")
+
+    def test_T3_unknown_flag_outside_llm_is_rejected(self):
+        with self.assertRaises(SystemExit):     # argparse .error() raises SystemExit(2)
+            B.main(["--mock", "--out-dir", "x"])   # --out-dir is an llm-only flag; must not silently pass
+
+    def test_T4_live_prompt_exposes_visual_asset_paths(self):
+        sc = _BY_NAME["visual_first_assets"]
+        prompt = B._live_prompt(FIXTURE, sc)
+        bank = json.loads(_read(os.path.join(os.path.relpath(FIXTURE, BS), "references", "quiz_bank.json")))
+        vis = [q for q in bank if isinstance(q, dict)
+               and (q.get("requires_assets") or q.get("maybe_requires_assets")
+                    or q.get("question_text_status") in ("stub", "page_reference"))]
+        self.assertTrue(vis, "fixture should have a visual-required item")
+        for q in vis:
+            for a in (q.get("assets") or []):
+                if isinstance(a, dict) and a.get("path"):
+                    self.assertIn(str(a["path"]).replace("\\", "/"), prompt,
+                                  "the live prompt must expose each visual item's asset path")
+
+
 if __name__ == "__main__":
     unittest.main()

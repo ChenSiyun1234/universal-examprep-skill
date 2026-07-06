@@ -18,6 +18,8 @@ import os
 import re
 import sys
 import json
+import shutil
+import tempfile
 import argparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -1092,6 +1094,14 @@ def _live_prompt(fixture_path, sc):
                                         str(q.get("question", "")))
             if q.get("options"):
                 e += " 选项: " + " / ".join(str(o) for o in q["options"])
+            # T4: visual-required items must expose their asset paths + roles so a real agent knows
+            # WHICH image to render first (the detector expects the exact fixture path back).
+            if q.get("requires_assets") or q.get("maybe_requires_assets") \
+                    or q.get("question_text_status") in ("stub", "page_reference"):
+                for a in (q.get("assets") or []):
+                    if isinstance(a, dict) and a.get("path"):
+                        e += "\n    题面侧图（先真实展示、标「题面图」）: %s（role=%s）" % (
+                            str(a["path"]).replace("\\", "/"), a.get("role", "?"))
             lines.append(e)
     digest = "\n".join(lines)
     plan = ""
@@ -1125,8 +1135,11 @@ def live_reply_check(name, sc, reply, fixture_path):
               and has_zero_basic_sections(reply))
         return ok, f"seven_step+source+sections={ok}"
     if name == "teaching_template":
-        ok = teaching_template_ok(reply) and question_source_block_ok(reply)
-        return ok, f"seven_step+source_block={ok}"
+        # T2: mirror --mock — the default output ENDS at the source block, so unsolicited closers
+        # (易错点 / 3分钟速记 / 现在轮到你) after it are a contract violation.
+        ok = (teaching_template_ok(reply) and question_source_block_ok(reply)
+              and no_unsolicited_closing_blocks(reply))
+        return ok, f"seven_step+source_block+no_unsolicited_closers={ok}"
     if name == "time_budget_no_questions":
         ok = urgent_no_student_questions_ok(reply)
         return ok, f"no_student_questions_in_1day={ok}"
@@ -1181,7 +1194,16 @@ def run_llm(argv=None):
                             "SKIP"))
             continue
         prompt = _live_prompt(fixture_path, sc)
-        reply = _LS.call_agent(args.agent_cmd, prompt, args.timeout, args.max_out, cwd=fixture_path)
+        # T1: run the agent inside a THROWAWAY copy of the fixture (it has filesystem access and could
+        # mutate quiz_bank.json / progress). The detector ORACLE always reads the pristine original
+        # fixture_path, so a misbehaving agent can neither dirty the repo nor poison later checks.
+        sandbox = tempfile.mkdtemp(prefix="bsmoke_")
+        agent_cwd = os.path.join(sandbox, "ws")
+        shutil.copytree(fixture_path, agent_cwd)
+        try:
+            reply = _LS.call_agent(args.agent_cmd, prompt, args.timeout, args.max_out, cwd=agent_cwd)
+        finally:
+            shutil.rmtree(sandbox, ignore_errors=True)
         with open(os.path.join(out_dir, "live_%s.md" % name), "w", encoding="utf-8") as f:
             f.write("# scenario: %s\n\n## prompt\n%s\n\n## reply\n%s\n" % (name, prompt, reply))
         ok, detail = live_reply_check(name, sc, reply, fixture_path)
@@ -1207,6 +1229,10 @@ def main(argv=None):
     ap.add_argument("--llm", action="store_true",
                     help="real claude -p smoke; requires RUN_SKILL_BEHAVIOR_LLM=1 (off in CI)")
     args, _rest = ap.parse_known_args(argv)   # --llm sub-flags (--agent-cmd …) parsed inside run_llm
+    # T3: leftover args are ONLY legitimate for the --llm runner (--agent-cmd/--out-dir/…). Outside it,
+    # an unknown/misspelled flag must FAIL loudly, not silently make a --mock/--check-fixture run green.
+    if _rest and not args.llm:
+        ap.error("unrecognized arguments: " + " ".join(_rest))
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
