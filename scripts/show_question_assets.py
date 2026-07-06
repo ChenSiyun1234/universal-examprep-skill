@@ -9,7 +9,7 @@ hand-written: it emits the Markdown lines to paste BEFORE the question, verifies
 exist/are safe (same rules as validate_workspace), and refuses (exit 1) when the contract can't be met.
 Answer-side assets are only printed with --with-answer, AFTER a separator — never before the prompt.
 
-    python scripts/show_question_assets.py --workspace <ws> --id <qid> [--with-answer]
+    python scripts/show_question_assets.py --workspace <ws> --id <qid> [--with-answer] [--lang zh|en]
 
 Exit codes: 0 printed · 1 fail-closed (visual item without a displayable prompt asset) · 2 bad input.
 """
@@ -48,7 +48,20 @@ def run(argv=None):
     ap.add_argument("--workspace", required=True)
     ap.add_argument("--id", required=True, help="question id")
     ap.add_argument("--with-answer", action="store_true", help="append answer-side assets afterwards (hidden by default)")
+    ap.add_argument("--lang", default="zh",
+                    help="reply-language mode for the visible asset label. Accepts zh/en or the "
+                         "persisted study_state.json values `中文`/`English`/`双语` (`中文` and `双语` "
+                         "map to zh labels `题面图`/`答案图`; `English` maps to en labels "
+                         "Question-side/Answer-side asset). The `双语` caller emits the zh labels and "
+                         "adds its own `> EN:` mirror.")
     args = ap.parse_args(argv)
+    _LANG = {"zh": "zh", "en": "en", "中文": "zh", "english": "en", "双语": "zh"}
+    _key = str(args.lang).strip()
+    lang = _LANG.get(_key) or _LANG.get(_key.lower())
+    if lang is None:
+        _die("--lang 只接受 zh/en 或持久化值 中文/English/双语，收到: %r" % args.lang)
+    q_label = "题面图" if lang == "zh" else "Question-side asset"
+    a_label = "答案图" if lang == "zh" else "Answer-side asset"
 
     bank_path = os.path.join(args.workspace, "references", "quiz_bank.json")
     if not os.path.isfile(bank_path):
@@ -87,16 +100,27 @@ def run(argv=None):
                             if broken else "没有任何可展示的题面侧 asset", pointer))
         raise SystemExit(1)
 
-    for a in prompt:                                   # POSIX relative paths → renderable Markdown,
-        rel = str(a["path"]).replace("\\", "/")        # canonical label per docs/file-format.md §4
-        print("![题面图 / question-side asset: %s](%s)" % (a.get("caption") or args.id, rel))
+    def _cap(a, idx, kind):
+        # zh keeps the raw caption; en must stay ASCII-safe (captions AND ids built from Chinese
+        # material stems are commonly CJK), so fall back id → ASCII index placeholder.
+        cap = a.get("caption") or args.id
+        if lang == "en" and not str(cap).isascii():
+            cap = args.id if str(args.id).isascii() else "%s %d" % (kind, idx)
+        return cap
+
+    for i, a in enumerate(prompt, 1):                  # POSIX relative paths → renderable Markdown,
+        rel = str(a["path"]).replace("\\", "/")        # label per reply language (docs/file-format.md §4)
+        print("![%s: %s](%s)" % (q_label, _cap(a, i, "question-side asset"), rel))
     if not prompt:
-        print("（该题不依赖图片，无题面 asset）")
+        print("（该题不依赖图片，无题面 asset）" if lang == "zh"
+              else "(this item needs no figure — no question-side asset)")
     if args.with_answer and answer:
-        print("\n---（以下为答案/解析侧图片，讲解或复盘时才展示）---")
-        for a in answer:
-            print("![答案图 / answer-side asset: %s](%s)"
-                  % (a.get("caption") or args.id, str(a["path"]).replace("\\", "/")))
+        sep = ("（以下为答案/解析侧图片，讲解或复盘时才展示）" if lang == "zh"
+               else "(answer/solution-side images below — shown only during solution or review)")
+        print("\n--- %s ---" % sep)
+        for i, a in enumerate(answer, 1):
+            print("![%s: %s](%s)" % (a_label, _cap(a, i, "answer-side asset"),
+                                     str(a["path"]).replace("\\", "/")))
     return 0
 
 

@@ -163,19 +163,19 @@ class A8bLanguageDispatch(unittest.TestCase):
         self.assertIn("语言 / Language：中文 / English / 双语", t)  # 三语语言行
         self.assertIn("--language <语言>", t)                      # 一次 set 立三样
         self.assertIn("NEVER infer `双语`", t)                     # 双语只显式选择
-        self.assertIn("LANGUAGE-INVARIANT", t)                     # 派发规则 + 锚点不变性
+        self.assertIn("SINGLE-LANGUAGE PURITY", t)                 # 派发规则（阶段6 单语言纯净）
         self.assertIn("Simplified Chinese", t)                     # 既有钉字存活
 
     def test_tutor_en_block_keeps_anchors(self):
         t = self._read("skills", "exam-tutor", "SKILL.md")
         self.assertIn("### English rendering", t)
-        self.assertIn("① 题面图 (Question figure)", t)             # token+gloss 形态
-        self.assertIn("题目来源：lec", t.replace("lecture03", "lec"))  # 来源块行原样（示例）
-        self.assertIn("> EN:", t)                                  # 双语镜像行形态
+        self.assertIn("① Question figure", t)                      # 纯英文块标（阶段6）
+        self.assertIn("Question source:", t)                       # 英文来源块行
+        self.assertIn("> EN:", t)                                  # 双语镜像行形态（composition 规则引用）
 
     def test_quiz_en_block_keeps_receipt(self):
         t = self._read("skills", "exam-quiz", "SKILL.md")
-        self.assertIn("已记录到错题本 (recorded to the mistake archive)", t)
+        self.assertIn("Recorded to the mistake archive", t)        # 英文回执（阶段6）
         self.assertIn("### English rendering", t)
 
     def test_policy_carries_single_language_purity(self):

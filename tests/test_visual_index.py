@@ -263,7 +263,8 @@ class OfficialTools(unittest.TestCase):
         ws, _m, _rc = _build(tmp, apply=True)
         rc, out = self._capture(SQA.run, ["--workspace", ws, "--id", "suspect_1"])
         self.assertEqual(rc, 0)
-        self.assertIn("![题面图 / question-side asset:", out)     # canonical label (docs/file-format §4)
+        self.assertIn("![题面图:", out)                          # default zh label (docs/file-format §4)
+        self.assertNotIn("question-side asset", out)             # 默认 zh 模式=纯 题面图，非复合形
         self.assertIn("references/assets/", out)
         self.assertNotIn("\\", out.split("(")[1].split(")")[0])   # renderable POSIX path
         # a visual item whose asset file is deleted → fail-closed exit 1
@@ -768,7 +769,7 @@ class OfficialTools(unittest.TestCase):
         src = open(os.path.join(ROOT, "skills", "exam-ingest", "SKILL.md"), encoding="utf-8").read()
         self.assertIn("AFTER ingest has created the workspace", src)
         # the cross-check instruction must appear AFTER the ingest.py step, not under the builder step
-        self.assertLess(src.index("scripts/ingest.py"), src.index("Recall cross-check (P0-V2)"))
+        self.assertLess(src.index("scripts/ingest.py"), src.index("Recall cross-check"))
 
     def test_figref_regex_has_token_boundary(self):
         self.assertFalse(BVI.classify_page("It is comfortable 1 and profitable 2024.")["has_visual"])

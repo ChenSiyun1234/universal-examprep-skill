@@ -23,13 +23,13 @@ Capture the learner's concept-level confusions (why / what / how-derived questio
 ## Workflow
 1. **Detect** — decide whether the follow-up is a concept question (not a quiz item or its answer).
 2. **Answer** — give a concise, clear explanation grounded in the current wiki chapter. Label the source: 🟢 来自资料 for material-sourced content, 🟡 AI补充，可能与你老师讲的不完全一致 for AI-supplied background. Never present AI-added content as the teacher's.
-3. **Record** — persist the confusion: `关联章节` / `疑难点` (one line) / `解答要点` (≤2 sentences) / `状态` (default 待回顾). When `study_state.json` exists (A4), the ONLY valid write path is `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> add-confusion --chapter <ch> --note <疑难点/解答要点>` — the md table is a generated view and a hand-appended row is lost on the next render. Without state (no-Python fallback), append to the 「## 💡 概念疑难点记录」 table in `study_progress.md` directly, auto-incrementing the `序号` column.
+3. **Record** — persist the confusion: `关联章节` / `疑难点` (one line) / `解答要点` (≤2 sentences) / `状态` (default 待回顾). When `study_state.json` exists, the ONLY valid write path is `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> add-confusion --chapter <ch> --note <疑难点/解答要点>` — the md table is a generated view and a hand-appended row is lost on the next render. Without state (no-Python fallback), append to the 「## 💡 概念疑难点记录」 table in `study_progress.md` directly, auto-incrementing the `序号` column.
 4. **Confirm** — tell the learner it was logged (e.g. 「已记录到疑难点」) in one short line, without breaking the teaching flow.
 
 ## Output Contract
 - Persist one confusion record (`关联章节` / `疑难点` / `解答要点` / `状态`): with `study_state.json`, the output contract IS the `update_progress.py add-confusion` call (the md table regenerates from state); without state, append one row to the 「## 💡 概念疑难点记录」 table in `study_progress.md` (`序号` auto-increments).
 - During the final sweep, read the confusion records and have the learner restate each: update `状态` **in place** — 待回顾 → 已回顾 when explained correctly; keep 待回顾 and re-explain otherwise. Never overwrite other skills' writes.
-- Student-facing output defaults to Simplified Chinese; a persisted `study_state.json` `language` (`English`/`双语`) switches it per exam-cram's dispatch rule (canonical tokens verbatim).
+- Student-facing output defaults to Simplified Chinese; a persisted `study_state.json` `language` (`English`/`双语`) switches it per exam-cram's dispatch rule with single-language purity.
 
 ## Student-facing Output
 进度文件里的表格格式（学生侧中文，序号按已有记录递增）：
@@ -45,10 +45,10 @@ Capture the learner's concept-level confusions (why / what / how-derived questio
 记录完后给一句简短回执（如「已记录到疑难点」），不打断教学节奏。
 
 
-Render per the persisted `study_state.json` `language` (`中文` default / `English` / `双语`); canonical tokens stay verbatim with a trailing gloss — see [`exam-cram`](../exam-cram/SKILL.md) Output Contract for the dispatch and composition rules.
+Render per the persisted `study_state.json` `language` (`中文` default / `English` / `双语`) with single-language purity — `中文` output stays pure Chinese, `English` output uses the EN canonical vocabulary, `双语` composes the zh unit first + a `> EN:` mirror per block; see [`exam-cram`](../exam-cram/SKILL.md) Output Contract and [`docs/language-policy.md`](../../docs/language-policy.md).
 
 ## Boundaries
-- **Structured progress state (A4)**: when `study_state.json` exists it is the SINGLE SOURCE OF TRUTH — record via `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> add-confusion`, update review status via `set-confusion-status --id <qid>|--index <N> --status 已回顾/待回顾`; never hand-patch the generated `study_progress.md`. If the state write fails, TELL the user; never continue as if it saved.
+- **Structured progress state**: when `study_state.json` exists it is the SINGLE SOURCE OF TRUTH — record via `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> add-confusion`, update review status via `set-confusion-status --id <qid>|--index <N> --status 已回顾/待回顾`; never hand-patch the generated `study_progress.md`. If the state write fails, TELL the user; never continue as if it saved.
 - Only record concept questions; never quiz or grade (that is `exam-quiz`).
 - Concept answers carry the canonical provenance labels (🟢 来自资料 / 🟡 AI补充，可能与你老师讲的不完全一致 / ⚠️ AI生成答案，非老师/教材提供); never disguise AI-added content as teacher-provided.
 - Share the progress state with `exam-review`: in state-backed workspaces both skills go through `update_progress.py` (append via add-confusion, status via set-confusion-status); in md-only workspaces append/update `study_progress.md` in place. Never overwrite other skills' writes.

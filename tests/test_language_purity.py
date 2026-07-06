@@ -769,5 +769,78 @@ class T5BilingualComposition(unittest.TestCase):
             self.assertEqual(self.BI_SEVEN_STEP.count(tok), 1, tok)
 
 
+# =============================================================================
+# C3 — no internal stage codenames in runtime surfaces
+# =============================================================================
+# Roadmap codenames (A2/A4/A7/A8b/B4/D1/P0/T5 …) are contributor-side labels; a
+# model that reads them into context can parrot 「按 A2 契约…」 to students. Runtime
+# files must NOT carry them outside code spans. Exempt: docs/ (the codename↔behavior
+# map lives there), CHANGELOG.md, benchmark/. Digit is REQUIRED so 「B 树」/「A.」 option
+# labels do not false-positive.
+_CODENAME_RE = re.compile(
+    r"(?<![A-Za-z0-9_./-])(A[1-9][a-z]?|B[1-9]x?|C[0-5][a-z]?|D[1-5]|P[0-3][A-Za-z]?|T[1-5][a-z]?)"
+    r"(?![A-Za-z0-9_])")   # C 系列（C0-C5/C2c…）是阶段6自身的路标，必须钉
+
+_RUNTIME_CODENAME_FILES = (
+    ["SKILL.md", "SKILL.en.md", "AGENTS.md", "prompts/web_prompt.md", "prompts/web_prompt.en.md"]
+    + ["skills/%s/SKILL.md" % s for s in
+       ("exam-cram", "exam-tutor", "exam-quiz", "exam-review", "exam-cheatsheet",
+        "exam-ingest", "exam-audit", "exam-help", "confusion-tracker")])
+
+
+class C3NoStageCodenames(unittest.TestCase):
+    """运行时面零阶段代号（docs/CHANGELOG/benchmark 豁免；代码 span 内豁免）。"""
+
+    def test_runtime_files_have_no_stage_codenames(self):
+        bad = []
+        for rel in _RUNTIME_CODENAME_FILES:
+            for n, line in enumerate(read_rel(rel).splitlines(), 1):
+                for m in _CODENAME_RE.finditer(CODE_SPAN_RE.sub("", line)):
+                    bad.append("%s L%d [%s] %s" % (rel, n, m.group(1), line.strip()[:70]))
+        self.assertFalse(bad, u"运行时面残留内部阶段代号（应改行为描述名；代码 span/docs/CHANGELOG "
+                              u"豁免）：\n" + "\n".join(bad))
+
+    def test_lint_machinery_fires_and_exempts(self):
+        # 机制自测：代码 span 内豁免、真代号被抓、B 树/A. 不误伤
+        def hits(s):
+            return [m.group(1) for m in _CODENAME_RE.finditer(CODE_SPAN_RE.sub("", s))]
+        self.assertEqual(hits(u"范围过滤契约（A2）：默认混合池"), ["A2"])
+        self.assertEqual(hits(u"见 C2c 语言分离、C3 去代号"), ["C2c", "C3"])   # C 系列被抓
+        self.assertEqual(hits(u"P0A / P0D 阶段"), ["P0A", "P0D"])   # P 字母后缀被抓
+        self.assertEqual(hits(u"存在 `A4 结构化状态` 时"), [])          # 代码 span 豁免
+        self.assertEqual(hits(u"二叉树/B 树、AVL 旋转"), [])            # 无数字不误伤
+        self.assertEqual(hits(u"选项 A. 与 B. 二选一"), [])            # 选项标签不误伤
+
+
+class C2cEnRenderingBlocksArePureEnglish(unittest.TestCase):
+    """C2c：exam-tutor / exam-quiz 的 `### English rendering` 子块必须零 CJK（代码 span 除外）——
+    它是 English 模式的学生可见样例，token+gloss 旧形态已废除。"""
+
+    EN_RENDER_FILES = ("skills/exam-tutor/SKILL.md", "skills/exam-quiz/SKILL.md")
+    _HEAD = re.compile(r"(?m)^### English rendering")
+    _NEXT = re.compile(r"(?m)^## |^### ")
+
+    def _en_block(self, text):
+        m = self._HEAD.search(text)
+        self.assertTrue(m, u"缺 `### English rendering` 子块")
+        start = m.end()
+        nxt = self._NEXT.search(text, start)
+        return text[start:nxt.start() if nxt else len(text)]
+
+    def test_en_rendering_blocks_zero_cjk(self):
+        for rel in self.EN_RENDER_FILES:
+            block = self._en_block(read_rel(rel))
+            off = en_purity_offenses(block)
+            self.assertFalse(off, u"%s 的 English rendering 块残留 CJK（代码 span 外）：%r" % (rel, off[:6]))
+
+    def test_en_rendering_blocks_use_en_vocab(self):
+        for rel in self.EN_RENDER_FILES:
+            block = self._en_block(read_rel(rel))
+            # 至少携带来源块行英文形与一个 EN 来源标签句（防退化回中文样例）
+            self.assertIn("Question source:", block, rel)
+            self.assertTrue(any(lbl in block for _, lbl in EN_CANONICAL_VOCAB
+                                if lbl.startswith(u"🟢") or lbl.startswith(u"⚠️")), rel)
+
+
 if __name__ == "__main__":
     unittest.main()
