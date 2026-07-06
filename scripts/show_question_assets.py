@@ -9,7 +9,7 @@ hand-written: it emits the Markdown lines to paste BEFORE the question, verifies
 exist/are safe (same rules as validate_workspace), and refuses (exit 1) when the contract can't be met.
 Answer-side assets are only printed with --with-answer, AFTER a separator — never before the prompt.
 
-    python scripts/show_question_assets.py --workspace <ws> --id <qid> [--with-answer]
+    python scripts/show_question_assets.py --workspace <ws> --id <qid> [--with-answer] [--lang zh|en]
 
 Exit codes: 0 printed · 1 fail-closed (visual item without a displayable prompt asset) · 2 bad input.
 """
@@ -95,9 +95,12 @@ def run(argv=None):
         rel = str(a["path"]).replace("\\", "/")        # label per reply language (docs/file-format.md §4)
         print("![%s: %s](%s)" % (q_label, a.get("caption") or args.id, rel))
     if not prompt:
-        print("（该题不依赖图片，无题面 asset）")
+        print("（该题不依赖图片，无题面 asset）" if args.lang == "zh"
+              else "(this item needs no figure — no question-side asset)")
     if args.with_answer and answer:
-        print("\n---（以下为答案/解析侧图片，讲解或复盘时才展示）---")
+        sep = ("（以下为答案/解析侧图片，讲解或复盘时才展示）" if args.lang == "zh"
+               else "(answer/solution-side images below — shown only during solution or review)")
+        print("\n--- %s ---" % sep)
         for a in answer:
             print("![%s: %s](%s)"
                   % (a_label, a.get("caption") or args.id, str(a["path"]).replace("\\", "/")))
