@@ -29,6 +29,7 @@ import argparse
 import json
 import math
 import os
+import re
 import hashlib
 import subprocess
 import sys
@@ -204,10 +205,26 @@ def mock_answer(arm, item):
     return str(item.get("gold_answer", "")) or J.ABSTAIN_MARKERS[0]
 
 
+# 订阅撞上限时，`claude -p --output-format json` 会把限额通知**当作 result 返回**
+# （"You've hit your limit · resets 10:50am (America/Los_Angeles)"），is_error 仍是 false。
+# 这不是答案——短、且是纯限额通知。必须识别成配额 infra_error，否则会被当有效答案判为错，
+# 把整臂正确率假压到 0（rawfiles 曾因此全 0）。用**短长度 + 限额签名**双条件，避免误伤正文里提到
+# "usage limit" 的正常长答案。
+_QUOTA_RESULT_RE = re.compile(
+    r"you'?ve hit your (usage )?limit|hit your limit.{0,40}reset|usage limit reached|"
+    r"reached your (usage )?limit|限额|额度已用完", re.I)
+
+
+def _is_quota_notice(res):
+    r = (res or "").strip()
+    return len(r) <= 220 and bool(_QUOTA_RESULT_RE.search(r))
+
+
 def _gen_claude(prompt, model, cwd=None, skill=False, timeout=900):
     """run_matrix 自带的 claude 生成调用，返回 (answer, cost, ok, err_text)。
     ok=True 表示拿到**有效 JSON result**——即便答案内容恰好含 resets/usage limit 等词也**不**误判为配额错。
-    只有拿不到 result（非 JSON / 空 result / 超时 / 异常）才 ok=False，再对**错误文本**分类 hard/transient。
+    例外：整个 result 就是一条**短限额通知**（撞上限时 claude 把通知当 result 返回）→ 判配额 infra_error。
+    只有拿不到 result（非 JSON / 空 result / 超时 / 异常 / 纯限额通知）才 ok=False，再对**错误文本**分类。
     （STDIN 传 prompt：material 臂会塞进整门课 ~100-230K 字符，走 argv 会撞 Windows WinError 206。）"""
     args = ["claude", "-p", "--output-format", "json", "--model", model]
     if skill:
@@ -226,6 +243,8 @@ def _gen_claude(prompt, model, cwd=None, skill=False, timeout=900):
         return "", None, False, (p.stdout or p.stderr or "").strip()
     res = data.get("result") or ""
     if res.strip():
+        if _is_quota_notice(res):            # 整个 result 就是限额通知 → 配额 infra_error（err 含通知原文，
+            return "", data.get("total_cost_usd"), False, res.strip()   # gen.classify → hard → 触发续跑重打
         return res, data.get("total_cost_usd"), True, ""
     return "", data.get("total_cost_usd"), False, (p.stdout or p.stderr or "").strip()
 

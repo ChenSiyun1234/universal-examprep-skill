@@ -208,8 +208,11 @@ def _norm(s):
 
 def _lex_norm(s):
     """小写 + 空白折叠成单空格，再剥掉紧邻标点的空格（'word - ram'→'word-ram'）——
-    但保留**词间**空格，让 ASCII 词边界检查有意义（microRAM ≠ ' RAM'）。"""
+    但保留**词间**空格，让 ASCII 词边界检查有意义（microRAM ≠ ' RAM'）。
+    同时剥掉 markdown 强调符与各式引号（**"a donkey…"** 里的标准答案要能对上）——对答案和金标
+    对称处理，故仍是干净的逐字比对，不会放宽语义。"""
     s = re.sub(r"\s+", " ", (s or "").lower()).strip()
+    s = re.sub(r"[*_~`\"'“”‘’「」『』]", "", s)   # markdown 强调 + 直/弯引号 + 中文引号（答案与金标同样剥）
     return re.sub(r" (?=[^0-9a-zÀ-ɏ一-鿿])"
                   r"|(?<=[^0-9a-zÀ-ɏ一-鿿]) ", "", s)
 
@@ -313,7 +316,9 @@ def _faithfulness_prompt(question, answer, context):
         "请把【待评答案】拆成若干条原子事实陈述，对每条判断它是否能由【参考依据】直接推出"
         "（1=能支持，0=不能/与依据矛盾）。只依据【参考依据】判断，不要用你自己的知识。\n"
         "只输出 JSON：{\"claims\":[{\"claim\":\"...\",\"supported\":0或1}],"
-        "\"correct\":0或1,\"abstained\":0或1}。correct=答案是否与依据一致且回答了问题；"
+        "\"correct\":0或1,\"abstained\":0或1}。correct=答案是否正确回答了问题（给出了标准答案、"
+        "或与之等价/含之即算对；**额外补充的正确细节不影响 correct，只体现在上面逐句 supported 里**——"
+        "别因为答案多说了几句依据里没有的正确背景就判 correct=0）；"
         "abstained=答案是否表示\"材料未涵盖/不确定\"。\n\n"
         f"【参考依据】\n{context}\n\n【问题】\n{question}\n\n【待评答案】\n{answer}\n"
     )

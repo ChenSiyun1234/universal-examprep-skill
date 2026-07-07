@@ -22,6 +22,7 @@ config_*.json
 items/items.jsonl
 items/items_*_full.jsonl
 items/items_*_hard.jsonl
+items/items_*_oos.jsonl
 
 # 你的课件/作业 —— 可能含版权或隐私，绝不提交到公开仓库
 materials/*
@@ -36,3 +37,4 @@ calibration/*
 !calibration/README.md
 !calibration/kappa_n24_summary.json
 runs/ledger.jsonl
+items/items_algoexam*.jsonl
