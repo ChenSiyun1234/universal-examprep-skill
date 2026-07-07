@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/exam-panic.jpg" width="200" alt="Exam Cram Coach" />
+<img src="assets/exam-panic.png" width="200" alt="Exam Cram Coach" />
 
 # Exam Cram Coach
 
@@ -11,10 +11,8 @@ English · [中文](README.md)
 [![stars](https://img.shields.io/github/stars/ZeKaiNie/universal-examprep-skill?style=flat&color=blue)](https://github.com/ZeKaiNie/universal-examprep-skill/stargazers)
 [![MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/ZeKaiNie/universal-examprep-skill/actions/workflows/ci.yml/badge.svg)](https://github.com/ZeKaiNie/universal-examprep-skill/actions)
-[![agents](https://img.shields.io/badge/works%20with-6%20agents-brightgreen.svg)](docs/agent-portability.md)
-[![tokens](https://img.shields.io/badge/tokens-−90%25-orange.svg)](#how-it-works)
 
-**Closed-book <10% → with the skill ~90%+** · tokens −90% · 100% honest abstention · 6 agents
+**Closed-book <10% → with the skill ~90%+** · context −90% · 100% honest abstention · 6 agents
 
 </div>
 
@@ -58,13 +56,13 @@ Correctness, higher is better (judge: Sonnet):
 | PSYC 110 · Opus 4.8 | 9% | 96% | **100%** |
 | PSYC 110 · Sonnet 4.6 | 7% | 96% | 87% |
 | PSYC 110 · Haiku 4.5 | 9% | 89% | **96%** |
+| 6.006 · Opus 4.8 | 27% | 91% | **91%** |
+| 6.006 · Sonnet 4.6 | 56% | 87% | 85% |
 | 6.006 · Haiku 4.5 | 31% | 85% | **89%** |
 
 Two domains (humanities fact recall / algorithm reasoning), same result: **without materials the model can't answer; grounding is where the correctness comes from.** The skill matches a "raw files agent" on accuracy but costs less — it pulls only the compressed relevant chapters instead of re-scanning the whole file pile each question.
 
 <details><summary>Cost per question (the skill's real edge: same accuracy, less spend)</summary>
-
-The skill pulls only the compressed relevant chapters; the raw-files agent re-scans the whole pile each question — so at the same accuracy the skill costs less:
 
 | Cost / question | Closed-book | Raw files agent | With the skill |
 |---|:--:|:--:|:--:|
@@ -73,7 +71,7 @@ The skill pulls only the compressed relevant chapters; the raw-files agent re-sc
 
 </details>
 
-Full method, three-arm design, cost, human kappa calibration, limitations → **[test report](benchmark/REPORT.en.md)**.
+Full method, three-arm design, cost, human agreement calibration, limitations → **[test report](benchmark/REPORT.en.md)**.
 
 ---
 
@@ -85,8 +83,8 @@ A ladder of "don't make it up unless you have to":
 2. **Forced source labels** — every claim tagged `🟢 from your materials` / `🟡 AI-supplemented, may differ from your teacher` / `⚠️ AI-generated answer`, never passed off as the textbook.
 3. **If it's not in the materials, say so** — abstains honestly on uncovered questions instead of fabricating (100% out-of-scope abstention, measured).
 4. **Draw-it questions run the algorithm first** — for binary trees / graph traversal, it runs the real algorithm in the background to get the topology, then renders — no imagining.
-5. **Figure-dependent questions fail closed** — a question that needs an image but has none is never served; no unanswerable question handed to the student.
-6. **Lazy-loaded wiki** — chapter-sliced, loaded by progress, so long chats don't blow up the context. **Tokens −90%.**
+5. **Figure-dependent questions won't be served without the figure** — no unanswerable question handed to the student.
+6. **Chapter-sliced knowledge base, loaded on demand** — sliced by chapter, loaded by progress, so long chats don't blow up the context. **Context −90%.**
 
 ---
 
@@ -108,7 +106,7 @@ Clone the repo; have the agent read `AGENTS.md` (a one-screen fallback contract)
 
 Can't write local files — use the drop-in prompt instead: copy [`prompts/web_prompt.en.md`](prompts/web_prompt.en.md) and send it, then paste your materials.
 
-> Full load matrix (per-agent support, entry files) in [`docs/agent-portability.md`](docs/agent-portability.md). The behavior source of truth is the Chinese [`SKILL.md`](SKILL.md); [`SKILL.en.md`](SKILL.en.md) is its English rendering.
+> Full load matrix (per-agent support, entry files) in [`docs/agent-portability.md`](docs/agent-portability.md). The behavior source of truth is [`SKILL.md`](SKILL.md); [`SKILL.en.md`](SKILL.en.md) is its English rendering.
 
 ---
 
@@ -119,7 +117,7 @@ The monolith is split into 9 single-purpose sub-skills the agent loads on demand
 | Sub-skill | What it does |
 |---|---|
 | `exam-cram` | Orchestrator — runs the 4-step workflow + study-mode routing |
-| `exam-ingest` | Builds the workspace from your materials (wiki + quiz bank + progress) |
+| `exam-ingest` | Builds the workspace from your materials (knowledge base + quiz bank + progress) |
 | `exam-tutor` | Lazy per-chapter teaching (7-step walkthroughs, draw-it-runs-algorithm-first) |
 | `exam-quiz` | Draws & grades from the bank (6 question types: MC / short / draw / fill / T-F / code) |
 | `exam-review` | Mistakes and concept-confusion review |
@@ -145,7 +143,7 @@ The real paid benchmark is expensive (tens of dollars / hours per matrix), run m
 
 ## FAQ
 
-**No Python installed?** Fine. When the agent finds no Python it silently switches to "manual write mode", creating the wiki tree itself — no difference to you.
+**No Python installed?** Fine. When the agent finds no Python it silently switches to "manual write mode", creating the knowledge-base tree itself — no difference to you.
 
 **Only photos / scanned PDFs / a recording?** First transcribe with any free web multimodal AI ("extract the highlights and questions as plain text, keep the star/underline markers"), paste into a `.txt`, then have the agent build the workspace; the rest is plain-text and smooth. Recordings: transcribe first, then feed.
 
