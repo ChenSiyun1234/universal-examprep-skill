@@ -29,7 +29,7 @@ Capture the learner's concept-level confusions (why / what / how-derived questio
 ## Output Contract
 - Persist one confusion record (`关联章节` / `疑难点` / `解答要点` / `状态`): with `study_state.json`, the output contract IS the `update_progress.py add-confusion` call (the md table regenerates from state); without state, append one row to the 「## 💡 概念疑难点记录」 table in `study_progress.md` (`序号` auto-increments).
 - During the final sweep, read the confusion records and have the learner restate each: update `状态` **in place** — 待回顾 → 已回顾 when explained correctly; keep 待回顾 and re-explain otherwise. Never overwrite other skills' writes.
-- Student-facing output defaults to Simplified Chinese; a persisted `study_state.json` `language` (`English`/`双语`) switches it per exam-cram's dispatch rule with single-language purity.
+- Student-facing output defaults to English (Simplified Chinese if the student opened in Chinese); a persisted `study_state.json` `language` (`中文`/`English`/`双语`) switches it per exam-cram's dispatch rule with single-language purity.
 
 ## Student-facing Output
 进度文件里的表格格式（学生侧中文，序号按已有记录递增）：

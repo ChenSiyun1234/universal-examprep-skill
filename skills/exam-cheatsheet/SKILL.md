@@ -35,7 +35,7 @@ Trigger when all study phases are basically cleared and review is wrapping up, O
 - Write `walkthrough.md`: the four fixed sections per mastered chapter, headings in the active reply language — `中文` 「必背结论/公式」→「例题」→「例题解答」→「要点解释」, `English` Must-memorize conclusions & formulas → Worked example → Worked solution → Takeaway — with a refreshed progress panel at the end.
 - Provenance is inline and honest: AI-supplemented lines carry 🟡 AI补充，可能与你老师讲的不完全一致; AI-generated answers carry ⚠️ AI生成答案，非老师/教材提供; unlabeled lines are material-sourced (per-line 🟢 tagging not required).
 - Keep it to one or two printable, hand-copyable pages.
-- Student-facing output defaults to Simplified Chinese; a persisted `study_state.json` `language` (`English`/`双语`) switches it per exam-cram's dispatch rule with single-language purity. (See [`docs/language-policy.md`](../../docs/language-policy.md).)
+- Student-facing output defaults to English (Simplified Chinese if the student opened in Chinese); a persisted `study_state.json` `language` (`中文`/`English`/`双语`) switches it per exam-cram's dispatch rule with single-language purity. (See [`docs/language-policy.md`](../../docs/language-policy.md).)
 
 ## Student-facing Output
 考前最后一小时速记小抄，固定四段、每章循环（简洁实用，AI 补充/生成的行就地标注）：

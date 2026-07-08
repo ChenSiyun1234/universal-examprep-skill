@@ -868,14 +868,19 @@ class Hygiene(unittest.TestCase):
 
     def test_no_committed_course_pdfs_or_images(self):
         # the repo must not carry real course PDFs or slide images
+        # exempt the repo's own branding dir (assets/ holds the README hero/mascot, not course material)
+        assets_dir = os.path.join(ROOT, "assets")
         for dirpath, _dirs, files in os.walk(ROOT):
             if ".git" in dirpath:
                 continue
+            in_assets = os.path.abspath(dirpath) == os.path.abspath(assets_dir)
             for fn in files:
                 low = fn.lower()
                 if low.endswith(".pdf"):
                     self.fail("committed PDF found: %s" % os.path.join(dirpath, fn))
                 if low.endswith((".png", ".jpg", ".jpeg")):
+                    if in_assets:  # project branding (mascot/hero), intentionally committed
+                        continue
                     size = os.path.getsize(os.path.join(dirpath, fn))
                     self.assertLess(size, 4096, "suspiciously large image (real slide?): %s" %
                                     os.path.join(dirpath, fn))

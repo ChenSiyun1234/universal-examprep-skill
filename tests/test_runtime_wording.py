@@ -53,7 +53,8 @@ class RuntimeWordingTest(unittest.TestCase):
     def test_bare_xieyi_is_not_globally_banned(self):
         # a bare `协议` (开源协议 / MIT License) is fine — only the specific abstract phrases are banned
         self.assertNotIn("协议", BANNED, "不应全局禁用单字「协议」（license / 历史措辞合法使用它）")
-        self.assertIn("开源协议", read("README.md"), "license 段「开源协议」不应被误删")
+        # README.md is English-canonical now; the Chinese license heading 「开源协议」 lives in README.zh.md
+        self.assertIn("开源协议", read("README.zh.md"), "license 段「开源协议」不应被误删")
 
 
 if __name__ == "__main__":

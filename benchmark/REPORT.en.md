@@ -18,7 +18,11 @@ Earlier versions mined our own questions from the lectures, fairly criticized as
 
 *54 materials-specific questions, judge Sonnet. All three models collapse to **11%** closed-book; hand the materials back (raw files or skill) and correctness returns to **94%–100%**.*
 
-Same model, same question — **just changing whether it gets the materials moves correctness from 11% to ~99%**. That's the point of the skill: when the answer is in your materials but not the model's head, it connects the materials **accurately**. The self-mined 6.006 set shows the same pattern (closed-book 31%–58% → skill 87%–91%).
+Same model, same question — **just changing whether it gets the materials moves correctness from 11% to ~99%**. That's the point of the skill: when the answer is in your materials but not the model's head, it connects the materials **accurately**. A STEM course (6.006 Algorithms, 65 questions) shows the same pattern:
+
+<div align="center"><img src="docs/img/hard_algo_correct_en.svg" width="620" alt="6.006 materials-specific: closed-book vs arms" /></div>
+
+*6.006, 65 questions. Closed-book 31%–58% → with the skill 87%–91%. One humanities-recall course, one algorithm-reasoning course, one curve.*
 
 The skill matches a "raw files agent" on accuracy but costs less — it pulls only the compressed relevant chapters, while raw files re-scans the whole pile each question ($0.10 vs $0.117 per question on PSYC, $0.063 vs $0.066 on 6.006) — and helps weaker models most.
 
@@ -28,9 +32,12 @@ The skill matches a "raw files agent" on accuracy but costs less — it pulls on
 
 Every set seeds **out-of-scope probes** — questions the materials genuinely don't answer (e.g. "how many students enrolled in this course"). The right behavior is to abstain; fabricating is a hallucination.
 
-<div align="center"><img src="docs/img/oos_psyc_abst_en.svg" width="600" alt="out-of-scope probes: honest abstention" /></div>
+<div align="center">
+<img src="docs/img/oos_psyc_abst_en.svg" width="440" alt="PSYC out-of-scope: honest abstention" />
+<img src="docs/img/oos_algo_abst_en.svg" width="440" alt="6.006 out-of-scope: honest abstention" />
+</div>
 
-*Honest-abstention rate on out-of-scope probes, higher is better. With the skill (and raw files), **100% across both courses and all three models**; closed-book only 60%–90% (it fabricates a plausible answer).*
+*Honest-abstention rate on out-of-scope probes, higher is better (left PSYC / right 6.006). With the skill (and raw files), **100% across both courses and all three models**; closed-book only 60%–90% (it fabricates a plausible answer).*
 
 This is the skill's most consistent result and the clearest anti-hallucination measure: **faced with a question the materials don't answer, it says "not in the materials" 100% of the time — never fabricates**; closed-book models fabricate a plausible answer 10%–40% of the time.
 
@@ -69,6 +76,6 @@ Raw files is already strong, so the skill wins on "same accuracy for less cost +
 - **The skill measures grounding** (content specific to your materials), not the generic knowledge a model already has cold — on that kind of question the model is fine closed-book, and the skill isn't where its value lies.
 - **Small sample**: 54 materials-specific PSYC questions, 65 for 6.006; 10 out-of-scope probes per course. Trend evidence, not large-scale statistics.
 - **Materials-specific gold held locally** (verbatim transcript quotes, to avoid copyright/leakage); reproducible by holders via `run_matrix.py --real`.
-- **The Sonnet judge shares a family with the graded models** — both human kappa passes were high, but a known limitation; a cross-provider GPT comparison is in progress (limited by the other account's quota).
+- **The Sonnet judge shares a family with the graded models** — both human kappa passes were high, but a known limitation.
 
 Full commands and reproduction in [`docs/running-real-runs.md`](docs/running-real-runs.md); metrics are benchmarked against FACTS Grounding, Vectara HHEM, RAGAS, RGB (see [`docs/`](docs/)).

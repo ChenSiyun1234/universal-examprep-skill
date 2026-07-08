@@ -31,7 +31,7 @@ Run when the student enters the final review stage, or asks to 「复盘错题 /
 ## Output Contract
 - Produce one not-yet-mastered list (「还没拿下的清单」): recorded mistakes plus confusion entries, each with its current status (已订正 / 已回顾 / 待回顾). End with a refreshed progress panel.
 - Persist each mistake/confusion status update — with `study_state.json`, via `update_progress.py set-mistake-status`/`set-confusion-status` (and `add-*` for genuinely new records; the md regenerates); without state, update each existing `study_progress.md` row **in place** (已订正 / 已回顾 / 待回顾) and append only genuinely new records. Never leave a mastered item still marked wrong/待回顾. Then return control to `exam-cram`.
-- Student-facing output defaults to Simplified Chinese; a persisted `study_state.json` `language` (`English`/`双语`) switches it per exam-cram's dispatch rule with single-language purity. (See [`docs/language-policy.md`](../../docs/language-policy.md).)
+- Student-facing output defaults to English (Simplified Chinese if the student opened in Chinese); a persisted `study_state.json` `language` (`中文`/`English`/`双语`) switches it per exam-cram's dispatch rule with single-language purity. (See [`docs/language-policy.md`](../../docs/language-policy.md).)
 
 ## Student-facing Output
 - **错题重做**：这道你上次错在「……」。同一道题再做一遍——这次盯住 ……。做对了我就把它从错题本划掉（标「已订正」）。

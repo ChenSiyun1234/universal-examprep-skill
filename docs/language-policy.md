@@ -1,8 +1,8 @@
 # 语言策略 / Language Policy
 
-本技能是**双语架构**：控制层用英文求精确可靠，学生可见层**默认**自然简体中文（按持久化 `language` 可切 English/双语，单语言输出）。**不要把整套技能翻译成单一语言**——该用英文的地方保留英文（提升代理执行可靠性），学生真正看到的输出用中文。
+本技能是**双语架构**：控制层用英文求精确可靠，学生可见层按持久化 `language` 单语言输出——**默认英文，学生用中文开场则简体中文**（`English` / `中文` / `双语`）。**不要把整套技能翻译成单一语言**——该用英文的地方保留英文（提升代理执行可靠性），学生真正看到的输出按其语言。
 
-This skill is **bilingual by design**: an English *control plane* for precision and reliability, and a Simplified-Chinese *student-facing layer* for natural, exam-oriented tutoring. Do **not** translate the whole skill into one language. Keep English where it improves agent reliability; student-visible output follows the persisted `language` mode, single-language per mode (Simplified Chinese by default).
+This skill is **bilingual by design**: an English *control plane* for precision and reliability, and a student-facing layer that is single-language per mode. Do **not** translate the whole skill into one language. Keep English where it improves agent reliability; student-visible output follows the persisted `language` mode — **English by default, Simplified Chinese when the student's opening message is in Chinese** (`English` / `中文` / `双语`).
 
 ---
 
@@ -34,7 +34,7 @@ Root `SKILL.md` stays **Chinese-first** as the compatibility entrypoint, and `pr
 ## Language state & dispatch（A8b：回复语言）
 
 - 持久化：`study_state.json.language`，canonical `中文` / `English` / `双语`（别名经 `update_progress.py`
-  `--language` 归一；未知值保留 + 告警）。缺省/为空 = `中文`（所有旧工作区行为逐字节不变）。
+  `--language` 归一；未知值保留 + 告警）。**首问时技能默认持久化 `English`（学生用中文开场则 `中文`）**；脚本层空值兜底仍取 `中文`，仅作旧工作区（建于本改动前、`language` 未设）的兼容安全网，不影响新会话的英文默认。
 - 首问：并入 A6 的**一次合并首问**（模式 × 时间宽裕度 × 语言）。语言行三语呈现——
   「语言 / Language：中文 / English / 双语」——这是学生可见输出里**唯一允许的混语言点**。
   紧迫开场按学生开场语言静默推断，**绝不推断 `双语`**。会话中途 `set --language <值>` 随时切换，
@@ -150,9 +150,9 @@ web 面板模板，不在十类之内）：
     同义同强度）。
 - 这**不是** `locales/` 拆分、也不引入第二套行为——同一仓库、同一安装、同一控制层与状态词汇
   （持久化 vocab 仍为中文 canonical，见上节）。见 [`localization.md`](localization.md) 的 A8c 附记。
-- **唯一例外面**：`prompts/web_prompt.en.md` 因 web 端无持久化 `language`，自声明**默认回复语言为
-  English**（学生可说「中文」/「双语」随时切回）——这是该 en prompt 的既定口径、被测试钉住，
-  不是渲染漂移；学生层「默认简体中文」对本地/有状态形态依旧无条件成立。
+- `prompts/web_prompt.en.md` 因 web 端无持久化 `language`，自声明**默认回复语言为 English**（学生可说
+  「中文」/「双语」随时切回）——这与本地/有状态形态的新默认**一致**（两者都默认 English，学生用中文
+  开场则中文）；`prompts/web_prompt.md` 是中文入口面，默认简体中文。
 
 ## English control plane（控制层 = 英文优先）
 
@@ -175,7 +175,7 @@ Write concrete, checkable behavior. **Avoid vague words** like "properly", "comp
 
 ## Chinese student-facing layer（学生可见层 = 简体中文）
 
-Everything the student actually reads **defaults to Simplified Chinese unless the user asks otherwise**:
+Everything the student actually reads is single-language per the persisted `language` — **English by default, Simplified Chinese when the student's opening message is in Chinese**, and an explicit `中文` / `English` / `双语` choice is honored:
 
 - 讲解（teaching explanations）
 - 判分反馈（quiz feedback）
