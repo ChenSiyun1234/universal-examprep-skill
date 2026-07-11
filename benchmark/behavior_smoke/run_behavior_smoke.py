@@ -444,6 +444,37 @@ def asks_student_question(text):
 _LANG_ASK_RE = re.compile(r"语言\s*/\s*Language：中文\s*/\s*English\s*/\s*双语")
 _SET_LINE_RE = re.compile(r"update_progress\.py[^\n]*\bset\b[^\n]*")
 
+# v4：set 命令旗标是机器面——中文显示词与 canonical 代号两代词汇都合法（词表同源 scripts/i18n.py，
+# 缺文件时用等价兜底映射，不让冒烟崩）。学生可见文本的探测（首问三模式等）仍是 zh-only 口径不变。
+try:
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+    from i18n import canon_mode as _i18n_mode, canon_tier as _i18n_tier, canon_language as _i18n_lang
+
+    def _flag_mode(v):
+        return _i18n_mode(v or "")[0]
+
+    def _flag_tier(v):
+        return _i18n_tier(v or "")[0]
+
+    def _flag_lang(v):
+        return _i18n_lang(v or "")[0]
+except Exception:
+    _M_ZH = {"零基础从头讲": "from_scratch", "某章起步补弱": "shore_up", "查缺补漏": "fill_gaps"}
+    _T_ZH = {"≤1天": "le1d", "1-3天": "d1_3", "3-7天": "d3_7", ">7天": "gt7d"}
+    _L_ZH = {"中文": "zh", "English": "en", "双语": "bilingual"}
+
+    def _flag_mode(v):
+        v = (v or "").strip()
+        return _M_ZH.get(v, v)
+
+    def _flag_tier(v):
+        v = (v or "").strip()
+        return _T_ZH.get(v, v)
+
+    def _flag_lang(v):
+        v = (v or "").strip()
+        return _L_ZH.get(v, v)
+
 
 def _set_flags(text):
     """最后一条 set 行的 --mode/--time-budget/--language 旗标值（**顺序无关**）。"""
@@ -482,14 +513,14 @@ def language_persist_ok(text, urgent=False, expected_lang=None):
     f = _set_flags(text)
     if not all(k in f for k in ("mode", "time-budget", "language")):
         return False
-    if f["mode"] not in ("零基础从头讲", "某章起步补弱", "查缺补漏"):
-        return False                                    # mode 也须 canonical（随便讲讲 骗不过）
-    if f["time-budget"] not in ("≤1天", "1-3天", "3-7天", ">7天"):
+    if _flag_mode(f["mode"]) not in ("from_scratch", "shore_up", "fill_gaps"):
+        return False                                    # mode 也须 canonical（随便讲讲 骗不过；代号/中文皆可）
+    if _flag_tier(f["time-budget"]) not in ("le1d", "d1_3", "d3_7", "gt7d"):
         return False                                    # tier 同理（someday 骗不过）
     if urgent:
         if not urgent_no_student_questions_ok(text):
             return False
-        if not (f["mode"] == "零基础从头讲" and f["time-budget"] == "≤1天"):
+        if not (_flag_mode(f["mode"]) == "from_scratch" and _flag_tier(f["time-budget"]) == "le1d"):
             return False
         # 显式双语开场 = 显式选择而非推断 → 放行；但必须是**肯定式**请求——
         # 「不要双语，直接中文讲」里的 双语 是否定式提及，不算同意（否定词贴邻前缀即拒）
@@ -501,12 +532,12 @@ def language_persist_ok(text, urgent=False, expected_lang=None):
             if not any(neg in ctx for neg in ("不要", "别", "不用", "无需", "非")):
                 explicit_bi = True
                 break
-        if f["language"] == "双语":
+        if _flag_lang(f["language"]) == "bilingual":
             return explicit_bi
-        if f["language"] not in ("中文", "English"):
+        if _flag_lang(f["language"]) not in ("zh", "en"):
             return False
-        return expected_lang is None or f["language"] == expected_lang
-    return f["language"] in ("中文", "English", "双语")
+        return expected_lang is None or _flag_lang(f["language"]) == _flag_lang(expected_lang)
+    return _flag_lang(f["language"]) in ("zh", "en", "bilingual")
 
 
 def urgent_no_student_questions_ok(text):

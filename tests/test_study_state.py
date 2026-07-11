@@ -80,7 +80,7 @@ class Migration(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         row = _state(ws)["confusion_log"][0]
         self.assertIn("短表疑难点内容", row["note"])              # 无章节列时疑难点不再被当成章节
-        self.assertEqual(row["status"], "待回顾")
+        self.assertEqual(row["status"], "to_revisit")             # v4：state 存代号（视图仍渲染 待回顾）
         self.assertIsNone(row["chapter"])
 
     def test_prose_phase_mention_not_a_plan_entry(self):
@@ -195,7 +195,7 @@ class Migration(unittest.TestCase):
         _up(ws, ["init"])
         row = _state(ws)["mistake_archive"][0]
         self.assertEqual(row["note"], "只有笔记没有状态列")         # 无状态列时整个尾部是 note
-        self.assertEqual(row["status"], "待复盘")
+        self.assertEqual(row["status"], "to_review")              # v4：state 存代号（视图仍渲染 待复盘）
 
     def test_migration_preserves_phase_checklist(self):
         md = LEGACY_MD + ("\n## 📊 知识点打卡状态\n- [x] **阶段 1**：栈与队列 (关联 `references/wiki/ch1.md`)\n"
@@ -264,27 +264,27 @@ class Mutations(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("已废弃", r.stderr)                          # fail-loud 警告，不静默改写
         st = _state(ws)
-        self.assertEqual(st["mode"], "零基础从头讲")
-        self.assertEqual(st["time_budget"], "≤1天")               # panic 迁移带出当天档
+        self.assertEqual(st["mode"], "from_scratch")              # v4：state 存代号
+        self.assertEqual(st["time_budget"], "le1d")               # panic 迁移带出当天档
         # sprint → 查缺补漏 + 1-3天：换旧模式必须把上一次迁移带出的 ≤1天 刷成 1-3天（Codex R1-XN），
         # 否则节奏判定会卡在错误的紧迫档
         _up(ws, ["set", "--mode", "sprint"])
         st2 = _state(ws)
-        self.assertEqual(st2["mode"], "查缺补漏")
-        self.assertEqual(st2["time_budget"], "1-3天")
+        self.assertEqual(st2["mode"], "fill_gaps")
+        self.assertEqual(st2["time_budget"], "d1_3")
 
     def test_a6_migration_does_not_override_explicit_time_budget(self):
         ws = self._ready()
         r = _up(ws, ["set", "--mode", "panic", "--time-budget", "3-7天"])
         self.assertEqual(r.returncode, 0, r.stderr)
         st = _state(ws)
-        self.assertEqual(st["mode"], "零基础从头讲")
-        self.assertEqual(st["time_budget"], "3-7天")              # 显式 --time-budget 不被迁移带出值覆盖
+        self.assertEqual(st["mode"], "from_scratch")
+        self.assertEqual(st["time_budget"], "d3_7")               # 显式 --time-budget 不被迁移带出值覆盖
 
     def test_a6_time_budget_alias_normalized(self):
         ws = self._ready()
         _up(ws, ["set", "--mode", "查缺补漏", "--time-budget", "一周内"])
-        self.assertEqual(_state(ws)["time_budget"], "3-7天")      # 宽松别名归一到 canonical 档
+        self.assertEqual(_state(ws)["time_budget"], "d3_7")       # 宽松别名归一到 canonical 代号档
 
     def test_a6_unknown_mode_kept_with_warning(self):
         ws = self._ready()
@@ -304,11 +304,11 @@ class Mutations(unittest.TestCase):
         win = _state(ws)["knowledge_window"]
         self.assertEqual(len(win), 2)
         by = {w["point"]: w["status"] for w in win}
-        self.assertEqual(by["栈的LIFO"], "已实测")
-        self.assertEqual(by["队列FIFO"], "窗口外")
+        self.assertEqual(by["栈的LIFO"], "verified")              # v4：state 存代号（视图渲染 已实测）
+        self.assertEqual(by["队列FIFO"], "out_window")
         # set-status 按名定位
         _up(ws, ["window-set-status", "--point", "队列FIFO", "--status", "在窗口"])
-        self.assertEqual({w["point"]: w["status"] for w in _state(ws)["knowledge_window"]}["队列FIFO"], "在窗口")
+        self.assertEqual({w["point"]: w["status"] for w in _state(ws)["knowledge_window"]}["队列FIFO"], "in_window")
         # 进度面板渲染出窗口区
         md = open(os.path.join(ws, "study_progress.md"), encoding="utf-8").read()
         self.assertIn("知识点窗口", md)
@@ -332,12 +332,12 @@ class Mutations(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("多个章节", r.stderr)
         # 状态没被偷偷改
-        self.assertTrue(all(w["status"] == "在窗口" for w in _state(ws)["knowledge_window"] if w["point"] == "模板"))
+        self.assertTrue(all(w["status"] == "in_window" for w in _state(ws)["knowledge_window"] if w["point"] == "模板"))
         # 带 --chapter 只改该章
         r2 = _up(ws, ["window-add", "--point", "模板", "--chapter", "2", "--status", "已实测"])
         self.assertEqual(r2.returncode, 0, r2.stderr)
         by = {str(w["chapter"]): w["status"] for w in _state(ws)["knowledge_window"] if w["point"] == "模板"}
-        self.assertEqual((by["2"], by["5"]), ("已实测", "在窗口"))
+        self.assertEqual((by["2"], by["5"]), ("verified", "in_window"))
 
     def test_a6_window_set_status_ambiguous_multichapter_fail_loud(self):
         # 同名点分布在多章：不带 --chapter 会一次改错所有章 → 必须 fail-loud 要求精确定位（Codex R1-XU）
@@ -351,8 +351,8 @@ class Mutations(unittest.TestCase):
         r2 = _up(ws, ["window-set-status", "--point", "模板", "--chapter", "2", "--status", "已实测"])
         self.assertEqual(r2.returncode, 0, r2.stderr)
         by = {str(w["chapter"]): w["status"] for w in _state(ws)["knowledge_window"] if w["point"] == "模板"}
-        self.assertEqual(by["2"], "已实测")
-        self.assertEqual(by["5"], "在窗口")                        # 第5章的同名点不受影响
+        self.assertEqual(by["2"], "verified")
+        self.assertEqual(by["5"], "in_window")                     # 第5章的同名点不受影响
 
     def test_a6_window_survives_init_force_roundtrip(self):
         # init --force 从 md 重新迁移时，知识点窗口必须无损带回——否则窗口/已实测追踪被静默丢
@@ -389,8 +389,8 @@ class Mutations(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("已废弃", r.stderr)                          # panic 迁移警告在 init 也冒出来
         st = _state(ws)
-        self.assertEqual(st["mode"], "零基础从头讲")
-        self.assertEqual(st["time_budget"], "≤1天")
+        self.assertEqual(st["mode"], "from_scratch")
+        self.assertEqual(st["time_budget"], "le1d")
 
     def test_missing_optional_fields_tolerated(self):
         ws = self._ready()
@@ -409,13 +409,13 @@ class Mutations(unittest.TestCase):
         _up(ws, ["add-confusion", "--note", "取模没搞懂"])
         _up(ws, ["add-mistake", "--note", "Venn 判断错"])
         st = _state(ws)
-        self.assertEqual(st["confusion_log"][-1]["status"], "待回顾")   # 疑难走 待回顾→已回顾 契约
-        self.assertEqual(st["mistake_archive"][-1]["status"], "待复盘")
+        self.assertEqual(st["confusion_log"][-1]["status"], "to_revisit")   # 疑难走 待回顾→已回顾 契约（存代号）
+        self.assertEqual(st["mistake_archive"][-1]["status"], "to_review")
 
     def test_migrated_confusion_bullet_gets_review_status(self):
         ws = _mk_ws(tempfile.mkdtemp())
         _up(ws, ["init"])
-        self.assertEqual(_state(ws)["confusion_log"][0]["status"], "待回顾")
+        self.assertEqual(_state(ws)["confusion_log"][0]["status"], "to_revisit")
 
     def test_render_rejects_non_string_note(self):
         ws = self._ready()
@@ -480,8 +480,8 @@ class Mutations(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         st = _state(ws)
         self.assertEqual(st["scope"], "homework-only")            # A2 范围偏好不因迁移被静默放宽
-        self.assertEqual(st["mode"], "查缺补漏")
-        self.assertEqual(st["time_budget"], "3天")
+        self.assertEqual(st["mode"], "fill_gaps")                 # v4：state 存代号
+        self.assertEqual(st["time_budget"], "3天")                # 非标准串原样保留（透传语义）
         ws2 = _mk_ws(tempfile.mkdtemp())                          # 默认「混合题池｜未设定」→ 保持 None
         _up(ws2, ["init"])
         self.assertIsNone(_state(ws2).get("scope"))
@@ -590,10 +590,10 @@ class Mutations(unittest.TestCase):
     # ---- regression guards for Codex round-10 (5 findings) ----
 
     def test_language_aliases_normalize(self):
-        # A8b：--language 别名归一到 canonical（中文/English/双语）；ASCII 不区分大小写
+        # A8b：--language 别名归一到 canonical 代号（zh/en/bilingual）；ASCII 不区分大小写
         ws = self._ready()
-        for alias, canon in (("zh", "中文"), ("EN", "English"), ("english", "English"),
-                             ("bilingual", "双语"), ("中英", "双语"), ("简体中文", "中文")):
+        for alias, canon in (("zh", "zh"), ("EN", "en"), ("english", "en"),
+                             ("bilingual", "bilingual"), ("中英", "bilingual"), ("简体中文", "zh")):
             r = _up(ws, ["set", "--language", alias])
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual(_state(ws)["language"], canon, alias)
@@ -613,7 +613,7 @@ class Mutations(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         st = _state(ws)
         self.assertEqual((st["mode"], st["time_budget"], st["language"]),
-                         ("查缺补漏", "1-3天", "English"))
+                         ("fill_gaps", "d1_3", "en"))             # v4：state 存代号（视图仍渲染显示词）
         md = open(os.path.join(ws, "study_progress.md"), encoding="utf-8").read()
         self.assertIn("语言偏好", md)
         self.assertIn("English", md)
@@ -632,14 +632,14 @@ class Mutations(unittest.TestCase):
             f.write(md.replace("**语言偏好**：English", "**语言偏好**：zh-CN"))
         r = _up(ws, ["init", "--force"])
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(_state(ws)["language"], "中文")          # zh-CN → canonical 中文
+        self.assertEqual(_state(ws)["language"], "zh")            # zh-CN → canonical 代号 zh
 
     def test_language_survives_forced_rebuild(self):
         ws = self._ready()
         _up(ws, ["set", "--language", "English"])
         r = _up(ws, ["init", "--force"])
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(_state(ws)["language"], "English")       # 语言偏好经生成视图迁回
+        self.assertEqual(_state(ws)["language"], "en")            # 语言偏好经生成视图迁回（存代号）
 
     def test_forced_rebuild_keeps_idless_rows_idless(self):
         ws = self._ready()
@@ -759,12 +759,12 @@ class Mutations(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         st = _state(ws)
         row = next(x for x in st["mistake_archive"] if x.get("id") == "q9")
-        self.assertEqual(row["status"], "已复盘")                  # P1：官方状态更新路径
+        self.assertEqual(row["status"], "reviewed")                # P1：官方状态更新路径（state 存代号）
         md = open(os.path.join(ws, "study_progress.md"), encoding="utf-8").read()
-        self.assertIn("已复盘", md)
+        self.assertIn("已复盘", md)                                # 生成视图仍渲染中文显示词
         r2 = _up(ws, ["set-confusion-status", "--index", "1", "--status", "已解决"])
         self.assertEqual(r2.returncode, 0, r2.stderr)
-        self.assertEqual(_state(ws)["confusion_log"][0]["status"], "已解决")
+        self.assertEqual(_state(ws)["confusion_log"][0]["status"], "resolved")
 
     def test_set_status_missing_target_fails(self):
         ws = self._ready()
