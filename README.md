@@ -188,6 +188,6 @@ The real paid benchmark is expensive (tens of dollars / hours per matrix), run m
 
 <div align="center">
 
-[![Star History](https://api.star-history.com/svg?repos=ZeKaiNie/universal-examprep-skill&type=Date)](https://star-history.com/#ZeKaiNie/universal-examprep-skill&Date)
+[![Star History](https://api.star-history.com/svg?repos=ZeKaiNie/universal-examprep-skill&type=Date&v=1)](https://star-history.com/#ZeKaiNie/universal-examprep-skill&Date)
 
 </div>

@@ -188,6 +188,6 @@ python scripts/validate_workspace.py path/to/ws  # 校验一个建好的备考�
 
 <div align="center">
 
-[![Star History](https://api.star-history.com/svg?repos=ZeKaiNie/universal-examprep-skill&type=Date)](https://star-history.com/#ZeKaiNie/universal-examprep-skill&Date)
+[![Star History](https://api.star-history.com/svg?repos=ZeKaiNie/universal-examprep-skill&type=Date&v=1)](https://star-history.com/#ZeKaiNie/universal-examprep-skill&Date)
 
 </div>
