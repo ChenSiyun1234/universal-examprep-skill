@@ -1,0 +1,5 @@
+{"id": "m01", "question": "工作记忆的容量大约是多少个组块？提出者是谁？", "gold_answer": "约 7±2 个组块，由米勒（Miller, 1956）提出", "answer_type": "factual", "answerable": true, "source_file": "materials/lecture01.md"}
+{"id": "m02", "question": "经典条件反射是谁发现的？铃声在实验里扮演什么角色？", "gold_answer": "巴甫洛夫发现；铃声起初是中性刺激，与食物配对后成为条件刺激", "answer_type": "factual", "answerable": true, "source_file": "materials/lecture01.md"}
+{"id": "m03", "question": "为什么说「相关不等于因果」？要确立因果必须怎么做？", "gold_answer": "相关只能说明两变量共同变化，可能有混淆变量；确立因果必须做随机分配的实验", "answer_type": "definition", "answerable": true, "source_file": "materials/lecture01.md"}
+{"id": "m04", "question": "艾宾浩斯遗忘曲线的基本形状是什么？对复习有什么启示？", "gold_answer": "遗忘先快后慢，最初 24 小时遗忘最多；应尽早复习并间隔重复", "answer_type": "factual", "answerable": true, "source_file": "materials/lecture01.md"}
+{"id": "m05", "question": "皮亚杰的前运算阶段大约对应几岁到几岁？", "gold_answer": "约 2 到 7 岁", "answer_type": "factual", "answerable": true, "source_file": "materials/lecture01.md"}
