@@ -1412,5 +1412,132 @@ class Contract(unittest.TestCase):
             self.assertNotIn(banned, src)
 
 
+class WorkspaceRegistry(unittest.TestCase):
+    """v4-P4 §2.5：全局工作区注册表（workspace-register / workspace-list）——
+    冻结位置 EXAMPREP_HOME|~/.exam-cram 下 workspaces.json；测试一律经 EXAMPREP_HOME 隔离，
+    绝不碰真实主目录。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.home = os.path.join(self.tmp, "examprep_home")   # 不预建：save 应自建目录
+
+    def _run(self, args, home=None):
+        env = dict(os.environ)
+        env["EXAMPREP_HOME"] = home or self.home
+        return subprocess.run([sys.executable, os.path.join(SCRIPTS, "update_progress.py")] + args,
+                              capture_output=True, text=True, encoding="utf-8", env=env)
+
+    def _registry_file(self, home=None):
+        return os.path.join(home or self.home, "workspaces.json")
+
+    def _mk_dir(self, name):
+        d = os.path.join(self.tmp, name)
+        os.makedirs(d)
+        return d
+
+    def test_register_list_roundtrip(self):
+        ws = self._mk_dir("ws_ds")
+        mats = self._mk_dir("materials_ds")
+        r = self._run(["workspace-register", "--course", "数据结构", "--path", ws,
+                       "--materials", mats])
+        self.assertEqual(r.returncode, 0, r.stderr)              # 注册表全局：不需要 --workspace
+        reg = json.load(open(self._registry_file(), encoding="utf-8"))
+        self.assertEqual(reg["version"], 1)                      # 冻结 schema：version + workspaces
+        self.assertEqual(len(reg["workspaces"]), 1)
+        row = reg["workspaces"][0]
+        self.assertEqual(row["course"], "数据结构")
+        self.assertEqual(row["path"], os.path.abspath(ws))       # 存绝对归一化路径
+        self.assertEqual(row["materials"], os.path.abspath(mats))
+        self.assertRegex(row["last_used"], r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$")
+        rj = self._run(["workspace-list", "--json"])
+        self.assertEqual(rj.returncode, 0, rj.stderr)
+        listed = json.loads(rj.stdout)                           # 机器口径 {"workspaces":[...]}
+        self.assertEqual(listed["workspaces"], [row])
+        rh = self._run(["workspace-list"])
+        self.assertEqual(rh.returncode, 0, rh.stderr)
+        self.assertIn("数据结构", rh.stdout)                     # 人读口径带课程与路径
+        self.assertIn(os.path.abspath(ws), rh.stdout)
+
+    def test_reregister_updates_in_place_no_duplicate(self):
+        ws1, ws2 = self._mk_dir("ws_v1"), self._mk_dir("ws_v2")
+        mats = self._mk_dir("mats_v1")
+        self._run(["workspace-register", "--course", "EEC160", "--path", ws1,
+                   "--materials", mats])
+        r = self._run(["workspace-register", "--course", "EEC160", "--path", ws2])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        reg = json.load(open(self._registry_file(), encoding="utf-8"))
+        self.assertEqual(len(reg["workspaces"]), 1)              # 同课程重复登记不追加重复行
+        row = reg["workspaces"][0]
+        self.assertEqual(row["path"], os.path.abspath(ws2))      # 路径已更新
+        self.assertEqual(row["materials"], os.path.abspath(mats))  # 未显式给 --materials 时保留旧值
+        # 两门课都在，且 workspace-list 最近使用在前（同分钟并列时后登记的在前）
+        wsb = self._mk_dir("ws_b")
+        self._run(["workspace-register", "--course", "线性代数", "--path", wsb])
+        rj = self._run(["workspace-list", "--json"])
+        courses = [w["course"] for w in json.loads(rj.stdout)["workspaces"]]
+        self.assertEqual(sorted(courses), ["EEC160", "线性代数"])
+        self.assertEqual(courses[0], "线性代数")
+
+    def test_list_orders_newest_first_by_last_used(self):
+        os.makedirs(self.home)
+        with open(self._registry_file(), "w", encoding="utf-8", newline=chr(10)) as f:
+            json.dump({"version": 1, "workspaces": [
+                {"course": "旧课", "path": self.tmp, "materials": None,
+                 "last_used": "2026-01-01 08:00"},
+                {"course": "新课", "path": self.tmp, "materials": None,
+                 "last_used": "2026-07-01 09:30"},
+            ]}, f, ensure_ascii=False)
+        rj = self._run(["workspace-list", "--json"])
+        self.assertEqual(rj.returncode, 0, rj.stderr)
+        courses = [w["course"] for w in json.loads(rj.stdout)["workspaces"]]
+        self.assertEqual(courses, ["新课", "旧课"])              # 最近使用在前
+
+    def test_register_missing_path_dies(self):
+        missing = os.path.join(self.tmp, "no_such_dir")
+        r = self._run(["workspace-register", "--course", "幽灵课", "--path", missing])
+        self.assertNotEqual(r.returncode, 0)                     # 不存在的路径必须拒绝
+        self.assertIn("不存在", r.stderr)
+        self.assertFalse(os.path.exists(self._registry_file()))  # 拒绝时不落任何注册表
+        ws = self._mk_dir("ws_ok")
+        r2 = self._run(["workspace-register", "--course", "幽灵课", "--path", ws,
+                        "--materials", missing])
+        self.assertNotEqual(r2.returncode, 0)                    # --materials 同样必须真实存在
+        self.assertFalse(os.path.exists(self._registry_file()))
+
+    def test_corrupt_registry_fails_loud_never_recreated(self):
+        os.makedirs(self.home)
+        with open(self._registry_file(), "w", encoding="utf-8") as f:
+            f.write("{corrupt json!!")
+        ws = self._mk_dir("ws_c")
+        for cmd in (["workspace-list"], ["workspace-list", "--json"],
+                    ["workspace-register", "--course", "任意课", "--path", ws]):
+            r = self._run(cmd)
+            self.assertNotEqual(r.returncode, 0, "corrupt registry must fail: %s" % cmd)
+            self.assertIn("workspaces.json", r.stderr)           # zh 报错点名注册表文件
+            self.assertIn("不会静默重建", r.stderr)
+        raw = open(self._registry_file(), encoding="utf-8").read()
+        self.assertEqual(raw, "{corrupt json!!")                 # 损坏文件原样保留，绝不静默重建
+
+    def test_examprep_home_isolation(self):
+        home2 = os.path.join(self.tmp, "examprep_home_2")
+        ws = self._mk_dir("ws_iso")
+        r = self._run(["workspace-register", "--course", "心理学导论", "--path", ws])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(os.path.isfile(self._registry_file()))   # 落在 EXAMPREP_HOME 冻结位置
+        self.assertFalse(os.path.exists(self._registry_file(home2)))
+        r2 = self._run(["workspace-list"], home=home2)
+        self.assertEqual(r2.returncode, 0, r2.stderr)            # 空注册表是正常态：exit 0
+        self.assertIn("注册表为空", r2.stdout)                   # 且给中文友好提示
+        self.assertNotIn("心理学导论", r2.stdout)                # 两个 HOME 互不可见
+        rj = self._run(["workspace-list", "--json"], home=home2)
+        self.assertEqual(json.loads(rj.stdout), {"workspaces": []})
+
+    def test_workspace_flag_still_required_elsewhere(self):
+        # 放宽 --workspace 只豁免注册表子命令——其余子命令保持 argparse required 契约（exit 2）
+        r = self._run(["show"])
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("--workspace", r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

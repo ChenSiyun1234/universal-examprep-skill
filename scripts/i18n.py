@@ -67,6 +67,15 @@ _ZH = {
     "row.reviewed": "已复盘",
     "row.revisited": "已回顾",
     "row.resolved": "已解决",
+    # v4-P4 notebook engine (scripts/notebook.py) — entry-type labels + index headings
+    "notebook_type.walkthrough": "精讲",
+    "notebook_type.feedback": "判分",
+    "notebook_type.confusion": "疑难",
+    "notebook_type.review": "复盘",
+    "notebook.index_title": "# 📒 学习笔记目录",
+    "notebook.chapter_heading": "第 %(num)s 章",
+    "mistakes.index_title": "# ❌ 错题本目录",
+    "mistakes.status_suffix": "｜ 状态：%(status)s",
 }
 _EN = {
     "mode.from_scratch": "teach from scratch",
@@ -88,6 +97,15 @@ _EN = {
     "row.reviewed": "reviewed",
     "row.revisited": "revisited",
     "row.resolved": "resolved",
+    # v4-P4 notebook engine (scripts/notebook.py) — entry-type labels + index headings
+    "notebook_type.walkthrough": "Walkthrough",
+    "notebook_type.feedback": "Feedback",
+    "notebook_type.confusion": "Confusion",
+    "notebook_type.review": "Review",
+    "notebook.index_title": "# 📒 Notebook index",
+    "notebook.chapter_heading": "Chapter %(num)s",
+    "mistakes.index_title": "# ❌ Mistake-notebook index",
+    "mistakes.status_suffix": "| Status: %(status)s",
 }
 _EMBEDDED = {"zh": _ZH, "en": _EN}
 

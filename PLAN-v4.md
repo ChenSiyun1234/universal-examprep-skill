@@ -133,16 +133,16 @@ universal-examprep-skill/
 |---|---|---|
 | 1 粒度 | ingest v2 按 `##` 小节切片（目标 800–1,500 字符/块）；**无结构长文本重建是独立交付物 R-slice**（见表后） | `scripts/ingest.py` |
 | 6 噪声 | 切片前清洗：剥 CSS/HTML 残留、去连续重复行、口头语过滤（保守白名单式，宁少勿滥删） | 同上 |
-| 3 元数据 | 每章 `_meta.json`：小节锚点、来源文件+页码、关键词、关联题号（打通题库已有的页级溯源→wiki 块级） | 同上 |
+| 3 元数据 | 每章元数据入 `wiki_meta.json`（章号/块数/内容哈希）；小节标题+词窗摘要由检索索引直接服务（页级溯源打通入 backlog） | 同上 |
 | 2 索引 | `retrieval_index.json`：纯标准库 BM25 倒排索引 + 每章每节一句摘要构成的 TOC；智能体先查索引、只读命中小节 | ★ `scripts/retrieve.py` |
 | 5 打分/弃答 | 采纳 spike 已定义的契约：`retrieve(q) → [Chunk{text,score,source}]`，top-k + `min_score` 门限，低于门限→「材料中未涵盖」先于任何生成 | 同上（spike 的 LlamaIndex 嵌入后端保留为可选插件，核心零依赖） |
 | 4 跨语言 | ingest 时生成 `terms.json`（课程术语中英对照，由 AI 在建库阶段一次性产出+人可校对）；检索前做查询扩展 | `scripts/ingest.py` + `retrieve.py` |
-| 7 增量 | 每章内容哈希入 `_meta.json`；重跑 ingest 只重建变化章，保护已有段落标注 | `scripts/ingest.py` |
+| 7 增量 | 每章内容哈希入 `wiki_meta.json`；重跑 ingest 只重建变化章，保护已有段落标注 | `scripts/ingest.py` |
 | 8 评测 | benchmark 增加检索指标：金标已带 `source_file`+逐字 span → **harness 补工具轨迹记录（P3 显式交付物，现 harness 只记最终答案）**，产出 recall@k 与「命中章」率；切片前后 A/B 用现有三臂直接跑 | `benchmark/`（复用，不重写） |
 
 **R-slice（P3 最硬的一块，单独立项）**：批评审查指出「按 `##` 切片」在旗舰数据上一次都不会命中——PSYC 各章是**零标题、单行 2–5 万字符**的退化文本，所谓退路（段落/句群重建）才是主路径。设计：先做确定性清洗（剥 CSS/HTML 残留、还原换行），再按句群+滑窗聚类切块（纯标准库），块边界优先落在话题转折词/讲课口头语标点上；**独立验收**：PSYC 20 章全部切成 ≤2,000 字符的块、每块可定位回原转录偏移、金标逐字 span 100% 落在唯一块内（不跨块截断）。
 
-**旧工作区兼容**：`retrieve.py` 检测不到 `retrieval_index.json`/`_meta.json` 时**优雅降级**为现行为（章文件直读），并提示可重跑 ingest 升级；不强制重建（原始材料可能已不在盘上）。
+**旧工作区兼容**：`retrieve.py` 检测不到 `retrieval_index.json` 时**优雅降级**为现行为（章文件直读），并提示可重跑 ingest 升级；不强制重建（原始材料可能已不在盘上）。
 
 ### 2.4 笔记本化输出（G3/G4/G5 一体设计）
 

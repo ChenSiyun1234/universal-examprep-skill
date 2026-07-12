@@ -15,6 +15,8 @@ view from it. A write failure is FAIL-LOUD (non-zero exit + message) — never s
     python scripts/update_progress.py --workspace <ws> add-confusion --chapter 1 --note "循环队列取模"
     python scripts/update_progress.py --workspace <ws> render               # json → md（修复被手改的 md）
     python scripts/update_progress.py --workspace <ws> show                 # 打印当前状态 JSON
+    python scripts/update_progress.py workspace-register --course 数据结构 --path <dir> [--materials <dir>]
+    python scripts/update_progress.py workspace-list [--json]               # 全局注册表，不吃 --workspace
 
 Backward compatible: a workspace WITHOUT study_state.json keeps working (no-Python fallback:
 hand-written study_progress.md still validates); `init` adopts the existing md losslessly
@@ -772,9 +774,123 @@ def cmd_show(ws, _args):
     return 0
 
 
+# ---------------- workspace registry（v4 §2.5：课程 → 工作区 跨会话映射；全局、非工作区级） ----------------
+
+REGISTRY_NAME = "workspaces.json"
+REGISTRY_VERSION = 1
+
+
+def _registry_home():
+    # EXAMPREP_HOME 覆盖供部署重定向/测试隔离——默认落用户主目录 ~/.exam-cram（冻结位置）
+    return os.environ.get("EXAMPREP_HOME") or os.path.expanduser("~/.exam-cram")
+
+
+def _registry_path():
+    return os.path.join(_registry_home(), REGISTRY_NAME)
+
+
+def load_registry():
+    """缺文件 = 空注册表（首次引导的正路）；文件损坏 = fail-loud 且点名文件——注册表是学生跨会话
+    找回自己工作区的唯一线索，静默重建等于把所有课程一起弄丢。"""
+    path = _registry_path()
+    if not os.path.isfile(path):
+        return {"version": REGISTRY_VERSION, "workspaces": []}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            reg = json.load(f)
+    except (OSError, UnicodeDecodeError, ValueError) as e:
+        _die("工作区注册表 %s 损坏/无法读取（%s）——不会静默重建；请手工修复或删除该文件后重试"
+             % (path, e), 1)
+    if not isinstance(reg, dict) or not isinstance(reg.get("workspaces"), list) \
+            or any(not isinstance(w, dict) for w in reg["workspaces"]):
+        _die("工作区注册表 %s 结构损坏（应为 {\"version\":1,\"workspaces\":[…]}）——"
+             "不会静默重建；请手工修复或删除该文件后重试" % path, 1)
+    reg.setdefault("version", REGISTRY_VERSION)
+    return reg
+
+
+def save_registry(reg):
+    """Atomic UTF-8 write at the frozen location（temp + os.replace，同 save 的 O_EXCL 反符号链接口径）。"""
+    home = _registry_home()
+    path = os.path.join(home, REGISTRY_NAME)
+    tmp = path + ".tmp"
+    if os.path.islink(tmp):
+        _die("检测到符号链接临时文件 %s——可能指向注册表目录外，拒绝写入（请手动清理后重试）" % tmp, 1)
+    try:
+        os.makedirs(home, exist_ok=True)
+        if os.path.exists(tmp):
+            os.remove(tmp)                      # 上次崩溃残留的普通 tmp——清掉重建
+        fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write(json.dumps(reg, ensure_ascii=False, indent=2))
+        os.replace(tmp, path)
+    except OSError as e:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        _die("写入工作区注册表失败：%s——注册表未更新，请告知用户（绝不静默继续）" % e, 1)
+
+
+def cmd_workspace_register(args):
+    course = (args.course or "").strip()
+    if not course:
+        _die("--course 不能为空")
+    if not os.path.isdir(args.path):
+        _die("--path 不存在或不是目录: %s——workspace-register 只登记已存在的工作区（建区必确认，"
+             "本命令不代建目录）" % args.path)
+    path = os.path.abspath(args.path)           # 存绝对+归一化路径：换目录/新会话都能找回
+    materials = None
+    if args.materials is not None:
+        if not os.path.isdir(args.materials):
+            _die("--materials 不存在或不是目录: %s" % args.materials)
+        materials = os.path.abspath(args.materials)
+    reg = load_registry()
+    rows = reg["workspaces"]
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    hit = next((w for w in rows if w.get("course") == course), None)
+    if hit is not None:
+        # 同课程重复登记 = 原地更新（换路径/补材料/刷新最近使用），绝不追加重复行；
+        # 未显式给 --materials 时保留旧值——换工作区路径不应顺手抹掉材料线索
+        hit["path"] = path
+        if materials is not None:
+            hit["materials"] = materials
+        hit.setdefault("materials", None)
+        hit["last_used"] = now
+        verb = "更新"
+    else:
+        rows.append({"course": course, "path": path, "materials": materials, "last_used": now})
+        verb = "登记"
+    save_registry(reg)
+    print("[+] workspace-register：%s「%s」→ %s（注册表：%s）" % (verb, course, path, _registry_path()))
+    return 0
+
+
+def cmd_workspace_list(args):
+    reg = load_registry()
+    # 最近使用在前；last_used 为 YYYY-MM-DD HH:MM（字典序即时间序），同分钟并列时后登记的在前
+    ordered = [w for _i, w in sorted(enumerate(reg["workspaces"]),
+                                     key=lambda t: (str(t[1].get("last_used") or ""), t[0]),
+                                     reverse=True)]
+    if args.json:
+        print(json.dumps({"workspaces": ordered}, ensure_ascii=False, indent=2))
+        return 0
+    if not ordered:
+        print("注册表为空——还没有登记过课程工作区；用 workspace-register --course <课程> --path <目录> 登记第一门")
+        return 0
+    for w in ordered:
+        print("- %s ｜ %s ｜ 材料：%s ｜ 最近使用：%s" % (
+            w.get("course") or "-", w.get("path") or "-",
+            w.get("materials") or "-", w.get("last_used") or "-"))
+    return 0
+
+
 def run(argv=None):
     ap = argparse.ArgumentParser(description="Structured study state (study_state.json is the single source of truth; the md is a generated view).")
-    ap.add_argument("--workspace", required=True)
+    # 注册表子命令是全局的（跨课程/跨工作区）不吃 --workspace——因此这里放宽为可选，
+    # 其余子命令在 parse 后补回「必填」检查（同 argparse 原生 required 的 usage+exit 2 行为）
+    ap.add_argument("--workspace", required=False, default=None,
+                    help="workspace dir (required for every subcommand except the global workspace-register/workspace-list)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p_init = sub.add_parser("init")
     p_init.add_argument("--force", action="store_true")
@@ -815,7 +931,22 @@ def run(argv=None):
     p_chk.add_argument("--undone", action="store_true", help="untick (default is tick-done)")
     sub.add_parser("render")
     sub.add_parser("show")
+    # v4 §2.5：全局工作区注册表（冻结位置 EXAMPREP_HOME|~/.exam-cram 下 workspaces.json）
+    p_wreg = sub.add_parser("workspace-register")
+    p_wreg.add_argument("--course", required=True, help="course name (registry key; re-register updates in place)")
+    p_wreg.add_argument("--path", required=True, help="workspace directory (must already exist)")
+    p_wreg.add_argument("--materials", default=None, help="materials directory (must exist if given)")
+    p_wlist = sub.add_parser("workspace-list")
+    p_wlist.add_argument("--json", action="store_true",
+                         help='machine shape {"workspaces":[...]} (newest first)')
     args = ap.parse_args(argv)
+    if args.cmd == "workspace-register":
+        return cmd_workspace_register(args)
+    if args.cmd == "workspace-list":
+        return cmd_workspace_list(args)
+    if args.workspace is None:
+        # 保持其余子命令的既有契约：--workspace 必填（复刻 argparse required 的报错与 exit 2）
+        ap.error("the following arguments are required: --workspace")
     ws = args.workspace
     if not os.path.isdir(ws):
         _die("workspace 不存在: %s" % ws)

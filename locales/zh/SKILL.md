@@ -79,6 +79,9 @@
    * 测验时的标准答案和解题步骤必须从 JSON 题库中读取，绝不现场进行复杂的符号或代数推导，以此实现 100% 的计算结果防幻觉。
 3. **断点状态锁定 (`study_state.json` / `study_progress.md`)**：
    * 智能体在每次交互（授课完成、答对题、归档错题）后，必须更新进度：存在 `study_state.json`（结构化状态）时它是唯一事实源——一律经 `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py"`（`set` / `add-mistake` / `add-confusion` / `set-*-status` / `set-check`）更新，`study_progress.md` 会自动重渲染、严禁手改；无状态文件时：Python 可用就先跑 `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> init` 建立事实源再更新（`ingest.py` 新建的工作区只有 `study_progress.md`、没有状态文件，正是这一步补上），真无法运行 Python 才直接更新 `study_progress.md`。每次会话重启时，第一步先读 `study_state.json`（存在时），否则读 `study_progress.md`，以此重置 AI 的记忆位置。
+4. **笔记本落盘与工作区落点**：
+   * **先落盘、再给摘要**：实质性输出（七步精讲、判分反馈、疑难解答、复盘结论）默认先经 `scripts/notebook.py` 写入工作区 `notebook/`（答错/跳过的题同步镜像 `mistakes/`），聊天里只给 3–5 行摘要加一行完整链接（如 完整解答：`notebook/ch02.md#q13`｜目录：`notebook/index.md`）；仅进度面板、速查卡、一次性逃生提示可以只走聊天。纯网页端无文件读写时保持原有纯聊天＋文本断点模式；落盘失败必须明说并把完整内容贴在聊天里。
+   * **建区必确认**：任何工作区创建前必须让用户明确确认目标路径（可给建议默认值，静默建区即违约）；建好后用 `update_progress.py workspace-register` 登记进 `~/.exam-cram/workspaces.json`，激活时先跑 `workspace-list` 认课（注册表为空→先问材料文件夹在哪并给 30 秒上手演示；非空→确认继续哪门课）；每次开场进度面板固定带一行工作区绝对路径。
 
 ---
 

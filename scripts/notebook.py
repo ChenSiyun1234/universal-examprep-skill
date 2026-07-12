@@ -1,0 +1,472 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""Notebook engine (v4 P4, G3/G4) — substantive answers land on DISK, chat only carries
+a summary + a link. notebook/chNN.md holds the full walkthrough/feedback/confusion/review
+entries; mistakes/chNN.md mirrors the mistake entries; both index.md files are DERIVED
+views, deterministically rebuilt from the chapter files on every write.
+
+Why: before v4 every seven-step walkthrough and grading feedback evaporated with the chat
+(PLAN-v4.md §1.3) — the one thing a student wants to re-read at review time lived nowhere.
+This official tool is the only write path: entry bodies arrive on STDIN (UTF-8), files are
+written atomically (temp + os.replace, same conventions as update_progress.save), and the
+same --id in the same chapter REPLACES the entry in place, so re-teaching a question never
+duplicates it. A write failure is FAIL-LOUD (non-zero exit) — never silently "recorded".
+
+    python scripts/notebook.py --workspace <ws> add-entry --chapter 2 --type walkthrough \
+        --id q13 --title "Venn 图判断" < body.md      # body via STDIN; rebuilds notebook/index.md
+    python scripts/notebook.py --workspace <ws> add-entry --chapter 2 --type feedback \
+        --id q13 --mistake < body.md                  # also mirrors into mistakes/ + its index
+    python scripts/notebook.py --workspace <ws> rebuild              # regenerate both index.md
+    python scripts/notebook.py --workspace <ws> list [--json]        # entries inventory
+
+Headings/labels come from i18n msgids (--lang zh|en; default: study_state.json language,
+falling back to zh). Entry anchors are GitHub-style slugs of "[#<id>] <title>", so index
+links jump straight to the entry. Chapter files are parsed back by their "## [#<id>]"
+block markers, fence-aware: a "## " line inside a fenced code block is content, never a
+block boundary. Exit codes: 0 ok · 1 read/write failure · 2 bad input/usage.
+"""
+import argparse
+import datetime
+import json
+import os
+import re
+import sys
+
+for _s in ("stdin", "stdout", "stderr"):
+    try:
+        getattr(sys, _s).reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
+import i18n
+
+NOTEBOOK_DIR = "notebook"
+MISTAKES_DIR = "mistakes"
+INDEX_NAME = "index.md"
+STATE_NAME = "study_state.json"
+TYPES = ("walkthrough", "feedback", "confusion", "review")
+
+# 条目块标记：'## [#<id>] <title>'——id 不含空白/']'（与 update_progress 的 [#id] 提取同口径）
+_HEAD_RE = re.compile(r"^##\s+\[#([^\]\s]+)\]\s*(.*)$")
+# 条目元行：'> <type-label> · <YYYY-MM-DD HH:MM>'
+_META_RE = re.compile(r"^>\s*(.+?)\s*·\s*(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\s*$")
+# 围栏行（CommonMark 缩进 ≤3 空格）；开闭都按长度配对，围栏内的 '## ' 是内容不是标题
+_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+# 章文件名：chNN.md（生成时 NN 补零到 2 位；回读容忍手写的 ch3.md）
+_CH_FILE_RE = re.compile(r"^ch(\d+)\.md$")
+# 条目 id：进标题的 [#id] 与锚点，禁空白与破坏解析/链接的字符
+_ID_RE = re.compile(r"^[^\s\[\]#|`]+$")
+
+
+def _die(msg, code=2):
+    sys.stderr.write("notebook: " + msg + "\n")
+    raise SystemExit(code)
+
+
+# ---------------- shared plumbing (containment / atomic IO — update_progress conventions) ----
+
+def _read_regular(path):
+    """Read a UTF-8 regular file; symlinks are refused (they can point outside the workspace)."""
+    if os.path.islink(path):
+        _die("%s 是符号链接——可能指向工作区外，拒绝读取（请替换为真实文件）" % path, 1)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    except OSError as e:
+        _die("%s 无法读取（%s）——本次操作未进行，请检查文件权限" % (path, e), 1)
+    except UnicodeDecodeError as e:
+        _die("%s 不是 UTF-8（%s）——笔记本文件必须是 UTF-8，请先转存再重试" % (path, e), 1)
+
+
+def _guard_dir(ws, name, create=False):
+    """notebook/ 与 mistakes/ 必须是工作区内的真实目录：符号链接目录或经链接逃出工作区都拒绝
+    （load_state 同款口径）——否则每次落盘都在往用户不知道的地方写。"""
+    d = os.path.join(ws, name)
+    if os.path.islink(d):
+        _die("%s 是符号链接目录——可能指向工作区外，拒绝读写（请替换为真实目录）" % d, 1)
+    if create and not os.path.isdir(d):
+        try:
+            os.makedirs(d)
+        except OSError as e:
+            _die("无法创建目录 %s（%s）" % (d, e), 1)
+    if os.path.isdir(d) and not os.path.realpath(d).startswith(os.path.realpath(ws) + os.sep):
+        _die("%s 经符号链接逃出工作区——拒绝读写" % d, 1)
+    return d
+
+
+def _save_files(plan, note):
+    """Atomic UTF-8 write of every (path, content) in the plan: pre-check ALL targets, stage
+    ALL tmp files, then replace — a failure at any step leaves no half-written file behind
+    (worst case an index is stale; `rebuild` repairs it). Same conventions as
+    update_progress.save: O_EXCL tmp creation, symlink-tmp refusal, fail-loud."""
+    for path, _content in plan:
+        if os.path.islink(path):
+            _die("%s 是符号链接——可能指向工作区外，拒绝写入（请替换为真实文件）" % path, 1)
+        if os.path.lexists(path) and not os.path.isfile(path):
+            _die("%s 已存在但不是常规文件（目录/特殊文件）——拒绝写入，请先手动清理" % path, 1)
+        tmp = path + ".tmp"
+        if os.path.islink(tmp):
+            _die("检测到符号链接临时文件 %s——可能指向工作区外，拒绝写入（请手动清理后重试）" % tmp, 1)
+    tmps = []
+    try:
+        for path, content in plan:
+            tmp = path + ".tmp"
+            if os.path.exists(tmp):
+                os.remove(tmp)                      # 上次崩溃残留的普通 tmp——清掉重建
+            # O_EXCL 独占创建：文件必须不存在才成功，绝不跟随同名链接/复用旧文件
+            fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+                f.write(content)
+            tmps.append((tmp, path))
+        for tmp, path in tmps:
+            os.replace(tmp, path)
+    except OSError as e:
+        for tmp, _p in tmps:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        _die("写入笔记本失败：%s——章文件与目录未被半写破坏；若目录已陈旧，跑 rebuild 即可恢复"
+             "一致。请告知用户（绝不静默继续）" % e, 1)
+    print("[+] %s" % note)
+
+
+def _load_state(ws):
+    """study_state.json（可缺省）——只为读语言偏好与错题状态；load_state 同款 fail-loud。"""
+    path = os.path.join(ws, STATE_NAME)
+    if os.path.islink(path):
+        _die("study_state.json 是符号链接——事实源可能指向工作区外，拒绝读取（请替换为真实文件）", 1)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            st = json.load(f)
+    except (OSError, UnicodeDecodeError, ValueError) as e:
+        _die("study_state.json 无法读取/不是合法 JSON（%s）——语言与错题状态无从获取；"
+             "请先修复 state（或 update_progress init --force 重建）" % e, 1)
+    if not isinstance(st, dict):
+        _die("study_state.json 顶层必须是对象", 1)
+    return st
+
+
+def _resolve_lang(arg_lang, state):
+    """--lang 显式覆盖 > study_state.json 的 language（经 i18n 归一） > zh；
+    bilingual 的落盘标题走 zh（双语=zh 包+镜像组合，文件只落一份标题）。"""
+    if arg_lang:
+        return arg_lang
+    lang = i18n.workspace_language(state)
+    return lang if lang in ("zh", "en") else "zh"
+
+
+# ---------------- chapter-file parsing / rendering (fence-aware block model) ----------------
+
+def parse_chapter(text):
+    """→ (preamble_lines, [{id, title, lines}]) — blocks keyed by '## [#<id>]' markers.
+    Fence-aware: a '## [#x]' line inside a fenced code block is CONTENT (stays in the
+    current block), so bodies holding markdown examples never corrupt the block model.
+    Preamble (hand-added prose above the first entry) is preserved verbatim on rewrite."""
+    pre, blocks, cur, fence = [], [], None, 0
+    for line in (text or "").splitlines():
+        fm = _FENCE_RE.match(line)
+        if fm:
+            t = len(fm.group(1))
+            fence = 0 if (fence and t >= fence) else (fence or t)
+            (cur["lines"] if cur else pre).append(line)
+            continue
+        if fence == 0:
+            hm = _HEAD_RE.match(line)
+            if hm:
+                cur = {"id": hm.group(1), "title": hm.group(2).strip() or hm.group(1),
+                       "lines": [line]}
+                blocks.append(cur)
+                continue
+        (cur["lines"] if cur else pre).append(line)
+    return pre, blocks
+
+
+def render_chapter(pre, blocks):
+    """Deterministic serialization: preamble + blocks, exactly one blank line between parts,
+    single trailing newline. Blocks keep their raw lines verbatim (hand edits survive)."""
+    parts = []
+    pre_text = "\n".join(pre).rstrip()
+    if pre_text:
+        parts.append(pre_text)
+    for b in blocks:
+        parts.append("\n".join(b["lines"]).rstrip())
+    return "\n\n".join(parts) + "\n"
+
+
+def github_slug(text):
+    """GitHub-style heading anchor: lowercase; drop punctuation; spaces → hyphens;
+    letters/digits (CJK included) and _- survive. Anchor source is '[#<id>] <title>'."""
+    out = []
+    for ch in (text or "").strip().lower():
+        if ch.isalnum() or ch in "_-":
+            out.append(ch)
+        elif ch in " \t":
+            out.append("-")
+    return "".join(out)
+
+
+def make_entry_lines(eid, title, type_label, ts, body):
+    """One entry block: heading + one-line meta (type · timestamp) + body + trailing ---."""
+    lines = ["## [#%s] %s" % (eid, title), "", "> %s · %s" % (type_label, ts), ""]
+    lines += body.splitlines()
+    lines += ["", "---"]
+    return lines
+
+
+def _block_meta(lines):
+    """(type_label, timestamp) from a block's meta line, fence-aware; (None, None) if absent
+    (hand-written blocks are legal notebook citizens — they list/index fine without meta)."""
+    fence = 0
+    for line in lines[1:]:
+        fm = _FENCE_RE.match(line)
+        if fm:
+            t = len(fm.group(1))
+            fence = 0 if (fence and t >= fence) else (fence or t)
+            continue
+        if fence == 0:
+            m = _META_RE.match(line)
+            if m:
+                return m.group(1), m.group(2)
+    return None, None
+
+
+def _label_to_type():
+    """Reverse map: zh/en display labels (and the canonical codes themselves) → type code."""
+    rev = {t: t for t in TYPES}
+    for lang in ("zh", "en"):
+        cat = i18n.catalog(lang)
+        for t in TYPES:
+            lab = cat.get("notebook_type." + t)
+            if lab:
+                rev[lab] = t
+    return rev
+
+
+# ---------------- collection + index rendering (derived views) ----------------
+
+def _collect(ws, dirname, overrides=None):
+    """[(num, fname, blocks)] for every chapter file in <ws>/<dirname>, sorted by chapter.
+    `overrides` maps fname → not-yet-written content so an in-flight add-entry can rebuild
+    the index in the SAME atomic plan as the chapter write (no read-back window)."""
+    d = _guard_dir(ws, dirname)
+    names = {}
+    if os.path.isdir(d):
+        for name in os.listdir(d):
+            if _CH_FILE_RE.match(name):
+                names[name] = None
+    for name, content in (overrides or {}).items():
+        names[name] = content
+    out = []
+    for name, content in names.items():
+        text = content if content is not None else _read_regular(os.path.join(d, name))
+        _pre, blocks = parse_chapter(text)
+        out.append((int(_CH_FILE_RE.match(name).group(1)), name, blocks))
+    out.sort(key=lambda t: (t[0], t[1]))
+    return out
+
+
+def _mistake_status_map(state):
+    """id → status from study_state.mistake_archive (last row wins — latest registration)."""
+    rows = (state or {}).get("mistake_archive")
+    m = {}
+    for r in (rows if isinstance(rows, list) else []):
+        if isinstance(r, dict) and r.get("id") and isinstance(r.get("status"), str):
+            m[r["id"]] = r["status"]
+    return m
+
+
+def entry_anchor(eid, title):
+    return github_slug("[#%s] %s" % (eid, title))
+
+
+def render_index(title_msgid, chapters, lang, status_map=None):
+    """Deterministic TOC: title heading, one '## 章' section per non-empty chapter, one link
+    per entry. mistakes/index.md additionally joins each entry to its study_state mistake
+    row by id and appends the status (rendered in the pack language)."""
+    lines = [i18n.msg(title_msgid, lang), ""]
+    for num, fname, blocks in chapters:
+        if not blocks:
+            continue
+        lines.append("## " + i18n.msg("notebook.chapter_heading", lang, num=num))
+        lines.append("")
+        for b in blocks:
+            # 链接文字里的 [] 会破坏 md 链接结构——换全角括号（标题原文在章文件里，无损）
+            text = b["title"].replace("[", "〔").replace("]", "〕")
+            line = "- [%s](%s#%s)" % (text, fname, entry_anchor(b["id"], b["title"]))
+            if status_map and b["id"] in status_map:
+                code = i18n.canon_row_status(status_map[b["id"]])
+                line += " " + i18n.msg("mistakes.status_suffix", lang,
+                                       status=i18n.display("row", code, lang))
+            lines.append(line)
+        lines.append("")
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
+# ---------------- commands ----------------
+
+def _read_body():
+    """Entry body from STDIN (UTF-8). Empty body is a usage error — an empty notebook entry
+    means the agent forgot to pipe the content; recording nothing must be LOUD, not silent."""
+    body = sys.stdin.read()
+    body = body.lstrip("\n").rstrip()
+    if not body.strip():
+        _die("正文为空——add-entry 的正文走 STDIN（UTF-8）；空条目拒绝写入（不要静默记录空讲解）")
+    # 正文里裸露的条目标题行会把本条目从中间劈开（回读时被当成新块边界）；
+    # 未闭合围栏会把后续条目整个吞进围栏——两种都在写入前拒绝，保住章文件永远可解析
+    fence = 0
+    for line in body.splitlines():
+        fm = _FENCE_RE.match(line)
+        if fm:
+            t = len(fm.group(1))
+            fence = 0 if (fence and t >= fence) else (fence or t)
+            continue
+        if fence == 0 and _HEAD_RE.match(line):
+            _die("正文包含裸露的条目标记行 %r——会破坏章文件解析；请放进 ``` 围栏再提交" % line)
+    if fence:
+        _die("正文的代码围栏未闭合——会把后续条目吞进围栏；请补齐 ``` 再提交")
+    return body
+
+
+def _upsert(ws, dirname, ch_name, eid, title, new_lines):
+    """Replace-or-append the entry block in <dirname>/<ch_name>; returns the new content."""
+    d = _guard_dir(ws, dirname, create=True)
+    path = os.path.join(d, ch_name)
+    pre, blocks = ([], [])
+    if os.path.lexists(path):
+        pre, blocks = parse_chapter(_read_regular(path))
+    for b in blocks:
+        if b["id"] == eid:      # 同章同 id = 同一条目：原地替换（幂等重讲），不追加副本
+            b["lines"], b["title"] = list(new_lines), title
+            break
+    else:
+        blocks.append({"id": eid, "title": title, "lines": list(new_lines)})
+    return path, render_chapter(pre, blocks)
+
+
+def cmd_add_entry(ws, args):
+    if args.chapter < 1:
+        _die("--chapter 必须 ≥ 1，当前 %d" % args.chapter)
+    eid = (args.id or "").strip()
+    if not _ID_RE.match(eid):
+        _die("--id 非法：%r——id 进标题锚点 [#id]，不能为空、含空白或 []#|` 字符" % (args.id or ""))
+    title = re.sub(r"\s*[\r\n]+\s*", " ", args.title or "").strip() or eid
+    body = _read_body()
+    state = _load_state(ws)
+    lang = _resolve_lang(args.lang, state)
+    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    label = i18n.display("notebook_type", args.type, lang)
+    new_lines = make_entry_lines(eid, title, label, ts, body)
+    ch_name = "ch%02d.md" % args.chapter
+
+    plan, overrides = [], {ch_name: None}
+    nb_path, nb_content = _upsert(ws, NOTEBOOK_DIR, ch_name, eid, title, new_lines)
+    overrides[ch_name] = nb_content
+    plan.append((nb_path, nb_content))
+    # 目录与章文件同一原子计划：目录由（含本次改动的）全部章文件确定性重建
+    nb_index = render_index("notebook.index_title",
+                            _collect(ws, NOTEBOOK_DIR, overrides), lang)
+    plan.append((os.path.join(ws, NOTEBOOK_DIR, INDEX_NAME), nb_index))
+    if args.mistake:
+        mi_path, mi_content = _upsert(ws, MISTAKES_DIR, ch_name, eid, title, new_lines)
+        plan.append((mi_path, mi_content))
+        mi_index = render_index("mistakes.index_title",
+                                _collect(ws, MISTAKES_DIR, {ch_name: mi_content}), lang,
+                                status_map=_mistake_status_map(state))
+        plan.append((os.path.join(ws, MISTAKES_DIR, INDEX_NAME), mi_index))
+    anchor = entry_anchor(eid, title)
+    _save_files(plan, "add-entry：%s/%s#%s（%s）%s｜ index.md 已重建"
+                % (NOTEBOOK_DIR, ch_name, anchor, label,
+                   "＋镜像 %s/%s " % (MISTAKES_DIR, ch_name) if args.mistake else ""))
+    return 0
+
+
+def cmd_rebuild(ws, args):
+    state = _load_state(ws)
+    lang = _resolve_lang(args.lang, state)
+    plan = [
+        (os.path.join(_guard_dir(ws, NOTEBOOK_DIR, create=True), INDEX_NAME),
+         render_index("notebook.index_title", _collect(ws, NOTEBOOK_DIR), lang)),
+        (os.path.join(_guard_dir(ws, MISTAKES_DIR, create=True), INDEX_NAME),
+         render_index("mistakes.index_title", _collect(ws, MISTAKES_DIR), lang,
+                      status_map=_mistake_status_map(state))),
+    ]
+    _save_files(plan, "rebuild：%s/index.md 与 %s/index.md 已从章文件确定性重建"
+                % (NOTEBOOK_DIR, MISTAKES_DIR))
+    return 0
+
+
+def cmd_list(ws, args):
+    rev = _label_to_type()
+    mistake_ids = {(num, b["id"])
+                   for num, _f, blocks in _collect(ws, MISTAKES_DIR) for b in blocks}
+    entries = []
+    for num, fname, blocks in _collect(ws, NOTEBOOK_DIR):
+        for b in blocks:
+            label, ts = _block_meta(b["lines"])
+            entries.append({
+                "chapter": num,
+                "id": b["id"],
+                "title": b["title"],
+                "type": rev.get(label, label),
+                "time": ts,
+                "file": NOTEBOOK_DIR + "/" + fname,
+                "anchor": entry_anchor(b["id"], b["title"]),
+                "mistake": (num, b["id"]) in mistake_ids,
+            })
+    if args.json:
+        print(json.dumps({"entries": entries}, ensure_ascii=False, indent=2))
+        return 0
+    if not entries:
+        print("（笔记本为空——还没有任何落盘条目；add-entry 是唯一官方写入路径）")
+        return 0
+    for e in entries:
+        print("- ch%02d [#%s] %s ｜ %s ｜ %s%s" % (
+            e["chapter"], e["id"], e["title"], e["type"] or "-", e["time"] or "-",
+            " ｜ 错题本" if e["mistake"] else ""))
+    return 0
+
+
+def run(argv=None):
+    ap = argparse.ArgumentParser(
+        description="Notebook engine: entries land in notebook/chNN.md (mistakes mirrored "
+                    "into mistakes/); index.md files are deterministic derived views.")
+    ap.add_argument("--workspace", required=True, help="workspace dir")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p_add = sub.add_parser("add-entry")
+    p_add.add_argument("--chapter", type=int, required=True,
+                       help="chapter number (>=1); the entry lands in notebook/ch<NN>.md")
+    p_add.add_argument("--type", required=True, choices=list(TYPES),
+                       help="entry kind (walkthrough/feedback/confusion/review)")
+    p_add.add_argument("--id", required=True,
+                       help="stable entry slug; the same --id in the same chapter REPLACES "
+                            "the entry in place (idempotent re-teach)")
+    p_add.add_argument("--title", default=None, help="entry title (defaults to the id)")
+    p_add.add_argument("--mistake", action="store_true",
+                       help="also mirror the entry into mistakes/ch<NN>.md and rebuild "
+                            "mistakes/index.md")
+    p_add.add_argument("--lang", choices=["zh", "en"], default=None,
+                       help="heading language (default: study_state.json language, "
+                            "falling back to zh)")
+    p_reb = sub.add_parser("rebuild")
+    p_reb.add_argument("--lang", choices=["zh", "en"], default=None,
+                       help="heading language (default: study_state.json language, "
+                            "falling back to zh)")
+    p_list = sub.add_parser("list")
+    p_list.add_argument("--json", action="store_true",
+                        help='machine shape {"entries":[...]} (chapter order)')
+    args = ap.parse_args(argv)
+    ws = args.workspace
+    if not os.path.isdir(ws):
+        _die("workspace 不存在: %s" % ws)
+    if args.cmd == "add-entry":
+        return cmd_add_entry(ws, args)
+    if args.cmd == "rebuild":
+        return cmd_rebuild(ws, args)
+    return cmd_list(ws, args)
+
+
+if __name__ == "__main__":
+    sys.exit(run())
