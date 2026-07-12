@@ -37,29 +37,12 @@ Trigger when all study phases are basically cleared and review is wrapping up, O
 - Keep it to one or two printable, hand-copyable pages.
 - Student-facing output defaults to English (Simplified Chinese if the student opened in Chinese); a persisted `study_state.json` `language` (`中文`/`English`/`双语`) switches it per exam-cram's dispatch rule with single-language purity. (See [`docs/language-policy.md`](../../docs/language-policy.md).)
 
-## Student-facing Output
-考前最后一小时速记小抄，固定四段、每章循环（简洁实用，AI 补充/生成的行就地标注）：
-
-```text
-【必背结论/公式】
-- ……
-- ……（🟡 AI补充，可能与你老师讲的不完全一致——只有资料没讲、AI 补的行才标）
-
-【例题】（每个重点知识点配一道有难度的例题；依赖图的题必须先真实展示题面图，展示不了就换题面自足的题）
-- 例：……
-  ![题面图](references/assets/chNN_pXX_fig.png)
-
-【例题解答】（把公式代入计算：可省略中间计算步骤，但必须保留基础过程——用哪条公式、代什么数、得出什么）
-- ……（老师/资料没给答案时标 ⚠️ AI生成答案，非老师/教材提供）
-
-【要点解释】（遇到同类型或类似题干的题怎么办：先认出特征，再套对应的答题框架）
-- ……
-```
-
-上面代码块只是**版式示例**——写入真实 `walkthrough.md` 时，图片行必须是真正的 Markdown 图片（workspace 相对路径，学生打开 md 即见图）；只写路径文字不算展示，嵌不了图就换题面自足的题。
-
-
-Render per the persisted `study_state.json` `language` (`中文` default / `English` / `双语`) with single-language purity — `中文` output stays pure Chinese, `English` output uses the EN canonical vocabulary, `双语` composes the zh unit first + a `> EN:` mirror per block; see [`exam-cram`](../exam-cram/SKILL.md) Output Contract and [`docs/language-policy.md`](../../docs/language-policy.md).
+## Language packs
+Student-visible wording for this skill lives in per-language packs — load the one matching `study_state.json.language` BEFORE emitting any student-visible output:
+- `zh` → [`../../locales/zh/skills/exam-cheatsheet.md`](../../locales/zh/skills/exam-cheatsheet.md)
+- `en` → [`../../locales/en/skills/exam-cheatsheet.md`](../../locales/en/skills/exam-cheatsheet.md)
+- `bilingual` → compose from the zh pack with a `> EN:` mirror line per block (rules in [`../../docs/language-policy.md`](../../docs/language-policy.md))
+Unset language → this is the first conversation: the merged first-ask (mode × time budget × language) decides it; default en unless the student opened in Chinese.
 
 ## Boundaries
 - Do not put content into the cram sheet that the materials do not cover unless it is tagged 🟡 or ⚠️.

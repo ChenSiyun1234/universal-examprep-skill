@@ -21,6 +21,8 @@ for _stream in ("stdout", "stderr"):
     except Exception:
         pass  # 老版本解释器或非常规环境则保持默认
 
+import i18n
+
 SUBJECT_TOKEN = "《科目名称》"               # 模板中待替换的科目占位符
 PHASE_TABLE_MARKER = "<!-- PHASE_TABLE -->"        # study_plan 模板里表格插入点
 PHASE_CHECKLIST_MARKER = "<!-- PHASE_CHECKLIST -->"  # study_progress 模板里打卡列表插入点
@@ -32,11 +34,15 @@ def is_blank(value):
     return value is None or (isinstance(value, str) and not value.strip())
 
 
-def get_template_path(template_name):
-    # 脚本位于 <skill>/scripts/，模板位于 <skill>/templates/
+def get_template_path(template_name, lang="zh"):
+    # 脚本位于 <package>/scripts/，模板位于 <package>/locales/<lang>/templates/（v4 P2 语言包分离）。
+    # 请求语言的模板缺失时回落 zh 包（历史 canonical，覆盖最全），两者都缺才返回 None。
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    template_path = os.path.join(script_dir, "..", "templates", template_name)
-    return template_path if os.path.exists(template_path) else None
+    for lg in dict.fromkeys((lang, "zh")):
+        template_path = os.path.join(script_dir, "..", "locales", lg, "templates", template_name)
+        if os.path.exists(template_path):
+            return template_path
+    return None
 
 
 def fail(messages):
@@ -146,13 +152,13 @@ def build_phase_checklist(phases):
     return "\n".join(lines)
 
 
-def render_template(template_name, replacements, markers):
+def render_template(template_name, replacements, markers, lang="zh"):
     """读取模板并按固定锚点 / 占位符渲染。
 
     用不显眼的注释锚点（如 <!-- PHASE_TABLE -->）替代以往“按 emoji 标题切割”的脆弱做法：
     可见标题被改动也不影响渲染。若锚点缺失或重复则报错，绝不静默输出错误内容。
     """
-    path = get_template_path(template_name)
+    path = get_template_path(template_name, lang)
     if not path:
         fail([f"未找到模板 {template_name}，无法生成。"])
     with open(path, "r", encoding="utf-8") as f:
@@ -171,7 +177,15 @@ def main():
     parser.add_argument("--input", "-i", type=str, default="raw_input.json", help="input structured-outline JSON path")
     parser.add_argument("--output-dir", "-o", type=str, default=".", help="target workspace path (default: current directory)")
     parser.add_argument("--force", action="store_true", help="allow overwriting an existing study_progress.md (auto-backup first)")
+    parser.add_argument("--lang", type=str, default="zh",
+                        help="language pack for generated plan/progress files: zh or en "
+                             "(aliases accepted via i18n.canon_language; default zh; "
+                             "missing en template files fall back to the zh pack)")
     args = parser.parse_args()
+
+    lang, lang_warn = i18n.canon_language(args.lang)
+    if lang not in ("zh", "en"):
+        fail([lang_warn or f"--lang 仅支持 zh / en（当前为 {args.lang!r}）。"])
 
     if not os.path.exists(args.input):
         print(f"[-] 错误: 输入文件 '{args.input}' 不存在。")
@@ -274,6 +288,7 @@ def main():
         "study_plan_template.md",
         {SUBJECT_TOKEN: f"《{course_name}》", PHASE_TABLE_MARKER: build_phase_table(phases)},
         markers=[PHASE_TABLE_MARKER],
+        lang=lang,
     )
     plan_out_path = os.path.join(output_dir, "study_plan.md")
     with open(plan_out_path, "w", encoding="utf-8") as pf:
@@ -299,6 +314,7 @@ def main():
                 PHASE_CHECKLIST_MARKER: build_phase_checklist(phases),
             },
             markers=[PHASE_CHECKLIST_MARKER],
+            lang=lang,
         )
         with open(progress_out_path, "w", encoding="utf-8") as prf:
             prf.write(prog_content)

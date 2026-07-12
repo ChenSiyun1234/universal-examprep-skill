@@ -310,7 +310,8 @@ class TestValidateWorkspace(unittest.TestCase):
 
     def test_progress_template_has_confusion_section(self):
         # fresh ingest output must carry the 疑难点 section so Tier 1 doesn't warn on canonical output (r7)
-        tpl = os.path.join(os.path.dirname(os.path.dirname(__file__)), "templates", "study_progress_template.md")
+        tpl = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                           "locales", "zh", "templates", "study_progress_template.md")
         with open(tpl, encoding="utf-8") as f:
             self.assertIn("疑难点", f.read())
 

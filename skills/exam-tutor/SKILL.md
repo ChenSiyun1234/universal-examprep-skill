@@ -55,85 +55,12 @@ Teach exactly one current wiki chapter. Explain concepts with real-life metaphor
 - Limit wiki reads to the single current `references/wiki/chN_*.md` chapter (not other chapters, not the whole book); validate that path. Reading and updating `study_progress.md` (per Inputs/Workflow, including confusion-tracker writes) is expected and allowed.
 - Student-facing output defaults to English (Simplified Chinese if the student opened in Chinese); a persisted `study_state.json` `language` (`中文`/`English`/`双语`) switches it per exam-cram's dispatch rule with single-language purity. Control instructions stay in precise English; see [`docs/language-policy.md`](../../docs/language-policy.md).
 
-## Student-facing Output
-讲题用七步模板的紧凑中文格式（具体、应试，别写翻译腔/长篇大论）。①-⑦ 七个编号块一个都不能少、顺序不能乱：
-
-```text
-当前阶段：阶段 2：线性表　｜　讲解模板：七步精讲（存在 ⚙️ 偏好里，随时可改）
-
-① 题面图：
-![题面图](references/assets/ch02_p12_fig.png)
-（无图题这里写：本题无图，直接看题干条件。）
-
-② 这题在问什么：
-给你一个顺序表和一个链表，问哪种结构随机访问第 i 个元素更快、为什么。考点是两种存储方式的定位代价。
-
-③ 图里要读的量：
-表长 n、要访问的下标 i；链表图里数一数从头结点走到第 i 个结点要跳几次。
-
-④ 核心公式：
-顺序表定位：地址 = 基地址 + i × 元素大小 → O(1)；链表定位：从头走 i 步 → O(i)。
-
-⑤ 逐步演算：
-1. 顺序表：一次乘加直接算出地址，1 步到位。
-2. 链表：i=5 时要做 5 次 next 跳转。
-3. 结论：顺序表随机访问 O(1)，链表 O(n)，顺序表快。
-
-⑥ 答案自检：
-拿 i=0 边界代回：顺序表仍 1 步，链表 0 步——大小关系不变，结论靠谱。
-
-⑦ 知识点溯源：
-第 2 章《线性表》 · references/wiki/ch02_linear_list.md · 原文 [lecture03.pdf 第 12 页](../lecture03.pdf#page=12)
-
-题目来源：hw02.pdf 第 3 页（homework）｜答案来源：hw02_sol.pdf 第 1 页｜🟢 来自资料
-```
-
-- **默认输出到来源块为止**。易错点 / 3分钟速记 / 现在轮到你 三个收尾块**默认不输出**——只在学生主动要求（「有什么易错点」「给我个口诀」「考考我」）或已存 ⚙️ 偏好（如 `收尾块=易错点+3分钟速记`）时按其要求输出；输出时沿用这三个 canonical 标签措辞。
-- **文科变体**：③→「材料里要读的关键句/概念」、④→「核心概念/理论框架」、⑤→「逐点展开论证」（得分要点逐条展开），⑦ 后可加一行「可能考点：…」；编号与其余块不变。
-- **无教材答案时**：⑤ 标题写成 `⑤ 逐步演算（⚠️ AI生成答案，非老师/教材提供）`，来源块末尾标签用 ⚠️ AI生成答案，非老师/教材提供。
-- 零基础重点题精讲对每道重点题都走同一份七步模板（旧版「考点拆解/标准答题步骤」已并入 ②/④⑤，不再单列）。
-
-### English rendering (`language=English`)
-
-Same seven blocks, same order — whole-sentence English using the EN canonical vocabulary in
-[`docs/language-policy.md`](../../docs/language-policy.md) verbatim, zero CJK outside code spans
-(persisted zh values, Chinese filenames, and commands stay inside code spans). A concrete
-English-mode sample of the SAME output the Chinese sample above shows:
-
-```text
-Current stage: Stage 2 (Linear Lists) | Template: seven-step walkthrough (stored as a preference — change anytime)
-
-① Question figure:
-![Question-side asset](references/assets/ch02_p12_fig.png)
-(For a no-figure item this block reads: This question has no figure — read the given conditions.)
-
-② What's being asked: one or two plain English sentences — what the question asks and which knowledge point it tests…
-③ What to read off the figure: …
-④ Core formula: …
-⑤ Step-by-step solution: …
-⑥ Answer self-check: …
-⑦ Source trace: Chapter 2 (Linear Lists) · references/wiki/ch02_linear_list.md · original [lecture03.pdf p.12](../lecture03.pdf#page=12)
-
-Question source: lecture03.pdf p.12 (lecture) | Answer source: provided by the teacher/textbook | 🟢 From your materials
-```
-
-- The source-block line uses ASCII `|` separators; the trailing label is the FULL text of one of the
-  three EN provenance sentences — 🟢 From your materials / 🟡 AI-supplemented — may differ from what your
-  teacher taught / ⚠️ AI-generated answer — not from your teacher or textbook — never the emoji alone.
-  Missing source metadata → write Source unknown (file known but page missing → Source page unknown);
-  never invent a filename or page number.
-- No teacher/textbook answer → ⑤'s title carries the label too:
-  `⑤ Step-by-step solution (⚠️ AI-generated answer — not from your teacher or textbook)`.
-- Closers stay OFF by default (same trigger rule as zh); when the student asks or a stored preference
-  (e.g. `收尾块=易错点+3分钟速记`) requests them, name them in English: Common pitfalls / 3-minute
-  mnemonic / Your turn.
-- Stage references render in English (Stage N); a resume opens with: Resuming from Stage 2.
-- Liberal-arts variant (`文科变体`) in English mode: ③ → the key sentences/concepts to read in the
-  material, ④ → the core concept / theoretical framework, ⑤ → expand each scoring point one by one,
-  and an optional line after ⑦: Possible exam focus: …. Numbering and the other blocks are unchanged.
-- For `language=双语`, do not use this template alone — compose per the rule in
-  [`exam-cram`](../exam-cram/SKILL.md): the zh unit first, then a `> EN:` mirror per block, each side
-  single-language pure.
+## Language packs
+Student-visible wording for this skill lives in per-language packs — load the one matching `study_state.json.language` BEFORE emitting any student-visible output:
+- `zh` → [`../../locales/zh/skills/exam-tutor.md`](../../locales/zh/skills/exam-tutor.md)
+- `en` → [`../../locales/en/skills/exam-tutor.md`](../../locales/en/skills/exam-tutor.md)
+- `bilingual` → compose from the zh pack with a `> EN:` mirror line per block (rules in [`../../docs/language-policy.md`](../../docs/language-policy.md))
+Unset language → this is the first conversation: the merged first-ask (mode × time budget × language) decides it; default en unless the student opened in Chinese.
 
 ## Boundaries
 - **Structured progress state**: when `study_state.json` exists it is the SINGLE SOURCE OF TRUTH — update it via `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> set/add-mistake/add-confusion/render`; `study_progress.md` is a GENERATED view (hand edits are lost on the next render — never hand-patch it). If a state write fails, TELL the user; never continue as if it saved. Without `study_state.json` but WITH Python (a fresh, uninitialized workspace), run `update_progress.py --workspace <ws> init` to create the source of truth FIRST — do not stop at hand-editing `study_progress.md`; only when Python truly cannot run does a hand-maintained md stay valid.

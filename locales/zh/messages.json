@@ -1,0 +1,21 @@
+{
+  "lang.bilingual": "双语",
+  "lang.en": "English",
+  "lang.zh": "中文",
+  "mode.fill_gaps": "查缺补漏",
+  "mode.from_scratch": "零基础从头讲",
+  "mode.shore_up": "某章起步补弱",
+  "row.corrected": "已订正",
+  "row.resolved": "已解决",
+  "row.reviewed": "已复盘",
+  "row.revisited": "已回顾",
+  "row.to_review": "待复盘",
+  "row.to_revisit": "待回顾",
+  "tier.d1_3": "1-3天",
+  "tier.d3_7": "3-7天",
+  "tier.gt7d": ">7天",
+  "tier.le1d": "≤1天",
+  "window.in_window": "在窗口",
+  "window.out_window": "窗口外",
+  "window.verified": "已实测"
+}

@@ -31,21 +31,12 @@ Capture the learner's concept-level confusions (why / what / how-derived questio
 - During the final sweep, read the confusion records and have the learner restate each: update `状态` **in place** — 待回顾 → 已回顾 when explained correctly; keep 待回顾 and re-explain otherwise. Never overwrite other skills' writes.
 - Student-facing output defaults to English (Simplified Chinese if the student opened in Chinese); a persisted `study_state.json` `language` (`中文`/`English`/`双语`) switches it per exam-cram's dispatch rule with single-language purity.
 
-## Student-facing Output
-进度文件里的表格格式（学生侧中文，序号按已有记录递增）：
-
-```text
-## 💡 概念疑难点记录
-
-| 序号 | 关联章节 | 疑难点 | 解答要点 | 状态 |
-|:---|:---|:---|:---|:---|
-| 1 | 晶体结构 | 为什么FCC是ABC堆垛？ | 第三层落C凹坑→FCC，落A→HCP | 待回顾 |
-```
-
-记录完后给一句简短回执（如「已记录到疑难点」），不打断教学节奏。
-
-
-Render per the persisted `study_state.json` `language` (`中文` default / `English` / `双语`) with single-language purity — `中文` output stays pure Chinese, `English` output uses the EN canonical vocabulary, `双语` composes the zh unit first + a `> EN:` mirror per block; see [`exam-cram`](../exam-cram/SKILL.md) Output Contract and [`docs/language-policy.md`](../../docs/language-policy.md).
+## Language packs
+Student-visible wording for this skill lives in per-language packs — load the one matching `study_state.json.language` BEFORE emitting any student-visible output:
+- `zh` → [`../../locales/zh/skills/confusion-tracker.md`](../../locales/zh/skills/confusion-tracker.md)
+- `en` → [`../../locales/en/skills/confusion-tracker.md`](../../locales/en/skills/confusion-tracker.md)
+- `bilingual` → compose from the zh pack with a `> EN:` mirror line per block (rules in [`../../docs/language-policy.md`](../../docs/language-policy.md))
+Unset language → this is the first conversation: the merged first-ask (mode × time budget × language) decides it; default en unless the student opened in Chinese.
 
 ## Boundaries
 - **Structured progress state**: when `study_state.json` exists it is the SINGLE SOURCE OF TRUTH — record via `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> add-confusion`, update review status via `set-confusion-status --id <qid>|--index <N> --status 已回顾/待回顾`; never hand-patch the generated `study_progress.md`. If the state write fails, TELL the user; never continue as if it saved.

@@ -52,31 +52,12 @@ Pull chapter/phase-scoped items from `references/quiz_bank.json`, present one it
 - Student-facing output defaults to English (Simplified Chinese if the student opened in Chinese); a persisted `study_state.json` `language` (`中文`/`English`/`双语`) switches it per exam-cram's dispatch rule with single-language purity. (See [`docs/language-policy.md`](../../docs/language-policy.md).)
 - Provenance labels in feedback follow the active reply language (`中文` verbatim markers 🟢 来自资料 / 🟡 AI补充，可能与你老师讲的不完全一致 / ⚠️ AI生成答案，非老师/教材提供 — `English` the three EN canonical sentences in [`docs/language-policy.md`](../../docs/language-policy.md)).
 
-## Student-facing Output
-判分反馈用简短、具体的中文，先点考点再给改进：
-
-- **答对**：✅ 对了。这题考什么：……（一句点考点）。顺手记个易错点：……。
-- **每题判分反馈末尾固定加一行**：题目来源：hw02.pdf 第 3 页（homework）｜答案来源：hw02_sol.pdf 第 1 页｜🟢 来自资料（AI 生成答案时末尾标签用 ⚠️，且解析块标题带 ⚠️）。
-- **部分对**：🟡 思路对了一半——你答到了「……」，但漏了「……」这一步，补上就满分。
-- **答错**：❌ 这里错了：……（指出逻辑漏洞）。标准答题步骤：1.… 2.…。再看一眼原题解析。
-- **连错两次**：要不要 ① 查看提示　② 跳过并归档错题　③ 再想想？选 ② 我就「已记录到错题本」，考前再扫雷。
-- **题/答为 AI 生成**：⚠️ AI生成答案，非老师/教材提供，仅供参考，请和老师/教材核对。
-
-### English rendering (`language=English`)
-
-Grade in pure English — same shapes as the zh sample above, zero CJK outside code spans, fixed phrasing
-verbatim from the EN canonical vocabulary in [`docs/language-policy.md`](../../docs/language-policy.md):
-
-- **Correct**: ✅ Correct. What this tests: … (one sentence). One pitfall worth noting: ….
-- **Every graded item's feedback ends with the fixed source line** (ASCII `|`): `Question source: hw02.pdf p.3 (homework) | Answer source: hw02_sol.pdf p.1 | 🟢 From your materials` — the trailing label is the FULL text of one of 🟢 From your materials / 🟡 AI-supplemented — may differ from what your teacher taught / ⚠️ AI-generated answer — not from your teacher or textbook, never the emoji alone. When the answer is AI-supplied, the trailing label is the FULL sentence ⚠️ AI-generated answer — not from your teacher or textbook (never the emoji alone) and the answer/explanation block title carries the same ⚠️ sentence. Missing source metadata → write Source unknown (or Source page unknown), never a fabricated filename or page.
-- **Partially correct**: 🟡 Halfway there — you covered "…", but missed the "…" step; add it for full marks.
-- **Wrong**: ❌ Here is the error: … (point out the logic gap). Standard answer steps: 1. … 2. …. Re-read the item's explanation.
-- **Two wrong in a row**: Would you like to ① view a hint ② skip and archive the wrong item ③ think again? On ② reply with the receipt: Recorded to the mistake archive — we sweep it again before the exam.
-- **AI-generated item/answer**: ⚠️ AI-generated answer — not from your teacher or textbook; reference only, verify against your teacher or textbook.
-- **Scope override**: emit the verbatim line ⚠️ Temporarily overriding your <scope> scope preference BEFORE the first out-of-scope item (substitute the active scope name).
-
-For `language=双语`, apply [`exam-cram`](../exam-cram/SKILL.md)'s composition rule: compose the zh unit
-first, then a `> EN:` mirror per block — each side single-language pure (no token+gloss mixing).
+## Language packs
+Student-visible wording for this skill lives in per-language packs — load the one matching `study_state.json.language` BEFORE emitting any student-visible output:
+- `zh` → [`../../locales/zh/skills/exam-quiz.md`](../../locales/zh/skills/exam-quiz.md)
+- `en` → [`../../locales/en/skills/exam-quiz.md`](../../locales/en/skills/exam-quiz.md)
+- `bilingual` → compose from the zh pack with a `> EN:` mirror line per block (rules in [`../../docs/language-policy.md`](../../docs/language-policy.md))
+Unset language → this is the first conversation: the merged first-ask (mode × time budget × language) decides it; default en unless the student opened in Chinese.
 
 ## Boundaries
 - **Structured progress state**: when `study_state.json` exists it is the SINGLE SOURCE OF TRUTH — update it via `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> set/add-mistake/add-confusion/render` (script path resolves from the skill package root); `study_progress.md` is a GENERATED view (hand edits are lost on the next render — never hand-patch it). If a state write fails, TELL the user; never continue as if it saved. Without `study_state.json` but WITH Python (a fresh, uninitialized workspace), run `update_progress.py --workspace <ws> init` to create the source of truth FIRST — do not stop at hand-editing `study_progress.md`; only when Python truly cannot run does a hand-maintained md stay valid.

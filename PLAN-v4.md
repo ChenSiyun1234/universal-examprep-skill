@@ -117,7 +117,7 @@ universal-examprep-skill/
 **scripts：逻辑一份 + 语言包分文件夹（修正原始设想，理由如下）。** 把 Python 逻辑复制成 zh/en 两份是维护陷阱——审计已实证枚举词表在 3 个脚本里各自硬编码并开始漂移，两棵代码树只会放大它。v4 方案：
 
 - `scripts/i18n.py` 成为唯一词表源：canonical 代号（英文蛇形，如 `mode=from_scratch`、`window=in_window`、`status=to_review`）+ 按 `locales/<lang>/messages.json` 渲染显示文案；
-- 所有脚本消息走 msgid（现有的 `no_materials:` ASCII 前缀模式推广到全部 440 条）；
+- **学习循环脚本**（update_progress / validate_workspace / select_hard_questions / show_question_assets——学生复习期间反复运行、输出学生相邻）的用户可见消息走 msgid + 语言包；**建库侧一次性脚本**（ingest / build_raw_input / visual 系列——纯 agent 面，智能体读后以学生语言转述）的控制台消息保持 zh 并在 localization.md 记录豁免（执行期收窄：440 条全量 msgid 化的回报不抵回归风险，`no_materials:` ASCII 前缀模式保留为机器可读缝）；
 - 脚本自动读 `study_state.json.language` 决定输出语言（保留 `--lang` 覆盖）；
 - **持久化文件从此只存 canonical 代号**——中文不再是 schema。旧工作区在 `update_progress init/load` 时自动迁移（沿用 `_MODE_MIGRATION` 的先例：识别旧中文枚举→写入代号→备份原文件）。
 
@@ -245,6 +245,7 @@ universal-examprep-skill/
 
 ## 6. Backlog（本轮不做，记录在案）
 
+- **study_progress.md 生成视图的按语言渲染**：视图是 agent 中介面（学生在聊天里看到的是按语言重述的进度面板），而它的 zh 结构被 parse_md 往返、validator、drift、T4 四条链共同解析——本轮改动回报小、回归面大；先保持 zh 视图 + 代号状态，等笔记本化（学生直读面）落定后再评估
 - 嵌入式语义检索后端（spike 已备契约，等 BM25 实测数据说话）
 - 笔记本导出 PDF / Anki 卡片
 - 多课程并行工作区管理

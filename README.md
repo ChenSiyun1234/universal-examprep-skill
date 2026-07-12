@@ -133,7 +133,7 @@ Clone the repo; have the agent read `AGENTS.md` (a one-screen fallback contract)
 
 Can't write local files — use the drop-in prompt instead: copy [`prompts/web_prompt.en.md`](prompts/web_prompt.en.md) and send it, then paste your materials.
 
-> Full load matrix (per-agent support, entry files) in [`docs/agent-portability.md`](docs/agent-portability.md). The behavior source of truth is [`SKILL.md`](SKILL.md); [`SKILL.en.md`](SKILL.en.md) is its English rendering.
+> Full load matrix (per-agent support, entry files) in [`docs/agent-portability.md`](docs/agent-portability.md). The trigger entry is [`SKILL.md`](SKILL.md) (a language-neutral router); [`locales/en/SKILL.md`](locales/en/SKILL.md) is the full English manual it dispatches to (derived rendering of [`locales/zh/SKILL.md`](locales/zh/SKILL.md)).
 
 ---
 

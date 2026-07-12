@@ -33,13 +33,12 @@ Run when the student enters the final review stage, or asks to 「复盘错题 /
 - Persist each mistake/confusion status update — with `study_state.json`, via `update_progress.py set-mistake-status`/`set-confusion-status` (and `add-*` for genuinely new records; the md regenerates); without state, update each existing `study_progress.md` row **in place** (已订正 / 已回顾 / 待回顾) and append only genuinely new records. Never leave a mastered item still marked wrong/待回顾. Then return control to `exam-cram`.
 - Student-facing output defaults to English (Simplified Chinese if the student opened in Chinese); a persisted `study_state.json` `language` (`中文`/`English`/`双语`) switches it per exam-cram's dispatch rule with single-language purity. (See [`docs/language-policy.md`](../../docs/language-policy.md).)
 
-## Student-facing Output
-- **错题重做**：这道你上次错在「……」。同一道题再做一遍——这次盯住 ……。做对了我就把它从错题本划掉（标「已订正」）。
-- **疑难复述**：你之前卡在「……」这个概念。用你自己的话讲一遍：它是什么、为什么这样。讲清楚 → 标「已回顾」；还含糊 → 我再讲一次，保留「待回顾」。
-- **缺口小结**：还没拿下的——错题：……；疑难点：……。这几条会让 `exam-cheatsheet` 的「例题」优先选它们对应的知识点。
-
-
-Render per the persisted `study_state.json` `language` (`中文` default / `English` / `双语`) with single-language purity — `中文` output stays pure Chinese, `English` output uses the EN canonical vocabulary, `双语` composes the zh unit first + a `> EN:` mirror per block; see [`exam-cram`](../exam-cram/SKILL.md) Output Contract and [`docs/language-policy.md`](../../docs/language-policy.md).
+## Language packs
+Student-visible wording for this skill lives in per-language packs — load the one matching `study_state.json.language` BEFORE emitting any student-visible output:
+- `zh` → [`../../locales/zh/skills/exam-review.md`](../../locales/zh/skills/exam-review.md)
+- `en` → [`../../locales/en/skills/exam-review.md`](../../locales/en/skills/exam-review.md)
+- `bilingual` → compose from the zh pack with a `> EN:` mirror line per block (rules in [`../../docs/language-policy.md`](../../docs/language-policy.md))
+Unset language → this is the first conversation: the merged first-ask (mode × time budget × language) decides it; default en unless the student opened in Chinese.
 
 ## Boundaries
 - **Structured progress state**: when `study_state.json` exists it is the SINGLE SOURCE OF TRUTH — update it via `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> set/add-mistake/add-confusion/set-mistake-status/set-confusion-status/set-check/render` (marking a replayed row 已订正/已回顾 goes through `set-mistake-status`/`set-confusion-status --id <qid> --status <状态>`; ticking a `知识点打卡` item goes through `set-check --match <文本>|--index <N>`); `study_progress.md` is a GENERATED view (hand edits are lost on the next render — never hand-patch it). If a state write fails, TELL the user; never continue as if it saved. Without `study_state.json` but WITH Python (a fresh, uninitialized workspace), run `update_progress.py --workspace <ws> init` to create the source of truth FIRST — do not stop at hand-editing `study_progress.md`; only when Python truly cannot run does a hand-maintained md stay valid.

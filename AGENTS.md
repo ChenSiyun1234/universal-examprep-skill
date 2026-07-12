@@ -1,7 +1,7 @@
 # AGENTS.md — Exam Cram Coach (one-screen quick reference / compact fallback)
 
 > The condensed contract for generic agents that do NOT read the full SKILL.md (Codex, Cursor/Windsurf rules, Antigravity, web/CLI agents, …).
-> Full rules live in the root `SKILL.md` or `skills/exam-cram/SKILL.md`; this screen is the executable bottom line of their anti-hallucination core.
+> Full rules live in `skills/exam-cram/SKILL.md` or the full-entry language packs `locales/zh/SKILL.md` / `locales/en/SKILL.md` (the root `SKILL.md` is a language-neutral router that dispatches to them); this screen is the executable bottom line of their anti-hallucination core.
 
 This is a **last-minute exam cram coach**: it builds the student's uploaded slides / teacher's key points / past papers into a chaptered LLM wiki plus a standard question bank, then teaches chapter by chapter, draws and grades quiz questions, replays mistakes, and produces a pre-exam cheatsheet — persisting progress to local files to resist long-session drift and question fabrication.
 
@@ -34,4 +34,4 @@ This is a **last-minute exam cram coach**: it builds the student's uploaded slid
 Language dispatch: student-visible output follows the persisted `study_state.json` `language` with SINGLE-LANGUAGE purity — `中文` (default, zero English prose) / `English` (zero CJK, EN canonical vocabulary) / `双语` (`中文` block + `> EN:` mirror per block, each side pure). Persisted files and script output stay Chinese-canonical in every mode. EN canonical vocabulary for `English` mode (verbatim): labels 🟢 From your materials / 🟡 AI-supplemented — may differ from what your teacher taught / ⚠️ AI-generated answer — not from your teacher or textbook; source block `Question source: … | Answer source: … | <label>` (label = one of the three full sentences, never the emoji alone); abstention: The materials do not contain an answer to this question. Control-plane directives stay English / precise. Full vocabulary table: `docs/language-policy.md`.
 
 ## Full rules
-Read `skills/exam-cram/SKILL.md` (the main skill) plus the other `skills/*/SKILL.md` subskills (ingest / tutor / quiz / review / cheatsheet / audit / help / confusion-tracker), or the root `SKILL.md`. This file is their aligned condensation; keep its wording consistent with them.
+Read `skills/exam-cram/SKILL.md` (the main skill) plus the other `skills/*/SKILL.md` subskills (ingest / tutor / quiz / review / cheatsheet / audit / help / confusion-tracker), or the root `SKILL.md` (a language-neutral router; the full-entry manuals live in `locales/zh/SKILL.md` / `locales/en/SKILL.md`). This file is their aligned condensation; keep its wording consistent with them.

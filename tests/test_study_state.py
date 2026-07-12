@@ -1295,7 +1295,10 @@ class DriftJsonSnapshots(unittest.TestCase):
 
 
 class Contract(unittest.TestCase):
-    ENTRY_POINTS = ["SKILL.md", "SKILL.en.md", "AGENTS.md", "prompts/web_prompt.md",
+    # v4-P2: the root SKILL.md is a language-neutral router (still carries the
+    # state-contract essentials); the zh/en full-entry manuals live under locales/.
+    ENTRY_POINTS = ["SKILL.md", "locales/zh/SKILL.md", "locales/en/SKILL.md", "AGENTS.md",
+                    "prompts/web_prompt.md",
                     "prompts/web_prompt.en.md", "skills/exam-cram/SKILL.md",
                     "skills/exam-quiz/SKILL.md", "skills/exam-tutor/SKILL.md", "skills/exam-review/SKILL.md",
                     "skills/confusion-tracker/SKILL.md"]
@@ -1307,8 +1310,9 @@ class Contract(unittest.TestCase):
             self.assertIn("update_progress.py", txt, p)
 
     def test_root_skill_lock_prefers_state(self):
-        txt = open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8").read()
-        self.assertIn("断点状态锁定 (`study_state.json`", txt)     # 根入口的状态锁对齐事实源
+        # v4-P2: the zh workflow wording lives in the zh full-entry pack
+        txt = open(os.path.join(ROOT, "locales", "zh", "SKILL.md"), encoding="utf-8").read()
+        self.assertIn("断点状态锁定 (`study_state.json`", txt)     # zh 全量入口的状态锁对齐事实源
         self.assertIn("set-check", txt)
 
     def test_web_prompt_never_claims_local_writes(self):
@@ -1318,8 +1322,8 @@ class Contract(unittest.TestCase):
         self.assertIn("只读事实源", txt)                          # 粘贴的 state 只读恢复
 
     def test_root_skill_final_review_reads_state(self):
-        txt = open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8").read()
-        self.assertIn("从其 `mistake_archive`", txt)              # 根入口错题重温读事实源
+        txt = open(os.path.join(ROOT, "locales", "zh", "SKILL.md"), encoding="utf-8").read()
+        self.assertIn("从其 `mistake_archive`", txt)              # zh 全量入口错题重温读事实源
 
     def test_state_scenario_exercises_md_gate(self):
         # 新 state-backed 场景真正武装 md_write_after_state 阈值（basic 场景对该阈值先天空转）
@@ -1353,7 +1357,7 @@ class Contract(unittest.TestCase):
         self.assertIn('init' + chr(96) + ' to establish the source of truth', txt)   # 通用代理契约也先建 state
 
     def test_root_skill_bootstraps_state_when_python_available(self):
-        txt = open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8").read()
+        txt = open(os.path.join(ROOT, "locales", "zh", "SKILL.md"), encoding="utf-8").read()
         self.assertIn("先跑 `python " + chr(34) + chr(36) + "{CLAUDE_SKILL_DIR}/scripts/update_progress.py" + chr(34), txt)
 
     def test_agents_md_prefers_state(self):

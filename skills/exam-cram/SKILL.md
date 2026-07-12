@@ -73,7 +73,7 @@ Window state persists in `study_state.json.knowledge_window` (via `window-add` /
 
 ## Output Contract
 
-- Render student-facing prose in the persisted `study_state.json` `language` with SINGLE-LANGUAGE PURITY: `中文` = pure Simplified Chinese (zero English prose); `English` = pure English using the EN canonical vocabulary VERBATIM (**the default when the language is unset — the reply language is English unless the student opened in Chinese**; the three provenance sentences, ① Question figure … ⑦ Source trace, the `Question source: … | Answer source: … | <label>` line, receipts, Stage N, the abstention sentence, the scope-override line, Question-side/Answer-side asset labels — full table in [`docs/language-policy.md`](../../docs/language-policy.md)); `双语` = composition rule — see Student-facing Output. Persisted workspace files and script outputs remain Chinese-canonical in all modes; when relaying a script receipt/failure to a non-`中文` student, quote the original Chinese line (code span) and add an English restatement — never drop fail-loud content in translation. Control instructions and schemas stay in English.
+- Render student-facing prose in the persisted `study_state.json` `language` with SINGLE-LANGUAGE PURITY: `中文` = pure Simplified Chinese (zero English prose); `English` = pure English using the EN canonical vocabulary VERBATIM (**the default when the language is unset — the reply language is English unless the student opened in Chinese**; the three provenance sentences, ① Question figure … ⑦ Source trace, the `Question source: … | Answer source: … | <label>` line, receipts, Stage N, the abstention sentence, the scope-override line, Question-side/Answer-side asset labels — full table in [`docs/language-policy.md`](../../docs/language-policy.md)); `双语` = composition rule — see Language packs. Persisted workspace files and script outputs remain Chinese-canonical in all modes; when relaying a script receipt/failure to a non-`中文` student, quote the original Chinese line (code span) and add an English restatement — never drop fail-loud content in translation. Control instructions and schemas stay in English.
 - Keep teaching/grading replies concise and conclusion-first: dissect formulas for STEM, give scoring points for humanities. In `中文` mode (and the zh units of `双语`), use concrete, exam-oriented, non-translationese Chinese; in `English` mode, equally concrete exam-oriented English using the EN canonical vocabulary.
 - Refresh the progress panel at the end of every reply, with field labels in the active reply language (`中文` `科目` / `当前阶段` / `打卡进度` / `错题累积` — `English` `Subject` / `Current stage` / `Progress` / `Mistake log`), so the student always knows their position.
 - Label every AI-generated answer (not teacher-provided) with the full AI-generated sentence in the active reply language (`中文` ⚠️ AI生成答案，非老师/教材提供 / `English` ⚠️ AI-generated answer — not from your teacher or textbook), never the emoji alone.
@@ -83,17 +83,12 @@ Window state persists in `study_state.json.knowledge_window` (via `window-add` /
   - ⚠️ AI生成答案，非老师/教材提供 — AI answered a teacher-marked question that had no provided answer.
 - Honest abstention: when materials give no basis and you are unsure, say so plainly in the active language (`中文` 「资料里没有这道题的答案」 / `English` "The materials do not contain an answer to this question.") instead of fabricating.
 
-## Student-facing Output
-
-In `中文` mode (and the zh side of `双语`) use the canonical Chinese vocabulary on the student side (当前阶段 / 这题考什么 / 标准答题步骤 / 易错点 / 3分钟速记 / 现在轮到你 / 已记录到错题本 / 必背 / 例题 / 例题解答 / 要点解释 / 错题重做 / 疑难复述 / 已初始化备考空间); in `English` mode use the EN canonical vocabulary (Output Contract dispatch above / [`docs/language-policy.md`](../../docs/language-policy.md)). In `中文` mode the provenance markers appear verbatim as:
-
-- 🟢 **来自资料**：直接源自学生上传内容，可信度高。
-- 🟡 **AI 补充**：资料未覆盖、AI 用自身知识补的，标注「🟡 AI补充，可能与你老师讲的不完全一致」（以老师为准）。
-- ⚠️ **AI 生成答案**：老师只勾题没给答案时 AI 代答的，每个都标「⚠️ AI生成答案，非老师/教材提供」。
-
-Student-facing output defaults to English (Simplified Chinese if the student opened in Chinese); the persisted `language` switches it per the Output Contract dispatch rule (each mode single-language pure).
-
-双语 composition rule (`language=双语`): NEVER a third template set — compose zh+en per block: the zh unit first (pure Chinese, zh canonical forms), an `> EN:` mirror line immediately after (pure English, EN canonical vocabulary); each side stays single-language pure and each anchor appears once per side. The progress panel, receipts, and source blocks mirror line-by-line the same way. In the `≤1天` tier the EN mirror may compress to the key sentences (time beats completeness there).
+## Language packs
+Student-visible wording for this skill lives in per-language packs — load the one matching `study_state.json.language` BEFORE emitting any student-visible output:
+- `zh` → [`../../locales/zh/skills/exam-cram.md`](../../locales/zh/skills/exam-cram.md)
+- `en` → [`../../locales/en/skills/exam-cram.md`](../../locales/en/skills/exam-cram.md)
+- `bilingual` → compose from the zh pack with a `> EN:` mirror line per block (rules in [`../../docs/language-policy.md`](../../docs/language-policy.md))
+Unset language → this is the first conversation: the merged first-ask (mode × time budget × language) decides it; default en unless the student opened in Chinese.
 
 ## Boundaries
 - **Structured progress state**: when `study_state.json` exists it is the SINGLE SOURCE OF TRUTH — update it via `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> set/add-mistake/add-confusion/render` (script path resolves from the skill package root); `study_progress.md` is a GENERATED view (hand edits are lost on the next render — never hand-patch it). If a state write fails, TELL the user; never continue as if it saved. Without `study_state.json` but WITH Python (a fresh, uninitialized workspace), run `update_progress.py --workspace <ws> init` to create the source of truth FIRST — do not stop at hand-editing `study_progress.md`; only when Python truly cannot run does a hand-maintained md stay valid.
