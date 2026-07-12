@@ -119,11 +119,15 @@ git clone https://github.com/ZeKaiNie/universal-examprep-skill .claude/skills/un
 
 ### Claude Code
 
+**推荐——运行时精简包**（约 230 KB 的 zip，只含技能本体，不带开发用的 benchmark/测试）：
+
+到[最新 release](https://github.com/ZeKaiNie/universal-examprep-skill/releases/latest) 下载 `universal-exam-cram-coach.zip`，解压到 `.claude/skills/universal-exam-cram-coach/`（项目内或全局 `~/.claude/skills/` 均可）。
+
+**或克隆整仓**（开发者路径，约 3.4 MB）：
+
 ```bash
 git clone https://github.com/ZeKaiNie/universal-examprep-skill .claude/skills/universal-exam-cram-coach
 ```
-
-项目内 `.claude/skills/` 或全局 `~/.claude/skills/` 均可。
 
 ### Codex / Cursor / Windsurf / Antigravity
 

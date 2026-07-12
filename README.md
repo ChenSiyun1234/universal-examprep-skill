@@ -119,11 +119,15 @@ The skill adapts how deep it teaches, how fast, and whether it asks you question
 
 ### Claude Code
 
+**Recommended — the runtime bundle** (a ~230 KB zip with just the skill, none of the dev weight):
+
+Download `universal-exam-cram-coach.zip` from the [latest release](https://github.com/ZeKaiNie/universal-examprep-skill/releases/latest) and unzip it into `.claude/skills/universal-exam-cram-coach/` (project-local or global `~/.claude/skills/`).
+
+**Or clone the repo** (developer path — brings benchmark/tests along, ~3.4 MB):
+
 ```bash
 git clone https://github.com/ZeKaiNie/universal-examprep-skill .claude/skills/universal-exam-cram-coach
 ```
-
-Works from a project-local `.claude/skills/` or global `~/.claude/skills/`.
 
 ### Codex / Cursor / Windsurf / Antigravity
 
