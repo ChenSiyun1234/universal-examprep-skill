@@ -266,6 +266,39 @@ def main():
             wf.write(p["wiki_content"])
         print(f"[+] 已写入 Wiki 文件: references/wiki/{filename}")
 
+    # 1b. v4-P3：小节级切块（仅索引粒度——章文件仍逐字写盘，现有契约零破坏）→ BM25 检索索引。
+    #     检索时 retrieve.py 返回 文件+标题+词窗摘要，弃答门限先于任何生成（spike 契约）。
+    import hashlib
+    import chunk as _chunk
+    import retrieve as _retrieve
+    all_chunks, wiki_meta = [], {}
+    for p in phases:
+        filename = os.path.basename(p["wiki_filename"].strip())
+        _, chs = _chunk.chunk_text(p["wiki_content"])
+        ch_id = "ch%02d" % p["phase_num"]
+        for k, c in enumerate(chs, 1):
+            all_chunks.append({"id": "%s#s%02d" % (ch_id, k),
+                               "file": "references/wiki/" + filename,
+                               "chapter": str(p["phase_num"]),
+                               "title": c["title"], "text": c["text"]})
+        wiki_meta[filename] = {
+            "chapter": p["phase_num"], "n_chunks": len(chs),
+            "sha256": hashlib.sha256(p["wiki_content"].encode("utf-8")).hexdigest()}
+    if all_chunks:
+        index = _retrieve.build_index(all_chunks)
+        with open(os.path.join(output_dir, "references", "retrieval_index.json"),
+                  "w", encoding="utf-8") as xf:
+            json.dump(index, xf, ensure_ascii=False)
+        print(f"[+] 已建检索索引: references/retrieval_index.json（{len(all_chunks)} 块 / {len(phases)} 章）")
+    with open(os.path.join(output_dir, "references", "wiki_meta.json"), "w", encoding="utf-8") as mf:
+        json.dump(wiki_meta, mf, ensure_ascii=False, indent=2)
+    # 术语对照（跨语言检索桥）：raw_input.json 可带顶层 "terms"（AI 建库时产出、可人工校对）
+    terms = data.get("terms")
+    if isinstance(terms, dict) and terms:
+        with open(os.path.join(output_dir, "references", "terms.json"), "w", encoding="utf-8") as tf:
+            json.dump(terms, tf, ensure_ascii=False, indent=2)
+        print(f"[+] 已写入术语对照: references/terms.json（{len(terms)} 组）")
+
     # 2. 写入题库 JSON
     quiz_file_path = os.path.join(output_dir, "references", "quiz_bank.json")
     with open(quiz_file_path, "w", encoding="utf-8") as qf:

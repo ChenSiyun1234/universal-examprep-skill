@@ -93,9 +93,11 @@ universal-examprep-skill/
 ```
 <workspace>/
 ├── references/
-│   ├── wiki/ch02/                # ★ 章 → 小节两级：ch02/s01_definition.md …
-│   │   └── _meta.json            #   每章元数据：小节锚点/来源页/关键词/关联题号
-│   ├── retrieval_index.json      # ★ BM25 倒排索引 + TOC 摘要（ingest 时构建）
+│   ├── wiki/chNN.md              # 章文件仍逐字整章写盘（执行期偏离：小节块做成索引内的
+│   │                             #   「逻辑块」而非物理拆文件——现有全部契约零破坏；检索直接
+│   │                             #   返回块文本，物理拆分列入 backlog 再评估）
+│   ├── wiki_meta.json            # ★ 每章元数据：内容哈希/块数/章号（增量重建的地基）
+│   ├── retrieval_index.json      # ★ BM25 倒排索引（小节级逻辑块，ingest 时构建）
 │   ├── terms.json                # ★ 本课程中英术语对照（跨语言检索桥）
 │   └── quiz_bank.json            # 保留
 ├── notebook/                     # ★ 笔记本（G3）
