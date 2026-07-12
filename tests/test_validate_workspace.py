@@ -628,5 +628,72 @@ class TestValidateWorkspace(unittest.TestCase):
         self.assertIn("maybe_requires_assets 必须是布尔型", err_text(errors))
 
 
+class CheatsheetTraceLint(unittest.TestCase):
+    """v4-P5 溯源 lint：cheatsheet.md 每个顶层要点必须携带可解析的 notebook/mistakes/wiki 锚点。"""
+
+    def _ws(self, cheatsheet=None, walkthrough=None, notebook_files=()):
+        d = tempfile.mkdtemp(prefix="vws-cs-")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        os.makedirs(os.path.join(d, "references", "wiki"))
+        open(os.path.join(d, "references", "wiki", "ch1.md"), "w", encoding="utf-8").write("# ch1\n")
+        open(os.path.join(d, "references", "quiz_bank.json"), "w", encoding="utf-8").write(json.dumps(
+            [{"id": "q1", "chapter": 1, "type": "subjective", "question": "q",
+              "keywords": ["a"], "answer": "a", "source": "teacher"}], ensure_ascii=False))
+        open(os.path.join(d, "study_plan.md"), "w", encoding="utf-8").write(
+            "阶段 1 `references/wiki/ch1.md`\n")
+        open(os.path.join(d, "study_progress.md"), "w", encoding="utf-8").write(
+            "## 当前复习断点\n阶段 1\n\n## 💡 概念疑难点记录\n")
+        for nf in notebook_files:
+            full = os.path.join(d, *nf.split("/"))
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            open(full, "w", encoding="utf-8").write("# nb\n")
+        if cheatsheet is not None:
+            open(os.path.join(d, "cheatsheet.md"), "w", encoding="utf-8").write(cheatsheet)
+        if walkthrough is not None:
+            open(os.path.join(d, "walkthrough.md"), "w", encoding="utf-8").write(walkthrough)
+        return d
+
+    def test_traced_bullets_pass(self):
+        d = self._ws(cheatsheet=(
+            "# 小抄\n\n## 必背\n"
+            "- 链表访问 O(n)（[→](notebook/ch01.md#q1)）\n"
+            "- 快排不稳定（[→](references/wiki/ch1.md)）\n"),
+            notebook_files=("notebook/ch01.md",))
+        errors, warnings, stats = V.validate(d)
+        self.assertEqual([e for e in errors], [], err_text(errors))
+        self.assertEqual(stats.get("cheatsheet_bullets"), 2)
+
+    def test_untraced_bullet_is_error(self):
+        d = self._ws(cheatsheet="# 小抄\n- 凭空要点，没有任何来源链接\n")
+        errors, _, _ = V.validate(d)
+        self.assertTrue(any("无溯源链接" in e["msg"] for e in errors), err_text(errors))
+
+    def test_dead_link_target_is_error(self):
+        d = self._ws(cheatsheet="# 小抄\n- 要点（[→](notebook/ch99.md#gone)）\n")
+        errors, _, _ = V.validate(d)
+        self.assertTrue(any("链接目标不存在" in e["msg"] for e in errors), err_text(errors))
+
+    def test_fenced_and_nested_bullets_exempt(self):
+        d = self._ws(cheatsheet=(
+            "# 小抄\n- 顶层要点（[→](references/wiki/ch1.md)）\n"
+            "  - 缩进子弹不查溯源\n"
+            "```\n- 围栏内示例也不查\n```\n"))
+        errors, _, stats = V.validate(d)
+        self.assertEqual([e for e in errors], [], err_text(errors))
+        self.assertEqual(stats.get("cheatsheet_bullets"), 1)
+
+    def test_legacy_walkthrough_warns(self):
+        d = self._ws(walkthrough="# 旧小抄\n")
+        errors, warnings, _ = V.validate(d)
+        self.assertEqual([e for e in errors], [], err_text(errors))
+        self.assertTrue(any("walkthrough.md" in w["msg"] for w in warnings))
+
+    def test_no_cheatsheet_no_new_messages(self):
+        d = self._ws()
+        errors, warnings, _ = V.validate(d)
+        self.assertEqual([e for e in errors], [], err_text(errors))
+        self.assertFalse(any("walkthrough" in w["msg"] for w in warnings))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

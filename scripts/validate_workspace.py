@@ -423,6 +423,41 @@ def validate(ws):
         except OSError:
             pass
 
+    # ---- v4-P5: cheatsheet 溯源 lint（PLAN §2.4：小抄每个要点须携带可解析锚点，坏锚即红）----
+    cheat_path = os.path.join(ws, "cheatsheet.md")
+    if os.path.isfile(cheat_path):
+        try:
+            cheat = _read(cheat_path)
+        except OSError:
+            cheat = None
+            err("cheatsheet.md 存在但无法读取")
+        if cheat is not None:
+            _SRC_LINK = re.compile(r"\]\(((?:notebook|mistakes)/[^)#\s]+|references/wiki/[^)#\s]+)(#[^)\s]*)?\)")
+            fence, n_bullets, bad = 0, 0, []
+            for i, ln in enumerate(cheat.splitlines(), 1):
+                fm = re.match(r"^\s*(`{3,})", ln)
+                if fm:
+                    t = len(fm.group(1))
+                    fence = 0 if (fence and t >= fence) else (fence or t)
+                    continue
+                if fence or not re.match(r"^- \S", ln):
+                    continue   # 只查顶层要点 bullet；围栏内示例/缩进子弹/标题不计
+                n_bullets += 1
+                links = _SRC_LINK.findall(ln)
+                if not links:
+                    bad.append(f"L{i} 无溯源链接: {ln[:60]}")
+                    continue
+                for rel, _anchor in links:
+                    if not os.path.isfile(os.path.join(ws, *rel.split("/"))):
+                        bad.append(f"L{i} 链接目标不存在: {rel}")
+            for b in bad:
+                err("cheatsheet.md " + b + "（编译产物每个要点必须可溯源到 notebook/mistakes/wiki——"
+                    "详见 PLAN 溯源契约）")
+            stats["cheatsheet_bullets"] = n_bullets
+    elif os.path.isfile(os.path.join(ws, "walkthrough.md")):
+        warn("检测到旧版 walkthrough.md 且无 cheatsheet.md——v4 小抄改为带溯源的编译产物"
+             "（exam-cheatsheet 重新编译即可，旧文件保留不删）")
+
     # ---- A4: structured state (study_state.json = source of truth when present) ----
     state_path = os.path.join(ws, "study_state.json")
     # 悬空符号链接 isfile 为 False——不先查 islink 会整段跳过校验、放行一个更新器拒跑的工作区

@@ -19,4 +19,14 @@ The last-hour-before-the-exam quick-recall cheat sheet: four fixed sections, rep
 - ...
 ```
 
-The code block above is only a **layout example** — when writing the real `walkthrough.md`, image lines must be actual Markdown images (workspace-relative paths, so the student sees the figure the moment the md is opened); writing the path as plain text does not count as showing it, and if the figure cannot be embedded, swap to a self-contained item.
+The code block above is only a **layout example** — when writing the real `cheatsheet.md`, image lines must be actual Markdown images (workspace-relative paths, so the student sees the figure the moment the md is opened); writing the path as plain text does not count as showing it, and if the figure cannot be embedded, swap to a self-contained item. Every bullet ends with a source arrow (e.g. `[→](mistakes/ch02.md#q13)`) that jumps back to the mistake notebook / notebook / wiki original.
+
+Delivery phrasing (after compile + render):
+
+> Your cheat sheet is compiled: `cheatsheet.md` (every bullet carries a source link back to your mistake notebook / notebook for verification).
+> The print version is at your requested page count: `cheatsheet.pdf` (2 pages, margins pre-set to printer-safe distances).
+> Say "squeeze it to 1 page" or "relax it to 3 pages" and I will re-fit the layout.
+
+Degradation phrasing when no local browser is available:
+
+> Generated `cheatsheet.html` — open it in a browser and press Ctrl+P, then "Save as PDF" (page count and margins are already set in the page).
