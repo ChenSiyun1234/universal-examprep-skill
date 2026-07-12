@@ -9,8 +9,10 @@ Why: before v4 every seven-step walkthrough and grading feedback evaporated with
 (PLAN-v4.md §1.3) — the one thing a student wants to re-read at review time lived nowhere.
 This official tool is the only write path: entry bodies arrive on STDIN (UTF-8), files are
 written atomically (temp + os.replace, same conventions as update_progress.save), and the
-same --id in the same chapter REPLACES the entry in place, so re-teaching a question never
-duplicates it. A write failure is FAIL-LOUD (non-zero exit) — never silently "recorded".
+same --id AND --type in the same chapter REPLACES the entry in place, so re-teaching a
+question never duplicates it — while a DIFFERENT type under the same id (walkthrough then
+feedback on the same question, the exact flow the contracts prescribe) is appended, never
+silently deleted. A write failure is FAIL-LOUD (non-zero exit) — never silently "recorded".
 
     python scripts/notebook.py --workspace <ws> add-entry --chapter 2 --type walkthrough \
         --id q13 --title "Venn 图判断" < body.md      # body via STDIN; rebuilds notebook/index.md
@@ -262,8 +264,8 @@ def _collect(ws, dirname, overrides=None):
     out = []
     for name, content in names.items():
         text = content if content is not None else _read_regular(os.path.join(d, name))
-        _pre, blocks = parse_chapter(text)
-        out.append((int(_CH_FILE_RE.match(name).group(1)), name, blocks))
+        pre, blocks = parse_chapter(text)
+        out.append((int(_CH_FILE_RE.match(name).group(1)), name, blocks, pre))
     out.sort(key=lambda t: (t[0], t[1]))
     return out
 
@@ -282,20 +284,48 @@ def entry_anchor(eid, title):
     return github_slug("[#%s] %s" % (eid, title))
 
 
+_PRE_HEADING_RE = re.compile(r"^ {0,3}#{1,6}\s+(.*?)\s*$")
+
+
+def anchors_for(pre, blocks):
+    """每个条目块的**实际** GitHub 锚（Codex r4）：同 slug 的第二个标题起 GitHub 会加 -1/-2
+    后缀，目录/回执若一律用裸 slug，重复 slug 的条目会全部跳到第一个。计数口径与
+    validate_workspace._md_anchors 完全一致——前言里的普通标题也参与计数（fence-aware）。"""
+    counts, fence = {}, 0
+    for line in pre:
+        fm = _FENCE_RE.match(line)
+        if fm:
+            t = len(fm.group(1))
+            fence = 0 if (fence and t >= fence) else (fence or t)
+            continue
+        if fence == 0:
+            m = _PRE_HEADING_RE.match(line)
+            if m:
+                slug = github_slug(m.group(1))
+                counts[slug] = counts.get(slug, 0) + 1
+    out = []
+    for b in blocks:
+        slug = entry_anchor(b["id"], b["title"])
+        n = counts.get(slug, 0)
+        counts[slug] = n + 1
+        out.append(slug if n == 0 else "%s-%d" % (slug, n))
+    return out
+
+
 def render_index(title_msgid, chapters, lang, status_map=None):
     """Deterministic TOC: title heading, one '## 章' section per non-empty chapter, one link
     per entry. mistakes/index.md additionally joins each entry to its study_state mistake
     row by id and appends the status (rendered in the pack language)."""
     lines = [i18n.msg(title_msgid, lang), ""]
-    for num, fname, blocks in chapters:
+    for num, fname, blocks, pre in chapters:
         if not blocks:
             continue
         lines.append("## " + i18n.msg("notebook.chapter_heading", lang, num=num))
         lines.append("")
-        for b in blocks:
+        for b, anchor in zip(blocks, anchors_for(pre, blocks)):
             # 链接文字里的 [] 会破坏 md 链接结构——换全角括号（标题原文在章文件里，无损）
             text = b["title"].replace("[", "〔").replace("]", "〕")
-            line = "- [%s](%s#%s)" % (text, fname, entry_anchor(b["id"], b["title"]))
+            line = "- [%s](%s#%s)" % (text, fname, anchor)
             if status_map and b["id"] in status_map:
                 code = i18n.canon_row_status(status_map[b["id"]])
                 line += " " + i18n.msg("mistakes.status_suffix", lang,
@@ -330,20 +360,28 @@ def _read_body():
     return body
 
 
-def _upsert(ws, dirname, ch_name, eid, title, new_lines):
-    """Replace-or-append the entry block in <dirname>/<ch_name>; returns the new content."""
+def _upsert(ws, dirname, ch_name, eid, title, new_lines, etype):
+    """Replace-or-append the entry block in <dirname>/<ch_name>.
+    替换键 = (id, type)（Codex r4）：同题先精讲再判分是契约规定的正常流——只按 id 匹配会让
+    feedback 静默删掉学生的 walkthrough。类型从块元行反解（zh/en 标签都认）；无元行的手写块
+    视为独立类型，永不被官方写入覆盖。Returns (path, new_content, pre, blocks, idx)."""
     d = _guard_dir(ws, dirname, create=True)
     path = os.path.join(d, ch_name)
     pre, blocks = ([], [])
     if os.path.lexists(path):
         pre, blocks = parse_chapter(_read_regular(path))
-    for b in blocks:
-        if b["id"] == eid:      # 同章同 id = 同一条目：原地替换（幂等重讲），不追加副本
+    rev = _label_to_type()
+    idx = None
+    for i, b in enumerate(blocks):
+        b_type = rev.get(_block_meta(b["lines"])[0])
+        if b["id"] == eid and b_type == etype:   # 同章同 id 同类型 = 同一条目：原地替换（幂等重讲）
             b["lines"], b["title"] = list(new_lines), title
+            idx = i
             break
-    else:
+    if idx is None:
         blocks.append({"id": eid, "title": title, "lines": list(new_lines)})
-    return path, render_chapter(pre, blocks)
+        idx = len(blocks) - 1
+    return path, render_chapter(pre, blocks), pre, blocks, idx
 
 
 def cmd_add_entry(ws, args):
@@ -362,7 +400,8 @@ def cmd_add_entry(ws, args):
     ch_name = "ch%02d.md" % args.chapter
 
     plan, overrides = [], {ch_name: None}
-    nb_path, nb_content = _upsert(ws, NOTEBOOK_DIR, ch_name, eid, title, new_lines)
+    nb_path, nb_content, nb_pre, nb_blocks, nb_idx = _upsert(
+        ws, NOTEBOOK_DIR, ch_name, eid, title, new_lines, args.type)
     overrides[ch_name] = nb_content
     plan.append((nb_path, nb_content))
     # 目录与章文件同一原子计划：目录由（含本次改动的）全部章文件确定性重建
@@ -370,13 +409,15 @@ def cmd_add_entry(ws, args):
                             _collect(ws, NOTEBOOK_DIR, overrides), lang)
     plan.append((os.path.join(ws, NOTEBOOK_DIR, INDEX_NAME), nb_index))
     if args.mistake:
-        mi_path, mi_content = _upsert(ws, MISTAKES_DIR, ch_name, eid, title, new_lines)
+        mi_path, mi_content, _p, _b, _i = _upsert(
+            ws, MISTAKES_DIR, ch_name, eid, title, new_lines, args.type)
         plan.append((mi_path, mi_content))
         mi_index = render_index("mistakes.index_title",
                                 _collect(ws, MISTAKES_DIR, {ch_name: mi_content}), lang,
                                 status_map=_mistake_status_map(state))
         plan.append((os.path.join(ws, MISTAKES_DIR, INDEX_NAME), mi_index))
-    anchor = entry_anchor(eid, title)
+    # 回执必须给条目的**实际**锚（重复 slug 时 GitHub 加 -N 后缀）——小抄溯源链接照抄回执即合法
+    anchor = anchors_for(nb_pre, nb_blocks)[nb_idx]
     _save_files(plan, "add-entry：%s/%s#%s（%s）%s｜ index.md 已重建"
                 % (NOTEBOOK_DIR, ch_name, anchor, label,
                    "＋镜像 %s/%s " % (MISTAKES_DIR, ch_name) if args.mistake else ""))
@@ -401,9 +442,9 @@ def cmd_rebuild(ws, args):
 def cmd_list(ws, args):
     rev = _label_to_type()
     mistake_ids = {(num, b["id"])
-                   for num, _f, blocks in _collect(ws, MISTAKES_DIR) for b in blocks}
+                   for num, _f, blocks, _p in _collect(ws, MISTAKES_DIR) for b in blocks}
     entries = []
-    for num, fname, blocks in _collect(ws, NOTEBOOK_DIR):
+    for num, fname, blocks, _pre in _collect(ws, NOTEBOOK_DIR):
         for b in blocks:
             label, ts = _block_meta(b["lines"])
             entries.append({

@@ -479,7 +479,13 @@ def _migrate_enums(ws, st):
     if changed:
         src = os.path.join(ws, STATE_NAME)
         bak = src + ".v3bak"
-        if os.path.isfile(src) and not os.path.exists(bak):
+        # 断链的 .v3bak 符号链接会让 exists() 判 False、随后 open("w") 顺着链接把学生进度
+        # 写到工作区外（Codex r4）——与 save() 的 tmp 同款纪律：islink 先整体拒绝（不写任何
+        # 字节，要求人工清理）；「已备份过」的跳过判断用 lexists（链接也算占位，绝不顺链写）
+        if os.path.islink(bak):
+            _die("检测到符号链接备份文件 %s——可能指向工作区外，拒绝写入（请手动清理后重试）"
+                 % bak, 1)
+        if os.path.isfile(src) and not os.path.lexists(bak):
             try:
                 with open(src, "r", encoding="utf-8") as f:
                     old = f.read()

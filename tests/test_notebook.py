@@ -95,24 +95,62 @@ class AddEntryBasics(unittest.TestCase):
             self.assertIn("## [#hw3_1] hw3_1", ch)      # --title 缺省 = id
             self.assertIn("(ch07.md#hw3_1-hw3_1)", read(ws, "notebook", "index.md"))
 
-    def test_replace_same_id_is_idempotent_and_refreshes_meta(self):
+    def test_replace_keyed_on_id_and_type(self):
+        # Codex r4：替换键 = (id, type)。同 id 同 type 幂等替换；同 id 异 type（先精讲后判分，
+        # 契约规定的正常流）必须追加——旧的 id-only 匹配会让判分静默删掉学生的精讲。
         with tempfile.TemporaryDirectory() as ws:
             self.assertEqual(add(ws, 2, "q13", "第一版正文", "--title", "旧标题").returncode, 0)
-            r = run_nb(ws, "add-entry", "--chapter", "2", "--type", "feedback",
+            r = run_nb(ws, "add-entry", "--chapter", "2", "--type", "walkthrough",
                        "--id", "q13", "--title", "第二版标题", stdin="第二版正文")
             self.assertEqual(r.returncode, 0, r.stderr)
             ch = read(ws, "notebook", "ch02.md")
-            self.assertEqual(ch.count("## [#q13]"), 1, "同章同 id 必须原地替换不追加:\n" + ch)
+            self.assertEqual(ch.count("## [#q13]"), 1, "同章同 id 同 type 必须原地替换:\n" + ch)
             self.assertIn("第二版正文", ch)
             self.assertNotIn("第一版正文", ch)
-            self.assertIn("> 判分 · ", ch)              # 元行随替换刷新（类型+时间戳）
-            self.assertNotIn("精讲", ch)
             idx = read(ws, "notebook", "index.md")
             self.assertIn("第二版标题", idx)
             self.assertNotIn("旧标题", idx)
+            # 同 id 异 type：追加，精讲不丢
+            r2 = run_nb(ws, "add-entry", "--chapter", "2", "--type", "feedback",
+                        "--id", "q13", "--title", "判分记录", stdin="答对了")
+            self.assertEqual(r2.returncode, 0, r2.stderr)
+            ch = read(ws, "notebook", "ch02.md")
+            self.assertEqual(ch.count("## [#q13]"), 2,
+                             "同 id 异 type 必须追加，判分不得覆盖精讲:\n" + ch)
+            self.assertIn("第二版正文", ch, "精讲正文必须存活")
+            self.assertIn("> 精讲 · ", ch)
+            self.assertIn("> 判分 · ", ch)
             lst = json.loads(run_nb(ws, "list", "--json").stdout)
-            self.assertEqual(len(lst["entries"]), 1)
-            self.assertEqual(lst["entries"][0]["type"], "feedback")
+            self.assertEqual(len(lst["entries"]), 2)
+            self.assertEqual({e["type"] for e in lst["entries"]}, {"walkthrough", "feedback"})
+            # 同 (id,type) 再替换仍幂等
+            r3 = run_nb(ws, "add-entry", "--chapter", "2", "--type", "feedback",
+                        "--id", "q13", "--title", "判分记录", stdin="部分正确")
+            self.assertEqual(r3.returncode, 0, r3.stderr)
+            ch = read(ws, "notebook", "ch02.md")
+            self.assertEqual(ch.count("## [#q13]"), 2)
+            self.assertIn("部分正确", ch)
+            self.assertNotIn("答对了", ch)
+
+    def test_duplicate_slug_anchors_match_validator_semantics(self):
+        # Codex r4：同 slug 的第二个标题 GitHub 加 -1 后缀——目录与回执必须给实际锚。
+        # 口径基准 = validate_workspace._md_anchors（notebook 计算的锚必须落在该集合里）。
+        sys.path.insert(0, os.path.join(ROOT, "scripts"))
+        import validate_workspace as V
+        with tempfile.TemporaryDirectory() as ws:
+            r1 = run_nb(ws, "add-entry", "--chapter", "3", "--type", "walkthrough",
+                        "--id", "q1", "--title", "同名", stdin="第一条")
+            r2 = run_nb(ws, "add-entry", "--chapter", "3", "--type", "feedback",
+                        "--id", "q1", "--title", "同名", stdin="第二条")
+            self.assertEqual((r1.returncode, r2.returncode), (0, 0), r1.stderr + r2.stderr)
+            idx = read(ws, "notebook", "index.md")
+            self.assertIn("(ch03.md#q1-同名)", idx)
+            self.assertIn("(ch03.md#q1-同名-1)", idx, "重复 slug 的第二条必须带 -1 后缀:\n" + idx)
+            # 回执打印的锚 = 实际锚（-1 后缀）
+            self.assertIn("#q1-同名-1", r2.stdout, "回执必须给实际锚: " + r2.stdout)
+            anchors = V._md_anchors(os.path.join(ws, "notebook", "ch03.md"))
+            self.assertIn("q1-同名", anchors)
+            self.assertIn("q1-同名-1", anchors, "notebook 锚必须与 validator 口径一致")
 
     def test_replace_in_middle_preserves_neighbors_and_order(self):
         with tempfile.TemporaryDirectory() as ws:

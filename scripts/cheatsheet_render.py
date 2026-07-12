@@ -43,6 +43,15 @@ def _die(msg, code=2):
     raise SystemExit(code)
 
 
+def _assert_contained(ws, path, name):
+    """realpath 归属校验（retrieve.py / select_hard_questions.py 同款）：
+    经符号链接 / 父目录逃出工作区的输入一律拒绝。"""
+    ws_real = os.path.normcase(os.path.realpath(ws))
+    real = os.path.normcase(os.path.realpath(path))
+    if real != ws_real and not real.startswith(ws_real + os.sep):
+        _die("%s 经符号链接 / 父目录逃出工作区——拒绝读取" % name)
+
+
 # ---------------- tiny md subset → html (the compiler controls the input dialect) ----------------
 
 _INLINE = [
@@ -240,8 +249,13 @@ def main(argv=None):
 
     ws = os.path.abspath(args.workspace)
     md_path = os.path.join(ws, MD_NAME)
+    # 输入不得是符号链接（Codex r4）：isfile 会顺着链接把工作区外的文件当小抄渲染出去——
+    # 与 retrieve.py / select_hard_questions.py 同口径：islink 先拒 + realpath 归属校验
+    if os.path.islink(md_path):
+        _die("%s 是符号链接——可能指向工作区外，拒绝读取（请替换为真实文件）" % MD_NAME)
     if not os.path.isfile(md_path):
         _die("找不到 %s——先让 exam-cheatsheet 编译出小抄，再来渲染" % MD_NAME)
+    _assert_contained(ws, md_path, MD_NAME)
     with open(md_path, "r", encoding="utf-8") as f:
         md = f.read()
     total = len(re.sub(r"\s+", "", md))
@@ -259,10 +273,21 @@ def main(argv=None):
 
     browser = None if args.html_only else find_browser()
     font_locked = bool(args.font_size)                  # 显式 --font-size = 手动调字号，拟合环不许再动
+    tmp = html_path + ".tmp"
     for attempt in range(4):                            # fit loop: nudge font vs actual pages
-        tmp = html_path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(render_html(md, font, cols, args.margin_mm))
+        # 可预测的 tmp 路径可能被预植符号链接（Codex r4）：open("w") 会顺链写到工作区外，
+        # os.replace 再把链接顶到 cheatsheet.html 上。先 lexists 清掉（断链也逃不过），
+        # 再以 "x" 独占创建——竞态重植时 FileExistsError 直接 fail-loud，绝不顺链写
+        if os.path.lexists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError as e:
+                _die("无法清理残留临时文件 %s（%s）——拒绝写入，请手动清理后重试" % (tmp, e), 1)
+        try:
+            with open(tmp, "x", encoding="utf-8") as f:
+                f.write(render_html(md, font, cols, args.margin_mm))
+        except FileExistsError:
+            _die("临时文件 %s 在清理后被重新创建（疑似并发或劫持）——拒绝写入" % tmp, 1)
         os.replace(tmp, html_path)                      # 原子落盘，与 update_progress 同惯例
         if args.html_only or not browser:
             break
@@ -284,8 +309,19 @@ def main(argv=None):
     if args.html_only:
         return 0
     if not browser:
+        stale = ""
+        # 降级路径的陈旧 PDF（Codex r4）：上次渲染留下的 cheatsheet.pdf 会挨着新 HTML 冒充
+        # 本次产出被学生拿去打印——lexists 连符号链接一起清掉，并在降级信息里明说
+        if os.path.lexists(pdf_path):
+            try:
+                os.remove(pdf_path)
+            except OSError as e:
+                _die("无法移除过期的 cheatsheet.pdf（%s）——旧产物会冒充本次渲染，"
+                     "请手动清理后重试" % e, 1)
+            stale = "；已移除过期的 cheatsheet.pdf（它不是本次产物）"
         sys.stderr.write("cheatsheet_render: no_browser: 本机未找到 Edge/Chrome——已生成 "
-                         "cheatsheet.html，请打开后 Ctrl+P 打印为 PDF（边距选默认、勾选背景图形）\n")
+                         "cheatsheet.html，请打开后 Ctrl+P 打印为 PDF（边距选默认、勾选背景图形）%s\n"
+                         % stale)
         raise SystemExit(3)
     got = pdf_page_count(pdf_path)
     print("[+] cheatsheet.pdf：%d 页（目标 %d 页%s）"
