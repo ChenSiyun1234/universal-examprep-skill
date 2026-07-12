@@ -26,6 +26,7 @@ import i18n
 SUBJECT_TOKEN = "《科目名称》"               # 模板中待替换的科目占位符
 PHASE_TABLE_MARKER = "<!-- PHASE_TABLE -->"        # study_plan 模板里表格插入点
 PHASE_CHECKLIST_MARKER = "<!-- PHASE_CHECKLIST -->"  # study_progress 模板里打卡列表插入点
+LANGUAGE_MARKER = "<!-- LANGUAGE -->"              # 显式 --lang 时替换为语言代号，否则整行移除
 SAFE_FILENAME = re.compile(r"^[\w.\-]+\.md$")      # 仅允许不含路径的 *.md 文件名
 VALID_QUIZ_TYPES = {"choice", "subjective", "diagram", "fill_blank", "true_false", "code"}
 
@@ -212,13 +213,16 @@ def main():
     parser.add_argument("--input", "-i", type=str, default="raw_input.json", help="input structured-outline JSON path")
     parser.add_argument("--output-dir", "-o", type=str, default=".", help="target workspace path (default: current directory)")
     parser.add_argument("--force", action="store_true", help="allow overwriting an existing study_progress.md (auto-backup first)")
-    parser.add_argument("--lang", type=str, default="zh",
+    parser.add_argument("--lang", type=str, default=None,
                         help="language pack for generated plan/progress files: zh or en "
                              "(aliases accepted via i18n.canon_language; default zh; "
-                             "missing en template files fall back to the zh pack)")
+                             "missing en template files fall back to the zh pack). When given "
+                             "EXPLICITLY it is also seeded into the progress file so "
+                             "update_progress init migrates it into study_state.language")
     args = parser.parse_args()
 
-    lang, lang_warn = i18n.canon_language(args.lang)
+    lang_explicit = args.lang is not None
+    lang, lang_warn = i18n.canon_language(args.lang or "zh")
     if lang not in ("zh", "en"):
         fail([lang_warn or f"--lang 仅支持 zh / en（当前为 {args.lang!r}）。"])
 
@@ -386,6 +390,14 @@ def main():
             markers=[PHASE_CHECKLIST_MARKER],
             lang=lang,
         )
+        # 语言持久化闭环（Codex r5）：显式 --lang 时把语言代号种进进度文件，update_progress init
+        # 迁移即得 study_state.language——否则 en 工作区 init 后 language=null，工具全回落 zh。
+        # 未显式给 --lang 则整行删除（不预占语言，留给合并首问决定——缺省英文政策不被预置 zh 顶掉）。
+        if lang_explicit:
+            prog_content = prog_content.replace(LANGUAGE_MARKER, lang)
+        else:
+            prog_content = "\n".join(l for l in prog_content.splitlines()
+                                     if LANGUAGE_MARKER not in l) + "\n"
         with open(progress_out_path, "w", encoding="utf-8") as prf:
             prf.write(prog_content)
         print("[+] 已生成: study_progress.md")

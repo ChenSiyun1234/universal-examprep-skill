@@ -114,8 +114,13 @@ def build_index(chunks):
 def load_terms(ws):
     """zh↔en glossary → symmetric expansion map token→set(tokens). Missing file = no expansion."""
     path = os.path.join(ws, TERMS_NAME)
+    # 与 retrieval_index.json 同一读入纪律（Codex r5）：符号链接/越界的术语表会把外部词汇
+    # 注进查询扩展（并经弃答 payload 泄出）——拒读，不静默当无术语表
+    if os.path.islink(path):
+        _die("terms.json 不得为符号链接（可能指向工作区外）——拒绝读取")
     if not os.path.isfile(path):
         return {}
+    _assert_contained(ws, path, "terms.json")
     try:
         with open(path, "r", encoding="utf-8") as f:
             raw = json.load(f)

@@ -58,27 +58,48 @@ _INLINE = [
     (re.compile(r"\*\*([^*]+)\*\*"), r"<strong>\1</strong>"),
     (re.compile(r"(?<!\*)\*([^*]+)\*(?!\*)"), r"<em>\1</em>"),
     (re.compile(r"`([^`]+)`"), r"<code>\1</code>"),
-    # 图片必须先于普通链接处理（Codex r2）：否则 ![题面图](references/assets/….png) 会被下一条
-    # 链接压平规则吃掉，打印版把依赖图的例题图丢了——恰恰违反小抄「图必须真展示」契约。
-    # 属性必须带引号转义（Codex r3）：alt 文本来自不受信材料，`x" onerror="…` 不转义就会
-    # 逃出属性成为真实事件处理器——用替换函数 + html.escape(quote=True) 构造标签。
-    # 注意 _inline 已对整行 escape(quote=False)（<>& 已转）——这里只需补转引号，避免 & 双重转义
-    (re.compile(r"!\[([^\]]*)\]\(([^)\s]+)\)"),
-     lambda m: '<img src="%s" alt="%s" style="max-width:100%%;max-height:60mm">'
-               % (m.group(2).replace('"', "&quot;").replace("'", "&#x27;"),
-                  m.group(1).replace('"', "&quot;").replace("'", "&#x27;"))),
     (re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)"), r'<span class="lnk">\1</span>'),  # print: no live links
 ]
 
 
-def _inline(s):
+_IMG_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)\)")
+
+
+def _img_tag(m, ws):
+    """图片必须先于普通链接处理（Codex r2），属性引号转义（r3），且 src 必须是工作区内的
+    真实相对文件（r5）——URL/绝对路径/.. 穿越/缺失文件一律 fail-closed：打印版要么真展示图，
+    要么大声失败，绝不静默丢图或让无头浏览器去加载工作区外资源/发网络请求。"""
+    alt, src = m.group(1), m.group(2)
+    plain = src.replace("&amp;", "&")          # 行先过了 escape(quote=False)，还原后再判语法
+    if "://" in plain:
+        _die("小抄图片不得用 URL（%s）——图片资产必须在工作区内（references/assets/）" % plain[:80], 1)
+    norm = plain.replace("\\", "/")
+    if norm.startswith("/") or (len(norm) >= 2 and norm[1] == ":"):
+        _die("小抄图片不得用绝对路径（%s）" % plain[:80], 1)
+    segs = [x for x in norm.split("/") if x not in ("", ".")]
+    if ".." in segs:
+        _die("小抄图片路径含 .. 穿越（%s）——拒绝渲染" % plain[:80], 1)
+    if ws is not None:
+        full = os.path.join(ws, *segs)
+        ws_real = os.path.normcase(os.path.realpath(ws))
+        real = os.path.normcase(os.path.realpath(full))
+        if real != ws_real and not real.startswith(ws_real + os.sep):
+            _die("小抄图片经符号链接逃出工作区（%s）——拒绝渲染" % plain[:80], 1)
+        if not os.path.isfile(full):
+            _die("小抄图片不存在：%s——fail-closed，请修正 cheatsheet.md 或补资产文件" % plain[:80], 1)
+    q = lambda x: x.replace('"', "&quot;").replace("'", "&#x27;")
+    return '<img src="%s" alt="%s" style="max-width:100%%;max-height:60mm">' % (q(src), q(alt))
+
+
+def _inline(s, ws=None):
     s = html_mod.escape(s, quote=False)
+    s = _IMG_RE.sub(lambda m: _img_tag(m, ws), s)
     for pat, rep in _INLINE:
         s = pat.sub(rep, s)
     return s
 
 
-def md_to_html_body(md):
+def md_to_html_body(md, ws=None):
     """Headings/lists/tables/hr/paragraphs — the documented subset the compiler emits."""
     out, in_ul, in_ol, in_table = [], False, False, False
 
@@ -103,7 +124,7 @@ def md_to_html_body(md):
         if m:
             close_lists()
             n = len(m.group(1))
-            out.append("<h%d>%s</h%d>" % (n, _inline(m.group(2)), n))
+            out.append("<h%d>%s</h%d>" % (n, _inline(m.group(2), ws), n))
             continue
         if re.match(r"^\s*(?:---+|\*\*\*+)\s*$", s):
             close_lists()
@@ -117,9 +138,9 @@ def md_to_html_body(md):
                 close_lists()
                 out.append('<table>')
                 in_table = True
-                out.append("<tr>" + "".join("<th>%s</th>" % _inline(c) for c in cells) + "</tr>")
+                out.append("<tr>" + "".join("<th>%s</th>" % _inline(c, ws) for c in cells) + "</tr>")
             else:
-                out.append("<tr>" + "".join("<td>%s</td>" % _inline(c) for c in cells) + "</tr>")
+                out.append("<tr>" + "".join("<td>%s</td>" % _inline(c, ws) for c in cells) + "</tr>")
             continue
         m = re.match(r"^\s*[-*]\s+(.*)$", s)
         if m:
@@ -128,7 +149,7 @@ def md_to_html_body(md):
             if not in_ul:
                 out.append("<ul>")
                 in_ul = True
-            out.append("<li>%s</li>" % _inline(m.group(1)))
+            out.append("<li>%s</li>" % _inline(m.group(1), ws))
             continue
         m = re.match(r"^\s*\d+[.)]\s+(.*)$", s)
         if m:
@@ -137,10 +158,10 @@ def md_to_html_body(md):
             if not in_ol:
                 out.append("<ol>")
                 in_ol = True
-            out.append("<li>%s</li>" % _inline(m.group(1)))
+            out.append("<li>%s</li>" % _inline(m.group(1), ws))
             continue
         close_lists()
-        out.append("<p>%s</p>" % _inline(s))
+        out.append("<p>%s</p>" % _inline(s, ws))
     close_lists()
     return "\n".join(out)
 
@@ -163,10 +184,10 @@ def pick_font(total_chars, pages):
     return FONT_MIN, 3
 
 
-def render_html(md, font_pt, columns, margin_mm=MIN_MARGIN_MM, title="Cheatsheet"):
+def render_html(md, font_pt, columns, margin_mm=MIN_MARGIN_MM, title="Cheatsheet", ws=None):
     if margin_mm < MIN_MARGIN_MM:
         margin_mm = MIN_MARGIN_MM                      # hard floor — printers eat edges
-    body = md_to_html_body(md)
+    body = md_to_html_body(md, ws)
     return """<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>%s</title>
 <style>
@@ -285,7 +306,7 @@ def main(argv=None):
                 _die("无法清理残留临时文件 %s（%s）——拒绝写入，请手动清理后重试" % (tmp, e), 1)
         try:
             with open(tmp, "x", encoding="utf-8") as f:
-                f.write(render_html(md, font, cols, args.margin_mm))
+                f.write(render_html(md, font, cols, args.margin_mm, ws=ws))
         except FileExistsError:
             _die("临时文件 %s 在清理后被重新创建（疑似并发或劫持）——拒绝写入" % tmp, 1)
         os.replace(tmp, html_path)                      # 原子落盘，与 update_progress 同惯例

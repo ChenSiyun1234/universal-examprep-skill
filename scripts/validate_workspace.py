@@ -124,15 +124,12 @@ def _md_anchors(path):
     headings get the -1/-2 suffixes GitHub assigns). Covers both notebook entry headings
     （`## [#<id>] <title>` → github_slug 后正是 notebook.entry_anchor 的锚）and hand-written
     plain `#`-headings, so a cheatsheet 溯源链接的 #锚点 能被逐一核实而不是被丢弃。"""
-    anchors, counts, fence = set(), {}, 0
+    anchors, counts, fence = set(), {}, None
     with open(path, "r", encoding="utf-8") as f:
         for ln in f:
-            fm = re.match(r"^ {0,3}(`{3,}|~{3,})", ln)
-            if fm:
-                t = len(fm.group(1))
-                fence = 0 if (fence and t >= fence) else (fence or t)
-                continue
-            if fence:
+            # 围栏字符+长度都跟踪（Codex r5：反引号栏内的 ~~~ 是内容不是关栏）——与 notebook 同机
+            fence, marker = _notebook._fence_step(fence, ln)
+            if marker or fence is not None:
                 continue
             hm = re.match(r"^ {0,3}#{1,6}\s+(.*?)\s*$", ln)
             if not hm:
@@ -464,15 +461,13 @@ def validate(ws):
             err("cheatsheet.md 存在但无法读取")
         if cheat is not None:
             _SRC_LINK = re.compile(r"\]\(((?:notebook|mistakes)/[^)#\s]+|references/wiki/[^)#\s]+)(#[^)\s]*)?\)")
-            fence, n_bullets, bad = 0, 0, []
+            fence, n_bullets, bad = None, 0, []
             anchor_cache = {}    # rel → set(锚点) | None(目标不可读)；同文件多链接只读一次
             for i, ln in enumerate(cheat.splitlines(), 1):
-                fm = re.match(r"^\s*(`{3,})", ln)
-                if fm:
-                    t = len(fm.group(1))
-                    fence = 0 if (fence and t >= fence) else (fence or t)
+                fence, marker = _notebook._fence_step(fence, ln)   # 字符+长度（Codex r5）
+                if marker:
                     continue
-                if fence or not re.match(r"^- \S", ln):
+                if fence is not None or not re.match(r"^- \S", ln):
                     continue   # 只查顶层要点 bullet；围栏内示例/缩进子弹/标题不计
                 n_bullets += 1
                 links = _SRC_LINK.findall(ln)

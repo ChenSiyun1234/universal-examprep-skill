@@ -110,7 +110,7 @@ def parse_md(text):
             if pmatch:
                 preferences[pmatch.group(1).strip()] = pmatch.group(2).strip()
     prefs["preferences"] = preferences
-    lm = re.search(r"语言偏好\**\s*：\s*(.+)", t)
+    lm = re.search(r"(?:语言偏好|Language preference)\**\s*[：:]\s*(.+)", t, re.I)
     prefs["language"] = lm.group(1).strip() if lm else None
     mistakes, confusions, checklist, window = [], [], [], []
     cur, in_checklist, in_window, tbl_cols, window_cols = None, False, False, None, None

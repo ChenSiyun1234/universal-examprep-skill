@@ -162,20 +162,33 @@ def _resolve_lang(arg_lang, state):
 
 # ---------------- chapter-file parsing / rendering (fence-aware block model) ----------------
 
+def _fence_step(state, line):
+    """CommonMark 围栏状态机（Codex r5）：state = (字符, 长度) 或 None。反引号开的栏只有反引号
+    能关（`~~~` 在其中是内容）；关栏须同字符且长度 ≥ 开栏。返回 (new_state, is_marker_line)。"""
+    fm = _FENCE_RE.match(line)
+    if not fm:
+        return state, False
+    tick = fm.group(1)
+    ch, ln = tick[0], len(tick)
+    if state is None:
+        return (ch, ln), True
+    if ch == state[0] and ln >= state[1]:
+        return None, True
+    return state, False        # 异字符 / 更短 = 开栏内的内容行，不是围栏标记
+
+
 def parse_chapter(text):
     """→ (preamble_lines, [{id, title, lines}]) — blocks keyed by '## [#<id>]' markers.
     Fence-aware: a '## [#x]' line inside a fenced code block is CONTENT (stays in the
     current block), so bodies holding markdown examples never corrupt the block model.
     Preamble (hand-added prose above the first entry) is preserved verbatim on rewrite."""
-    pre, blocks, cur, fence = [], [], None, 0
+    pre, blocks, cur, fence = [], [], None, None
     for line in (text or "").splitlines():
-        fm = _FENCE_RE.match(line)
-        if fm:
-            t = len(fm.group(1))
-            fence = 0 if (fence and t >= fence) else (fence or t)
+        fence, marker = _fence_step(fence, line)
+        if marker:
             (cur["lines"] if cur else pre).append(line)
             continue
-        if fence == 0:
+        if fence is None:
             hm = _HEAD_RE.match(line)
             if hm:
                 cur = {"id": hm.group(1), "title": hm.group(2).strip() or hm.group(1),
@@ -221,14 +234,12 @@ def make_entry_lines(eid, title, type_label, ts, body):
 def _block_meta(lines):
     """(type_label, timestamp) from a block's meta line, fence-aware; (None, None) if absent
     (hand-written blocks are legal notebook citizens — they list/index fine without meta)."""
-    fence = 0
+    fence = None
     for line in lines[1:]:
-        fm = _FENCE_RE.match(line)
-        if fm:
-            t = len(fm.group(1))
-            fence = 0 if (fence and t >= fence) else (fence or t)
+        fence, marker = _fence_step(fence, line)
+        if marker:
             continue
-        if fence == 0:
+        if fence is None:
             m = _META_RE.match(line)
             if m:
                 return m.group(1), m.group(2)
@@ -288,27 +299,33 @@ _PRE_HEADING_RE = re.compile(r"^ {0,3}#{1,6}\s+(.*?)\s*$")
 
 
 def anchors_for(pre, blocks):
-    """每个条目块的**实际** GitHub 锚（Codex r4）：同 slug 的第二个标题起 GitHub 会加 -1/-2
-    后缀，目录/回执若一律用裸 slug，重复 slug 的条目会全部跳到第一个。计数口径与
-    validate_workspace._md_anchors 完全一致——前言里的普通标题也参与计数（fence-aware）。"""
-    counts, fence = {}, 0
+    """每个条目块的**实际** GitHub 锚（Codex r4/r5）：GitHub 对**文件里全部标题**按出现顺序
+    计数，同 slug 第二个起加 -1/-2 后缀——前言标题、条目标题、**条目正文里的标题**都参与
+    （正文含 `### [#q2] Second` 时，后面真正的 q2 条目锚是 `…-1`）。计数口径与
+    validate_workspace._md_anchors 完全一致（fence-aware，围栏字符+长度都跟踪）。"""
+    counts = {}
+    fence = None
+
+    def _feed(line):
+        nonlocal fence
+        fence, marker = _fence_step(fence, line)
+        if marker or fence is not None:
+            return
+        m = _PRE_HEADING_RE.match(line)
+        if m:
+            slug = github_slug(m.group(1))
+            counts[slug] = counts.get(slug, 0) + 1
+
     for line in pre:
-        fm = _FENCE_RE.match(line)
-        if fm:
-            t = len(fm.group(1))
-            fence = 0 if (fence and t >= fence) else (fence or t)
-            continue
-        if fence == 0:
-            m = _PRE_HEADING_RE.match(line)
-            if m:
-                slug = github_slug(m.group(1))
-                counts[slug] = counts.get(slug, 0) + 1
+        _feed(line)
     out = []
     for b in blocks:
         slug = entry_anchor(b["id"], b["title"])
         n = counts.get(slug, 0)
         counts[slug] = n + 1
         out.append(slug if n == 0 else "%s-%d" % (slug, n))
+        for line in b["lines"][1:]:        # 正文标题按序参与后续计数（条目标题行本身已计）
+            _feed(line)
     return out
 
 
@@ -346,16 +363,14 @@ def _read_body():
         _die("正文为空——add-entry 的正文走 STDIN（UTF-8）；空条目拒绝写入（不要静默记录空讲解）")
     # 正文里裸露的条目标题行会把本条目从中间劈开（回读时被当成新块边界）；
     # 未闭合围栏会把后续条目整个吞进围栏——两种都在写入前拒绝，保住章文件永远可解析
-    fence = 0
+    fence = None
     for line in body.splitlines():
-        fm = _FENCE_RE.match(line)
-        if fm:
-            t = len(fm.group(1))
-            fence = 0 if (fence and t >= fence) else (fence or t)
+        fence, marker = _fence_step(fence, line)
+        if marker:
             continue
-        if fence == 0 and _HEAD_RE.match(line):
+        if fence is None and _HEAD_RE.match(line):
             _die("正文包含裸露的条目标记行 %r——会破坏章文件解析；请放进 ``` 围栏再提交" % line)
-    if fence:
+    if fence is not None:
         _die("正文的代码围栏未闭合——会把后续条目吞进围栏；请补齐 ``` 再提交")
     return body
 
@@ -444,8 +459,9 @@ def cmd_list(ws, args):
     mistake_ids = {(num, b["id"])
                    for num, _f, blocks, _p in _collect(ws, MISTAKES_DIR) for b in blocks}
     entries = []
-    for num, fname, blocks, _pre in _collect(ws, NOTEBOOK_DIR):
-        for b in blocks:
+    for num, fname, blocks, pre in _collect(ws, NOTEBOOK_DIR):
+        # anchor 必须是重复后缀调整后的**实际**锚（Codex r5）——裸 slug 会让同名条目全跳到第一条
+        for b, anchor in zip(blocks, anchors_for(pre, blocks)):
             label, ts = _block_meta(b["lines"])
             entries.append({
                 "chapter": num,
@@ -454,7 +470,7 @@ def cmd_list(ws, args):
                 "type": rev.get(label, label),
                 "time": ts,
                 "file": NOTEBOOK_DIR + "/" + fname,
-                "anchor": entry_anchor(b["id"], b["title"]),
+                "anchor": anchor,
                 "mistake": (num, b["id"]) in mistake_ids,
             })
     if args.json:
