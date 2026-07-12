@@ -49,6 +49,10 @@ _INLINE = [
     (re.compile(r"\*\*([^*]+)\*\*"), r"<strong>\1</strong>"),
     (re.compile(r"(?<!\*)\*([^*]+)\*(?!\*)"), r"<em>\1</em>"),
     (re.compile(r"`([^`]+)`"), r"<code>\1</code>"),
+    # 图片必须先于普通链接处理（Codex r2）：否则 ![题面图](references/assets/….png) 会被下一条
+    # 链接压平规则吃掉，打印版把依赖图的例题图丢了——恰恰违反小抄「图必须真展示」契约。
+    (re.compile(r"!\[([^\]]*)\]\(([^)\s]+)\)"),
+     r'<img src="\2" alt="\1" style="max-width:100%;max-height:60mm">'),
     (re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)"), r'<span class="lnk">\1</span>'),  # print: no live links
 ]
 

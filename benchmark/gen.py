@@ -102,7 +102,12 @@ def parse_stream_events(stdout_text):
             for block in (ev.get("message") or {}).get("content") or []:
                 if block.get("type") == "tool_use" and block.get("name") in ("Read", "Glob", "Grep"):
                     inp = block.get("input") or {}
-                    for k in ("file_path", "path", "pattern"):
+                    # Grep 的 pattern 是内容搜索正则、不是路径——记进 files_opened 会让
+                    # retrieval_eval 把 "lecture02" 这类搜索词当成「翻开了第 2 章」，虚标
+                    # recall（Codex r2）。Glob 的 pattern 才是路径面；Grep 只记 path 过滤器。
+                    keys = {"Read": ("file_path",), "Glob": ("pattern", "path"),
+                            "Grep": ("path",)}[block["name"]]
+                    for k in keys:
                         v = inp.get(k)
                         if isinstance(v, str) and v and v not in seen:
                             seen.add(v)

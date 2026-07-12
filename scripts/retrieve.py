@@ -48,6 +48,24 @@ def _die(msg, code=2):
     raise SystemExit(code)
 
 
+# 查询侧停用词（Codex r2 P1）：纯英文功能词的重合不算「材料覆盖」——否则
+# "What is the capital of France?" 靠 is/the/of 就能在任何英文材料上凑出正分，弃答门限形同虚设。
+# 只滤查询侧：旧/新索引都零迁移；真实内容词照常检索。zh 走字 bigram（双字组合本身携带内容），
+# 不设 zh 停用词——zh 越界问题由「信息词无命中 → 零命中 → 弃答」兜底。
+_QUERY_STOPWORDS = frozenset(
+    "a an the is are was were be been being am do does did doing have has had having will would "
+    "shall should can could may might must of in on at by for with about against between into "
+    "through to from up down out off over under again and or but not no nor so than too very "
+    "what which who whom whose when where why how this that these those it its he she they them "
+    "him his her hers their theirs you your yours we our ours i me my mine us if as then there "
+    "here also just please tell say says said give gives show shows explain define describe".split())
+
+
+def informative_terms(tokens):
+    """查询 token 中的信息词（滤英文功能词；CJK bigram 与技术词原样保留）。"""
+    return [t for t in tokens if t not in _QUERY_STOPWORDS]
+
+
 def tokenize(text):
     """ASCII → lowercased word tokens; each CJK run → character bigrams (unigram if length 1).
     Deterministic and language-mixed-safe: '什么是Word-RAM模型' → ['什么','么是',...,'word-ram',...]."""
@@ -183,8 +201,9 @@ def _snippet(ws, doc, q_tokens, width=240):
 
 def search(ws, index, query, top_k=DEFAULT_TOP_K, min_score=0.0):
     exp = load_terms(ws)
-    q_tokens = expand_query(tokenize(query), exp)
+    q_tokens = expand_query(informative_terms(tokenize(query)), exp)
     if not q_tokens:
+        # 查询里没有任何信息词（全是英文功能词）——不允许功能词重合冒充「材料覆盖」，走弃答
         return [], q_tokens
     scores = bm25_scores(index, q_tokens)
     ranked = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))[:max(1, top_k)]

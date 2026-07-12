@@ -84,6 +84,19 @@ def validate(data):
             val = p.get(key)
             if val is None or (isinstance(val, str) and not val.strip()):
                 errors.append(f"第 {idx} 个阶段缺少字段「{key}」。")
+        # phase_num 在校验期就规范化成正整数（手写/LLM 生成的 JSON 常给 "1" 字符串）——
+        # 否则要到写盘中途的 chunk id 格式化才 TypeError，留下残缺工作区（Codex r2）。
+        pn = p.get("phase_num")
+        if pn is not None:
+            if isinstance(pn, bool) or not isinstance(pn, (int, str)):
+                errors.append(f"第 {idx} 个阶段的 phase_num 必须是正整数（当前 {pn!r}）。")
+            elif isinstance(pn, str):
+                if pn.strip().isdigit() and int(pn.strip()) >= 1:
+                    p["phase_num"] = int(pn.strip())
+                else:
+                    errors.append(f"第 {idx} 个阶段的 phase_num 必须是正整数（当前 {pn!r}）。")
+            elif pn < 1:
+                errors.append(f"第 {idx} 个阶段的 phase_num 必须 ≥1（当前 {pn}）。")
         # 文件名安全 + 去重（防止 ../ 越界写盘或互相覆盖）
         fn = p.get("wiki_filename")
         if isinstance(fn, str) and fn.strip():

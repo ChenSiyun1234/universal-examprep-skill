@@ -19,7 +19,7 @@ The last-hour-before-the-exam quick-recall cheat sheet: four fixed sections, rep
 - ...
 ```
 
-The code block above is only a **layout example** — when writing the real `cheatsheet.md`, image lines must be actual Markdown images (workspace-relative paths, so the student sees the figure the moment the md is opened); writing the path as plain text does not count as showing it, and if the figure cannot be embedded, swap to a self-contained item. Every bullet ends with a source arrow (e.g. `[→](mistakes/ch02.md#q13)`) that jumps back to the mistake notebook / notebook / wiki original.
+The code block above is only a **layout example** — when writing the real `cheatsheet.md`, image lines must be actual Markdown images (workspace-relative paths, so the student sees the figure the moment the md is opened); writing the path as plain text does not count as showing it, and if the figure cannot be embedded, swap to a self-contained item. Every bullet ends with a source arrow (e.g. `[→](mistakes/ch02.md#q13-venn-diagram-shading)`) that jumps back to the mistake notebook / notebook / wiki original — the anchor must be the REAL one printed by the `notebook.py add-entry` receipt (it includes the title slug; a bare `#q13` is a dead anchor the validator rejects).
 
 Delivery phrasing (after compile + render):
 
