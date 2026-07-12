@@ -123,6 +123,8 @@ The skill adapts how deep it teaches, how fast, and whether it asks you question
 
 Download `universal-exam-cram-coach.zip` from the [latest release](https://github.com/ZeKaiNie/universal-examprep-skill/releases/latest) and unzip it into `.claude/skills/universal-exam-cram-coach/` (project-local or global `~/.claude/skills/`).
 
+No dependencies to install up front — the core is pure stdlib. If your materials include PDFs, the agent runs the bundled dependency preflight (`scripts/check_deps.py`) at setup and offers the exact one-line install **before** starting, so nothing fails mid-build.
+
 **Or clone the repo** (developer path — brings benchmark/tests along, ~3.4 MB):
 
 ```bash

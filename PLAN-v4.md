@@ -166,6 +166,8 @@ universal-examprep-skill/
 
 ### 2.6 分发（G6）
 
+**依赖预检清单（执行期新增，用户反馈：装好后一跑才发现缺库）**：`scripts/check_deps.py` 是可选依赖的唯一清单+探测器（PDF 文本后端 / PyMuPDF 渲染 / 本机浏览器），exam-ingest Workflow 第 0 步强制预检——按材料实际内容判定「需要/暂不需要/可选降级」，缺了就给出精确安装命令并一句话征询学生同意后由智能体代装（绝不静默装、绝不等运行时炸）。清单只此一处，技能文本仅指向工具，防两处漂移。
+
 三层递进，互不排斥：
 
 1. **立即做（一次性小改）**：加 `.gitattributes` 对 benchmark/ tests/ spike/ assets/ .github/ 标 `export-ignore` → GitHub 自动源码 zip 直接瘦成运行时体积，零工具成本；

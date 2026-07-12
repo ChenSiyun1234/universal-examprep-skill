@@ -123,6 +123,8 @@ git clone https://github.com/ZeKaiNie/universal-examprep-skill .claude/skills/un
 
 到[最新 release](https://github.com/ZeKaiNie/universal-examprep-skill/releases/latest) 下载 `universal-exam-cram-coach.zip`，解压到 `.claude/skills/universal-exam-cram-coach/`（项目内或全局 `~/.claude/skills/` 均可）。
 
+无需预装任何依赖——核心是纯标准库。材料里有 PDF 时，智能体会在建库**之前**运行自带的依赖预检（`scripts/check_deps.py`），把需要的安装命令一次性问清装好，绝不中途报错。
+
 **或克隆整仓**（开发者路径，约 3.4 MB）：
 
 ```bash
