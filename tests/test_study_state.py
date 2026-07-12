@@ -1539,5 +1539,107 @@ class WorkspaceRegistry(unittest.TestCase):
         self.assertIn("--workspace", r.stderr)
 
 
+class EnTemplateMigration(unittest.TestCase):
+    """Codex 评审回归：`ingest --lang en` 建出的英文进度模板跑 `init` 迁移时，
+    英文表头行（"| Mistake ID | Chapter | … |"）绝不能被当成真实错题/疑难行迁进 state，
+    英文打卡区（check-in）与断点（Phase 1）也要照常解析。"""
+
+    RAW_EN = {
+        "course_name": "Data Structures",
+        "phases": [
+            {"phase_num": 1, "phase_name": "Linear lists", "wiki_filename": "ch1_linear.md",
+             "wiki_content": "# Linear lists\n\n## Linked list\nAccess cost is O(n)."},
+            {"phase_num": 2, "phase_name": "Sorting", "wiki_filename": "ch2_sort.md",
+             "wiki_content": "# Sorting\n\n## Merge sort\nStable, O(n log n)."},
+        ],
+        "quiz_bank": [
+            {"id": "q1", "phase": 1, "type": "choice", "question": "Linked-list access cost?",
+             "options": ["O(1)", "O(n)"], "answer": "O(n)", "source": "teacher"},
+        ],
+    }
+
+    def _build_en_ws(self):
+        tmp = tempfile.mkdtemp(prefix="enws_")
+        self.addCleanup(__import__("shutil").rmtree, tmp, ignore_errors=True)
+        raw_path = os.path.join(tmp, "raw_input.json")
+        with open(raw_path, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(self.RAW_EN, f, ensure_ascii=False)
+        ws = os.path.join(tmp, "ws")
+        r = subprocess.run([sys.executable, os.path.join(SCRIPTS, "ingest.py"),
+                            "--input", raw_path, "--output-dir", ws, "--lang", "en"],
+                           capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return ws
+
+    def test_en_init_does_not_ingest_header_rows(self):
+        ws = self._build_en_ws()
+        r = _up(ws, ["init"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        st = _state(ws)
+        # 英文表头行/占位不是条目——迁移后档案必须是空的（回归：{id:"Mistake ID"} 假行）
+        self.assertEqual(st["mistake_archive"], [], st["mistake_archive"])
+        self.assertEqual(st["confusion_log"], [], st["confusion_log"])
+        # 断点解析：模板断点行 "Current phase: Phase 1: …" → current_phase=1
+        self.assertEqual(st["current_phase"], 1)
+        # 打卡区（"Knowledge-point check-in status"）被识别：2 阶段 + Mock test + Pitfall sweep
+        texts = [row["text"] for row in st["phase_checklist"]]
+        self.assertEqual(len(texts), 4, texts)
+        self.assertTrue(any("Phase 1" in t for t in texts), texts)
+        self.assertTrue(all(not row["done"] for row in st["phase_checklist"]))
+        # 打卡区没被表头行污染
+        self.assertFalse(any("Mistake ID" in t or "Trouble spot" in t for t in texts), texts)
+
+    def test_en_workspace_add_mistake_render_roundtrip_stays_clean(self):
+        ws = self._build_en_ws()
+        self.assertEqual(_up(ws, ["init"]).returncode, 0)
+        r = _up(ws, ["add-mistake", "--id", "q1", "--chapter", "1", "--note", "picked O(1)"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(_up(ws, ["render"]).returncode, 0)
+        r2 = _up(ws, ["init", "--force"])                          # 生成视图迁回 state 的恢复路径
+        self.assertEqual(r2.returncode, 0, r2.stderr)
+        st = _state(ws)
+        self.assertEqual(len(st["mistake_archive"]), 1, st["mistake_archive"])
+        self.assertEqual(st["mistake_archive"][0]["id"], "q1")
+        self.assertEqual(st["confusion_log"], [])                  # 往返不长出幽灵行
+        self.assertEqual(len(st["phase_checklist"]), 4)
+
+    def test_en_confusion_and_window_headings_recognized(self):
+        # 手写英文进度文件：trouble-spot 表行归疑难档、Knowledge window 区行归窗口档
+        md = ("# Progress\n\n"
+              "* Current phase: Phase 2\n\n"
+              "## Mistake archive\n"
+              "| Mistake ID | Chapter | Question summary | Error analysis | Status |\n"
+              "| :--- | :--- | :--- | :--- | :--- |\n"
+              "| [#q7] | 2 | quicksort stability | mixed up stable sorts | to review |\n\n"
+              "## Concept trouble-spot log\n"
+              "| No. | Chapter | Trouble spot | Answer key points | Status |\n"
+              "| :--- | :--- | :--- | :--- | :--- |\n"
+              "| 1 | 1 | modulo boundary | wrap-around rule | to revisit |\n\n"
+              "## Knowledge window (recent-mastery tracking)\n"
+              "| Knowledge point | Chapter | Status | Note |\n"
+              "| --- | --- | --- | --- |\n"
+              "| LIFO order | 1 | verified by quiz | quizzed twice |\n")
+        ws = _mk_ws(tempfile.mkdtemp(), md=md)
+        with open(os.path.join(ws, "study_plan.md"), "w", encoding="utf-8", newline="\n") as f:
+            f.write("# Plan\n## Phase 1: Stack\n## Phase 2: Queue\n")
+        r = _up(ws, ["init"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        st = _state(ws)
+        self.assertEqual(st["current_phase"], 2)
+        self.assertEqual(len(st["mistake_archive"]), 1, st["mistake_archive"])
+        row = st["mistake_archive"][0]
+        self.assertEqual(row["id"], "q7")
+        self.assertEqual(row["chapter"], "2")                     # en 表头列角色映射（chapter 列）
+        self.assertEqual(row["status"], "to_review")              # en 显示词状态归代号
+        self.assertNotIn("to review", row["note"])                # 状态不再混进 note
+        self.assertEqual(len(st["confusion_log"]), 1, st["confusion_log"])
+        self.assertIn("modulo boundary", st["confusion_log"][0]["note"])
+        self.assertEqual(st["confusion_log"][0]["status"], "to_revisit")
+        win = st["knowledge_window"]
+        self.assertEqual(len(win), 1, win)                        # 窗口表头行不被当数据行
+        self.assertEqual(win[0]["point"], "LIFO order")
+        self.assertEqual(win[0]["status"], "verified")            # en 窗口状态词归代号
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

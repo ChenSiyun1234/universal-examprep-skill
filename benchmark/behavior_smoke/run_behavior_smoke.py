@@ -1456,7 +1456,9 @@ def live_reply_check(name, sc, reply, fixture_path):
 
 # the repo's skill-contract surface — copied into every live sandbox so a paid `--llm` run exercises
 # THIS skill, not a generic agent guessing from the prompt stub (R6 U1). Only paths that exist are copied.
-_SKILL_CONTRACT_PATHS = ("SKILL.md", "SKILL.en.md", "AGENTS.md", "skills", "prompts", "scripts", "docs")
+# v4-P2: the full-entry packs live under locales/ (SKILL.en.md is retired) — without locales/ the root
+# SKILL.md router dispatches into nothing and a live run stops exercising the actual manual.
+_SKILL_CONTRACT_PATHS = ("SKILL.md", "locales", "AGENTS.md", "skills", "prompts", "scripts", "docs")
 
 
 def _prepare_live_sandbox(fixture_path):

@@ -69,7 +69,10 @@ def tokenize(text):
 def build_index(chunks):
     """chunks: [{"id": "ch02/s03", "file": "references/wiki/ch02/s03_xxx.md", "chapter": "2",
                 "title": "...", "text": "..."}] → the persistable index dict.
-    Text itself is NOT stored (chunks live on disk as md); the index holds term→postings only."""
+    Each doc stores its OWN chunk text so snippets always come from the hit chunk — the file
+    on disk holds the whole chapter, and windowing over it could show a sibling chunk's words
+    under this chunk's id. The index is a gitignored workspace artifact; the size cost is fine.
+    Old indexes without per-doc text still load (the snippet path falls back to the file)."""
     docs, vocab = [], {}
     for ci, c in enumerate(chunks):
         for k in ("id", "file", "text"):
@@ -82,7 +85,7 @@ def build_index(chunks):
         for t, n in tf.items():
             vocab.setdefault(t, []).append([ci, n])
         docs.append({"id": c["id"], "file": c["file"], "chapter": c.get("chapter"),
-                     "title": c.get("title") or "", "len": len(toks)})
+                     "title": c.get("title") or "", "len": len(toks), "text": c["text"]})
     avgdl = (sum(d["len"] for d in docs) / len(docs)) if docs else 0.0
     return {"version": INDEX_VERSION, "k1": K1, "b": B, "avgdl": round(avgdl, 3),
             "n_docs": len(docs), "docs": docs, "vocab": vocab}
@@ -152,15 +155,20 @@ def _assert_contained(ws, path, name):
 
 
 def _snippet(ws, doc, q_tokens, width=240):
-    """First window of the chunk file containing a query token (fallback: head). Read-only, contained."""
-    path = os.path.join(ws, doc["file"])
-    if os.path.islink(path):
-        return ""
-    _assert_contained(ws, path, doc["file"])
-    if not os.path.isfile(path):
-        return ""
-    with open(path, "r", encoding="utf-8", errors="replace") as f:
-        text = f.read()
+    """Window around the first query-token hit inside THIS chunk's own text (fallback: head).
+    The doc's stored text is authoritative — scanning the whole chapter file could window
+    around a DIFFERENT chunk's occurrence and display the wrong section under this id.
+    Old indexes without per-doc text keep the pre-v4 file-scan path (read-only, contained)."""
+    text = doc.get("text")
+    if not text:
+        path = os.path.join(ws, doc["file"])
+        if os.path.islink(path):
+            return ""
+        _assert_contained(ws, path, doc["file"])
+        if not os.path.isfile(path):
+            return ""
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read()
     low = text.lower()
     pos = -1
     for t in q_tokens:

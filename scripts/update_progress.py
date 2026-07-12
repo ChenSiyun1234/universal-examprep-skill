@@ -74,7 +74,12 @@ def default_state():
 # ---------------- md → state (migration; tolerant of both bullet and table forms) ----------------
 
 _TABLE_SEP = re.compile(r"^\s*\|[\s:\-|]+\|?\s*$")
-_HDR_WORDS = ("错题id", "关联章节", "题目内容", "错误原因", "序号", "疑难点", "解答要点", "状态")
+# 表头词表（匹配前整行 lower()）：zh 词来自历史模板；en 词来自 locales/en/templates/ 的
+# 进度模板表头（多词短语，避免普通数据行里出现 chapter/status 就被误当表头吞掉）。
+# 少了 en 词，`ingest --lang en` 的英文表头行会被当成真实错题行迁进 state（{id:"Mistake ID"}）。
+_HDR_WORDS = ("错题id", "关联章节", "题目内容", "错误原因", "序号", "疑难点", "解答要点", "状态",
+              "mistake id", "question summary", "error analysis", "trouble spot",
+              "answer key points")
 # 旧模板的空档占位既有全角括号形（（暂无））也有裸标签形（暂无错题 / 暂无疑难 / N/A）——
 # 都不是真实条目；真实笔记只是【包含】这些字样（「暂无法求解」）不受影响（fullmatch 才跳过）
 _PLACEHOLDER = re.compile(
@@ -112,16 +117,17 @@ def parse_md(text):
     for ln in t.splitlines():
         h = ln.strip()
         is_heading = bool(re.match(r"^\s{0,3}(#{1,4}\s|\*\*)", ln))
-        if is_heading and re.search(r"打卡|checklist", h, re.I):
+        if is_heading and re.search(r"打卡|checklist|check-?in", h, re.I):
             cur, in_checklist, in_window, tbl_cols = None, True, False, None   # 📊 知识点打卡状态 区
             continue
         if is_heading and re.search(r"错题|mistake", h, re.I):
             cur, in_checklist, in_window, tbl_cols = mistakes, False, False, None
             continue
-        if is_heading and re.search(r"疑难|困惑|confusion", h, re.I):
+        # en 模板的疑难区标题是 "Concept trouble-spot log"（不含 confusion）——一并识别
+        if is_heading and re.search(r"疑难|困惑|confusion|trouble[ -]?spot", h, re.I):
             cur, in_checklist, in_window, tbl_cols = confusions, False, False, None
             continue
-        if is_heading and re.search(r"知识点窗口|窗口|🪟", h):
+        if is_heading and re.search(r"知识点窗口|窗口|🪟|window", h, re.I):
             # A6：知识点窗口区——init 恢复路径必须把窗口行迁回 state，否则窗口/已实测追踪不可逆丢
             cur, in_checklist, in_window, window_cols = None, False, True, None
             continue
@@ -141,14 +147,16 @@ def parse_md(text):
                 continue
             cells = [c.strip(" *`") for c in h.strip("|").split("|")]
             low = h.lower()
-            if "知识点" in low and "状态" in low:
+            if ("知识点" in low and "状态" in low) or \
+                    ("knowledge point" in low and "status" in low):   # 手写 en 窗口表同样按表头映射
                 window_cols = []
                 for c in cells:
-                    if "知识点" in c:
+                    cl = c.lower()
+                    if "知识点" in c or "knowledge point" in cl:
                         window_cols.append("point")
-                    elif "章节" in c:
+                    elif "章节" in c or "chapter" in cl:
                         window_cols.append("chapter")
-                    elif "状态" in c:
+                    elif "状态" in c or "status" in cl:
                         window_cols.append("status")
                     else:
                         window_cols.append("note")
@@ -189,12 +197,13 @@ def parse_md(text):
                 # 纯位置映射会把疑难点当章节、状态当 note，迁移后学生的记录被吞
                 tbl_cols = []
                 for c in (c0.strip(" *`") for c0 in h.strip("|").split("|")):
-                    if "章节" in c:
+                    cl = c.lower()
+                    if "章节" in c or "chapter" in cl:
                         tbl_cols.append("chapter")
-                    elif "状态" in c:
+                    elif "状态" in c or "status" in cl:
                         tbl_cols.append("status")
-                    elif "id" in c.lower() or "序号" in c:
-                        tbl_cols.append("id")
+                    elif "id" in cl or "序号" in c or cl.rstrip(".") == "no":
+                        tbl_cols.append("id")           # en 疑难表的 "No." 序号列
                     else:
                         tbl_cols.append("note")
                 continue

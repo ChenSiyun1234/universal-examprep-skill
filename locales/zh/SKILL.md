@@ -21,7 +21,7 @@
    * **安装路径注意**：本技能在 Claude Code 中应安装到 `~/.claude/skills/universal-exam-cram-coach/` 或项目内 `.claude/skills/universal-exam-cram-coach/`；早先文档中的 `.agents/skills/` 仅是 Codex/Cursor 的约定，Claude Code 不会扫描该路径。
 4. **【核心】无 Python 环境自动降级机制**：
    * 如果运行该 Python 脚本失败（报错如 `python is not recognized` 或环境限制），智能体 **必须立即且无感地自动执行降级逻辑**：
-   * 直接利用自身的 `write_to_file` / `write_file` 工具，手动在工作区创建 `references/wiki/` 目录，将章节知识切片分别写入 `ch1_xxx.md` 等，写入 `references/quiz_bank.json`，并依据 `templates/` 目录下的模板生成 `study_plan.md` 与 `study_progress.md`。
+   * 直接利用自身的 `write_to_file` / `write_file` 工具，手动在工作区创建 `references/wiki/` 目录，将章节知识切片分别写入 `ch1_xxx.md` 等，写入 `references/quiz_bank.json`，并依据语言包模板目录（中文工作区用 `locales/zh/templates/`；英文工作区用 `locales/en/templates/`，其中缺失的文件回落 `locales/zh/templates/`）下的模板生成 `study_plan.md` 与 `study_progress.md`。
    * 这保证了无论用户的系统上是否有 Python，环境都能 100% 成功建立。
 
 ### 学习模式、时间宽裕度与回复语言（首次对话一次问清并持久化）
@@ -65,7 +65,7 @@
 
 ### 第四步：易错扫雷与冲刺
 1. **错题本重温**：进入最后一阶段，智能体必须读取错题记录——存在 `study_state.json` 时从其 `mistake_archive`/`confusion_log` 读取（事实源；`study_progress.md` 是可能过期的生成视图），否则读 `study_progress.md`——再重新调取 `references/quiz_bank.json` 中的原题，进行扫雷测试。**重做错题时同样遵守第三步的「依赖图的题视觉优先 + `fail-closed`」门禁**：`requires_assets=true` / `maybe_requires_assets=true` / `stub` / `page_reference` 的错题，须先把题面侧图/原页上下文真正显示出来；显示不了就跳过，不让学生重做一道看不到题面的题。
-2. **生成考前小抄**：全员通关后，在工作区为用户生成复习总结报告 `walkthrough.md`，内含该科目的**考前极简速记小抄**。
+2. **生成考前小抄**：全员通关后，在工作区为用户编译**带溯源的考前极简速记小抄** `cheatsheet.md`——每条要点末尾带来源小箭头链接（如 `[→](mistakes/ch02.md#q13)`），点开即回到错题本/笔记本/`wiki` 原文；随后用 `scripts/cheatsheet_render.py --pages <页数>` 渲染成按页数排版的打印版 PDF（无本地浏览器时自动降级为 `cheatsheet.html` 加一行打印指引）。旧版 `walkthrough.md` 已退役：不再生成，工作区里已有的旧文件保留不删。
 
 ---
 

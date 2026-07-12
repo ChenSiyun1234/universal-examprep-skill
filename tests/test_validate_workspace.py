@@ -631,7 +631,13 @@ class TestValidateWorkspace(unittest.TestCase):
 class CheatsheetTraceLint(unittest.TestCase):
     """v4-P5 溯源 lint：cheatsheet.md 每个顶层要点必须携带可解析的 notebook/mistakes/wiki 锚点。"""
 
-    def _ws(self, cheatsheet=None, walkthrough=None, notebook_files=()):
+    # 笔记本章文件的真实形态：notebook.py 的条目标题 `## [#q1] 链表访问代价` → GitHub 锚
+    # `q1-链表访问代价`；另有一个手写小节标题（锚 `手写小节`）与围栏内的假标题（不产生锚）。
+    NB_CONTENT = ("# nb\n\n## [#q1] 链表访问代价\n\n> 精讲 · 2026-07-01 12:00\n\n正文。\n\n---\n\n"
+                  "## 手写小节\n\n补充说明。\n\n```\n## [#fake] 围栏内不是标题\n```\n")
+
+    def _ws(self, cheatsheet=None, walkthrough=None, notebook_files=(),
+            notebook_content=NB_CONTENT):
         d = tempfile.mkdtemp(prefix="vws-cs-")
         self.addCleanup(shutil.rmtree, d, ignore_errors=True)
         os.makedirs(os.path.join(d, "references", "wiki"))
@@ -646,7 +652,7 @@ class CheatsheetTraceLint(unittest.TestCase):
         for nf in notebook_files:
             full = os.path.join(d, *nf.split("/"))
             os.makedirs(os.path.dirname(full), exist_ok=True)
-            open(full, "w", encoding="utf-8").write("# nb\n")
+            open(full, "w", encoding="utf-8").write(notebook_content)
         if cheatsheet is not None:
             open(os.path.join(d, "cheatsheet.md"), "w", encoding="utf-8").write(cheatsheet)
         if walkthrough is not None:
@@ -656,7 +662,7 @@ class CheatsheetTraceLint(unittest.TestCase):
     def test_traced_bullets_pass(self):
         d = self._ws(cheatsheet=(
             "# 小抄\n\n## 必背\n"
-            "- 链表访问 O(n)（[→](notebook/ch01.md#q1)）\n"
+            "- 链表访问 O(n)（[→](notebook/ch01.md#q1-链表访问代价)）\n"
             "- 快排不稳定（[→](references/wiki/ch1.md)）\n"),
             notebook_files=("notebook/ch01.md",))
         errors, warnings, stats = V.validate(d)
@@ -672,6 +678,54 @@ class CheatsheetTraceLint(unittest.TestCase):
         d = self._ws(cheatsheet="# 小抄\n- 要点（[→](notebook/ch99.md#gone)）\n")
         errors, _, _ = V.validate(d)
         self.assertTrue(any("链接目标不存在" in e["msg"] for e in errors), err_text(errors))
+
+    # ---- Codex 评审回归：锚点也要校验，#typo 指向存在的文件同样是死链 ----
+
+    def test_bad_anchor_on_existing_file_is_error(self):
+        d = self._ws(cheatsheet="# 小抄\n- 要点（[→](notebook/ch01.md#typo)）\n",
+                     notebook_files=("notebook/ch01.md",))
+        errors, _, _ = V.validate(d)
+        self.assertTrue(any("坏锚点" in e["msg"] and "#typo" in e["msg"] for e in errors),
+                        err_text(errors))
+
+    def test_mistakes_anchor_validated_too(self):
+        good = self._ws(cheatsheet="# 小抄\n- 要点（[→](mistakes/ch01.md#q1-链表访问代价)）\n",
+                        notebook_files=("mistakes/ch01.md",))
+        errors, _, _ = V.validate(good)
+        self.assertEqual([e for e in errors], [], err_text(errors))
+        bad = self._ws(cheatsheet="# 小抄\n- 要点（[→](mistakes/ch01.md#q99)）\n",
+                       notebook_files=("mistakes/ch01.md",))
+        errors, _, _ = V.validate(bad)
+        self.assertTrue(any("坏锚点" in e["msg"] for e in errors), err_text(errors))
+
+    def test_handwritten_heading_anchor_passes(self):
+        d = self._ws(cheatsheet="# 小抄\n- 要点（[→](notebook/ch01.md#手写小节)）\n",
+                     notebook_files=("notebook/ch01.md",))
+        errors, _, _ = V.validate(d)
+        self.assertEqual([e for e in errors], [], err_text(errors))
+
+    def test_fenced_fake_heading_is_not_an_anchor(self):
+        # 围栏内的 `## [#fake] …` 是内容不是标题——链接它必须判坏锚
+        d = self._ws(cheatsheet="# 小抄\n- 要点（[→](notebook/ch01.md#fake-围栏内不是标题)）\n",
+                     notebook_files=("notebook/ch01.md",))
+        errors, _, _ = V.validate(d)
+        self.assertTrue(any("坏锚点" in e["msg"] for e in errors), err_text(errors))
+
+    def test_wiki_target_stays_file_level(self):
+        # references/wiki 目标：文件存在即可，锚点不管（章节文件没有保证的标题结构）
+        d = self._ws(cheatsheet="# 小抄\n- 要点（[→](references/wiki/ch1.md#任意锚)）\n")
+        errors, _, _ = V.validate(d)
+        self.assertEqual([e for e in errors], [], err_text(errors))
+
+    def test_anchor_matches_notebook_engine_slug(self):
+        # 锚点词汇与 notebook 引擎同源：entry_anchor 生成的锚必过 lint
+        sys.path.insert(0, os.path.join(ROOT, "scripts"))
+        import notebook as N
+        anchor = N.entry_anchor("q1", "链表访问代价")
+        d = self._ws(cheatsheet="# 小抄\n- 要点（[→](notebook/ch01.md#%s)）\n" % anchor,
+                     notebook_files=("notebook/ch01.md",))
+        errors, _, _ = V.validate(d)
+        self.assertEqual([e for e in errors], [], err_text(errors))
 
     def test_fenced_and_nested_bullets_exempt(self):
         d = self._ws(cheatsheet=(

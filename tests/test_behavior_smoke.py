@@ -39,6 +39,16 @@ def _silent(fn, *a, **k):
 
 
 class BehaviorSmokeTest(unittest.TestCase):
+    # 0 — Codex 评审回归：live 沙箱契约面必须带 locales/（v4-P2 全量入口语言包），
+    # 且不再引用已退役的 SKILL.en.md（复制循环会静默跳过不存在的路径 = 沙箱悄悄缺契约）
+    def test_skill_contract_paths_ship_locales_not_retired_files(self):
+        self.assertIn("locales", H._SKILL_CONTRACT_PATHS)
+        self.assertNotIn("SKILL.en.md", H._SKILL_CONTRACT_PATHS)
+        missing = [rel for rel in H._SKILL_CONTRACT_PATHS
+                   if not os.path.exists(os.path.join(ROOT, rel))]
+        self.assertEqual(missing, [],
+                         f"_SKILL_CONTRACT_PATHS 引用了仓库里不存在的路径（复制时会被静默跳过）: {missing}")
+
     # 1
     def test_fixture_passes_validate_workspace(self):
         ok, errors, warnings, _ = H.validate_fixture_workspace(H.FIXTURE)

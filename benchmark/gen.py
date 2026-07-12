@@ -110,11 +110,9 @@ def parse_stream_events(stdout_text):
     return result, cost, files
 
 
-def run_claude(prompt, model, cwd=None, skill=False, timeout=900, trace=False):
+def _run_claude_impl(prompt, model, cwd=None, skill=False, timeout=900, trace=False):
     # Pass the prompt via STDIN, not argv — the material arm dumps a ~100-230K-char course, which
     # blows Windows' ~32K command-line limit (WinError 206) if passed as an argument.
-    # trace=True（或 EXAMPREP_TRACE=1）改用 stream-json 记录工具轨迹——检索评测（recall@k）的数据源。
-    trace = trace or os.environ.get("EXAMPREP_TRACE") == "1"
     if trace:
         args = ["claude", "-p", "--output-format", "stream-json", "--verbose", "--model", model]
     else:
@@ -140,14 +138,30 @@ def run_claude(prompt, model, cwd=None, skill=False, timeout=900, trace=False):
         return f"API Error: {e}", None, None
 
 
+def run_claude(prompt, model, cwd=None, skill=False, timeout=900):
+    """(out, cost) — the stable 2-tuple every existing caller (run_matrix judge path 等) unpacks.
+    轨迹要走 run_claude_traced；本函数**永不**因环境变量改变返回形状（Codex r1）。"""
+    out, cost, _files = _run_claude_impl(prompt, model, cwd, skill, timeout, trace=False)
+    return out, cost
+
+
+def run_claude_traced(prompt, model, cwd=None, skill=False, timeout=900):
+    """(out, cost, files_opened) — stream-json 工具轨迹版（检索评测 recall@k 的数据源）。"""
+    return _run_claude_impl(prompt, model, cwd, skill, timeout, trace=True)
+
+
 def generate_one(course, model, arm, qid, q, combined):
+    """(out, cost, files_opened|None)。EXAMPREP_TRACE=1 只在**作答生成**路径开启轨迹——
+    判分等其它 run_claude 调用点不受影响（返回形状恒定）。"""
+    trace = os.environ.get("EXAMPREP_TRACE") == "1"
+    call = run_claude_traced if trace else (lambda *a, **k: run_claude(*a, **k) + (None,))
     if arm == "closedbook":
-        return run_claude(CLOSEDBOOK.format(q=q), model)
+        return call(CLOSEDBOOK.format(q=q), model)
     if arm == "material":
-        return run_claude(MATERIAL.format(material=combined, q=q), model)
+        return call(MATERIAL.format(material=combined, q=q), model)
     if arm == "rawfiles":
-        return run_claude(RAWFILES.format(q=q), model, cwd=COURSES[course]["raw_ws"], skill=True)
-    return run_claude(SKILL.format(q=q), model, cwd=COURSES[course]["skill_ws"], skill=True)
+        return call(RAWFILES.format(q=q), model, cwd=COURSES[course]["raw_ws"], skill=True)
+    return call(SKILL.format(q=q), model, cwd=COURSES[course]["skill_ws"], skill=True)
 
 
 def build_tasks():

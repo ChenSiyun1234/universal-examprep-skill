@@ -15,6 +15,12 @@ import re
 import sys
 import json
 import argparse
+from urllib.parse import unquote
+
+# 同包内的 notebook 引擎是锚点词汇（github_slug）的唯一定义点——按 select_hard_questions.py
+# 的先例把 scripts/ 放进 sys.path 再导入，validator 与生成器绝不各养一套 slug 规则。
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import notebook as _notebook
 
 SIX_TYPES = {"choice", "subjective", "diagram", "fill_blank", "true_false", "code"}
 MATERIAL_SOURCES = {"teacher", "material"}
@@ -111,6 +117,31 @@ def _asset_safety(ws, p):
     if real != ws_real and not real.startswith(ws_real + os.sep):
         return full, "asset 经符号链接 / 父目录逃出工作区"
     return full, None
+
+
+def _md_anchors(path):
+    """GitHub-style anchor set for every heading in a markdown file (fence-aware; duplicate
+    headings get the -1/-2 suffixes GitHub assigns). Covers both notebook entry headings
+    （`## [#<id>] <title>` → github_slug 后正是 notebook.entry_anchor 的锚）and hand-written
+    plain `#`-headings, so a cheatsheet 溯源链接的 #锚点 能被逐一核实而不是被丢弃。"""
+    anchors, counts, fence = set(), {}, 0
+    with open(path, "r", encoding="utf-8") as f:
+        for ln in f:
+            fm = re.match(r"^ {0,3}(`{3,}|~{3,})", ln)
+            if fm:
+                t = len(fm.group(1))
+                fence = 0 if (fence and t >= fence) else (fence or t)
+                continue
+            if fence:
+                continue
+            hm = re.match(r"^ {0,3}#{1,6}\s+(.*?)\s*$", ln)
+            if not hm:
+                continue
+            slug = _notebook.github_slug(hm.group(1))
+            n = counts.get(slug, 0)
+            counts[slug] = n + 1
+            anchors.add(slug if n == 0 else "%s-%d" % (slug, n))
+    return anchors
 
 
 def validate(ws):
@@ -434,6 +465,7 @@ def validate(ws):
         if cheat is not None:
             _SRC_LINK = re.compile(r"\]\(((?:notebook|mistakes)/[^)#\s]+|references/wiki/[^)#\s]+)(#[^)\s]*)?\)")
             fence, n_bullets, bad = 0, 0, []
+            anchor_cache = {}    # rel → set(锚点) | None(目标不可读)；同文件多链接只读一次
             for i, ln in enumerate(cheat.splitlines(), 1):
                 fm = re.match(r"^\s*(`{3,})", ln)
                 if fm:
@@ -447,9 +479,27 @@ def validate(ws):
                 if not links:
                     bad.append(f"L{i} 无溯源链接: {ln[:60]}")
                     continue
-                for rel, _anchor in links:
-                    if not os.path.isfile(os.path.join(ws, *rel.split("/"))):
+                for rel, anchor in links:
+                    target = os.path.join(ws, *rel.split("/"))
+                    if not os.path.isfile(target):
                         bad.append(f"L{i} 链接目标不存在: {rel}")
+                        continue
+                    # notebook/mistakes 目标带 #锚点时必须真实存在于目标文件——只查文件存在
+                    # 会放行 #typo 这种点开跳不到条目的死锚。references/wiki 目标保持文件级
+                    # 校验（章节文件没有保证的标题结构）。
+                    frag = unquote(anchor[1:]) if anchor else ""
+                    if frag and rel.split("/", 1)[0] in ("notebook", "mistakes"):
+                        if rel not in anchor_cache:
+                            try:
+                                anchor_cache[rel] = _md_anchors(target)
+                            except (OSError, UnicodeDecodeError):
+                                anchor_cache[rel] = None
+                        aset = anchor_cache[rel]
+                        if aset is None:
+                            bad.append(f"L{i} 链接目标无法读取，锚点无法校验: {rel}")
+                        elif frag not in aset:
+                            bad.append(f"L{i} 坏锚点: {rel}{anchor}（目标文件里没有对应的标题锚，"
+                                       "点开跳不到条目）")
             for b in bad:
                 err("cheatsheet.md " + b + "（编译产物每个要点必须可溯源到 notebook/mistakes/wiki——"
                     "详见 PLAN 溯源契约）")

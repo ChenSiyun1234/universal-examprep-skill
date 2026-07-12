@@ -129,7 +129,21 @@ def validate(data):
     return course_name, phases, quiz_bank, missing_answer_ids
 
 
-def build_phase_table(phases):
+def build_phase_table(phases, lang="zh"):
+    # 插入行必须跟模板同语言（单语言纯净）：en 模板里混入 阶段/未开始 会产出混语工作区；
+    # 读侧（update_progress._plan_phases / validate_workspace._plan_phase_nums /
+    # build_knowledge_index._PHASE_RE）本就同时认 「阶段N」 与 「Phase N」。
+    if lang == "en":
+        lines = [
+            "| Phase | Core task | Linked wiki chapter file | Status |",
+            "| :--- | :--- | :--- | :--- |",
+        ]
+        for p in phases:
+            fn = os.path.basename(p["wiki_filename"].strip())
+            lines.append(f"| **Phase {p['phase_num']}** | {p['phase_name']} | `references/wiki/{fn}` | Not started |")
+        lines.append("| **Mock test** | Final mixed self-test | `references/quiz_bank.json` | Not started |")
+        lines.append("| **Pitfall sweep** | Mistake-archive revisit & cheat sheet | `study_progress.md` mistake archive | Not started |")
+        return "\n".join(lines)
     lines = [
         "| 阶段 | 核心任务 | 关联 Wiki 章节文件 | 状态 |",
         "| :--- | :--- | :--- | :--- |",
@@ -142,7 +156,15 @@ def build_phase_table(phases):
     return "\n".join(lines)
 
 
-def build_phase_checklist(phases):
+def build_phase_checklist(phases, lang="zh"):
+    if lang == "en":
+        lines = []
+        for p in phases:
+            fn = os.path.basename(p["wiki_filename"].strip())
+            lines.append(f"- [ ] **Phase {p['phase_num']}**: {p['phase_name']} (see `references/wiki/{fn}`)")
+        lines.append("- [ ] **Mock test**: Final mixed self-test (see `references/quiz_bank.json`)")
+        lines.append("- [ ] **Pitfall sweep**: mistake self-test")
+        return "\n".join(lines)
     lines = []
     for p in phases:
         fn = os.path.basename(p["wiki_filename"].strip())
@@ -319,7 +341,7 @@ def main():
     # 3. 生成 study_plan.md（可重复生成，无用户状态）
     plan_content = render_template(
         "study_plan_template.md",
-        {SUBJECT_TOKEN: f"《{course_name}》", PHASE_TABLE_MARKER: build_phase_table(phases)},
+        {SUBJECT_TOKEN: f"《{course_name}》", PHASE_TABLE_MARKER: build_phase_table(phases, lang)},
         markers=[PHASE_TABLE_MARKER],
         lang=lang,
     )
@@ -338,13 +360,15 @@ def main():
             backup = f"{progress_out_path}.bak-{datetime.now():%Y%m%d-%H%M%S}"
             shutil.copy2(progress_out_path, backup)
             print(f"[+] 已备份旧进度文件: {os.path.basename(backup)}")
-        first_phase = f"阶段 1：{phases[0]['phase_name']}"
+        # 断点种子行同语言：en 进度文件写 「Phase 1: …」（读侧 current phase 解析两种都认）
+        first_phase = (f"Phase 1: {phases[0]['phase_name']}" if lang == "en"
+                       else f"阶段 1：{phases[0]['phase_name']}")
         prog_content = render_template(
             "study_progress_template.md",
             {
                 SUBJECT_TOKEN: f"《{course_name}》",
                 "{CURRENT_PHASE}": first_phase,
-                PHASE_CHECKLIST_MARKER: build_phase_checklist(phases),
+                PHASE_CHECKLIST_MARKER: build_phase_checklist(phases, lang),
             },
             markers=[PHASE_CHECKLIST_MARKER],
             lang=lang,

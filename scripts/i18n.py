@@ -114,6 +114,16 @@ _EMBEDDED = {"zh": _ZH, "en": _EN}
 # plus the historical loose aliases carried over VERBATIM from update_progress.py.
 _MODE_IN = {c: c for c in MODES}
 _MODE_IN.update({_ZH["mode." + c]: c for c in MODES})
+# en 显示词与常见英文松散别名同样归代号（Codex r1：en 首问流把 "teach from scratch" 存成
+# 未知自由串，下游选择器命不中 MODES 便静默退回 fill_gaps——tier/language 早已收 en，模式补齐）。
+# ASCII 输入在 canon_mode 里统一 lower() 后查表，故此处键全小写。
+_MODE_IN.update({_EN["mode." + c].lower(): c for c in MODES})
+_MODE_IN.update({
+    "from scratch": "from_scratch", "teach-from-scratch": "from_scratch",
+    "shore up": "shore_up", "shore up weak spots": "shore_up",
+    "start mid-course": "shore_up", "mid-course": "shore_up",
+    "fill gaps": "fill_gaps", "fill-the-gaps": "fill_gaps", "gap filling": "fill_gaps",
+})
 
 # Legacy four modes (normal/sprint/panic/mock) → (new mode code, implied tier code or None).
 MODE_MIGRATION = {
@@ -135,6 +145,7 @@ _TIER_IN.update({
     # en-side loose aliases (the en pack's students type these)
     "1 day": "le1d", "1-3 days": "d1_3", "3-7 days": "d3_7", ">7 days": "gt7d",
 })
+_TIER_IN.update({_EN["tier." + c].lower(): c for c in TIERS})   # en 显示词整词也收（与模式同理）
 
 _LANG_IN = {c: c for c in LANGS}
 _LANG_IN.update({_ZH["lang." + c]: c for c in LANGS})
@@ -161,6 +172,8 @@ def canon_mode(v):
     v = (v or "").strip()
     if v in _MODE_IN:
         return _MODE_IN[v], None, None
+    if v.lower() in _MODE_IN:          # en 显示词/别名大小写不敏感（zh 键不受 lower 影响）
+        return _MODE_IN[v.lower()], None, None
     if v in MODE_MIGRATION:
         code, tier = MODE_MIGRATION[v]
         return code, tier, ("旧模式「%s」已废弃，迁移为「%s」%s（新模式仅 %s）"
@@ -176,6 +189,8 @@ def canon_tier(v):
     v = (v or "").strip()
     if v in _TIER_IN:
         return _TIER_IN[v], None
+    if v.lower() in _TIER_IN:          # en 显示词大小写不敏感（与 canon_mode 同理）
+        return _TIER_IN[v.lower()], None
     return v, ("非标准时间宽裕度「%s」——canonical 仅 %s；已按原值保留，请确认是否规范化"
                % (v, "/".join(display("tier", c) for c in TIERS)))
 

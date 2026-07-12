@@ -129,6 +129,61 @@ class Search(unittest.TestCase):
             shutil.rmtree(ws, ignore_errors=True)
 
 
+class SnippetFromOwnChunk(unittest.TestCase):
+    """Codex 评审回归：docs 存每块自己的 text——命中 ch05#s02 时摘要必须来自该块本身，
+    不能重开整章文件、在【第一个】查询词出现处开窗而把 s01 的内容顶到 s02 的名下。"""
+
+    CH1 = ("FIRSTMARK introduction paragraph. The widget concept appears once here, "
+           "purely in passing, with no depth at all.")
+    CH2 = ("SECONDMARK splay tree section. The widget rotates; widget amortized analysis; "
+           "widget access theorem details live here.")
+
+    def _ws_shared_file(self, strip_text=False):
+        # 两个 chunk 共享同一个章文件（ingest 的真实形态）；索引文本与盘上文件都可控
+        ws = tempfile.mkdtemp(prefix="rtv2_")
+        self.addCleanup(shutil.rmtree, ws, ignore_errors=True)
+        wiki = os.path.join(ws, "references", "wiki")
+        os.makedirs(wiki)
+        with open(os.path.join(wiki, "ch05.md"), "w", encoding="utf-8") as f:
+            f.write(self.CH1 + "\n\n" + self.CH2)
+        chunks = [
+            {"id": "ch05#s01", "file": "references/wiki/ch05.md", "chapter": "5",
+             "title": "intro", "text": self.CH1},
+            {"id": "ch05#s02", "file": "references/wiki/ch05.md", "chapter": "5",
+             "title": "splay", "text": self.CH2},
+        ]
+        idx = retrieve.build_index(chunks)
+        if strip_text:
+            for d in idx["docs"]:
+                d.pop("text", None)                    # 旧版索引形态（升级前建出的工作区）
+        with open(os.path.join(ws, "references", "retrieval_index.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump(idx, f, ensure_ascii=False)
+        return ws
+
+    def test_snippet_comes_from_the_hit_chunk(self):
+        ws = self._ws_shared_file()
+        hits, _ = retrieve.search(ws, retrieve.load_index(ws), "widget splay")
+        self.assertTrue(hits)
+        self.assertEqual(hits[0]["id"], "ch05#s02")   # splay + 3×widget 应压过 s01
+        # 「widget」在整章文件里首现于 s01——按文件开窗会显示 FIRSTMARK；按块开窗显示 SECONDMARK
+        self.assertIn("SECONDMARK", hits[0]["text"], hits[0]["text"])
+        self.assertNotIn("FIRSTMARK", hits[0]["text"], hits[0]["text"])
+
+    def test_index_docs_store_chunk_text(self):
+        ws = self._ws_shared_file()
+        idx = retrieve.load_index(ws)
+        self.assertEqual([d["text"] for d in idx["docs"]], [self.CH1, self.CH2])
+
+    def test_old_index_without_text_falls_back_to_file_scan(self):
+        ws = self._ws_shared_file(strip_text=True)
+        hits, _ = retrieve.search(ws, retrieve.load_index(ws), "widget splay")
+        self.assertTrue(hits)
+        self.assertEqual(hits[0]["id"], "ch05#s02")
+        self.assertTrue(hits[0]["text"], "旧索引降级路径仍须给出非空摘要（读章文件开窗）")
+        self.assertIn("MARK", hits[0]["text"])        # 摘要仍来自真实章文件内容
+
+
 class CliContract(unittest.TestCase):
     def test_hits_exit_0_and_json_shape(self):
         ws = make_ws(CORPUS)
