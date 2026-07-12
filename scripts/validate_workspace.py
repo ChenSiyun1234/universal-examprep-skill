@@ -480,7 +480,18 @@ def validate(ws):
                     bad.append(f"L{i} 无溯源链接: {ln[:60]}")
                     continue
                 for rel, anchor in links:
-                    target = os.path.join(ws, *rel.split("/"))
+                    # 溯源链接不得穿越（Codex r3）：notebook/../../外部文件 会解析到工作区外，
+                    # 「存在且有锚」也不算合法溯源——段级拒 ..，再 realpath 包含性双保险
+                    segs = [s for s in rel.split("/") if s not in ("", ".")]
+                    if ".." in segs:
+                        bad.append(f"L{i} 溯源链接含 .. 穿越: {rel}")
+                        continue
+                    target = os.path.join(ws, *segs)
+                    ws_real = os.path.normcase(os.path.realpath(ws))
+                    t_real = os.path.normcase(os.path.realpath(target))
+                    if t_real != ws_real and not t_real.startswith(ws_real + os.sep):
+                        bad.append(f"L{i} 溯源链接逃出工作区: {rel}")
+                        continue
                     if not os.path.isfile(target):
                         bad.append(f"L{i} 链接目标不存在: {rel}")
                         continue

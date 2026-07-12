@@ -51,8 +51,13 @@ _INLINE = [
     (re.compile(r"`([^`]+)`"), r"<code>\1</code>"),
     # 图片必须先于普通链接处理（Codex r2）：否则 ![题面图](references/assets/….png) 会被下一条
     # 链接压平规则吃掉，打印版把依赖图的例题图丢了——恰恰违反小抄「图必须真展示」契约。
+    # 属性必须带引号转义（Codex r3）：alt 文本来自不受信材料，`x" onerror="…` 不转义就会
+    # 逃出属性成为真实事件处理器——用替换函数 + html.escape(quote=True) 构造标签。
+    # 注意 _inline 已对整行 escape(quote=False)（<>& 已转）——这里只需补转引号，避免 & 双重转义
     (re.compile(r"!\[([^\]]*)\]\(([^)\s]+)\)"),
-     r'<img src="\2" alt="\1" style="max-width:100%;max-height:60mm">'),
+     lambda m: '<img src="%s" alt="%s" style="max-width:100%%;max-height:60mm">'
+               % (m.group(2).replace('"', "&quot;").replace("'", "&#x27;"),
+                  m.group(1).replace('"', "&quot;").replace("'", "&#x27;"))),
     (re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)"), r'<span class="lnk">\1</span>'),  # print: no live links
 ]
 
@@ -196,11 +201,15 @@ def find_browser():
 
 
 def print_to_pdf(browser, html_path, pdf_path, timeout=120):
+    # 旧 PDF 先删（Codex r3）：浏览器失败时残留的旧成品会顶替新渲染被当作「本次产出」上报，
+    # 学生会拿着过期小抄去打印——非零退出一律失败，绝不拿旧文件遮错。
+    if os.path.exists(pdf_path):
+        os.remove(pdf_path)
     url = "file:///" + os.path.abspath(html_path).replace("\\", "/")
     args = [browser, "--headless=new", "--disable-gpu", "--no-pdf-header-footer",
             "--print-to-pdf=%s" % os.path.abspath(pdf_path), url]
     r = subprocess.run(args, capture_output=True, timeout=timeout)
-    if r.returncode != 0 and not os.path.isfile(pdf_path):
+    if r.returncode != 0 or not os.path.isfile(pdf_path):
         _die("无头浏览器打印失败（%s）：%s" % (os.path.basename(browser),
              (r.stderr or b"")[:300].decode("utf-8", "replace")), 1)
 
@@ -243,16 +252,23 @@ def main(argv=None):
         font, cols = pick_font(total, args.pages)
     html_path = os.path.join(ws, "cheatsheet.html")
     pdf_path = os.path.join(ws, "cheatsheet.pdf")
+    # 输出位不得是符号链接（Codex r3）：跟随链接写会覆写工作区外目标——与仓库其它写盘路径同一守卫
+    for p, name in ((html_path, "cheatsheet.html"), (pdf_path, "cheatsheet.pdf")):
+        if os.path.islink(p):
+            _die("%s 是符号链接（可能指向工作区外）——拒绝写入，请先移除该链接" % name, 1)
 
     browser = None if args.html_only else find_browser()
+    font_locked = bool(args.font_size)                  # 显式 --font-size = 手动调字号，拟合环不许再动
     for attempt in range(4):                            # fit loop: nudge font vs actual pages
-        with open(html_path, "w", encoding="utf-8") as f:
+        tmp = html_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             f.write(render_html(md, font, cols, args.margin_mm))
+        os.replace(tmp, html_path)                      # 原子落盘，与 update_progress 同惯例
         if args.html_only or not browser:
             break
         print_to_pdf(browser, html_path, pdf_path)
         got = pdf_page_count(pdf_path)
-        if got == args.pages:
+        if got == args.pages or font_locked:            # 命中目标页数，或字号被显式锁定（Codex r3 P3）
             break
         if got > args.pages and font > FONT_MIN:        # overflow → shrink
             font = max(FONT_MIN, font - 0.5)
