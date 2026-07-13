@@ -213,11 +213,17 @@ def mock_answer(arm, item):
 _QUOTA_RESULT_RE = re.compile(
     r"you'?ve hit your (usage )?limit|hit your limit.{0,40}reset|usage limit reached|"
     r"reached your (usage )?limit|限额|额度已用完", re.I)
+# 登录/认证类通知同样会被 claude 当 result 返回（v4 复盘：登录态过期时整趟 1,251 条"作答"
+# 全是 "Not logged in · Please run /login" 且被当合法答案入账）。与配额同一判定通道：
+# 短 result + 词表命中 → infra 错误，绝不入 answers。
+_AUTH_RESULT_RE = re.compile(
+    r"not logged in|please run /login|invalid api key|authentication[ _]error|"
+    r"credentials? (expired|invalid)|未登录", re.I)
 
 
 def _is_quota_notice(res):
     r = (res or "").strip()
-    return len(r) <= 220 and bool(_QUOTA_RESULT_RE.search(r))
+    return len(r) <= 220 and bool(_QUOTA_RESULT_RE.search(r) or _AUTH_RESULT_RE.search(r))
 
 
 def _gen_claude(prompt, model, cwd=None, skill=False, timeout=900):
@@ -226,7 +232,13 @@ def _gen_claude(prompt, model, cwd=None, skill=False, timeout=900):
     例外：整个 result 就是一条**短限额通知**（撞上限时 claude 把通知当 result 返回）→ 判配额 infra_error。
     只有拿不到 result（非 JSON / 空 result / 超时 / 异常 / 纯限额通知）才 ok=False，再对**错误文本**分类。
     （STDIN 传 prompt：material 臂会塞进整门课 ~100-230K 字符，走 argv 会撞 Windows WinError 206。）"""
-    args = ["claude", "-p", "--output-format", "json", "--model", model]
+    # EXAMPREP_TRACE=1 → stream-json 记工具轨迹（检索 recall 数据源；Codex r5 后 gen 侧同门控）。
+    # 返回形状恒为 5 元组 (answer, cost, ok, err, files)——本文件内部私有调用链，外部契约不变。
+    trace = os.environ.get("EXAMPREP_TRACE") == "1"
+    if trace:
+        args = ["claude", "-p", "--output-format", "stream-json", "--verbose", "--model", model]
+    else:
+        args = ["claude", "-p", "--output-format", "json", "--model", model]
     if skill:
         args += ["--allowedTools", "Read", "Glob", "Grep"]
     workdir = os.path.join(HERE, cwd) if cwd else HERE
@@ -234,19 +246,26 @@ def _gen_claude(prompt, model, cwd=None, skill=False, timeout=900):
         p = subprocess.run(args, cwd=workdir, input=prompt, capture_output=True,
                            text=True, encoding="utf-8", timeout=timeout)
     except subprocess.TimeoutExpired:
-        return "", None, False, "TIMEOUT"
+        return "", None, False, "TIMEOUT", None
     except Exception as e:                              # 绝不让一次坏调用弄崩整趟
-        return "", None, False, "API Error: %s" % e
+        return "", None, False, "API Error: %s" % e, None
+    if trace:
+        res, cost, files = gen.parse_stream_events(p.stdout)
+        if res.strip():
+            if _is_quota_notice(res):
+                return "", cost, False, res.strip(), None
+            return res, cost, True, "", files
+        return "", cost, False, (p.stdout or p.stderr or "").strip(), None
     try:
         data = json.loads(p.stdout)
     except json.JSONDecodeError:
-        return "", None, False, (p.stdout or p.stderr or "").strip()
+        return "", None, False, (p.stdout or p.stderr or "").strip(), None
     res = data.get("result") or ""
     if res.strip():
         if _is_quota_notice(res):            # 整个 result 就是限额通知 → 配额 infra_error（err 含通知原文，
-            return "", data.get("total_cost_usd"), False, res.strip()   # gen.classify → hard → 触发续跑重打
-        return res, data.get("total_cost_usd"), True, ""
-    return "", data.get("total_cost_usd"), False, (p.stdout or p.stderr or "").strip()
+            return "", data.get("total_cost_usd"), False, res.strip(), None   # gen.classify → hard → 触发续跑重打
+        return res, data.get("total_cost_usd"), True, "", None
+    return "", data.get("total_cost_usd"), False, (p.stdout or p.stderr or "").strip(), None
 
 
 def real_answer(cfg, course, model, arm, item):
@@ -351,19 +370,19 @@ def _classify(text):
 
 
 def _generate_real(cfg, course, model, arm, item):
-    """真跑一题：瞬时错误/超时退避重试 3 次。返回 (answer, cost, kind)。
+    """真跑一题：瞬时错误/超时退避重试 3 次。返回 (answer, cost, kind, files)。
     成功用 _gen_claude 的 ok 信号判定（不看答案文本），失败才对**错误文本**分类 hard/transient——
-    合法答案里含 resets/usage limit 等词不再被误判成配额错。"""
+    合法答案里含 resets/usage limit 等词不再被误判成配额错。files 仅 EXAMPREP_TRACE=1 时非 None。"""
     cost = 0.0
     for attempt in range(3):
-        ans, cost, ok, err = real_answer(cfg, course, model, arm, item)
+        ans, cost, ok, err, files = real_answer(cfg, course, model, arm, item)
         if ok:
-            return ans, cost or 0.0, "ok"
+            return ans, cost or 0.0, "ok", files
         kind = _classify(err)
         if kind == "hard":
-            return "", cost or 0.0, "hard"
+            return "", cost or 0.0, "hard", None
         time.sleep(5 * (attempt + 1) ** 2)             # 5s, 20s, 45s（仅真跑触发）
-    return "", cost or 0.0, "transient"
+    return "", cost or 0.0, "transient", None
 
 
 def _read_ledger(path):
@@ -577,9 +596,9 @@ def run(cfg, mock, limit=0):
                 n_rescore += 1
                 continue
             if mock:
-                answer, cost = mock_answer(arm, item), 0.0
+                answer, cost, files_opened = mock_answer(arm, item), 0.0, None
             else:
-                answer, cost, kind = _generate_real(cfg, course, model, arm, item)
+                answer, cost, kind, files_opened = _generate_real(cfg, course, model, arm, item)
                 if kind == "hard":
                     hard_streak += 1
                     n_skip += 1                         # 硬失败也是跳过——计数，让"未完成不聚合"守卫触发
@@ -597,6 +616,8 @@ def run(cfg, mock, limit=0):
             arow = {"course": cname, "model": model, "arm": arm, "item_id": item["id"],
                     "answerable": bool(item.get("answerable", True)), "status": "ok",
                     "answer": answer, "cost_usd": cost or 0.0}
+            if files_opened:
+                arow["files_opened"] = files_opened   # EXAMPREP_TRACE=1：检索轨迹（recall 数据源）
             af.write(json.dumps(arow, ensure_ascii=False) + "\n"); af.flush()
             srow, jf = score_row(cname, model, arm, item, answer, mock, judge_label)
             if jf:

@@ -59,7 +59,10 @@ SKILL = ("你是备考教练。请依据本工作区已建立的 references/wiki
 RAWFILES = ("本文件夹里是这门课的原始材料文件（讲义、习题）。请先用工具查阅相关文件，再据此回答问题；"
             "材料未涵盖的内容请回答「材料中未涵盖」，不要编造或凭记忆作答。\n\n【问题】{q}\n\n请直接给出简洁答案。")
 
-_HARD = ("hit your limit", "usage limit", "resets ")
+_HARD = ("hit your limit", "usage limit", "resets ",
+         # 登录态失效也是硬错误（需要人工 /login）——曾把 "Not logged in" 当合法答案
+         # 记满整趟假跑（v4 复盘）：result 形状的基础设施通知绝不能进 answers
+         "not logged in", "please run /login", "authentication_error", "invalid api key")
 _TRANSIENT = ("temporarily limiting", "rate limited", "api error", "overloaded")
 
 

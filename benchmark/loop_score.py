@@ -362,8 +362,11 @@ def _notebook_index_ok(ws, anchor_cache):
 
 
 def _mistakes_entry_ok(ws, wrong_id):
+    """交付物存在性：错题本里**有真实错题条目块**（任一 chNN.md 里有 `## [#…]` 条目，fence-aware）。
+    不再要求 id == 内部金标 wrong_id——技能按语义命名条目（'toxo-cat-…'）而非 benchmark 内部 id，
+    「记录的是否恰为那道错题」已由 M4 存续探针（内容回忆）验证；本项只问「错题本非空」。"""
     d = os.path.join(ws, "mistakes")
-    if wrong_id in (None, "") or not os.path.isdir(d):
+    if not os.path.isdir(d):
         return 0
     for name in sorted(os.listdir(d)):
         if not name.endswith(".md") or name == "index.md":
@@ -378,8 +381,7 @@ def _mistakes_entry_ok(ws, wrong_id):
             fence, marker = _nb._fence_step(fence, line)
             if marker or fence is not None:
                 continue
-            m = _nb._HEAD_RE.match(line)
-            if m and m.group(1) == str(wrong_id):
+            if _nb._HEAD_RE.match(line):      # 任一真实条目块 = 错题本已落盘（非空）
                 return 1
     return 0
 

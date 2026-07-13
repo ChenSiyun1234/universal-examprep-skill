@@ -483,23 +483,35 @@ class FixesRegression(unittest.TestCase):
         self.assertIn(".run_meta", r.stderr)
 
     def test_generate_real_marker_answer_not_dropped(self):
-        # 合法答案含 "resets" 等词（ok=True）→ 不被当配额错丢弃
+        # 合法答案含 "resets" 等词（ok=True）→ 不被当配额错丢弃（v4：real_answer 5 元组带 files）
         orig = RM.real_answer
-        RM.real_answer = lambda *a, **k: ("the cache resets and usage limit is 5", 0.01, True, "")
+        RM.real_answer = lambda *a, **k: ("the cache resets and usage limit is 5", 0.01, True, "", None)
         try:
-            ans, cost, kind = RM._generate_real({}, {}, "opus", "closedbook", {"question": "q"})
+            ans, cost, kind, files = RM._generate_real({}, {}, "opus", "closedbook", {"question": "q"})
             self.assertEqual(kind, "ok")
             self.assertIn("resets", ans)
+            self.assertIsNone(files)
         finally:
             RM.real_answer = orig
 
     def test_generate_real_infra_error_classified_hard(self):
         # 真错误文本（ok=False）才走 classify → hard
         orig = RM.real_answer
-        RM.real_answer = lambda *a, **k: ("", None, False, "hit your limit; resets later")
+        RM.real_answer = lambda *a, **k: ("", None, False, "hit your limit; resets later", None)
         try:
-            ans, cost, kind = RM._generate_real({}, {}, "opus", "closedbook", {"question": "q"})
+            ans, cost, kind, files = RM._generate_real({}, {}, "opus", "closedbook", {"question": "q"})
             self.assertEqual(kind, "hard")
+        finally:
+            RM.real_answer = orig
+
+    def test_generate_real_passes_trace_files_through(self):
+        # EXAMPREP_TRACE 路径：files 随 ok 答案透传，最终进 answers 行的 files_opened
+        orig = RM.real_answer
+        RM.real_answer = lambda *a, **k: ("ans", 0.01, True, "", ["references/wiki/ch02.md"])
+        try:
+            ans, cost, kind, files = RM._generate_real({}, {}, "sonnet", "skill", {"question": "q"})
+            self.assertEqual(kind, "ok")
+            self.assertEqual(files, ["references/wiki/ch02.md"])
         finally:
             RM.real_answer = orig
 

@@ -263,12 +263,19 @@ class M5Deliverables(Base):
         self.assertEqual(s["c2"]["skill"]["m5_checklist"]["notebook_index"], 0)   # 目录死锚
 
     def test_mistakes_cheatsheet_and_pdf_flip(self):
-        ws = make_ws(self.tmp, mistake_ids=("q9",), cheatsheet=False, pdf_pages=3)
-        r = self._run_one(ws)                     # wrong_id=q2 不在错题本；无 md；PDF 3 页≠2
+        # 新语义：mistakes_entry 只问「错题本非空」——故用 EMPTY 错题本才让该项翻 0
+        ws = make_ws(self.tmp, mistake_ids=(), cheatsheet=False, pdf_pages=3)
+        r = self._run_one(ws)                     # 错题本空；无 md；PDF 3 页≠2
         self.assertEqual(r["m5_checklist"],
                          {"notebook_index": 1, "mistakes_entry": 0,
                           "cheatsheet_md": 0, "cheatsheet_pdf": 0})
         self.assertEqual(r["m5"], 0.25)
+
+    def test_mistakes_entry_ok_on_any_semantic_id(self):
+        # 技能按语义命名错题条目（非 benchmark 内部 wrong_id）——错题本有任一真实条目即记 1
+        ws = make_ws(self.tmp, mistake_ids=("toxo-cat-弓形虫",))   # wrong_id=q2，语义 id 不同
+        r = self._run_one(ws)
+        self.assertEqual(r["m5_checklist"]["mistakes_entry"], 1)
 
     def test_cheatsheet_md_flips_on_validate_errors(self):
         ws = make_ws(self.tmp)
