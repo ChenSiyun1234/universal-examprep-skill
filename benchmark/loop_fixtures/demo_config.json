@@ -10,7 +10,8 @@
       "questions": ["m01", "m02", "m03"],
       "quiz": ["m04", "m05"],
       "wrong_id": "m05",
-      "wrong_answer": "7 到 11 岁"
+      "wrong_answer": "7 到 11 岁",
+      "gist": ["皮亚杰", "前运算", "2 到 7 岁"]
     }
   ]
 }

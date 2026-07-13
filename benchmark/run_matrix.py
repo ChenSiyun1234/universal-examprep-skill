@@ -623,8 +623,10 @@ def run(cfg, mock, limit=0):
             arow = {"course": cname, "model": model, "arm": arm, "item_id": item["id"],
                     "answerable": bool(item.get("answerable", True)), "status": "ok",
                     "answer": answer, "cost_usd": cost or 0.0}
-            if files_opened:
-                arow["files_opened"] = files_opened   # EXAMPREP_TRACE=1：检索轨迹（recall 数据源）
+            if files_opened is not None:              # EXAMPREP_TRACE=1 时轨迹恒非 None（哪怕 []）
+                # 一个 Read/Glob/Grep 都没开的空轨迹 [] 也必须落盘：省了字段，retrieval_eval 会把它
+                # 当「没 trace」丢出召回分母，把「没检索到」的失败洗成召回虚高（Codex r3 P1）。
+                arow["files_opened"] = files_opened   # 检索轨迹（recall 数据源），[] = 检索 MISS
             af.write(json.dumps(arow, ensure_ascii=False) + "\n"); af.flush()
             srow, jf = score_row(cname, model, arm, item, answer, mock, judge_label)
             if jf:

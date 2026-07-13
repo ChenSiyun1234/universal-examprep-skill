@@ -181,6 +181,10 @@ def load_config(path):
         wa = c.get("wrong_answer")
         if not (isinstance(wa, str) and wa.strip()):
             _die("课程 %s 缺 wrong_answer（模拟学生答错时给出的似真错误答案文案）" % name)
+        gist = c.get("gist")   # 可选：错题 gist 关键词表，供 loop_score 的 M4「上次错了哪题」判分
+        if gist is not None and not (isinstance(gist, list) and gist
+                                     and all(isinstance(x, str) and x.strip() for x in gist)):
+            _die("课程 %s 的 gist（可选）必须是非空字符串关键词数组；留空则 M4 存续探针不可评" % name)
     model = cfg.get("model", "sonnet")
     if not (isinstance(model, str) and model.strip()):
         _die("config.model 必须是非空字符串（缺省 sonnet）")
@@ -649,6 +653,23 @@ def run_course_arm(cfg, course, items, arm, mock):
     done = {}
     for d in _read_sessions(sessions_path):            # 后行覆盖前行（非 ok 重跑后追加新行）
         done[(d["session"], int(d["turn"]))] = d
+    meta_path = os.path.join(dirp, "meta.json")
+    # Finding B（Codex r3）：有转写行却缺 meta.json（目录被删剩一半、或从别处拷来半份结果）——
+    # meta 是续跑指纹的唯一载体，缺了就无从校验这些 ok 转写是不是本课程/本配置打的。绝不能当
+    # 「干净新跑」静默复用：否则 ensure_meta 会照当前 config 现造一份 meta、把来路不明的旧转写
+    # 当成本配置的成果直接跳过。宁可大声失败，逼人换干净目录或整轮重跑。
+    if done and not os.path.isfile(meta_path):
+        _die("results 目录 %s 有 sessions.jsonl 转写却缺 meta.json——无法校验续跑指纹，拒绝把"
+             "来路不明的旧转写当本次新跑复用；请换干净 --results-dir，或删掉该目录整轮重跑" % dirp)
+    # Finding C（Codex r3）：skill 臂的 workspace/ 本身就是被判分的产物（M4 存续/M5 交付物都读它）。
+    # 转写记着某些轮已 ok（产物理应在 workspace/ 里），可 workspace/ 被删/没恢复——续跑会跳过那些
+    # ok 轮、却只重铺一个空的干净种子，最终判分对着空工作区，凭空丢掉本已产出的 notebook/错题/小抄。
+    # 同样大声失败，让人要么恢复 workspace/、要么删目录整轮重跑，绝不静默把满分产物洗成 0。
+    if arm == "skill" and any(r.get("status") == "ok" for r in done.values()) \
+            and not os.path.isdir(os.path.join(dirp, "workspace")):
+        _die("results 目录 %s 的转写记有已完成(ok)轮次，但被判分的 workspace/ 已不在——续跑会跳过"
+             "这些轮又只铺空种子，判分将凭空丢失已产出的 notebook/错题/小抄；请恢复 workspace/ 后"
+             "再续，或删掉该目录整轮重跑" % dirp)
     ws = prepare_workspace(course, arm, dirp)
     ensure_meta(dirp, cfg, course, arm, ws, mock)
     plan = build_sessions(course, items)
@@ -691,6 +712,26 @@ def run_course_arm(cfg, course, items, arm, mock):
     return 0
 
 
+def _emit_scorer_config(cfg):
+    """把驱动 config 里各课程的 gist 关键词翻成 loop_score 认的
+    {course: {"gist": {wrong_id: [...]}}}，落到 <results>/loop_config.json（Codex r3 P2）。
+    否则一次普通 loop_bench 跑完，loop_score 找不到关键词，M4「上次错了哪题」探针只能记 null、
+    整条跨会话存续指标白测——用户还得另手写一份 config 才评得了。只写有 gist 的课程；没配 gist
+    的课程留给 loop_score 照旧大声告警「不可评」（不硬造关键词、不假装可评）。"""
+    scorer = {c["name"]: {"gist": {c["wrong_id"]: list(c["gist"])}}
+              for c in cfg["courses"] if c.get("gist")}
+    if not scorer:
+        return
+    os.makedirs(cfg["results_dir"], exist_ok=True)
+    path = os.path.join(cfg["results_dir"], "loop_config.json")
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(scorer, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+    print("[loop] 已落判分关键词 → %s（%d 门课的 gist，loop_score 默认自动读取）"
+          % (path, len(scorer)))
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(
         description="备考全流程 loop benchmark 会话驱动器（bare vs skill；断点续跑、配额感知）")
@@ -702,6 +743,7 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     cfg = load_config(args.config)
+    _emit_scorer_config(cfg)   # 把 gist 关键词落到 <results>/loop_config.json，让 loop_score 直接可评 M4
     courses = cfg["courses"]
     if args.course:
         courses = [c for c in courses if c["name"] == args.course]

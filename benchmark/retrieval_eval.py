@@ -69,6 +69,9 @@ def _load_jsonl(path, label):
     return rows
 
 
+TRACED_ARMS = {"skill", "rawfiles"}   # 检索臂：无轨迹=检索 MISS，进召回分母
+
+
 def evaluate(answers, items, arm=None):
     gold = {}
     unmapped = []
@@ -89,16 +92,22 @@ def evaluate(answers, items, arm=None):
         iid = a.get("id") or a.get("item_id")
         if iid not in gold:
             continue
-        key = "%s|%s" % (a.get("model"), a.get("arm"))
+        a_arm = a.get("arm")
+        key = "%s|%s" % (a.get("model"), a_arm)
         cell = cells.setdefault(key, {"n_traced": 0, "n_hit": 0, "n_untraced": 0})
-        files = a.get("files_opened")
-        if not files:
+        # 只有 **检索臂（skill/rawfiles）且这一行确实被 trace 过** 才进召回分母。判据用字段**在场**
+        # （"files_opened" in a，哪怕值是 []）——字段在场 == 本行是 EXAMPREP_TRACE=1 下产出的：
+        # 开对含金标那一章=命中；开错章、或一个文件都没开（[]）**都是检索 MISS**，绝不能把空轨迹丢出
+        # 分母（会把「没检索到」洗成召回虚高，Codex r3 P1；配套地 run_matrix 现在空轨迹也落 []）。
+        # 非检索臂（闭卷）、或字段缺席（这份数据根本没开 trace）→ 记 untraced，不进召回、响亮计数。
+        if a_arm in TRACED_ARMS and "files_opened" in a:
+            cell["n_traced"] += 1
+            files = a.get("files_opened")
+            if files and gold[iid] in opened_chapters(files):
+                cell["n_hit"] += 1
+        else:
             cell["n_untraced"] += 1
             untraced += 1
-            continue
-        cell["n_traced"] += 1
-        if gold[iid] in opened_chapters(files):
-            cell["n_hit"] += 1
     for cell in cells.values():
         cell["recall"] = round(cell["n_hit"] / cell["n_traced"], 4) if cell["n_traced"] else None
     return {"cells": cells, "n_gold": len(gold), "unmapped_items": unmapped,

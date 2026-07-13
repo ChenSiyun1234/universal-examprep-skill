@@ -66,7 +66,7 @@ v4 measures the **whole study cycle**, not just single-question Q&A. We ran a pl
 | Grounding | Closed-book | With the skill |
 |---|:--:|:--:|
 | Materials-specific correctness | 2%–49% | **87%–100%** |
-| Retrieval hits the right chapter (recall@1) | — | **74%–100%** |
+| Retrieval hits the right chapter (recall@1) | — | **69%–100%** |
 | Out-of-scope: honest "not in the materials" | 50%–90% | **≈100%** |
 
 Full method, session scripts, deterministic scorers, and honest limitations → **[test report](benchmark/REPORT.en.md)**.

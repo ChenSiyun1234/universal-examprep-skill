@@ -87,5 +87,35 @@ class Evaluate(unittest.TestCase):
         self.assertNotIn("haiku|rawfiles", res["cells"])
 
 
+class EmptyVsAbsentTrace(unittest.TestCase):
+    """Codex r3 P1：EXAMPREP_TRACE=1 下一个文件都没开 → files_opened=[]（字段在场）。这类空轨迹
+    是**检索 MISS**，必须进召回分母；绝不能和「根本没开 trace」（字段缺席）混为一谈丢出分母，
+    否则「没检索到」的失败被洗掉、召回虚高。字段**在场**（哪怕 []）才算 traced。"""
+    ITEMS = [{"id": "q1", "source_file": "materials/lecture02.md", "answerable": True}]
+
+    def test_empty_files_opened_is_traced_miss(self):
+        res = rev.evaluate([{"id": "q1", "model": "opus", "arm": "skill", "files_opened": []}],
+                           self.ITEMS)
+        cell = res["cells"]["opus|skill"]
+        self.assertEqual((cell["n_traced"], cell["n_hit"]), (1, 0), "空轨迹=traced MISS，进分母")
+        self.assertEqual(cell["recall"], 0.0)
+        self.assertEqual(res["n_untraced_answers"], 0, "字段在场即已 trace，不该记 untraced")
+
+    def test_absent_files_opened_is_untraced(self):
+        res = rev.evaluate([{"id": "q1", "model": "opus", "arm": "skill"}], self.ITEMS)
+        self.assertNotIn("opus|skill", {k for k, c in res["cells"].items() if c["n_traced"]},
+                         "字段缺席=这份数据没开 trace → untraced，不硬判 MISS")
+        self.assertEqual(res["cells"]["opus|skill"]["n_untraced"], 1)
+        self.assertEqual(res["n_untraced_answers"], 1)
+
+    def test_empty_and_hit_mix_recall(self):
+        res = rev.evaluate([
+            {"id": "q1", "model": "opus", "arm": "skill", "files_opened": ["references/wiki/ch02.md"]},
+            {"id": "q1", "model": "sonnet", "arm": "skill", "files_opened": []},
+        ], self.ITEMS)
+        self.assertEqual(res["cells"]["opus|skill"]["recall"], 1.0)
+        self.assertEqual(res["cells"]["sonnet|skill"]["recall"], 0.0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

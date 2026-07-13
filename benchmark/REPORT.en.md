@@ -38,7 +38,7 @@ This section retains the matrix regression from earlier versions (judge Sonnet +
 
 *Chapter-routing recall@1 (new in v4), computed deterministically from the tool-call trace recorded via `EXAMPREP_TRACE=1`.*
 
-**Retrieval recall@1** (new in v4, computed deterministically from the agent's tool-call trace, no LLM judge involved): how often the skill routes to the chapter containing the gold answer — PSYC **96%–100%**, 6.006 **74%–100%**. This measures directly whether the new BM25 retrieval engine finds the right place, rather than only the downstream "was the answer correct" outcome.
+**Retrieval recall@1** (new in v4, computed deterministically from the agent's tool-call trace, no LLM judge involved): how often the skill routes to the chapter containing the gold answer — PSYC **96%–100%**, 6.006 **69%–100%**. This measures directly whether the new BM25 retrieval engine finds the right place, rather than only the downstream "was the answer correct" outcome.
 
 **Out-of-scope abstention**: closed-book **50%–90%**, with the skill **≈100%**. One honest caveat worth stating plainly: the Sonnet skill arm measured 90% on PSYC because of a **judge false positive** — the answer literally states "the material does not say how many minutes the final lasts" (which is a correct abstention), but volunteered an adjacent true fact alongside it, and the judge flagged that extra sentence as a hallucination. The true abstention rate is 100%.
 

@@ -336,6 +336,14 @@ class ConfigErrors(unittest.TestCase):
         cfg = make_env(self.tmp, course_over={"quiz": ["m04", "m99"], "wrong_id": "m99"})
         self._expect2(["--config", cfg, "--mock"])
 
+    def test_bad_gist_rejected(self):
+        """gist 可选，但给了就必须是非空字符串数组（空表/含非字符串 = 配置写错，fail-loud）。
+        每个坏值用独立临时目录（make_env 会 copytree，同目录二拷会 FileExistsError）。"""
+        for bad in ([], ["", "  "], [1, 2], "皮亚杰"):
+            sub = tempfile.mkdtemp(prefix="loopbench_gist_", dir=self.tmp)
+            cfg = make_env(sub, course_over={"gist": bad})
+            self._expect2(["--config", cfg, "--mock"])
+
 
 _STALE_PROGRESS_MD = (
     "# 🎯 《测试科目》复习进度与错题档案\n\n"
@@ -582,6 +590,92 @@ class ConfigFingerprintResume(unittest.TestCase):
             f.write("\n新增一段——技能定义被修改过。\n")
         self.assertEqual(LB.main(["--config", cfg, "--mock", "--arm", "bare"]), 0,
                          "bare 臂不读 skill_md，改它不该拒绝 bare 臂续跑")
+
+
+class OrphanAndWorkspaceGuards(unittest.TestCase):
+    """Codex r3：续跑前对「残缺 results 目录」大声失败，绝不静默把来路不明的旧转写当新跑复用。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="loopbench_guard_")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.cfg = make_env(self.tmp)
+
+    def _run_skill(self):
+        self.assertEqual(LB.main(["--config", self.cfg, "--mock", "--arm", "skill"]), 0)
+
+    def _dir(self):
+        return os.path.join(self.tmp, "results", "mini_skill")
+
+    def test_orphan_transcript_without_meta_refused(self):
+        """Finding B：有 sessions.jsonl 转写却缺 meta.json（指纹载体）——拒绝当干净新跑复用。"""
+        self._run_skill()
+        os.remove(os.path.join(self._dir(), "meta.json"))
+        with self.assertRaises(SystemExit) as cm:
+            LB.main(["--config", self.cfg, "--mock", "--arm", "skill"])
+        self.assertEqual(cm.exception.code, 2)
+
+    def test_missing_scored_workspace_refused(self):
+        """Finding C：转写记有 ok 轮但被判分的 workspace/ 没了——续跑会跳过这些轮又只铺空种子，
+        judge 凭空丢产物；必须大声失败而非静默洗成 0。"""
+        self._run_skill()
+        shutil.rmtree(os.path.join(self._dir(), "workspace"))
+        with self.assertRaises(SystemExit) as cm:
+            LB.main(["--config", self.cfg, "--mock", "--arm", "skill"])
+        self.assertEqual(cm.exception.code, 2)
+
+    def test_bare_arm_unaffected_by_workspace_guard(self):
+        """bare 臂不落 workspace/（就地在只读材料上干活）——workspace 守卫只管 skill 臂，
+        bare 臂正常续跑不该被它误伤。"""
+        self.assertEqual(LB.main(["--config", self.cfg, "--mock", "--arm", "bare"]), 0)
+        self.assertEqual(LB.main(["--config", self.cfg, "--mock", "--arm", "bare"]), 0)
+
+    def test_first_run_with_empty_dir_ok(self):
+        """空目录首跑不该被守卫误杀（没有转写行 → 既不算孤儿也不算丢工作区）。"""
+        self._run_skill()
+
+
+class ScorerConfigEmission(unittest.TestCase):
+    """Codex r3 Finding D：驱动器把课程 gist 落成 <results>/loop_config.json，让 loop_score 的
+    M4「上次错了哪题」探针开箱即评——用户不必再另手写一份判分 config。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="loopbench_scorer_")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def _res(self):
+        return os.path.join(self.tmp, "results")
+
+    def test_emits_loop_config_in_scorer_schema(self):
+        cfg = make_env(self.tmp, course_over={"gist": ["皮亚杰", "前运算", "2 到 7 岁"]})
+        self.assertEqual(LB.main(["--config", cfg, "--mock", "--arm", "skill"]), 0)
+        p = os.path.join(self._res(), "loop_config.json")
+        self.assertTrue(os.path.isfile(p), "有 gist 就必须落 loop_config.json")
+        with open(p, encoding="utf-8") as f:
+            sc = json.load(f)
+        self.assertEqual(sc, {"mini": {"gist": {WRONG_ID: ["皮亚杰", "前运算", "2 到 7 岁"]}}})
+
+    def test_no_gist_no_file(self):
+        """没配 gist 的课程不落文件——留给 loop_score 照旧大声告警「不可评」，不假装可评。"""
+        cfg = make_env(self.tmp)                       # make_env 默认不带 gist
+        self.assertEqual(LB.main(["--config", cfg, "--mock", "--arm", "skill"]), 0)
+        self.assertFalse(os.path.isfile(os.path.join(self._res(), "loop_config.json")))
+
+    def test_emitted_config_makes_m4_scorable(self):
+        """端到端：mock 跑完 → loop_score 默认读 <results>/loop_config.json → M4 可评（非 null），
+        且 skill 复现出错题 gist、bare 复现不出 → M4 gap 拉开。"""
+        sys.path.insert(0, os.path.join(ROOT, "benchmark"))
+        import loop_score as LS
+        cfg = make_env(self.tmp, course_over={"gist": ["皮亚杰", "前运算", "2 到 7 岁"]})
+        self.assertEqual(LB.main(["--config", cfg, "--mock"]), 0)   # 两臂都跑
+        out = os.path.join(self.tmp, "summary_loop.json")
+        LS.main(["--results", self._res(), "--out", out])
+        with open(out, encoding="utf-8") as f:
+            summary = json.load(f)
+        m4_skill = summary["mini"]["skill"]["m4"]
+        m4_bare = summary["mini"]["bare"]["m4"]
+        self.assertIsNotNone(m4_skill, "自动落的关键词必须让 M4 可评，不能还是 null")
+        self.assertEqual(m4_skill, 1.0, "skill 臂 S2 复现出错题 gist → M4 满分")
+        self.assertEqual(m4_bare, 0.0, "bare 臂无错题记忆 → M4 归零，gap 拉满")
 
 
 if __name__ == "__main__":
