@@ -45,6 +45,25 @@ class RunClaudeShapes(unittest.TestCase):
             os.environ.pop("EXAMPREP_TRACE", None)
 
 
+class AnswerRowTraceShape(unittest.TestCase):
+    """Codex r4 P2：EXAMPREP_TRACE=1 下空轨迹 [] 也必须落 files_opened，否则 retrieval_eval
+    按字段在场判 traced 会把「没检索到」的失败丢出召回分母、虚高 recall。None=未开 trace→不落。"""
+
+    def test_empty_trace_is_persisted(self):
+        row = gen._answer_row("psyc", "opus", "skill", "q1", "答", 0.1, [])
+        self.assertIn("files_opened", row, "空轨迹 [] 必须落盘（=检索 MISS），不能省字段")
+        self.assertEqual(row["files_opened"], [])
+
+    def test_none_trace_omits_field(self):
+        row = gen._answer_row("psyc", "opus", "closedbook", "q1", "答", 0.1, None)
+        self.assertNotIn("files_opened", row, "未开 trace（None）不落字段——才能与空轨迹 [] 区分")
+
+    def test_nonempty_trace_passes_through(self):
+        row = gen._answer_row("algo", "sonnet", "rawfiles", "q2", "答", 0.2,
+                              ["references/wiki/ch02.md"])
+        self.assertEqual(row["files_opened"], ["references/wiki/ch02.md"])
+
+
 class EnModeAliases(unittest.TestCase):
     def test_en_display_labels_canonicalize(self):
         for raw, want in [("teach from scratch", "from_scratch"),

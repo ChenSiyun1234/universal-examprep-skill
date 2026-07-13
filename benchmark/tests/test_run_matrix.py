@@ -483,23 +483,35 @@ class FixesRegression(unittest.TestCase):
         self.assertIn(".run_meta", r.stderr)
 
     def test_generate_real_marker_answer_not_dropped(self):
-        # 合法答案含 "resets" 等词（ok=True）→ 不被当配额错丢弃
+        # 合法答案含 "resets" 等词（ok=True）→ 不被当配额错丢弃（v4：real_answer 5 元组带 files）
         orig = RM.real_answer
-        RM.real_answer = lambda *a, **k: ("the cache resets and usage limit is 5", 0.01, True, "")
+        RM.real_answer = lambda *a, **k: ("the cache resets and usage limit is 5", 0.01, True, "", None)
         try:
-            ans, cost, kind = RM._generate_real({}, {}, "opus", "closedbook", {"question": "q"})
+            ans, cost, kind, files = RM._generate_real({}, {}, "opus", "closedbook", {"question": "q"})
             self.assertEqual(kind, "ok")
             self.assertIn("resets", ans)
+            self.assertIsNone(files)
         finally:
             RM.real_answer = orig
 
     def test_generate_real_infra_error_classified_hard(self):
         # 真错误文本（ok=False）才走 classify → hard
         orig = RM.real_answer
-        RM.real_answer = lambda *a, **k: ("", None, False, "hit your limit; resets later")
+        RM.real_answer = lambda *a, **k: ("", None, False, "hit your limit; resets later", None)
         try:
-            ans, cost, kind = RM._generate_real({}, {}, "opus", "closedbook", {"question": "q"})
+            ans, cost, kind, files = RM._generate_real({}, {}, "opus", "closedbook", {"question": "q"})
             self.assertEqual(kind, "hard")
+        finally:
+            RM.real_answer = orig
+
+    def test_generate_real_passes_trace_files_through(self):
+        # EXAMPREP_TRACE 路径：files 随 ok 答案透传，最终进 answers 行的 files_opened
+        orig = RM.real_answer
+        RM.real_answer = lambda *a, **k: ("ans", 0.01, True, "", ["references/wiki/ch02.md"])
+        try:
+            ans, cost, kind, files = RM._generate_real({}, {}, "sonnet", "skill", {"question": "q"})
+            self.assertEqual(kind, "ok")
+            self.assertEqual(files, ["references/wiki/ch02.md"])
         finally:
             RM.real_answer = orig
 
@@ -712,6 +724,40 @@ class HardeningB4X(unittest.TestCase):
         self.assertEqual(RM._config_fingerprint(cfg), fp_default)
         cfg["judge_model"] = "sonnet"
         self.assertNotEqual(RM._config_fingerprint(cfg), fp_default)
+
+    def test_fingerprint_changes_with_trace_env(self):
+        # Finding 5：EXAMPREP_TRACE=1 让答案行长出 files_opened（检索轨迹）——这是答案的**形状**，
+        # 不只是运行时旁路，必须进指纹；否则对一个已完成的未开轨迹 results_dir 开
+        # EXAMPREP_TRACE=1 重跑，resume 会把所有任务当"已判分"直接跳过，轨迹永远补不进去。
+        cfg = self._fp_cfg(["closedbook"], "v1")
+        old = os.environ.get("EXAMPREP_TRACE")
+        try:
+            os.environ.pop("EXAMPREP_TRACE", None)
+            fp_untraced = RM._config_fingerprint(cfg)
+            os.environ["EXAMPREP_TRACE"] = "1"
+            fp_traced = RM._config_fingerprint(cfg)
+            self.assertNotEqual(fp_untraced, fp_traced)
+        finally:
+            if old is None:
+                os.environ.pop("EXAMPREP_TRACE", None)
+            else:
+                os.environ["EXAMPREP_TRACE"] = old
+
+    def test_trace_rerun_of_untraced_dir_refused(self):
+        # 端到端：先完整跑一遍（未开轨迹），再用 EXAMPREP_TRACE=1 重跑同一 results_dir——
+        # 必须被识别成"配置变了"而拒绝（而不是把所有任务当已判分静默跳过、轨迹永远补不上）。
+        self._mock_run()
+        old = os.environ.get("EXAMPREP_TRACE")
+        os.environ["EXAMPREP_TRACE"] = "1"
+        try:
+            r = self._mock_run()
+        finally:
+            if old is None:
+                os.environ.pop("EXAMPREP_TRACE", None)
+            else:
+                os.environ["EXAMPREP_TRACE"] = old
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("不同的 config", r.stderr)
 
     # ---- 聚合子进程的警告透传 ----
     def test_ragged_warning_forwarded_through_runner(self):

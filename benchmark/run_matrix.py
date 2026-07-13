@@ -213,11 +213,17 @@ def mock_answer(arm, item):
 _QUOTA_RESULT_RE = re.compile(
     r"you'?ve hit your (usage )?limit|hit your limit.{0,40}reset|usage limit reached|"
     r"reached your (usage )?limit|限额|额度已用完", re.I)
+# 登录/认证类通知同样会被 claude 当 result 返回（v4 复盘：登录态过期时整趟 1,251 条"作答"
+# 全是 "Not logged in · Please run /login" 且被当合法答案入账）。与配额同一判定通道：
+# 短 result + 词表命中 → infra 错误，绝不入 answers。
+_AUTH_RESULT_RE = re.compile(
+    r"not logged in|please run /login|invalid api key|authentication[ _]error|"
+    r"credentials? (expired|invalid)|未登录", re.I)
 
 
 def _is_quota_notice(res):
     r = (res or "").strip()
-    return len(r) <= 220 and bool(_QUOTA_RESULT_RE.search(r))
+    return len(r) <= 220 and bool(_QUOTA_RESULT_RE.search(r) or _AUTH_RESULT_RE.search(r))
 
 
 def _gen_claude(prompt, model, cwd=None, skill=False, timeout=900):
@@ -226,7 +232,13 @@ def _gen_claude(prompt, model, cwd=None, skill=False, timeout=900):
     例外：整个 result 就是一条**短限额通知**（撞上限时 claude 把通知当 result 返回）→ 判配额 infra_error。
     只有拿不到 result（非 JSON / 空 result / 超时 / 异常 / 纯限额通知）才 ok=False，再对**错误文本**分类。
     （STDIN 传 prompt：material 臂会塞进整门课 ~100-230K 字符，走 argv 会撞 Windows WinError 206。）"""
-    args = ["claude", "-p", "--output-format", "json", "--model", model]
+    # EXAMPREP_TRACE=1 → stream-json 记工具轨迹（检索 recall 数据源；Codex r5 后 gen 侧同门控）。
+    # 返回形状恒为 5 元组 (answer, cost, ok, err, files)——本文件内部私有调用链，外部契约不变。
+    trace = os.environ.get("EXAMPREP_TRACE") == "1"
+    if trace:
+        args = ["claude", "-p", "--output-format", "stream-json", "--verbose", "--model", model]
+    else:
+        args = ["claude", "-p", "--output-format", "json", "--model", model]
     if skill:
         args += ["--allowedTools", "Read", "Glob", "Grep"]
     workdir = os.path.join(HERE, cwd) if cwd else HERE
@@ -234,19 +246,26 @@ def _gen_claude(prompt, model, cwd=None, skill=False, timeout=900):
         p = subprocess.run(args, cwd=workdir, input=prompt, capture_output=True,
                            text=True, encoding="utf-8", timeout=timeout)
     except subprocess.TimeoutExpired:
-        return "", None, False, "TIMEOUT"
+        return "", None, False, "TIMEOUT", None
     except Exception as e:                              # 绝不让一次坏调用弄崩整趟
-        return "", None, False, "API Error: %s" % e
+        return "", None, False, "API Error: %s" % e, None
+    if trace:
+        res, cost, files = gen.parse_stream_events(p.stdout)
+        if res.strip():
+            if _is_quota_notice(res):
+                return "", cost, False, res.strip(), None
+            return res, cost, True, "", files
+        return "", cost, False, (p.stdout or p.stderr or "").strip(), None
     try:
         data = json.loads(p.stdout)
     except json.JSONDecodeError:
-        return "", None, False, (p.stdout or p.stderr or "").strip()
+        return "", None, False, (p.stdout or p.stderr or "").strip(), None
     res = data.get("result") or ""
     if res.strip():
         if _is_quota_notice(res):            # 整个 result 就是限额通知 → 配额 infra_error（err 含通知原文，
-            return "", data.get("total_cost_usd"), False, res.strip()   # gen.classify → hard → 触发续跑重打
-        return res, data.get("total_cost_usd"), True, ""
-    return "", data.get("total_cost_usd"), False, (p.stdout or p.stderr or "").strip()
+            return "", data.get("total_cost_usd"), False, res.strip(), None   # gen.classify → hard → 触发续跑重打
+        return res, data.get("total_cost_usd"), True, "", None
+    return "", data.get("total_cost_usd"), False, (p.stdout or p.stderr or "").strip(), None
 
 
 def real_answer(cfg, course, model, arm, item):
@@ -351,19 +370,19 @@ def _classify(text):
 
 
 def _generate_real(cfg, course, model, arm, item):
-    """真跑一题：瞬时错误/超时退避重试 3 次。返回 (answer, cost, kind)。
+    """真跑一题：瞬时错误/超时退避重试 3 次。返回 (answer, cost, kind, files)。
     成功用 _gen_claude 的 ok 信号判定（不看答案文本），失败才对**错误文本**分类 hard/transient——
-    合法答案里含 resets/usage limit 等词不再被误判成配额错。"""
+    合法答案里含 resets/usage limit 等词不再被误判成配额错。files 仅 EXAMPREP_TRACE=1 时非 None。"""
     cost = 0.0
     for attempt in range(3):
-        ans, cost, ok, err = real_answer(cfg, course, model, arm, item)
+        ans, cost, ok, err, files = real_answer(cfg, course, model, arm, item)
         if ok:
-            return ans, cost or 0.0, "ok"
+            return ans, cost or 0.0, "ok", files
         kind = _classify(err)
         if kind == "hard":
-            return "", cost or 0.0, "hard"
+            return "", cost or 0.0, "hard", None
         time.sleep(5 * (attempt + 1) ** 2)             # 5s, 20s, 45s（仅真跑触发）
-    return "", cost or 0.0, "transient"
+    return "", cost or 0.0, "transient", None
 
 
 def _read_ledger(path):
@@ -458,12 +477,18 @@ def _dir_hash(d):
 
 def _config_fingerprint(cfg):
     """决定任务集 + 判分的配置指纹：课程名 + **items/combined 内容 + raw_ws/skill_ws 目录内容** +
-    模型/臂/主次课程 + judge_model。改了任一（含就地重生成材料/wiki、改题、换裁判）→ 指纹变 → 拒绝复用旧目录。"""
+    模型/臂/主次课程 + judge_model + trace 模式（EXAMPREP_TRACE）。改了任一（含就地重生成材料/
+    wiki、改题、换裁判、开关轨迹）→ 指纹变 → 拒绝复用旧目录。"""
     # **保持顺序**（不 sort）——任务序是 course×arm×model×item，--limit 按此切片、resume 跳已判分 key，
     # 所以重排课程/臂/模型对部分跑并不等价，理应算不同配置、不复用同一 results_dir。
     # 材料/workspace 只在**选了对应臂**时才进指纹——没选 material 臂时改 combined 不影响判分，
     # 不该拒续跑（判分只读 items 金标）。judge_model 存**判分实际用的**解析值（缺省=haiku），
     # 事后把默认值写显式不该被当成"换了裁判"。
+    # trace（Finding 5）：EXAMPREP_TRACE=1 会让 _gen_claude 走 stream-json、给答案行加
+    # files_opened——这是答案的**形状**，不只是运行时旁路。若不进指纹，对一个已完成的未开轨迹
+    # results_dir 开 EXAMPREP_TRACE=1 重跑，resume 会把所有任务当"已判分"直接跳过（`todo` 按
+    # scored key 过滤，不看 trace 开没开），answers 永远补不上 files_opened，retrieval_eval 就
+    # 找不到任何轨迹——必须让这种重跑被识别成"配置变了"而不是静默什么都不做。
     arms = set(cfg["arms"])
     sig = {
         "courses": [(c["name"], _file_hash(c.get("items")),
@@ -476,6 +501,7 @@ def _config_fingerprint(cfg):
         "primary": cfg["primary_course"],
         "secondary": cfg.get("secondary_course"),
         "judge_model": cfg.get("judge_model") or "haiku",
+        "trace": os.environ.get("EXAMPREP_TRACE") == "1",
     }
     return hashlib.md5(json.dumps(sig, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
@@ -577,9 +603,9 @@ def run(cfg, mock, limit=0):
                 n_rescore += 1
                 continue
             if mock:
-                answer, cost = mock_answer(arm, item), 0.0
+                answer, cost, files_opened = mock_answer(arm, item), 0.0, None
             else:
-                answer, cost, kind = _generate_real(cfg, course, model, arm, item)
+                answer, cost, kind, files_opened = _generate_real(cfg, course, model, arm, item)
                 if kind == "hard":
                     hard_streak += 1
                     n_skip += 1                         # 硬失败也是跳过——计数，让"未完成不聚合"守卫触发
@@ -597,6 +623,10 @@ def run(cfg, mock, limit=0):
             arow = {"course": cname, "model": model, "arm": arm, "item_id": item["id"],
                     "answerable": bool(item.get("answerable", True)), "status": "ok",
                     "answer": answer, "cost_usd": cost or 0.0}
+            if files_opened is not None:              # EXAMPREP_TRACE=1 时轨迹恒非 None（哪怕 []）
+                # 一个 Read/Glob/Grep 都没开的空轨迹 [] 也必须落盘：省了字段，retrieval_eval 会把它
+                # 当「没 trace」丢出召回分母，把「没检索到」的失败洗成召回虚高（Codex r3 P1）。
+                arow["files_opened"] = files_opened   # 检索轨迹（recall 数据源），[] = 检索 MISS
             af.write(json.dumps(arow, ensure_ascii=False) + "\n"); af.flush()
             srow, jf = score_row(cname, model, arm, item, answer, mock, judge_label)
             if jf:

@@ -42,3 +42,9 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Run unittest (stdlib only, no install needed)
         run: python -m unittest discover -s tests -v
+      - name: Run benchmark unittest (stdlib only; mock paths, no LLM/network)
+        # benchmark/tests 里的回归套件（含登录/凭证通知 test_auth_notice、判分与断点续跑守卫）
+        # 之前不在 CI 发现范围内，PR 上这些回归可能悄悄复活。这些用例只 subprocess 到 python 跑
+        # --mock 路径、零网络零 claude，CI 安全。cwd=benchmark 让 `import run_matrix` 等能解析。
+        working-directory: benchmark
+        run: python -m unittest discover -s tests -v

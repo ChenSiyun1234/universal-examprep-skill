@@ -12,7 +12,7 @@ English · [中文](README.zh.md)
 [![MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/ZeKaiNie/universal-examprep-skill/actions/workflows/ci.yml/badge.svg)](https://github.com/ZeKaiNie/universal-examprep-skill/actions)
 
-**Never fabricates: 100% honest abstention** · in-your-materials-not-the-model's-head 11% → ~99% · context −90% · 6 agents
+**Close the chat, nothing's lost: cross-session recall 0 → 100%** · grounded 87–100% · never fabricates (≈100% abstention) · context −90%
 
 </div>
 
@@ -45,35 +45,31 @@ The difference isn't tone. It's whether each claim lands back in your materials.
 
 ## Numbers
 
-The skill's value is **grounding**: connecting what's in your materials but not in the model's head — **accurately**, and **never fabricated**. Two real measurements (judge: Sonnet):
+v4 measures the **whole study cycle**, not just single-question Q&A. We ran a plain no-skill agent and the skill on the **same materials, same questions, same session scripts** (teach 3 → quiz → *fresh* next-day recall → cheat-sheet), and scored the study-loop metrics **deterministically** — no LLM judge, just parsing what landed on disk.
 
-**① In your materials, not in the model — the skill goes from 11% up to 100%.** Details mined from course transcripts (the professor's examples, obscure studies, exact numbers) that world knowledge can't answer; closed-book collapses, hand the materials back and it returns:
+**① The night-before payoff — a no-skill agent leaves you empty-handed.** It scores **0 on every durability dimension**: it can't recall what you got wrong once the chat closes, leaves no study artifacts, and cites no checkable source. The skill does all three.
 
-<div align="center"><img src="benchmark/docs/img/hard_psyc_correct_en.svg" width="600" alt="materials-specific: closed-book vs with the skill" /></div>
+<div align="center"><img src="benchmark/docs/img/v4_loop_en.svg" width="600" alt="study-cycle durability: no skill vs with skill" /></div>
 
-| Course · Model | Closed-book | Raw files + generic agent | With the skill |
-|---|:--:|:--:|:--:|
-| PSYC 110 · Opus 4.8 | 11% | 98% | **100%** |
-| PSYC 110 · Sonnet 4.6 | 13% | 100% | **100%** |
-| PSYC 110 · Haiku 4.5 | 11% | 98% | **100%** |
-| 6.006 · Haiku 4.5 | 45% | 89% | **91%** |
+| What survives the night | No skill | With the skill |
+|---|:--:|:--:|
+| **Recall across sessions** — a *brand-new* chat, "which did I get wrong?": it reads your mistake book off disk and tells you the exact question | **0%** | **100%** |
+| **Durable artifacts** — notebook + mistake book + a printable cheat-sheet PDF left in your workspace | **0%** | **81%** |
+| **Verifiable sources** — every taught claim carries a source label you can check | **0%** | **58%** ¹ |
 
-**② Not in the materials at all — the skill says "not covered" 100% of the time.** On out-of-scope probes, with the skill (and raw files) **all three models, both courses, abstain honestly 100%**; closed-book only 60%–90% (it fabricates a plausible answer). This is the most direct anti-hallucination measure.
+¹ One-shot automated runs are noisier than a real interactive session (PSYC 100%, 6.006 17% — the model doesn't always emit the source line under harder algorithm content; interactively it iterates until it does). The load-bearing result is the *structural* zero for no-skill on all three.
 
-<div align="center"><img src="benchmark/docs/img/oos_psyc_abst_en.svg" width="560" alt="out-of-scope probes: honest abstention rate" /></div>
+**② In the moment, it stays grounded and honest.** On details only someone who read your materials would know, closed-book collapses and the skill returns; on questions the materials don't answer, it abstains instead of fabricating; and its retrieval routes to the right chapter most of the time (judge: Sonnet; deterministic recall trace).
 
-The skill matches a "raw files agent" on accuracy but costs less — it pulls only the compressed relevant chapters instead of re-scanning the whole file pile each question:
+<div align="center"><img src="benchmark/docs/img/v4_psyc_correct_en.svg" width="460" alt="materials-specific correctness" /> <img src="benchmark/docs/img/v4_recall_en.svg" width="380" alt="retrieval recall@1" /></div>
 
-<details><summary>Cost per question (same accuracy, less spend)</summary>
+| Grounding | Closed-book | With the skill |
+|---|:--:|:--:|
+| Materials-specific correctness | 2%–49% | **87%–100%** |
+| Retrieval hits the right chapter (recall@1) | — | **69%–100%** |
+| Out-of-scope: honest "not in the materials" | 50%–90% | **≈100%** |
 
-| Cost / question | Closed-book | Raw files agent | With the skill |
-|---|:--:|:--:|:--:|
-| PSYC 110 | $0.033 | $0.117 | **$0.102** |
-| 6.006 | $0.034 | $0.066 | **$0.063** |
-
-</details>
-
-Full method, three-arm design, judge calibration, cost, limitations → **[test report](benchmark/REPORT.en.md)**.
+Full method, session scripts, deterministic scorers, and honest limitations → **[test report](benchmark/REPORT.en.md)**.
 
 ---
 

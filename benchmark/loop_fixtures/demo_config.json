@@ -1,0 +1,17 @@
+{
+  "model": "sonnet",
+  "results_dir": "../results/loop_demo",
+  "courses": [
+    {
+      "name": "mini",
+      "skill_ws": "mini_course/ws",
+      "materials": "mini_course/materials",
+      "items": "mini_course/items.jsonl",
+      "questions": ["m01", "m02", "m03"],
+      "quiz": ["m04", "m05"],
+      "wrong_id": "m05",
+      "wrong_answer": "7 到 11 岁",
+      "gist": ["皮亚杰", "前运算", "2 到 7 岁"]
+    }
+  ]
+}
