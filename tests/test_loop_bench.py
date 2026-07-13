@@ -337,10 +337,27 @@ class ConfigErrors(unittest.TestCase):
         self._expect2(["--config", cfg, "--mock"])
 
 
+_STALE_PROGRESS_MD = (
+    "# 🎯 《测试科目》复习进度与错题档案\n\n"
+    "## ⏱️ 当前复习断点\n"
+    "* **当前进行阶段**：阶段 3\n\n"
+    "---\n\n"
+    "## ❌ 错题档案记录（考前扫雷核心）\n\n"
+    "| 错题ID | 关联章节 | 题目内容简述 | 错误原因分析 | 状态 |\n"
+    "| :--- | :--- | :--- | :--- | :--- |\n"
+    "| [#stale_q9] | ch03 | 旧错题 | 旧原因分析 | 待复盘 |\n\n"
+    "---\n\n"
+    "## 💡 概念疑难点记录\n\n"
+    "| 序号 | 章节 | 疑难点 | 解答要点 | 状态 |\n"
+    "| :--- | :--- | :--- | :--- | :--- |\n"
+    "| [#stale_c1] | ch02 | 旧疑难点 | 旧要点 | 待回顾 |\n"
+)
+
+
 class SeedWorkspaceStripping(unittest.TestCase):
     """Finding 4：seed 用的 skill_ws 源若已带旧跑/人工用过的运行时产物（notebook/mistakes/
-    cheatsheet/study_state.json），拷贝进 results 工作区后必须先剥净——不能让 S1 还没开始
-    就带着"上一轮存续"的证据，让 M4/M5 白捡分。"""
+    cheatsheet/study_state.json/study_progress.md），拷贝进 results 工作区后必须先剥净——不能让
+    S1 还没开始就带着"上一轮存续"的证据，让 M4/M5 白捡分。"""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="loopbench_strip_")
@@ -361,6 +378,10 @@ class SeedWorkspaceStripping(unittest.TestCase):
             f.write(b"%PDF-1.4 fake old pdf\n")
         with open(os.path.join(src, "study_state.json"), "w", encoding="utf-8") as f:
             f.write("{}")
+        # Finding 1：study_state.json 一删，study_progress.md 就是技能契约唯一的错题/疑难点/
+        # 断点读取来源——源里若带着已推进的阶段 + 非空错题/疑难点表，同样要被剥净。
+        with open(os.path.join(src, "study_progress.md"), "w", encoding="utf-8") as f:
+            f.write(_STALE_PROGRESS_MD)
         return src
 
     def _course(self, src):
@@ -386,6 +407,19 @@ class SeedWorkspaceStripping(unittest.TestCase):
         # 源工作区本身不被动——绝不原地改写源（run_matrix 复用同一份源目录的前提）
         self.assertTrue(os.path.isdir(os.path.join(src, "notebook")))
         self.assertTrue(os.path.isfile(os.path.join(src, "cheatsheet.md")))
+        src_prog = open(os.path.join(src, "study_progress.md"), encoding="utf-8").read()
+        self.assertIn("stale_q9", src_prog, "源工作区的 study_progress.md 本身不该被动")
+
+        # Finding 1 回归钉：study_progress.md 必须存在且已清空——不是删掉，是重渲染成
+        # phase=1、错题/疑难点表全空的干净视图（study_state.json 缺失时它是技能契约的
+        # fallback 读取来源，留着旧痕迹 = 白捡 M4/M5 分）。
+        prog = open(os.path.join(ws, "study_progress.md"), encoding="utf-8").read()
+        self.assertNotIn("stale_q9", prog, "旧错题条目不能残留在剥净后的 study_progress.md 里")
+        self.assertNotIn("stale_c1", prog, "旧疑难点条目不能残留在剥净后的 study_progress.md 里")
+        self.assertNotIn("旧错题", prog)
+        self.assertNotIn("旧疑难点", prog)
+        self.assertNotIn("阶段 3", prog, "旧的已推进阶段不能残留")
+        self.assertIn("阶段 1", prog, "剥净后必须回落到阶段 1")
 
     def test_resume_does_not_re_strip_own_run_artifacts(self):
         """续跑（workspace 已存在）绝不能再剥一次——那时里面的产物是这一轮自己刚写的。"""
@@ -396,14 +430,21 @@ class SeedWorkspaceStripping(unittest.TestCase):
         os.makedirs(os.path.join(ws, "notebook"), exist_ok=True)
         with open(os.path.join(ws, "notebook", "ch01.md"), "w", encoding="utf-8") as f:
             f.write("## [#this-run] 本轮条目\n\n> 精讲\n\n本轮正文。\n\n---\n")
+        marker = "\n\n<!-- 本轮真实写下的进度标记 -->\n"
+        with open(os.path.join(ws, "study_progress.md"), "a", encoding="utf-8") as f:
+            f.write(marker)
         ws2 = LB.prepare_workspace(self._course(src), "skill", dirp)   # 续跑：目录已存在，不再剥
         self.assertEqual(ws, ws2)
         self.assertTrue(os.path.isfile(os.path.join(ws2, "notebook", "ch01.md")),
                         "续跑绝不能剥掉这一轮自己刚写的产物")
+        prog = open(os.path.join(ws2, "study_progress.md"), encoding="utf-8").read()
+        self.assertIn("本轮真实写下的进度标记", prog,
+                     "续跑绝不能重渲染掉这一轮自己刚写的 study_progress.md")
 
     def test_end_to_end_mock_run_starts_clean_despite_stale_seed(self):
         """端到端：源 skill_ws 带旧痕迹时，mock 全跑完，笔记本/错题本里必须只有**这一轮**写的
-        条目（qid 前缀 m0x），旧的 #stale 条目不能混在里面。"""
+        条目（qid 前缀 m0x），旧的 #stale 条目不能混在里面；study_progress.md 也不带旧错题/
+        疑难点/已推进阶段（mock 的 skill 臂从不写 study_progress.md，剥净后应保持干净）。"""
         src = self._make_stale_source("src_ws3")
         cfg = make_env(self.tmp, course_over={"skill_ws": src})
         rc = LB.main(["--config", cfg, "--mock", "--arm", "skill"])
@@ -412,6 +453,9 @@ class SeedWorkspaceStripping(unittest.TestCase):
         nb = open(os.path.join(ws, "notebook", "ch01.md"), encoding="utf-8").read()
         self.assertNotIn("#stale", nb, "旧条目不能残留在这一轮的笔记本里")
         self.assertIn("#m01", nb, "这一轮真实教学条目必须存在")
+        prog = open(os.path.join(ws, "study_progress.md"), encoding="utf-8").read()
+        self.assertNotIn("stale_q9", prog, "旧错题不能残留在这一轮的 study_progress.md 里")
+        self.assertNotIn("stale_c1", prog, "旧疑难点不能残留在这一轮的 study_progress.md 里")
 
 
 class ConfigFingerprintResume(unittest.TestCase):
@@ -493,6 +537,51 @@ class ConfigFingerprintResume(unittest.TestCase):
         with self.assertRaises(SystemExit) as cm:
             LB.main(["--config", self.cfg, "--mock", "--arm", "skill"])
         self.assertEqual(cm.exception.code, 2)
+
+    def _cfg_with_skill_md(self, skill_md_path):
+        """复用 setUp 里已拷好的同一份 mini_course 树（同 _cfg_with_override），额外把顶层
+        cfg.skill_md 指向一个可控的临时文件——默认 make_env 不设 skill_md 时会落到真实仓库的
+        SKILL.md，没法在测试里就地改内容。"""
+        course = {"name": "mini", "skill_ws": "mini_course/ws",
+                  "materials": "mini_course/materials", "items": "mini_course/items.jsonl",
+                  "questions": list(TEACH_IDS), "quiz": list(QUIZ_IDS),
+                  "wrong_id": WRONG_ID, "wrong_answer": "7 到 11 岁"}
+        cfg = {"model": "sonnet", "results_dir": "results", "courses": [course],
+               "skill_md": skill_md_path}
+        path = os.path.join(self.tmp, "loop_skill_md.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False)
+        return path
+
+    def test_changing_skill_md_content_refused_on_resume(self):
+        """Finding 3：resume 指纹必须包含 skill_md **内容**——SKILL_PREAMBLE 每轮都嵌入
+        cfg["skill_md"] 并要求模型先读它。技能定义变了却复用旧 results_dir，若指纹不认它，
+        ensure_meta 会把旧账本当"配置没变"放行续跑——报告悄悄测量的却是旧版技能。"""
+        skill_md = os.path.join(self.tmp, "SKILL_test.md")
+        with open(skill_md, "w", encoding="utf-8") as f:
+            f.write("# 技能定义 v1\n\n初始版本正文。\n")
+        cfg = self._cfg_with_skill_md(skill_md)
+        self.assertEqual(LB.main(["--config", cfg, "--mock", "--arm", "skill"]), 0)
+        # 先确认内容不变时能正常续跑——隔离出 skill_md 内容才是下面拒绝续跑的唯一变量
+        self.assertEqual(LB.main(["--config", cfg, "--mock", "--arm", "skill"]), 0)
+        with open(skill_md, "a", encoding="utf-8") as f:
+            f.write("\n新增一段——技能定义被修改过。\n")
+        with self.assertRaises(SystemExit) as cm:
+            LB.main(["--config", cfg, "--mock", "--arm", "skill"])
+        self.assertEqual(cm.exception.code, 2)
+
+    def test_bare_arm_ignores_skill_md_changes(self):
+        """bare 臂前导语从不引用 skill_md——改它不该让 bare 臂的续跑被拒绝（与
+        run_matrix._config_fingerprint「材料/workspace 只在选了对应臂时才进指纹」同一立场）。"""
+        skill_md = os.path.join(self.tmp, "SKILL_test2.md")
+        with open(skill_md, "w", encoding="utf-8") as f:
+            f.write("# 技能定义 v1\n\n初始版本正文。\n")
+        cfg = self._cfg_with_skill_md(skill_md)
+        self.assertEqual(LB.main(["--config", cfg, "--mock", "--arm", "bare"]), 0)
+        with open(skill_md, "a", encoding="utf-8") as f:
+            f.write("\n新增一段——技能定义被修改过。\n")
+        self.assertEqual(LB.main(["--config", cfg, "--mock", "--arm", "bare"]), 0,
+                         "bare 臂不读 skill_md，改它不该拒绝 bare 臂续跑")
 
 
 if __name__ == "__main__":

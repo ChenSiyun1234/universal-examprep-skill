@@ -357,5 +357,48 @@ class M6CostAndWarnings(Base):
         self.assertTrue(any("缺 bare 臂" in w for w in summary["_warnings"]))
 
 
+# ---------------- 断点续跑去重（Finding 2） ----------------
+
+class ResumeDedup(Base):
+    """驱动器断点续跑对失败行（quota_stop/infra_error）保留原位、成功后**追加**新的 ok 行——
+    冻结转写接口写明"消费者按 (session, turn) 取最后一行"。判分器之前直接对原始行打分，被
+    resume 覆盖的失败行会和取代它的 ok 行一起被计入 n_quota_stops/n_turns/成本，重复计数。"""
+
+    def test_superseded_quota_stop_row_not_double_counted(self):
+        ws = make_ws(self.tmp)
+        rows = [
+            row("S1", 1, "教我第1题", "无来源一。", cost=0.01),
+            row("S1", 2, "教我第2题", "无来源二。", cost=0.01),
+            # 撞配额那次的占位行——保留原位，cost 非零以确认它不会被重复求和
+            row("S1", 3, "教我第3题", "You've hit your usage limit · resets 10am",
+                status="quota_stop", cost=0.5),
+            # resume 成功后追加的真行——冻结接口的"最后一行"
+            row("S1", 3, "教我第3题",
+                "真实讲解见 [wiki](references/wiki/ch01.md)。", status="ok", cost=0.02),
+        ]
+        self.write_run("c1", "skill", rows, make_meta(ws))
+        r = self.run_scorer()["c1"]["skill"]
+        self.assertEqual(r["n_turns"], 3, "按 (session, turn) 去重后只剩 3 个回合")
+        self.assertEqual(r["n_quota_stops"], 0, "被 resume 覆盖的 quota_stop 行不能再计入")
+        self.assertAlmostEqual(r["m6_total_usd"], 0.04, places=6,
+                               msg="被超越行的 0.5 成本不能重复求和进总成本")
+        # M1：turn3 只剩 ok 版本，且它带 wiki 出处 → 计入且判过；quota_stop 的占位文本不参与判分
+        self.assertEqual((r["m1_verified"], r["m1_claims"]), (1, 3))
+        self.assertAlmostEqual(r["m1"], 1 / 3, places=4)
+
+    def test_superseded_infra_error_row_not_double_counted(self):
+        # infra_error 同样是「保留原位 + resume 后追加 ok 行」的失败态，去重口径一致
+        ws = make_ws(self.tmp)
+        rows = [
+            row("S1", 1, "教我第1题", "API Error: boom", status="infra_error", cost=None),
+            row("S1", 1, "教我第1题", "无来源一。", status="ok", cost=0.03),
+        ]
+        self.write_run("c1", "skill", rows, make_meta(ws))
+        r = self.run_scorer()["c1"]["skill"]
+        self.assertEqual(r["n_turns"], 1)
+        self.assertAlmostEqual(r["m6_total_usd"], 0.03, places=6)
+        self.assertEqual(r["m1_claims"], 1, "去重后只有 1 个可评教学回合（ok 版本）")
+
+
 if __name__ == "__main__":
     unittest.main()

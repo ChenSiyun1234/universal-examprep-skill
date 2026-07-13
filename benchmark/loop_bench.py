@@ -26,14 +26,17 @@ skill 臂的工作区（meta.workspace 指向处）在跑完后**本身就是评
 工程约定：
 · skill 臂在 <results_dir>/<course>_skill/workspace 上工作——**开跑时从 config.skill_ws 拷贝**，
   拷贝后立刻剥净 notebook/mistakes/cheatsheet.md/cheatsheet.pdf/study_state.json 等运行时产物
-  （若源 skill_ws 已带旧跑/人工用过的痕迹，照抄会让 M4/M5 白捡分——见 Finding 4）。
+  （若源 skill_ws 已带旧跑/人工用过的痕迹，照抄会让 M4/M5 白捡分——见 Finding 4），并把
+  study_progress.md 重渲染回空错题/疑难点/阶段 1 的干净视图（study_state.json 一删，它就是技能
+  契约唯一的 fallback 读取源——留着旧痕迹是同一类白捡分，见 Finding 1）。
   绝不原地改写源工作区：psyc110_full 等还被 run_matrix 复用，其 _dir_hash 配置指纹一变，
   矩阵臂就全部拒绝续跑。bare 臂 cwd=materials（只读工具，材料不会被写脏）。
 · 断点续跑：sessions.jsonl 里 status=ok 的 (session, turn) 直接跳过（回答用于重建前缀）；
   非 ok 行视作未完成，重跑后**追加**新行——消费者按 (session, turn) 取**最后一行**。resume 时
   额外核对 meta.config_fingerprint（items 内容+materials/skill_ws 目录内容+wrong_id/
-  wrong_answer/questions/quiz）与当前 config 一致——变了（哪怕题目 id 没变）就拒绝复用，
-  防止拿新 prompt 续跑对着旧账本打分（Finding 2）。
+  wrong_answer/questions/quiz，skill 臂再加 skill_md **内容**——每轮前导语都嵌入它、要求模型
+  先读，技能定义变了不能被当"配置没变"续跑，见 Finding 3）与当前 config 一致——变了（哪怕题目
+  id 没变）就拒绝复用，防止拿新 prompt 续跑对着旧账本打分（Finding 2）。
 · 配额感知：回答是限额通知（复用 run_matrix._is_quota_notice + gen.classify 的 hard 词表）→
   落一行 status=quota_stop 并**干净地停**（退出码 7，供外层 runner 退避重试）；
   瞬时错误重试 3 次仍失败 → status=infra_error，退出码 1（转写出现空洞，后续轮的前缀
@@ -76,8 +79,9 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 import gen                                  # noqa: E402  parse_stream_events / classify 复用
-import run_matrix as RM                     # noqa: E402  _is_quota_notice 复用（唯一实现）
+import run_matrix as RM                     # noqa: E402  _is_quota_notice / _file_hash 复用（唯一实现）
 import notebook as NB                       # noqa: E402  entry_anchor + 官方落盘路径（mock 用）
+import update_progress as UP                # noqa: E402  render_md/default_state（Finding 1 清空用）
 
 FIXTURES = os.path.join(HERE, "loop_fixtures")
 ARMS = ("bare", "skill")
@@ -509,8 +513,14 @@ def _read_sessions(path):
 RUNTIME_ARTIFACT_DIRS = ("notebook", "mistakes")
 RUNTIME_ARTIFACT_FILES = ("cheatsheet.md", "cheatsheet.pdf",
                           "study_state.json")   # 进度结构化事实源（update_progress.py 的
-                          # STATE_NAME）——同样是运行时产物；study_progress.md 本身是 ingest
-                          # 生成的静态大纲，缺 state 时有 no-Python 兜底渲染路径，不动它。
+                          # STATE_NAME）——同样是运行时产物。study_progress.md 单独处理（见下）：
+                          # 它不能只删/留原样——study_state.json 一旦没了，技能契约的官方 fallback
+                          # 就是改读 study_progress.md（scripts/update_progress.py 顶部 docstring：
+                          # "a workspace WITHOUT study_state.json keeps working (no-Python
+                          # fallback: hand-written study_progress.md still validates)"；
+                          # skills/exam-review/SKILL.md 同样写明 state 缺失时错题/疑难点表改读
+                          # study_progress.md）——留着源里可能带的旧错题/疑难点/已推进阶段，
+                          # 就是把「上一轮」的痕迹当成本轮的存续证据（Finding 1）。
 
 
 def _strip_runtime_artifacts(ws):
@@ -527,6 +537,21 @@ def _strip_runtime_artifacts(ws):
         p = os.path.join(ws, name)
         if os.path.isfile(p):
             os.remove(p)
+    _reset_study_progress(ws)
+
+
+def _reset_study_progress(ws):
+    """Finding 1：study_state.json 剥掉后，study_progress.md 变成技能契约的**唯一**错题/疑难点/
+    断点读取来源——源里若带着旧跑（或人工用过）留下的已推进阶段/非空错题表/疑难点表，原样留着
+    就是让技能把"上一轮"的痕迹当成本轮的存续证据，重演 Finding 4 同一类白捡分。
+    用 update_progress.render_md(default_state()) 直接调库函数重渲染——这是官方唯一的
+    state→md 渲染实现（真跑时 update_progress.py 的每次 save() 都用它生成 study_progress.md），
+    不新造第二套格式；也不必先造一个 study_state.json 再删（`update_progress.py render` 的 CLI
+    路径需要 state 文件存在，直接调库函数绕开这个前提）。产出：phase=1、错题/疑难点/打卡表全空
+    ——与「刚建库、一次都没跑过」的工作区应有的断点一致。"""
+    p = os.path.join(ws, "study_progress.md")
+    with open(p, "w", encoding="utf-8", newline="\n") as f:
+        f.write(UP.render_md(UP.default_state()))
 
 
 def prepare_workspace(course, arm, dirp):
@@ -541,13 +566,19 @@ def prepare_workspace(course, arm, dirp):
     return dst
 
 
-def _config_fingerprint(course):
+def _config_fingerprint(cfg, course, arm):
     """决定 S1-S3 会话脚本的 prompt 内容 + 判分口径的配置指纹：items **文件内容**、materials/
     skill_ws **目录内容**（含就地重生成 wiki/工作区——路径没变但内容变了也要让指纹变，
-    run_matrix._config_fingerprint 同一立场）+ wrong_id/wrong_answer/questions/quiz 取值。
-    改了任一，即便题目 id 照旧（同一批 wrong_id/questions/quiz），旧账本也是对着**旧** prompt
-    写的——续跑必须拒绝复用（Finding 2）。哈希用文件/目录内容而非仅路径字符串，专治"config 路径
-    没变、但底下文件被就地改写"这种最容易被忽略的漏网场景。"""
+    run_matrix._config_fingerprint 同一立场）+ wrong_id/wrong_answer/questions/quiz 取值 +
+    （仅 skill 臂）skill_md **文件内容**。改了任一，即便题目 id 照旧（同一批 wrong_id/questions/
+    quiz），旧账本也是对着**旧** prompt 写的——续跑必须拒绝复用（Finding 2）。哈希用文件/目录内容
+    而非仅路径字符串，专治"config 路径没变、但底下文件被就地改写"这种最容易被忽略的漏网场景。
+
+    skill_md 只在 arm=="skill" 时才进指纹（Finding 3）：SKILL_PREAMBLE 每轮都嵌入 cfg["skill_md"]
+    并要求模型先读它——技能定义变了却复用旧 results_dir，ensure_meta 会把旧账本当"配置没变"放行
+    续跑，报告悄悄测量的却是旧版技能。bare 臂前导语从不引用 skill_md，改它不该拒绝 bare 臂续跑
+    ——与 run_matrix._config_fingerprint「材料/workspace 只在选了对应臂时才进指纹」同一立场，
+    避免臂无关的资源变化触发误报的"配置变了"。"""
     sig = {
         "items": RM._file_hash(course.get("items")),
         "materials": RM._dir_hash(course.get("materials")),
@@ -556,6 +587,7 @@ def _config_fingerprint(course):
         "wrong_answer": course.get("wrong_answer"),
         "questions": list(course.get("questions") or []),
         "quiz": list(course.get("quiz") or []),
+        "skill_md": RM._file_hash(cfg.get("skill_md")) if arm == "skill" else None,
     }
     return hashlib.sha256(
         json.dumps(sig, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
@@ -565,10 +597,11 @@ def ensure_meta(dirp, cfg, course, arm, ws, mock):
     """meta.json：冻结键 + 附加键。已有 meta（续跑）时核对 mock/real 与题目配置一致——
     mock 占位混进真跑目录、或换了题还复用旧目录，转写就成了对不上的杂拌；config_fingerprint
     另外核对 items/materials/skill_ws/wrong_answer 等**内容**是否也没变（Finding 2——这些字段
-    单独看未必等值改变就能查出，比如就地重生成 wiki）。"""
+    单独看未必等值改变就能查出，比如就地重生成 wiki）；skill 臂还核对 skill_md **内容**
+    （Finding 3——技能定义变了却复用旧账本，报告会悄悄测量成旧版技能）。"""
     meta_path = os.path.join(dirp, "meta.json")
     mode = "mock" if mock else "real"
-    fp = _config_fingerprint(course)
+    fp = _config_fingerprint(cfg, course, arm)
     want = {"model": cfg["model"], "workspace": ws, "materials": course["materials"],
             "questions": list(course["questions"]), "wrong_id": course["wrong_id"],
             # 附加键（判分器只依赖上面的冻结键；这些是给人/续跑核对用的）：

@@ -66,7 +66,16 @@ _HARD = ("hit your limit", "usage limit", "resets ")
 # 报错处理完全合情合理！）——必须只在**整个回答本身就是一条基础设施通知**时才拦，不能是长真答案
 # 里顺带提到就被当substring 误伤而整题丢弃（Finding 3）。跟 run_matrix._is_quota_notice 同一套
 # 守卫：短长度门槛 + 词表命中，两者都满足才判 hard；只对内容分类，不做正则/大小写以外的改动。
-_AUTH_HARD = ("not logged in", "please run /login", "authentication_error", "invalid api key")
+#
+# Finding 4：这里必须和 run_matrix._AUTH_RESULT_RE 是**同一份词表**——gen 不能 import run_matrix
+# （run_matrix 反过来 import gen，会成环），只能各自维护一份正则，靠人工同步。此前 gen 这边是一个
+# 不完整的子串元组（漏了 "credentials (expired|invalid)"、"未登录"、"authentication error"
+# 的空格变体——只认下划线形 "authentication_error"），会让这些短登录/认证通知从 len<=220 门槛
+# 漏网、被当合法答案缓存进 gen_answers.jsonl，重演这条注释开头说的那次事故。
+# 【keep in sync with run_matrix._AUTH_RESULT_RE —— 改一处务必同步改另一处】
+_AUTH_RESULT_RE = re.compile(
+    r"not logged in|please run /login|invalid api key|authentication[ _]error|"
+    r"credentials? (expired|invalid)|未登录", re.I)
 _AUTH_LEN_GATE = 220   # 与 run_matrix._is_quota_notice 的 220 字符门槛同口径
 _TRANSIENT = ("temporarily limiting", "rate limited", "api error", "overloaded")
 
@@ -85,7 +94,7 @@ def classify(text):
     t = stripped.lower()
     if any(h in t for h in _HARD):
         return "hard"
-    if len(stripped) <= _AUTH_LEN_GATE and any(a in t for a in _AUTH_HARD):
+    if len(stripped) <= _AUTH_LEN_GATE and _AUTH_RESULT_RE.search(stripped):
         return "hard"
     if any(x in t for x in _TRANSIENT):
         return "transient"

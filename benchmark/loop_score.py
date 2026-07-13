@@ -12,6 +12,10 @@ Input（冻结转写接口，由 loop_bench 驱动器产出）:
                                              "wrong_id","started"}
   跑完后的 workspace 目录本身是被评物（S1-S3 会改写它）。
 
+  断点续跑账本可能对同一 (session, turn) 有多行（失败行 quota_stop/infra_error 保留原位、resume
+  成功后追加新的 ok 行）——`score_arm` 读账本后先按 (session, turn) 折叠、只保留**最后一行**
+  再喂给下面四项度量，否则被取代的失败行会和取代它的 ok 行一起被 M1/M6 重复计入。
+
 四项度量（全部确定性，零 LLM）：
 
 M1 溯源可核验率（claim proxy —— 诚实声明）
@@ -162,6 +166,22 @@ def _read_sessions(path):
     except OSError as e:
         _die("%s 无法读取（%s）" % (path, e))
     return rows
+
+
+def _dedupe_by_last(rows):
+    """按 (session, turn) 折叠、保留**最后一行**（Finding 2）：驱动器断点续跑对失败行
+    （quota_stop/infra_error）保留原位、成功后**追加**新的 ok 行——loop_bench 冻结接口写明
+    "消费者按 (session, turn) 取最后一行"。判分器之前直接对原始行打分，被 resume 覆盖的
+    quota_stop/infra_error 行会和取代它的 ok 行一起被 M1/M6 计入：n_quota_stops/n_turns/成本
+    重复计数，M1 还可能把同一回合判两次（一次用旧配额通知文本、一次用真答案文本）。必须在传
+    给任何 M1/M4/M6 之前先按此口径折叠——保序（同 key 内取最后出现的，返回顺序=首次出现顺序）。"""
+    last, order = {}, []
+    for r in rows:
+        key = (r.get("session"), r.get("turn"))
+        if key not in last:
+            order.append(key)
+        last[key] = r
+    return [last[k] for k in order]
 
 
 # ---------------- 路径解析（realpath 归属校验，与仓库其它工具同口径） ----------------
@@ -444,7 +464,7 @@ def score_m6(rows):
 
 def score_arm(arm_dir, course, arm, config, results_dir, warnings):
     tag = "%s_%s" % (course, arm)
-    rows = _read_sessions(os.path.join(arm_dir, SESSIONS_NAME))
+    rows = _dedupe_by_last(_read_sessions(os.path.join(arm_dir, SESSIONS_NAME)))
     meta = _read_json(os.path.join(arm_dir, META_NAME))
     if not isinstance(meta, dict):
         _die("%s/meta.json 顶层必须是对象" % arm_dir)

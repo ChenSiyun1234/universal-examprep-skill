@@ -477,12 +477,18 @@ def _dir_hash(d):
 
 def _config_fingerprint(cfg):
     """决定任务集 + 判分的配置指纹：课程名 + **items/combined 内容 + raw_ws/skill_ws 目录内容** +
-    模型/臂/主次课程 + judge_model。改了任一（含就地重生成材料/wiki、改题、换裁判）→ 指纹变 → 拒绝复用旧目录。"""
+    模型/臂/主次课程 + judge_model + trace 模式（EXAMPREP_TRACE）。改了任一（含就地重生成材料/
+    wiki、改题、换裁判、开关轨迹）→ 指纹变 → 拒绝复用旧目录。"""
     # **保持顺序**（不 sort）——任务序是 course×arm×model×item，--limit 按此切片、resume 跳已判分 key，
     # 所以重排课程/臂/模型对部分跑并不等价，理应算不同配置、不复用同一 results_dir。
     # 材料/workspace 只在**选了对应臂**时才进指纹——没选 material 臂时改 combined 不影响判分，
     # 不该拒续跑（判分只读 items 金标）。judge_model 存**判分实际用的**解析值（缺省=haiku），
     # 事后把默认值写显式不该被当成"换了裁判"。
+    # trace（Finding 5）：EXAMPREP_TRACE=1 会让 _gen_claude 走 stream-json、给答案行加
+    # files_opened——这是答案的**形状**，不只是运行时旁路。若不进指纹，对一个已完成的未开轨迹
+    # results_dir 开 EXAMPREP_TRACE=1 重跑，resume 会把所有任务当"已判分"直接跳过（`todo` 按
+    # scored key 过滤，不看 trace 开没开），answers 永远补不上 files_opened，retrieval_eval 就
+    # 找不到任何轨迹——必须让这种重跑被识别成"配置变了"而不是静默什么都不做。
     arms = set(cfg["arms"])
     sig = {
         "courses": [(c["name"], _file_hash(c.get("items")),
@@ -495,6 +501,7 @@ def _config_fingerprint(cfg):
         "primary": cfg["primary_course"],
         "secondary": cfg.get("secondary_course"),
         "judge_model": cfg.get("judge_model") or "haiku",
+        "trace": os.environ.get("EXAMPREP_TRACE") == "1",
     }
     return hashlib.md5(json.dumps(sig, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
