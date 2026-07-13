@@ -59,10 +59,15 @@ SKILL = ("你是备考教练。请依据本工作区已建立的 references/wiki
 RAWFILES = ("本文件夹里是这门课的原始材料文件（讲义、习题）。请先用工具查阅相关文件，再据此回答问题；"
             "材料未涵盖的内容请回答「材料中未涵盖」，不要编造或凭记忆作答。\n\n【问题】{q}\n\n请直接给出简洁答案。")
 
-_HARD = ("hit your limit", "usage limit", "resets ",
-         # 登录态失效也是硬错误（需要人工 /login）——曾把 "Not logged in" 当合法答案
-         # 记满整趟假跑（v4 复盘）：result 形状的基础设施通知绝不能进 answers
-         "not logged in", "please run /login", "authentication_error", "invalid api key")
+_HARD = ("hit your limit", "usage limit", "resets ")
+# 登录态失效也是硬错误（需要人工 /login）——曾把 "Not logged in" 当合法答案
+# 记满整趟假跑（v4 复盘）：result 形状的基础设施通知绝不能进 answers。
+# 但这几个词一样会出现在**正当的答案正文**里（CS 课程讨论 "invalid API key" / "not logged in"
+# 报错处理完全合情合理！）——必须只在**整个回答本身就是一条基础设施通知**时才拦，不能是长真答案
+# 里顺带提到就被当substring 误伤而整题丢弃（Finding 3）。跟 run_matrix._is_quota_notice 同一套
+# 守卫：短长度门槛 + 词表命中，两者都满足才判 hard；只对内容分类，不做正则/大小写以外的改动。
+_AUTH_HARD = ("not logged in", "please run /login", "authentication_error", "invalid api key")
+_AUTH_LEN_GATE = 220   # 与 run_matrix._is_quota_notice 的 220 字符门槛同口径
 _TRANSIENT = ("temporarily limiting", "rate limited", "api error", "overloaded")
 
 
@@ -76,8 +81,11 @@ def read(path):
 
 
 def classify(text):
-    t = (text or "").lower()
+    stripped = (text or "").strip()
+    t = stripped.lower()
     if any(h in t for h in _HARD):
+        return "hard"
+    if len(stripped) <= _AUTH_LEN_GATE and any(a in t for a in _AUTH_HARD):
         return "hard"
     if any(x in t for x in _TRANSIENT):
         return "transient"

@@ -24,11 +24,16 @@ skill 臂的工作区（meta.workspace 指向处）在跑完后**本身就是评
 ──────────────────────────────────────────────────────────────────────────────
 
 工程约定：
-· skill 臂在 <results_dir>/<course>_skill/workspace 上工作——**开跑时从 config.skill_ws 拷贝**。
+· skill 臂在 <results_dir>/<course>_skill/workspace 上工作——**开跑时从 config.skill_ws 拷贝**，
+  拷贝后立刻剥净 notebook/mistakes/cheatsheet.md/cheatsheet.pdf/study_state.json 等运行时产物
+  （若源 skill_ws 已带旧跑/人工用过的痕迹，照抄会让 M4/M5 白捡分——见 Finding 4）。
   绝不原地改写源工作区：psyc110_full 等还被 run_matrix 复用，其 _dir_hash 配置指纹一变，
   矩阵臂就全部拒绝续跑。bare 臂 cwd=materials（只读工具，材料不会被写脏）。
 · 断点续跑：sessions.jsonl 里 status=ok 的 (session, turn) 直接跳过（回答用于重建前缀）；
-  非 ok 行视作未完成，重跑后**追加**新行——消费者按 (session, turn) 取**最后一行**。
+  非 ok 行视作未完成，重跑后**追加**新行——消费者按 (session, turn) 取**最后一行**。resume 时
+  额外核对 meta.config_fingerprint（items 内容+materials/skill_ws 目录内容+wrong_id/
+  wrong_answer/questions/quiz）与当前 config 一致——变了（哪怕题目 id 没变）就拒绝复用，
+  防止拿新 prompt 续跑对着旧账本打分（Finding 2）。
 · 配额感知：回答是限额通知（复用 run_matrix._is_quota_notice + gen.classify 的 hard 词表）→
   落一行 status=quota_stop 并**干净地停**（退出码 7，供外层 runner 退避重试）；
   瞬时错误重试 3 次仍失败 → status=infra_error，退出码 1（转写出现空洞，后续轮的前缀
@@ -49,6 +54,7 @@ skill 臂的工作区（meta.workspace 指向处）在跑完后**本身就是评
 """
 import argparse
 import datetime
+import hashlib
 import io
 import json
 import os
@@ -500,28 +506,76 @@ def _read_sessions(path):
     return rows
 
 
+RUNTIME_ARTIFACT_DIRS = ("notebook", "mistakes")
+RUNTIME_ARTIFACT_FILES = ("cheatsheet.md", "cheatsheet.pdf",
+                          "study_state.json")   # 进度结构化事实源（update_progress.py 的
+                          # STATE_NAME）——同样是运行时产物；study_progress.md 本身是 ingest
+                          # 生成的静态大纲，缺 state 时有 no-Python 兜底渲染路径，不动它。
+
+
+def _strip_runtime_artifacts(ws):
+    """把刚拷贝进来的工作区剥回「刚建库、一次都没跑过」的干净状态（Finding 4）：源 skill_ws
+    若已带着上一次跑（或人工用过）留下的 notebook/mistakes/cheatsheet/study_state.json，原样
+    拷进 results 工作区会让 M4（存续）/M5（交付物完备性）白捡分——本轮明明什么都没讲、没判、
+    没落盘，判分器却看见"早就有了"。只在**首次**拷贝后、S1 开跑前调用一次；续跑绝不能碰
+    （那时工作区里的产物是这一轮自己写的，剥了就是自毁转写）。"""
+    for name in RUNTIME_ARTIFACT_DIRS:
+        p = os.path.join(ws, name)
+        if os.path.isdir(p):
+            shutil.rmtree(p)
+    for name in RUNTIME_ARTIFACT_FILES:
+        p = os.path.join(ws, name)
+        if os.path.isfile(p):
+            os.remove(p)
+
+
 def prepare_workspace(course, arm, dirp):
-    """skill 臂：<results>/<course>_skill/workspace（首跑从 skill_ws 拷贝、续跑原样保留——
-    S1 的落盘就是 S2/S3 的记忆）。bare 臂：直接在材料文件夹里干活（只读工具）。"""
+    """skill 臂：<results>/<course>_skill/workspace（首跑从 skill_ws 拷贝 + 剥净运行时产物、
+    续跑原样保留——S1 的落盘就是 S2/S3 的记忆）。bare 臂：直接在材料文件夹里干活（只读工具）。"""
     if arm == "bare":
         return course["materials"]
     dst = os.path.join(dirp, "workspace")
     if not os.path.isdir(dst):
         shutil.copytree(course["skill_ws"], dst)
+        _strip_runtime_artifacts(dst)
     return dst
+
+
+def _config_fingerprint(course):
+    """决定 S1-S3 会话脚本的 prompt 内容 + 判分口径的配置指纹：items **文件内容**、materials/
+    skill_ws **目录内容**（含就地重生成 wiki/工作区——路径没变但内容变了也要让指纹变，
+    run_matrix._config_fingerprint 同一立场）+ wrong_id/wrong_answer/questions/quiz 取值。
+    改了任一，即便题目 id 照旧（同一批 wrong_id/questions/quiz），旧账本也是对着**旧** prompt
+    写的——续跑必须拒绝复用（Finding 2）。哈希用文件/目录内容而非仅路径字符串，专治"config 路径
+    没变、但底下文件被就地改写"这种最容易被忽略的漏网场景。"""
+    sig = {
+        "items": RM._file_hash(course.get("items")),
+        "materials": RM._dir_hash(course.get("materials")),
+        "skill_ws": RM._dir_hash(course.get("skill_ws")),
+        "wrong_id": course.get("wrong_id"),
+        "wrong_answer": course.get("wrong_answer"),
+        "questions": list(course.get("questions") or []),
+        "quiz": list(course.get("quiz") or []),
+    }
+    return hashlib.sha256(
+        json.dumps(sig, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
 
 def ensure_meta(dirp, cfg, course, arm, ws, mock):
     """meta.json：冻结键 + 附加键。已有 meta（续跑）时核对 mock/real 与题目配置一致——
-    mock 占位混进真跑目录、或换了题还复用旧目录，转写就成了对不上的杂拌。"""
+    mock 占位混进真跑目录、或换了题还复用旧目录，转写就成了对不上的杂拌；config_fingerprint
+    另外核对 items/materials/skill_ws/wrong_answer 等**内容**是否也没变（Finding 2——这些字段
+    单独看未必等值改变就能查出，比如就地重生成 wiki）。"""
     meta_path = os.path.join(dirp, "meta.json")
     mode = "mock" if mock else "real"
+    fp = _config_fingerprint(course)
     want = {"model": cfg["model"], "workspace": ws, "materials": course["materials"],
             "questions": list(course["questions"]), "wrong_id": course["wrong_id"],
             # 附加键（判分器只依赖上面的冻结键；这些是给人/续跑核对用的）：
             "course": course["name"], "arm": arm, "mode": mode,
             "quiz": list(course["quiz"]), "wrong_answer": course["wrong_answer"],
-            "items": course["items"], "cheatsheet_pages": CHEATSHEET_PAGES}
+            "items": course["items"], "cheatsheet_pages": CHEATSHEET_PAGES,
+            "config_fingerprint": fp}
     if arm == "skill":
         want["skill_md"] = cfg["skill_md"]
     if os.path.isfile(meta_path):
@@ -535,6 +589,15 @@ def ensure_meta(dirp, cfg, course, arm, ws, mock):
                 _die("results 目录 %s 的 meta.%s 与当前 config 不一致（%r vs %r）——"
                      "mock/real 或题目配置混目录；请换一个 results_dir"
                      % (dirp, k, prev.get(k), want[k]))
+        if not prev.get("config_fingerprint"):
+            _die("results 目录 %s 的 meta.json 缺 config_fingerprint（大概率是本次修复前生成的旧"
+                 "账本，没法核对 items/materials/skill_ws/wrong_answer 是否也没变）——无法安全续跑；"
+                 "请换一个干净的 --results-dir，或删除该目录重新跑" % dirp)
+        elif prev["config_fingerprint"] != fp:
+            _die("results 目录 %s 的配置指纹变了——items/materials/skill_ws/wrong_answer 等实际"
+                 "取值/内容与上次不同（即便题目 id 没变），旧转写是对着旧 prompt 打的，继续续跑会"
+                 "拿新配置的判分标准套旧回答；请换一个干净的 --results-dir，或删除该目录重新跑"
+                 % dirp)
         return prev
     want["started"] = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
     tmp = meta_path + ".tmp"

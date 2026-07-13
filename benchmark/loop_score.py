@@ -27,9 +27,12 @@ M1 溯源可核验率（claim proxy —— 诚实声明）
   代理指标，不是句级；换取的是 100% 确定性与零判分成本。
 
 M4 跨会话存续率
-  S2 的两个探针（先按用户话语正则分类，兜底按轮次顺序）：
-    A「上次错了哪题」: assistant 含 meta.wrong_id（ASCII 边界防 q2 误配 q20），或 config 的
-      gist 关键词覆盖 ≥60%；
+  S2 的两个探针（先按用户话语正则分类，兜底按轮次顺序；驱动器目前只发探针 A 一轮——探针 B
+  缺席是单探针协议的设计如此，不告警，见下）：
+    A「上次错了哪题」: config 的 gist 关键词在 assistant 里覆盖 ≥60% **才**算过——单纯报出/
+      提到 wrong_id 这个 token（哪怕一字不差）不是充分条件：「说不清是不是 q5，反正没有错题本」
+      这种事实上的弃答，光靠报数字就能唬过判分，必须要求真实内容回忆（正向信号）。config 缺该题
+      gist 时探针 A **不可评**（大声告警 + 计入 m4_unscored，不硬造 0 分也不假装满分）。
     B「再给我看一眼 <q1>」: config 按题给的 keywords（确定性词表）在 assistant 里覆盖 ≥60%，
       q1 = config[course].reshow_question 或 meta.questions[0]。
   m4 = 通过探针 / 可评探针。config 缺该题 keywords 时探针 B **不可评**（大声告警 + 计入
@@ -266,14 +269,6 @@ def _coverage(keywords, text):
     return hits / len(keywords) if keywords else 0.0
 
 
-def _id_hit(wid, text):
-    """wrong_id 以 ASCII 边界匹配（q2 不误配 q20；「第q2题」「#q2」都命中）。"""
-    if not wid:
-        return False
-    return bool(re.search(r"(?<![A-Za-z0-9_])" + re.escape(str(wid)) + r"(?![A-Za-z0-9])",
-                          text or "", re.I))
-
-
 def _pick_probes(s2_rows):
     """(probe_a_row|None, probe_b_row|None)：先按用户话语正则各认领一行，剩的按轮次顺序补位。"""
     a = next((r for r in s2_rows if _WRONG_PROBE_RE.search(r.get("user") or "")), None)
@@ -301,15 +296,21 @@ def score_m4(rows, meta, course_cfg, warnings, tag):
 
     if probe_a is not None:
         wid = meta.get("wrong_id")
-        gist = (course_cfg.get("gist") or {}).get(str(wid), []) if wid is not None else []
         if wid in (None, ""):
             unscored += 1
             _warn(warnings, "%s: meta.wrong_id 缺失——错题探针不可评" % tag)
         else:
-            probes += 1
-            ans = probe_a.get("assistant") or ""
-            if _id_hit(wid, ans) or (gist and _coverage(gist, ans) >= COVERAGE_THRESHOLD):
-                passed += 1
+            gist = (course_cfg.get("gist") or {}).get(str(wid))
+            if not gist:
+                unscored += 1
+                _warn(warnings, "%s: config 缺题 %r 的 gist 关键词——「上次错了哪题」探针不可评"
+                      "（不硬造 0 分也不假装满分；光报出/提到 wrong_id 这个 token 不算数——"
+                      "必须是真实内容回忆的正向信号）" % (tag, wid))
+            else:
+                probes += 1
+                ans = probe_a.get("assistant") or ""
+                if _coverage(gist, ans) >= COVERAGE_THRESHOLD:
+                    passed += 1
     else:
         _warn(warnings, "%s: S2 缺「上次错了哪题」探针回合" % tag)
 
@@ -325,7 +326,9 @@ def score_m4(rows, meta, course_cfg, warnings, tag):
             probes += 1
             if _coverage(kws, probe_b.get("assistant") or "") >= COVERAGE_THRESHOLD:
                 passed += 1
-    else:
+    elif len(ok2) >= 2:
+        # 单探针协议下（驱动器只发探针 A 一轮）b 缺席是设计如此，不告警；只有「S2 明明有 ≥2 轮
+        # 却没配出探针 B」这种真异常才告警（_pick_probes 的兜底通常总能配出，这里纯防御）。
         _warn(warnings, "%s: S2 缺「再给我看一眼」探针回合" % tag)
 
     if probes == 0:

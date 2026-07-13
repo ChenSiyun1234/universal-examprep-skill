@@ -36,7 +36,22 @@ class AuthNoticeDetection(unittest.TestCase):
         long_answer = ("要登录 MIT OCW 下载讲义时，如果页面提示 not logged in，"
                        "点右上角登录即可。" + "这是正文补充说明。" * 30)
         self.assertFalse(RM._is_quota_notice(long_answer))
+        self.assertGreater(len(long_answer.strip()), 220)
+        # Finding 3 回归钉：gen.main() 直接对生成的**答案正文**调用 classify()——之前是无长度
+        # 门槛的子串匹配，这句长答案会被误判 hard、整题静默丢弃。必须和 RM._is_quota_notice 一样
+        # 只拦"整个回答就是一条短通知"的形状，长真答案里顺带提到 not logged in 必须保留为 ok。
+        self.assertEqual(gen.classify(long_answer), "ok")
         self.assertEqual(gen.classify(""), "ok")
+
+    def test_long_cs_course_answer_mentioning_invalid_api_key_stays_valid(self):
+        # Finding 3 的具体场景：CS 课程正当讨论 "invalid API key" 报错处理——不是基础设施通知，
+        # 不该被当成认证失效整题丢弃。
+        long_answer = (
+            "当客户端收到服务端返回的 401 invalid api key 错误时，应当检查请求头里的 "
+            "Authorization 令牌是否正确编码、是否已过期，并在日志中记录相关上下文以便排查。"
+            + "这段补充说明具体的排查步骤与最佳实践建议，帮助理解认证失败与限流的区别。" * 10)
+        self.assertGreater(len(long_answer.strip()), 220)
+        self.assertEqual(gen.classify(long_answer), "ok")
 
     def test_quota_notices_still_detected(self):
         self.assertTrue(RM._is_quota_notice("You've hit your limit · resets 10am"))

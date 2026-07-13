@@ -182,7 +182,7 @@ class M1Provenance(Base):
 
 # ---------------- M4 跨会话存续率 ----------------
 
-KWS = {"c1": {"keywords": {"q1": ["自然选择", "适应", "环境"]}}}
+KWS = {"c1": {"keywords": {"q1": ["自然选择", "适应", "环境"]}}}   # 无 gist（q2）——探针 A 默认不可评
 
 
 class M4Persistence(Base):
@@ -191,20 +191,25 @@ class M4Persistence(Base):
                 row("S2", 2, "把上次讲过的 q1 结论再给我看一眼", b_ans, course=course, arm=arm)]
 
     def test_wrong_id_probe_pass_and_fail_with_gap(self):
+        # skill 是真实内容回忆（gist 关键词覆盖 100%），bare 是诚实的"不记得"（0% 覆盖）——
+        # 用真实回忆信号而非单纯报出题号来区分两臂（Finding 1：正向内容信号，不是 id 提及）。
         ws, bws = make_ws(self.tmp), make_bare_ws(self.tmp)
+        cfg = {"c1": {"keywords": {"q1": ["自然选择", "适应", "环境"]},
+                      "gist": {"q2": ["米尔格拉姆", "服从"]}}}
         self.write_run("c1", "skill", self._s2(
-            "你上次错的是 #q2（错题本 mistakes/ch01.md 有完整条目）。",
+            "你上次错的是 q2，那道关于米尔格拉姆服从实验的题（错题本 mistakes/ch01.md 有完整条目）。",
             "q1 结论：自然选择塑造适应，环境压力是筛选器。"), make_meta(ws))
         self.write_run("c1", "bare", self._s2(
             "抱歉，我没有上一次会话的记录。",
             "我不记得之前讲过什么。", arm="bare"), make_meta(bws))
-        s = self.run_scorer(config=KWS)["c1"]
+        s = self.run_scorer(config=cfg)["c1"]
         self.assertEqual(s["skill"]["m4"], 1.0)
         self.assertEqual(s["bare"]["m4"], 0.0)
         self.assertEqual(s["gap"]["m4"], 1.0)
         self.assertIsNone(s["gap"]["m1"])                       # 无 S1 回合 → m1 null → gap null
 
-    def test_wrong_id_gist_fallback(self):
+    def test_wrong_id_gist_coverage_passes_without_naming_id(self):
+        # 探针 A 只认 gist 内容覆盖——回答全程没提 "q2" 这个 token，纯靠内容覆盖也能过。
         ws = make_ws(self.tmp)
         self.write_run("c1", "skill", self._s2(
             "上次错的是关于米尔格拉姆服从实验的那道题。", "（略）"), make_meta(ws))
@@ -213,29 +218,67 @@ class M4Persistence(Base):
         self.assertEqual((r["m4"], r["m4_passed"], r["m4_probes"], r["m4_unscored"]),
                          (1.0, 1, 1, 1))
 
+    def test_naming_wrong_id_without_content_recall_does_not_pass(self):
+        """Finding 1 回归钉：只报出/提到 wrong_id 这个 token（哪怕报对了、哪怕报错成 q20）不是
+        充分条件——config 明明给了 gist 关键词，但回答里一个都没覆盖到，必须判不过。防止
+        「说不清是不是 q5，反正没有错题本」这类实为弃答的回答被误判为存续成功（曾经的
+        `_id_hit` 让这类回答假通过）。"""
+        ws = make_ws(self.tmp)
+        cfg = {"c1": {"gist": {"q2": ["米尔格拉姆", "服从"]}}}
+        self.write_run("c1", "skill", self._s2(
+            "你错的是 q20 那道，不太确定具体是哪一题、错在哪。", "（略）"), make_meta(ws))
+        r = self.run_scorer(config=cfg)["c1"]["skill"]
+        self.assertEqual((r["m4"], r["m4_passed"], r["m4_probes"]), (0.0, 0, 1))
+
+    def test_missing_gist_is_unscored_not_defaulted(self):
+        """Finding 1：config 没给该 wrong_id 的 gist 关键词——不硬判 0 也不假装满分，必须
+        unscored + 大声告警（同探针 B 缺 keywords 的既有处理姿势）。"""
+        ws = make_ws(self.tmp)
+        cfg = {"c1": {"keywords": {"q1": ["自然选择", "适应", "环境"]}}}   # 有 keywords，无 gist
+        self.write_run("c1", "skill", self._s2(
+            "你错的是 q2。", "结论：自然选择带来适应，环境是关键。"), make_meta(ws))
+        summary = self.run_scorer(config=cfg)
+        r = summary["c1"]["skill"]
+        # 探针 A（无 gist）不可评；探针 B（有 keywords，3/3 覆盖）过 → m4 只算探针 B
+        self.assertEqual((r["m4"], r["m4_probes"], r["m4_unscored"]), (1.0, 1, 1))
+        self.assertTrue(any("gist" in w for w in summary["_warnings"]))
+
     def test_keyword_coverage_threshold_both_directions(self):
+        # KWS 没给 q2 的 gist——探针 A 两臂都不可评，阈值行为只由探针 B（keywords）单独体现。
         ws, bws = make_ws(self.tmp), make_bare_ws(self.tmp)
         self.write_run("c1", "skill", self._s2(
             "你错的是 q2。", "结论：自然选择带来适应。"), make_meta(ws))          # 2/3 ≥ 60% → 过
         self.write_run("c1", "bare", self._s2(
             "你错的是 q2。", "只记得和适应有关。", arm="bare"), make_meta(bws))   # 1/3 < 60% → 不过
         s = self.run_scorer(config=KWS)["c1"]
-        self.assertEqual(s["skill"]["m4"], 1.0)
-        self.assertEqual(s["bare"]["m4"], 0.5)
+        self.assertEqual((s["skill"]["m4"], s["skill"]["m4_probes"], s["skill"]["m4_unscored"]),
+                         (1.0, 1, 1))
+        self.assertEqual((s["bare"]["m4"], s["bare"]["m4_probes"], s["bare"]["m4_unscored"]),
+                         (0.0, 1, 1))
 
     def test_missing_keywords_is_unscored_with_loud_warning(self):
         ws = make_ws(self.tmp)
-        self.write_run("c1", "skill", self._s2("你错的是 q2。", "（无所谓）"), make_meta(ws))
-        summary = self.run_scorer()                              # 完全没给 config
+        cfg = {"c1": {"gist": {"q2": ["米尔格拉姆", "服从"]}}}   # 有 gist（探针 A 可评），无 keywords
+        self.write_run("c1", "skill", self._s2(
+            "你错的是 q2，那道米尔格拉姆服从实验题。", "（无所谓）"), make_meta(ws))
+        summary = self.run_scorer(config=cfg)                    # 无 keywords
         r = summary["c1"]["skill"]
         self.assertEqual((r["m4"], r["m4_probes"], r["m4_unscored"]), (1.0, 1, 1))
         self.assertTrue(any("keywords" in w for w in summary["_warnings"]))
 
-    def test_wrong_id_no_false_substring_match(self):
+    def test_single_probe_protocol_does_not_warn_about_missing_probe_b(self):
+        """Finding 5 回归钉：驱动器现在只发探针 A（错题回忆）一轮——S2 探针 B 缺席是单探针
+        协议设计如此，不该对每一次完整跑都告警"缺「再给我看一眼」探针回合"，污染 _warnings
+        让本来完整的跑看着像没跑完。"""
         ws = make_ws(self.tmp)
-        self.write_run("c1", "skill", self._s2("你错的是 q20 那道。", "（略）"), make_meta(ws))
-        r = self.run_scorer(config=KWS)["c1"]["skill"]           # q2 不得误配 q20
-        self.assertEqual(r["m4_passed"], 0)
+        cfg = {"c1": {"gist": {"q2": ["米尔格拉姆", "服从"]}}}
+        rows = [row("S2", 1, "上次我错了哪几道？", "你错的是 q2，那道米尔格拉姆服从实验题。")]
+        self.write_run("c1", "skill", rows, make_meta(ws))
+        summary = self.run_scorer(config=cfg)
+        self.assertFalse(any("再给我看一眼" in w for w in summary["_warnings"]),
+                         "单探针协议下缺探针 B 不该告警：%s" % summary["_warnings"])
+        r = summary["c1"]["skill"]
+        self.assertEqual((r["m4"], r["m4_probes"]), (1.0, 1))
 
 
 # ---------------- M5 交付物完备性 ----------------

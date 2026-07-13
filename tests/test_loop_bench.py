@@ -337,5 +337,163 @@ class ConfigErrors(unittest.TestCase):
         self._expect2(["--config", cfg, "--mock"])
 
 
+class SeedWorkspaceStripping(unittest.TestCase):
+    """Finding 4：seed 用的 skill_ws 源若已带旧跑/人工用过的运行时产物（notebook/mistakes/
+    cheatsheet/study_state.json），拷贝进 results 工作区后必须先剥净——不能让 S1 还没开始
+    就带着"上一轮存续"的证据，让 M4/M5 白捡分。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="loopbench_strip_")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def _make_stale_source(self, name="src_ws"):
+        src = os.path.join(self.tmp, name)
+        shutil.copytree(os.path.join(FIX, "mini_course", "ws"), src)
+        os.makedirs(os.path.join(src, "notebook"), exist_ok=True)
+        with open(os.path.join(src, "notebook", "ch01.md"), "w", encoding="utf-8") as f:
+            f.write("## [#stale] 旧条目\n\n> 精讲 · 2020-01-01 00:00\n\n旧正文。\n\n---\n")
+        os.makedirs(os.path.join(src, "mistakes"), exist_ok=True)
+        with open(os.path.join(src, "mistakes", "ch01.md"), "w", encoding="utf-8") as f:
+            f.write("## [#stale] 旧错题\n\n> 精讲 · 2020-01-01 00:00\n\n旧正文。\n\n---\n")
+        with open(os.path.join(src, "cheatsheet.md"), "w", encoding="utf-8") as f:
+            f.write("# 旧小抄\n")
+        with open(os.path.join(src, "cheatsheet.pdf"), "wb") as f:
+            f.write(b"%PDF-1.4 fake old pdf\n")
+        with open(os.path.join(src, "study_state.json"), "w", encoding="utf-8") as f:
+            f.write("{}")
+        return src
+
+    def _course(self, src):
+        mats = os.path.join(self.tmp, "mats")
+        os.makedirs(mats, exist_ok=True)
+        return {"name": "seedtest", "skill_ws": src, "materials": mats, "items": "x"}
+
+    def test_stale_artifacts_stripped_on_first_copy(self):
+        src = self._make_stale_source()
+        dirp = os.path.join(self.tmp, "results_dir")
+        os.makedirs(dirp, exist_ok=True)
+        ws = LB.prepare_workspace(self._course(src), "skill", dirp)
+        self.assertFalse(os.path.exists(os.path.join(ws, "notebook")),
+                         "拷贝后必须剥净源里留下的旧 notebook/")
+        self.assertFalse(os.path.exists(os.path.join(ws, "mistakes")),
+                         "拷贝后必须剥净源里留下的旧 mistakes/")
+        self.assertFalse(os.path.isfile(os.path.join(ws, "cheatsheet.md")))
+        self.assertFalse(os.path.isfile(os.path.join(ws, "cheatsheet.pdf")))
+        self.assertFalse(os.path.isfile(os.path.join(ws, "study_state.json")))
+        # 干净留下的其它文件不受影响
+        self.assertTrue(os.path.isfile(os.path.join(ws, "study_plan.md")))
+        self.assertTrue(os.path.isdir(os.path.join(ws, "references")))
+        # 源工作区本身不被动——绝不原地改写源（run_matrix 复用同一份源目录的前提）
+        self.assertTrue(os.path.isdir(os.path.join(src, "notebook")))
+        self.assertTrue(os.path.isfile(os.path.join(src, "cheatsheet.md")))
+
+    def test_resume_does_not_re_strip_own_run_artifacts(self):
+        """续跑（workspace 已存在）绝不能再剥一次——那时里面的产物是这一轮自己刚写的。"""
+        src = self._make_stale_source("src_ws2")
+        dirp = os.path.join(self.tmp, "results_dir2")
+        os.makedirs(dirp, exist_ok=True)
+        ws = LB.prepare_workspace(self._course(src), "skill", dirp)   # 首次拷贝 + 剥净
+        os.makedirs(os.path.join(ws, "notebook"), exist_ok=True)
+        with open(os.path.join(ws, "notebook", "ch01.md"), "w", encoding="utf-8") as f:
+            f.write("## [#this-run] 本轮条目\n\n> 精讲\n\n本轮正文。\n\n---\n")
+        ws2 = LB.prepare_workspace(self._course(src), "skill", dirp)   # 续跑：目录已存在，不再剥
+        self.assertEqual(ws, ws2)
+        self.assertTrue(os.path.isfile(os.path.join(ws2, "notebook", "ch01.md")),
+                        "续跑绝不能剥掉这一轮自己刚写的产物")
+
+    def test_end_to_end_mock_run_starts_clean_despite_stale_seed(self):
+        """端到端：源 skill_ws 带旧痕迹时，mock 全跑完，笔记本/错题本里必须只有**这一轮**写的
+        条目（qid 前缀 m0x），旧的 #stale 条目不能混在里面。"""
+        src = self._make_stale_source("src_ws3")
+        cfg = make_env(self.tmp, course_over={"skill_ws": src})
+        rc = LB.main(["--config", cfg, "--mock", "--arm", "skill"])
+        self.assertEqual(rc, 0)
+        ws = os.path.join(self.tmp, "results", "mini_skill", "workspace")
+        nb = open(os.path.join(ws, "notebook", "ch01.md"), encoding="utf-8").read()
+        self.assertNotIn("#stale", nb, "旧条目不能残留在这一轮的笔记本里")
+        self.assertIn("#m01", nb, "这一轮真实教学条目必须存在")
+
+
+class ConfigFingerprintResume(unittest.TestCase):
+    """Finding 2：resume 复用 results_dir 时，若 items/materials/skill_ws/wrong_answer 等**实际
+    内容或取值**变了（哪怕题目 id 没变），必须拒绝复用旧 sessions.jsonl——那是对着旧 prompt
+    写的账本。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="loopbench_fp_")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.cfg = make_env(self.tmp)          # 唯一一次 copytree——mini_course 落在 self.tmp 下
+
+    def _run_once(self, cfg=None):
+        self.assertEqual(LB.main(["--config", cfg or self.cfg, "--mock", "--arm", "skill"]), 0)
+
+    def _meta(self):
+        p = os.path.join(self.tmp, "results", "mini_skill", "meta.json")
+        with open(p, encoding="utf-8") as f:
+            return json.load(f), p
+
+    def _cfg_with_override(self, **course_over):
+        """写一份**新** loop.json、复用 setUp 里已拷好的同一份 mini_course 树（course_over 只改
+        字段取值，不再 copytree——避免对同一目标目录二次拷贝报 FileExistsError）。"""
+        course = {"name": "mini", "skill_ws": "mini_course/ws",
+                  "materials": "mini_course/materials", "items": "mini_course/items.jsonl",
+                  "questions": list(TEACH_IDS), "quiz": list(QUIZ_IDS),
+                  "wrong_id": WRONG_ID, "wrong_answer": "7 到 11 岁"}
+        course.update(course_over)
+        cfg = {"model": "sonnet", "results_dir": "results", "courses": [course]}
+        path = os.path.join(self.tmp, "loop_override.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False)
+        return path
+
+    def test_meta_records_config_fingerprint(self):
+        self._run_once()
+        meta, _ = self._meta()
+        self.assertIn("config_fingerprint", meta)
+        self.assertTrue(meta["config_fingerprint"])
+
+    def test_same_config_resumes_cleanly(self):
+        self._run_once()
+        self.assertEqual(LB.main(["--config", self.cfg, "--mock", "--arm", "skill"]), 0)
+
+    def test_changing_wrong_answer_text_refused_on_resume(self):
+        self._run_once()
+        cfg2 = self._cfg_with_override(wrong_answer="完全不同的错误答案文案")
+        with self.assertRaises(SystemExit) as cm:
+            LB.main(["--config", cfg2, "--mock", "--arm", "skill"])
+        self.assertEqual(cm.exception.code, 2)
+
+    def test_changing_materials_content_in_place_refused_on_resume(self):
+        """materials **路径没变**，但内容被就地改写——指纹必须靠内容哈希发现，不能只比路径。"""
+        self._run_once()
+        mat_file = os.path.join(self.tmp, "mini_course", "materials", "lecture01.md")
+        with open(mat_file, "a", encoding="utf-8") as f:
+            f.write("\n新增内容——课件被重新生成过。\n")
+        with self.assertRaises(SystemExit) as cm:
+            LB.main(["--config", self.cfg, "--mock", "--arm", "skill"])
+        self.assertEqual(cm.exception.code, 2)
+
+    def test_changing_skill_ws_content_in_place_refused_on_resume(self):
+        """skill_ws **路径没变**，但内容被就地重建——同上，必须靠内容哈希发现。"""
+        self._run_once()
+        ws_file = os.path.join(self.tmp, "mini_course", "ws", "study_plan.md")
+        with open(ws_file, "a", encoding="utf-8") as f:
+            f.write("\n新增阶段——工作区被重新生成过。\n")
+        with self.assertRaises(SystemExit) as cm:
+            LB.main(["--config", self.cfg, "--mock", "--arm", "skill"])
+        self.assertEqual(cm.exception.code, 2)
+
+    def test_legacy_meta_without_fingerprint_refused(self):
+        """本次修复前生成的旧 meta.json（没有 config_fingerprint 键）——无法核对一致性，拒绝续跑。"""
+        self._run_once()
+        meta, meta_path = self._meta()
+        del meta["config_fingerprint"]
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False)
+        with self.assertRaises(SystemExit) as cm:
+            LB.main(["--config", self.cfg, "--mock", "--arm", "skill"])
+        self.assertEqual(cm.exception.code, 2)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
