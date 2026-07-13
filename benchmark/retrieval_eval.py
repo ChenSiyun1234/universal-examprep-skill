@@ -57,10 +57,10 @@ def _load_jsonl(path, label):
     if not os.path.isfile(path):
         _die("找不到 %s: %s" % (label, path))
     rows = []
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, "r", encoding="utf-8-sig") as f:   # 金标文件常带 BOM（utf-8-sig 兼容无 BOM）
         for ln, line in enumerate(f, 1):
             line = line.strip()
-            if not line:
+            if not line or line.startswith("#"):   # 金标文件顶部有 # 注释头（课程/来源），跳过
                 continue
             try:
                 rows.append(json.loads(line))

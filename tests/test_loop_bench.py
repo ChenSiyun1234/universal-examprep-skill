@@ -20,9 +20,10 @@ FIX = os.path.join(ROOT, "benchmark", "loop_fixtures")
 TEACH_IDS = ["m01", "m02", "m03"]
 QUIZ_IDS = ["m04", "m05"]
 WRONG_ID = "m05"
-# 会话脚本的固定轮数：S1 教 3 + 测 2，S2 存续 2，S3 小抄 1
+# 会话脚本的固定轮数：S1 教 3 + 测 2，S2 存续 1（只剩「错题回忆」——「内容复原」探针已删，
+# 因为裸智能体重读材料就能答出，不具区分度），S3 小抄 1
 EXPECT_TURNS = [("S1", 1), ("S1", 2), ("S1", 3), ("S1", 4), ("S1", 5),
-                ("S2", 1), ("S2", 2), ("S3", 1)]
+                ("S2", 1), ("S3", 1)]
 
 
 def make_env(tmp, course_over=None, **cfg_over):
@@ -158,13 +159,14 @@ class MockEndToEnd(unittest.TestCase):
             self.assertNotIn("notebook/", r["assistant"], "bare 夹具不该伪装出落盘回执")
 
     def test_s2_persistence_signal_split(self):
-        """跨会话存续指标的两个分支：skill 从错题本准确报出 wrong_id；bare 如实说没有记录。"""
-        skill_s2 = [r for r in self.rows("skill") if r["session"] == "S2"][0]
-        bare_s2 = [r for r in self.rows("bare") if r["session"] == "S2"][0]
-        self.assertIn(WRONG_ID, skill_s2["assistant"])
-        self.assertNotIn(WRONG_ID, bare_s2["assistant"])
-        skill_s2b = [r for r in self.rows("skill") if r["session"] == "S2"][1]
-        self.assertIn("7±2", skill_s2b["assistant"], "S2 内容复原必须给出 q1 金标结论")
+        """跨会话存续指标：skill 从错题本准确报出 wrong_id；bare 如实说没有记录。
+        （S2 现在只有「错题回忆」一轮——「内容复原」探针已被驱动删除，不再有第二行可测。）"""
+        skill_s2 = [r for r in self.rows("skill") if r["session"] == "S2"]
+        bare_s2 = [r for r in self.rows("bare") if r["session"] == "S2"]
+        self.assertEqual(len(skill_s2), 1)
+        self.assertEqual(len(bare_s2), 1)
+        self.assertIn(WRONG_ID, skill_s2[0]["assistant"])
+        self.assertNotIn(WRONG_ID, bare_s2[0]["assistant"])
 
     def test_demo_config_loads(self):
         cfg = LB.load_config(os.path.join(FIX, "demo_config.json"))
@@ -182,11 +184,11 @@ class Resume(unittest.TestCase):
     def test_rerun_skips_done_turns_and_partial_resume_completes(self):
         self.assertEqual(LB.main(["--config", self.cfg, "--mock", "--arm", "skill"]), 0)
         snap = open(self.sessions, encoding="utf-8").read()
-        self.assertEqual(len(read_rows(self.sessions)), 8)
-        # 整跑重来：全部 8 轮跳过，文件一个字节都不追加
+        self.assertEqual(len(read_rows(self.sessions)), 7)
+        # 整跑重来：全部 7 轮跳过，文件一个字节都不追加
         self.assertEqual(LB.main(["--config", self.cfg, "--mock", "--arm", "skill"]), 0)
         self.assertEqual(open(self.sessions, encoding="utf-8").read(), snap)
-        # 截断到前 3 轮（模拟中途崩溃）→ 续跑补齐后 5 轮，且 mock 确定性 = 全文件复原
+        # 截断到前 3 轮（模拟中途崩溃）→ 续跑补齐后 4 轮，且 mock 确定性 = 全文件复原
         lines = snap.splitlines(True)
         with open(self.sessions, "w", encoding="utf-8") as f:
             f.writelines(lines[:3])
@@ -231,7 +233,7 @@ class QuotaStop(unittest.TestCase):
         LB._claude_turn = lambda *a, **k: ("答复正文", 0.01, ["references/wiki/ch01.md"], True, "")
         self.assertEqual(LB.main(["--config", self.cfg, "--arm", "skill"]), 0)
         rows = read_rows(self.sessions)
-        self.assertEqual(len(rows), 9, "quota 行保留 + 8 轮 ok 追加（消费者按最后一行取）")
+        self.assertEqual(len(rows), 8, "quota 行保留 + 7 轮 ok 追加（消费者按最后一行取）")
         last = {(r["session"], r["turn"]): r for r in rows}
         self.assertEqual(sorted(last), sorted(set(EXPECT_TURNS)))
         self.assertTrue(all(r["status"] == "ok" for r in last.values()))
@@ -266,7 +268,9 @@ class PrefixIsolation(unittest.TestCase):
         LB._claude_turn = stub
         self.addCleanup(setattr, LB, "_claude_turn", self._orig)
         self.assertEqual(LB.main(["--config", self.cfg, "--arm", "skill"]), 0)
-        self.assertEqual(len(self.prompts), 8)
+        # 7 轮：S1 T1-5（索引 0-4）+ S2 T1（索引 5，「内容复原」探针已删，S2 只剩一轮）
+        # + S3 T1（索引 6）。
+        self.assertEqual(len(self.prompts), 7)
 
     def test_s1_accumulates_within_session(self):
         p1 = self.prompts[1]                            # S1 T2
@@ -283,23 +287,27 @@ class PrefixIsolation(unittest.TestCase):
         self.assertNotIn("请给我讲透这道题", p5, "S1 学生话语也不得泄漏")
         self.assertIn("期末极速备考", p5, "臂前导语必须每轮都在")
 
-    def test_s2_accumulates_only_its_own_turns(self):
-        p6 = self.prompts[6]                            # S2 T2
-        self.assertIn("ANS-5", p6, "S2 T1 的回答要进 S2 T2 的前缀")
-        for i in range(5):
-            self.assertNotIn("ANS-%d\n" % i, p6 + "\n")
-        self.assertNotIn("我的答案：", p6, "S1 测验话语不得出现在 S2")
+    # test_s2_accumulates_only_its_own_turns 已删除：它验证的是 S2 T2（「内容复原」探针）
+    # 累积 S2 T1 的前缀，但驱动已把该探针整个删掉——S2 现在只有一轮，没有 T2 可测。
+    # S2 T1 不泄漏 S1 内容已由 test_s2_starts_with_empty_prefix 覆盖；S3 不泄漏 S2 内容
+    # 由下面 test_s3_starts_fresh_too 覆盖（它断言 p6 里没有任何 "ANS-" 前缀，含 S2 T1 的
+    # ANS-5）。
 
     def test_s3_starts_fresh_too(self):
-        p7 = self.prompts[7]                            # S3 T1
-        self.assertNotIn("ANS-", p7)
-        self.assertNotIn(LB.HISTORY_HEADER, p7)
-        self.assertIn("考前小抄", p7)
+        p6 = self.prompts[6]                            # S3 T1
+        self.assertNotIn("ANS-", p6, "S2 助手文本（含 S2 T1 的 ANS-5）不得泄漏进 S3 prompt")
+        self.assertNotIn(LB.HISTORY_HEADER, p6)
+        self.assertIn("考前小抄", p6)
 
     def test_first_turn_has_preamble_and_no_history(self):
         p0 = self.prompts[0]
         self.assertNotIn(LB.HISTORY_HEADER, p0)
         self.assertIn("SKILL.md", p0, "skill 臂前导语必须指向技能定义文件")
+        # 新版 SKILL_PREAMBLE：硬性落盘契约（每轮讲解/判分后立刻用 notebook.py 落盘）必须每轮都在。
+        self.assertIn("硬性落盘契约", p0, "skill 臂前导语必须包含每轮强制落盘契约")
+        self.assertIn("notebook.py", p0, "落盘契约必须点名官方写入路径 notebook.py")
+        self.assertIn(os.path.join(LB.ROOT, "scripts"), p0,
+                     "落盘契约必须给出 notebook.py 所在的 scripts 目录（make_preamble 的第二个 %s）")
 
 
 class ConfigErrors(unittest.TestCase):
