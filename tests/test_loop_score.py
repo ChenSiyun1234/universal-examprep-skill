@@ -400,5 +400,36 @@ class ResumeDedup(Base):
         self.assertEqual(r["m1_claims"], 1, "去重后只有 1 个可评教学回合（ok 版本）")
 
 
+class PortableResults(Base):
+    """Codex r4 P2：被判分的 skill 工作区恒在 <arm_dir>/workspace。结果目录被拷/移走后
+    meta.workspace 的绝对路径会失效，判分器必须优先用就地的 <arm_dir>/workspace，M1/M5 仍可评。"""
+
+    def test_moved_results_dir_scores_via_local_workspace(self):
+        arm_dir = os.path.join(self.results, "c1_skill")
+        os.makedirs(arm_dir)
+        make_ws(arm_dir, name="workspace")                 # 工作区就地在 <arm_dir>/workspace
+        rows = s1_rows(["结论见 [第一章](references/wiki/ch01.md)。", "无来源。", "无来源。"])
+        with open(os.path.join(arm_dir, "sessions.jsonl"), "w", encoding="utf-8", newline="\n") as f:
+            for r in rows:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        stale_abs = os.path.join(self.tmp, "ORIGINAL_gone", "workspace")   # 跑时的绝对路径，将失效
+        with open(os.path.join(arm_dir, "meta.json"), "w", encoding="utf-8") as f:
+            json.dump(make_meta(stale_abs), f, ensure_ascii=False)
+        moved = os.path.join(self.tmp, "moved_results")    # 整个 results 目录搬走
+        shutil.move(self.results, moved)
+        out = os.path.join(self.tmp, "summary_loop.json")
+        err, dev = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(dev):
+            rc = LS.main(["--results", moved, "--out", out])
+        self.assertEqual(rc, 0)
+        with open(out, encoding="utf-8") as f:
+            summary = json.load(f)
+        r = summary["c1"]["skill"]
+        self.assertIsNotNone(r["m5"], "搬走后应经 <arm_dir>/workspace 兜底，M5 不该是 null")
+        self.assertIsNotNone(r["m1"], "M1 同理经就地工作区解析，不该 null")
+        self.assertFalse(any("解析不到目录" in w for w in summary["_warnings"]),
+                         "就地工作区在场，不该告警解析不到：%s" % summary["_warnings"])
+
+
 if __name__ == "__main__":
     unittest.main()

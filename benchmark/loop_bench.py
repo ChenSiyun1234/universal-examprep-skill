@@ -586,7 +586,9 @@ def _config_fingerprint(cfg, course, arm):
     sig = {
         "items": RM._file_hash(course.get("items")),
         "materials": RM._dir_hash(course.get("materials")),
-        "skill_ws": RM._dir_hash(course.get("skill_ws")),
+        # skill_ws 只在 skill 臂进指纹（Codex r4 P2，与 skill_md 同门）：bare 臂前导语走 materials、
+        # cwd 也是 materials，从不碰 skill_ws——重建 wiki/工作区后 bare-only 续跑不该被误拒。
+        "skill_ws": RM._dir_hash(course.get("skill_ws")) if arm == "skill" else None,
         "wrong_id": course.get("wrong_id"),
         "wrong_answer": course.get("wrong_answer"),
         "questions": list(course.get("questions") or []),
@@ -720,10 +722,16 @@ def _emit_scorer_config(cfg):
     的课程留给 loop_score 照旧大声告警「不可评」（不硬造关键词、不假装可评）。"""
     scorer = {c["name"]: {"gist": {c["wrong_id"]: list(c["gist"])}}
               for c in cfg["courses"] if c.get("gist")}
+    path = os.path.join(cfg["results_dir"], "loop_config.json")
     if not scorer:
+        # 本次没有任何课配 gist——若同一 results_dir 上一轮遗留了自动落的 loop_config.json，
+        # 必须清掉：loop_score 默认读它，留着会用**旧**关键词判 M4，而不是按本次配置转「不可评」
+        # 大声告警（Codex r4 P2）。文件本身的在场必须跟随当前配置。
+        if os.path.isfile(path):
+            os.remove(path)
+            print("[loop] 无课程配 gist——已清除上次遗留的判分关键词 %s（M4 转为不可评）" % path)
         return
     os.makedirs(cfg["results_dir"], exist_ok=True)
-    path = os.path.join(cfg["results_dir"], "loop_config.json")
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(scorer, f, ensure_ascii=False, indent=2)

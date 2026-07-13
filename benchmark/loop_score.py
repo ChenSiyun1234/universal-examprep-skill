@@ -481,6 +481,12 @@ def score_arm(arm_dir, course, arm, config, results_dir, warnings):
 
     bases = (arm_dir, results_dir, ROOT, os.getcwd())
     ws = _resolve_dir(meta.get("workspace"), bases)
+    # 便携性（Codex r4 P2）：skill 臂被判分的工作区恒在 <arm_dir>/workspace（prepare_workspace 落点）。
+    # meta.workspace 存的是跑时的**绝对**路径——结果目录被拷/移走后它要么失效（→M1/M5 变 null）、
+    # 要么在同机上指回**原**目录（静默判成别处/上一轮数据）。就地的 workspace/ 才是权威，优先用它。
+    local_ws = os.path.join(arm_dir, "workspace")
+    if os.path.isdir(local_ws):
+        ws = local_ws
     if ws is None:
         _warn(warnings, "%s: meta.workspace=%r 解析不到目录" % (tag, meta.get("workspace")))
     materials = _resolve_dir(meta.get("materials"), bases)

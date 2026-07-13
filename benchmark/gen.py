@@ -227,6 +227,17 @@ def load_cache():
     return cache
 
 
+def _answer_row(course, model, arm, qid, ans, cost, files):
+    """作答行的冻结形状。files **非 None（含 []）即落 files_opened**——EXAMPREP_TRACE=1 下一个
+    文件都没开的空轨迹 [] 同样是检索 MISS，必须落盘：省了字段，retrieval_eval 按「files_opened
+    字段是否在场」判 traced 会把它当未 trace 丢出召回分母、把 recall 洗高（与 run_matrix 同契约，
+    Codex r4 P2）。files=None 表示这次没开 trace（EXAMPREP_TRACE 未设）→ 不落字段。"""
+    row = {"course": course, "model": model, "arm": arm, "id": qid, "answer": ans, "cost": cost}
+    if files is not None:
+        row["files_opened"] = files
+    return row
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=0)
@@ -260,10 +271,7 @@ def main():
         if kind == "ok" and ans.strip():
             key = [course, model, arm, qid]
             cf.write(json.dumps({"key": key}, ensure_ascii=False) + "\n"); cf.flush()
-            row = {"course": course, "model": model, "arm": arm, "id": qid,
-                   "answer": ans, "cost": cost}
-            if files:                                 # 轨迹开着才有——检索评测的数据源
-                row["files_opened"] = files
+            row = _answer_row(course, model, arm, qid, ans, cost, files)
             af.write(json.dumps(row, ensure_ascii=False) + "\n"); af.flush()
             n_ok += 1; hard_streak = 0
         else:

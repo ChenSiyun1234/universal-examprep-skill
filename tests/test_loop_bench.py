@@ -591,6 +591,18 @@ class ConfigFingerprintResume(unittest.TestCase):
         self.assertEqual(LB.main(["--config", cfg, "--mock", "--arm", "bare"]), 0,
                          "bare 臂不读 skill_md，改它不该拒绝 bare 臂续跑")
 
+    def test_bare_arm_ignores_skill_ws_changes(self):
+        """Codex r4 P2：bare 臂 cwd/前导语只用 materials、从不碰 skill_ws——重建 wiki/工作区
+        （ingest 重跑）后，只跑 bare 的续跑不该被指纹误拒（skill_ws 已与 skill_md 同门只在 skill 臂进指纹）。"""
+        self.assertEqual(LB.main(["--config", self.cfg, "--mock", "--arm", "bare"]), 0)
+        ws_file = os.path.join(self.tmp, "mini_course", "ws", "study_plan.md")
+        with open(ws_file, "a", encoding="utf-8") as f:
+            f.write("\n工作区被就地重建过——但 bare 臂用不到它。\n")
+        self.assertEqual(LB.main(["--config", self.cfg, "--mock", "--arm", "bare"]), 0,
+                         "bare 臂不读 skill_ws，改它不该拒绝 bare 臂续跑")
+        # 反向不变量（skill 臂仍必须拒绝 skill_ws 变更）已由
+        # test_changing_skill_ws_content_in_place_refused_on_resume 覆盖，不重复。
+
 
 class OrphanAndWorkspaceGuards(unittest.TestCase):
     """Codex r3：续跑前对「残缺 results 目录」大声失败，绝不静默把来路不明的旧转写当新跑复用。"""
@@ -659,6 +671,30 @@ class ScorerConfigEmission(unittest.TestCase):
         cfg = make_env(self.tmp)                       # make_env 默认不带 gist
         self.assertEqual(LB.main(["--config", cfg, "--mock", "--arm", "skill"]), 0)
         self.assertFalse(os.path.isfile(os.path.join(self._res(), "loop_config.json")))
+
+    def test_stale_loop_config_cleared_when_gist_removed(self):
+        """Codex r4 P2：同一 results_dir 先跑带 gist（落 loop_config.json），再跑去掉 gist——
+        必须清掉遗留文件，否则 loop_score 默认读它、用**旧**关键词判 M4，而非按新配置转「不可评」。"""
+        p = os.path.join(self._res(), "loop_config.json")
+        with_gist = make_env(self.tmp, course_over={"gist": ["皮亚杰", "前运算"]})
+        self.assertEqual(LB.main(["--config", with_gist, "--mock", "--arm", "skill"]), 0)
+        self.assertTrue(os.path.isfile(p), "带 gist 首跑应落 loop_config.json")
+        # 复用同一 results_dir、同一 mini_course 树，但这次 config 不含 gist
+        no_gist = self._cfg_no_gist()
+        self.assertEqual(LB.main(["--config", no_gist, "--mock", "--arm", "skill"]), 0)
+        self.assertFalse(os.path.isfile(p), "去掉 gist 后必须清除遗留的判分关键词文件")
+
+    def _cfg_no_gist(self):
+        """复用 setUp 已拷好的 mini_course 树，另写一份不含 gist 的 config（不再 copytree）。"""
+        course = {"name": "mini", "skill_ws": "mini_course/ws",
+                  "materials": "mini_course/materials", "items": "mini_course/items.jsonl",
+                  "questions": list(TEACH_IDS), "quiz": list(QUIZ_IDS),
+                  "wrong_id": WRONG_ID, "wrong_answer": "7 到 11 岁"}
+        cfg = {"model": "sonnet", "results_dir": "results", "courses": [course]}
+        path = os.path.join(self.tmp, "loop_nogist.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False)
+        return path
 
     def test_emitted_config_makes_m4_scorable(self):
         """端到端：mock 跑完 → loop_score 默认读 <results>/loop_config.json → M4 可评（非 null），
