@@ -1,10 +1,10 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""Lightweight retrieval over the chunked wiki (v4-P3) — pure stdlib BM25, no LLM, no network.
+"""Lightweight retrieval over structured course chunks — pure stdlib BM25, no LLM, no network.
 
 Single definition point for the index format: ingest builds `references/retrieval_index.json`
-by importing `build_index()` from HERE; answer-time lookup runs `search()` / this CLI. The spike
-(spike/llamaindex_rag) contract is honored: results are Chunk-shaped {text, score, source}, and an
+by importing `build_index()` from HERE; answer-time lookup runs `search()` / this CLI. Results
+are citation-shaped {text, score, source}, and an
 ABSTAIN GATE runs before any generation — zero term overlap (or top score below --min-score) means
 「材料中未涵盖」, never a fabricated answer.
 
@@ -21,11 +21,30 @@ and may suggest re-running ingest to build the index. Exit: 0 hits · 3 no-index
 (no hit above the gate) · 2 bad input.
 """
 import argparse
+import hashlib
 import json
 import math
 import os
 import re
 import sys
+
+try:
+    import strict_json
+except ImportError:  # imported as scripts.retrieve in unit tests
+    from scripts import strict_json
+
+try:
+    from ingestion.identifiers import (
+        is_link_or_reparse,
+        normalize_workspace_path,
+        safe_workspace_entry,
+    )
+except ImportError:  # imported as scripts.retrieve in unit tests
+    from scripts.ingestion.identifiers import (
+        is_link_or_reparse,
+        normalize_workspace_path,
+        safe_workspace_entry,
+    )
 
 for _s in ("stdout", "stderr"):
     try:
@@ -35,7 +54,7 @@ for _s in ("stdout", "stderr"):
 
 INDEX_NAME = os.path.join("references", "retrieval_index.json")
 TERMS_NAME = os.path.join("references", "terms.json")
-INDEX_VERSION = 1
+INDEX_VERSION = 2
 K1, B = 1.5, 0.75          # standard BM25 constants; persisted in the index for provenance
 DEFAULT_TOP_K = 4          # spike contract default
 _CJK = r"぀-ヿ㐀-䶿一-鿿"
@@ -84,7 +103,7 @@ def tokenize(text):
 
 # ---------------- index build (imported by ingest) ----------------
 
-def build_index(chunks):
+def build_index(chunks, integrity=None):
     """chunks: [{"id": "ch02/s03", "file": "references/wiki/ch02/s03_xxx.md", "chapter": "2",
                 "title": "...", "text": "..."}] → the persistable index dict.
     Each doc stores its OWN chunk text so snippets always come from the hit chunk — the file
@@ -92,21 +111,33 @@ def build_index(chunks):
     under this chunk's id. The index is a gitignored workspace artifact; the size cost is fine.
     Old indexes without per-doc text still load (the snippet path falls back to the file)."""
     docs, vocab = [], {}
+    seen_ids = set()
     for ci, c in enumerate(chunks):
         for k in ("id", "file", "text"):
             if not c.get(k):
                 _die("build_index: chunk 缺必需字段 %r（id=%r）" % (k, c.get("id")))
+        if c["id"] in seen_ids:
+            _die("build_index: chunk id 重复: %s" % c["id"])
+        seen_ids.add(c["id"])
         toks = tokenize(c["text"])
         tf = {}
         for t in toks:
             tf[t] = tf.get(t, 0) + 1
         for t, n in tf.items():
             vocab.setdefault(t, []).append([ci, n])
-        docs.append({"id": c["id"], "file": c["file"], "chapter": c.get("chapter"),
-                     "title": c.get("title") or "", "len": len(toks), "text": c["text"]})
+        docs.append({
+            "id": c["id"], "file": c["file"], "chapter": c.get("chapter"),
+            "chapter_id": c.get("chapter_id"), "phase_id": c.get("phase_id"),
+            "title": c.get("title") or "", "len": len(toks), "text": c["text"],
+            "source_file": c.get("source_file"), "pages": list(c.get("pages") or ()),
+            "unit_ids": list(c.get("unit_ids") or ()), "kind": c.get("kind") or "prose",
+            "asset_paths": list(c.get("asset_paths") or ()),
+            "asset_roles": list(c.get("asset_roles") or ()),
+        })
     avgdl = (sum(d["len"] for d in docs) / len(docs)) if docs else 0.0
     return {"version": INDEX_VERSION, "k1": K1, "b": B, "avgdl": round(avgdl, 3),
-            "n_docs": len(docs), "docs": docs, "vocab": vocab}
+            "n_docs": len(docs), "docs": docs, "vocab": vocab,
+            "integrity": integrity if isinstance(integrity, dict) else {"wiki": []}}
 
 
 # ---------------- query-time ----------------
@@ -116,14 +147,14 @@ def load_terms(ws):
     path = os.path.join(ws, TERMS_NAME)
     # 与 retrieval_index.json 同一读入纪律（Codex r5）：符号链接/越界的术语表会把外部词汇
     # 注进查询扩展（并经弃答 payload 泄出）——拒读，不静默当无术语表
-    if os.path.islink(path):
+    if is_link_or_reparse(path):
         _die("terms.json 不得为符号链接（可能指向工作区外）——拒绝读取")
     if not os.path.isfile(path):
         return {}
     _assert_contained(ws, path, "terms.json")
     try:
         with open(path, "r", encoding="utf-8") as f:
-            raw = json.load(f)
+            raw = strict_json.load(f)
     except ValueError as e:
         _die("terms.json 不是合法 JSON: %s" % e)
     if not isinstance(raw, dict):
@@ -185,7 +216,7 @@ def _snippet(ws, doc, q_tokens, width=240):
     text = doc.get("text")
     if not text:
         path = os.path.join(ws, doc["file"])
-        if os.path.islink(path):
+        if is_link_or_reparse(path):
             return ""
         _assert_contained(ws, path, doc["file"])
         if not os.path.isfile(path):
@@ -218,30 +249,156 @@ def search(ws, index, query, top_k=DEFAULT_TOP_K, min_score=0.0):
         if sc < min_score:
             continue
         d = docs[di]
-        out.append({"id": d["id"], "file": d["file"], "chapter": d.get("chapter"),
-                    "title": d.get("title") or "", "score": round(sc, 4),
-                    "text": _snippet(ws, d, q_tokens)})
+        out.append({
+            "id": d["id"], "file": d["file"], "chapter": d.get("chapter"),
+            "chapter_id": d.get("chapter_id"), "phase_id": d.get("phase_id"),
+            "source_file": d.get("source_file"), "pages": d.get("pages") or [],
+            "unit_ids": d.get("unit_ids") or [], "kind": d.get("kind") or "prose",
+            "asset_paths": d.get("asset_paths") or [],
+            "asset_roles": d.get("asset_roles") or [],
+            "title": d.get("title") or "", "score": round(sc, 4),
+            "text": _snippet(ws, d, q_tokens),
+        })
     return out, q_tokens
+
+
+def _sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _verify_integrity(ws, integrity):
+    if not isinstance(integrity, dict):
+        _die("retrieval_index.json integrity 必须是对象——请重跑 ingest 重建")
+    wiki = integrity.get("wiki", [])
+    if not isinstance(wiki, list):
+        _die("retrieval_index.json integrity.wiki 必须是数组——请重跑 ingest 重建")
+    rows = list(wiki)
+    for key in ("source_manifest", "content_units", "quiz_bank"):
+        if integrity.get(key) is not None:
+            rows.append(integrity[key])
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {"file", "sha256"}:
+            _die("retrieval_index.json integrity 条目损坏——请重跑 ingest 重建")
+        relative = row["file"]
+        expected = row["sha256"]
+        if not isinstance(relative, str) or not re.fullmatch(r"[0-9a-f]{64}", str(expected)):
+            _die("retrieval_index.json integrity 条目字段无效——请重跑 ingest 重建")
+        try:
+            canonical = normalize_workspace_path(relative)
+            path = str(safe_workspace_entry(ws, canonical))
+        except (TypeError, ValueError) as exc:
+            _die("索引依赖文件路径不安全: %s (%s)" % (relative, exc))
+        if is_link_or_reparse(path):
+            _die("索引依赖文件不得为符号链接或重解析点: %s" % relative)
+        if not os.path.isfile(path):
+            _die("索引依赖文件缺失: %s——请重跑 ingest 重建" % relative)
+        if _sha256_file(path) != expected:
+            _die("stale_index: %s 已变更——拒绝旧索引，请重跑 ingest 重建" % relative)
 
 
 def load_index(ws):
     path = os.path.join(ws, INDEX_NAME)
-    if os.path.islink(path):
-        _die("retrieval_index.json 不得为符号链接——拒绝读取")
+    if is_link_or_reparse(path):
+        _die("retrieval_index.json 不得为符号链接或重解析点——拒绝读取")
     if not os.path.isfile(path):
         return None
     _assert_contained(ws, path, "retrieval_index.json")
     try:
         with open(path, "r", encoding="utf-8") as f:
-            idx = json.load(f)
+            idx = strict_json.load(f)
     except ValueError as e:
         _die("retrieval_index.json 不是合法 JSON: %s" % e)
-    for k in ("version", "docs", "vocab", "n_docs", "avgdl"):
+    for k in ("version", "docs", "vocab", "n_docs", "avgdl", "integrity"):
         if k not in idx:
             _die("retrieval_index.json 缺字段 %r——索引损坏，请重跑 ingest 重建" % k)
     if idx["version"] != INDEX_VERSION:
         _die("retrieval_index.json version=%r 与本工具 (%d) 不符——请重跑 ingest 重建"
              % (idx["version"], INDEX_VERSION))
+    expected_top = {"version", "k1", "b", "avgdl", "n_docs", "docs", "vocab", "integrity"}
+    if not isinstance(idx, dict) or set(idx) != expected_top:
+        _die("retrieval_index.json 顶层 schema 无效——请重跑 ingest 重建")
+    if (type(idx["n_docs"]) is not int or idx["n_docs"] < 0
+            or not isinstance(idx["docs"], list) or len(idx["docs"]) != idx["n_docs"]
+            or not isinstance(idx["vocab"], dict)
+            or not isinstance(idx["avgdl"], (int, float))
+            or isinstance(idx["avgdl"], bool) or not math.isfinite(idx["avgdl"])
+            or idx["avgdl"] < 0
+            or not isinstance(idx["k1"], (int, float)) or isinstance(idx["k1"], bool)
+            or not math.isfinite(idx["k1"]) or idx["k1"] <= 0
+            or not isinstance(idx["b"], (int, float)) or isinstance(idx["b"], bool)
+            or not math.isfinite(idx["b"]) or not 0 <= idx["b"] <= 1):
+        _die("retrieval_index.json 统计字段无效——请重跑 ingest 重建")
+    integrity_files = set()
+    if isinstance(idx["integrity"], dict):
+        integrity_rows = list(idx["integrity"].get("wiki") or ())
+        for key in ("source_manifest", "content_units", "quiz_bank"):
+            if idx["integrity"].get(key) is not None:
+                integrity_rows.append(idx["integrity"][key])
+        for row in integrity_rows:
+            if isinstance(row, dict) and isinstance(row.get("file"), str):
+                try:
+                    integrity_files.add(normalize_workspace_path(row["file"]))
+                except (TypeError, ValueError):
+                    pass
+    expected_doc = {
+        "id", "file", "chapter", "chapter_id", "phase_id", "title", "len", "text",
+        "source_file", "pages", "unit_ids", "kind", "asset_paths", "asset_roles",
+    }
+    doc_ids = set()
+    for position, doc in enumerate(idx["docs"]):
+        # Index v2 existed briefly before per-chunk text was embedded.  Accept
+        # exactly that one historical shape so old student workspaces retain the
+        # documented contained file-scan fallback; all other missing/unknown
+        # fields remain fail-closed.
+        legacy_doc = expected_doc - {"text"}
+        if not isinstance(doc, dict) or set(doc) not in (expected_doc, legacy_doc):
+            _die("retrieval_index.json docs[%d] schema 无效——请重跑 ingest" % position)
+        if (not isinstance(doc["id"], str) or not doc["id"] or doc["id"] in doc_ids
+                or not isinstance(doc["file"], str) or not doc["file"]
+                or type(doc["len"]) is not int or doc["len"] < 0
+                or ("text" in doc and not isinstance(doc["text"], str))
+                or not all(isinstance(doc[key], list)
+                           for key in ("pages", "unit_ids", "asset_paths", "asset_roles"))):
+            _die("retrieval_index.json docs[%d] 字段无效——请重跑 ingest" % position)
+        try:
+            doc_file = normalize_workspace_path(doc["file"])
+            safe_workspace_entry(ws, doc_file)
+            asset_paths = [normalize_workspace_path(value) for value in doc["asset_paths"]]
+            for asset_path in asset_paths:
+                safe_workspace_entry(ws, asset_path)
+        except (TypeError, ValueError) as exc:
+            _die("retrieval_index.json docs[%d] 路径不安全: %s" % (position, exc))
+        if doc_file not in integrity_files:
+            _die("retrieval_index.json docs[%d].file 未绑定到完整性清单" % position)
+        if (not all(type(page) is int and page >= 1 for page in doc["pages"])
+                or not all(isinstance(value, str) and value for value in doc["unit_ids"])
+                or not all(isinstance(value, str) and value for value in doc["asset_paths"])
+                or not all(isinstance(value, str) and value for value in doc["asset_roles"])
+                or not isinstance(doc["title"], str)
+                or not isinstance(doc["kind"], str) or not doc["kind"]
+                or (doc["chapter"] is not None
+                    and (isinstance(doc["chapter"], bool)
+                         or not isinstance(doc["chapter"], (str, int))))
+                or any(doc[key] is not None and not isinstance(doc[key], str)
+                       for key in ("chapter_id", "phase_id", "source_file"))):
+            _die("retrieval_index.json docs[%d] metadata 无效——请重跑 ingest" % position)
+        doc_ids.add(doc["id"])
+    for token, postings in idx["vocab"].items():
+        if not isinstance(token, str) or not token or not isinstance(postings, list):
+            _die("retrieval_index.json vocab schema 无效——请重跑 ingest")
+        seen_docs = set()
+        for posting in postings:
+            if (not isinstance(posting, list) or len(posting) != 2
+                    or type(posting[0]) is not int or not 0 <= posting[0] < idx["n_docs"]
+                    or type(posting[1]) is not int or posting[1] <= 0
+                    or posting[0] in seen_docs):
+                _die("retrieval_index.json posting 无效——请重跑 ingest")
+            seen_docs.add(posting[0])
+    _verify_integrity(ws, idx["integrity"])
     return idx
 
 

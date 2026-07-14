@@ -28,6 +28,14 @@ class Manifest(unittest.TestCase):
                              f"开发面文件泄进分发包: {f}")
         self.assertNotIn("scripts/build_dist.py", self.files, "打包器自身是开发工具，不进包")
 
+    def test_maintainer_history_does_not_ship(self):
+        excluded = ("docs/plans/", "docs/history/", "docs/releases/")
+        leaked = [f for f in self.files if f.startswith(excluded)]
+        self.assertEqual(leaked, [], "维护者计划/历史/发布文档泄进运行时包: %s" % leaked)
+        self.assertFalse(build_dist.is_runtime_path("docs/plans/example.md"))
+        self.assertFalse(build_dist.is_runtime_path("docs\\history\\plans\\example.md"))
+        self.assertTrue(build_dist.is_runtime_path("docs/language-policy.md"))
+
     def test_every_skill_referenced_script_ships(self):
         # every scripts/<name>.py referenced from runtime skill texts must be in the manifest
         refs = set()
@@ -37,7 +45,9 @@ class Manifest(unittest.TestCase):
             for dirpath, _dirs, files in os.walk(os.path.join(ROOT, d)):
                 for fn in files:
                     if fn.endswith(".md"):
-                        scan.append(os.path.relpath(os.path.join(dirpath, fn), ROOT))
+                        rel = os.path.relpath(os.path.join(dirpath, fn), ROOT)
+                        if build_dist.is_runtime_path(rel):
+                            scan.append(rel)
         for rel in scan:
             with open(os.path.join(ROOT, rel), encoding="utf-8") as fh:
                 refs.update(pat.findall(fh.read()))

@@ -1,8 +1,11 @@
 # Knowledge Ingestion Hardening Plan
 
-Status: active implementation plan  
-Branch: `codex/kb-ingestion-hardening`  
-Scope: local, student-focused Exam Cram Coach; no hosted multi-tenant service  
+Status: implementation complete; Draft PR delivery in progress
+
+Branch: `codex/kb-ingestion-hardening`
+
+Scope: local, student-focused Exam Cram Coach; no hosted multi-tenant service
+
 Source brief: *Course Knowledge Base Project Plan* (18-page DOCX supplied by the maintainer)
 
 ## 1. Outcome
@@ -88,24 +91,20 @@ No external framework becomes a runtime dependency in this PR. No GPL implementa
 ```json
 {
   "schema_version": 1,
-  "pipeline_version": "ingestion-v1",
   "sources": [
     {
       "source_id": "src_<stable digest>",
       "path": "lectures/ch05.pdf",
       "sha256": "...",
-      "size": 1234,
-      "mime": "application/pdf",
-      "role": "lecture",
-      "adapter": "native_pdf",
-      "adapter_version": "...",
+      "size_bytes": 1234,
+      "media_type": "application/pdf",
       "status": "parsed"
     }
   ]
 }
 ```
 
-Paths are workspace-relative and normalized. A source is always accounted for as `parsed`, `review_required`, `unsupported`, or `failed`; no source silently disappears.
+Paths are workspace-relative and normalized. A source is always accounted for as `discovered`, `parsed`, `review_required`, `unsupported`, `failed`, or `unrecoverable`; no source silently disappears. Pipeline identity and parser/config-dependent input hashes live in `.ingest/build_manifest.json` (`pipeline_version=ingestion-v1`) so the immutable source inventory stays minimal.
 
 ### 4.2 Content-unit IR
 
@@ -122,7 +121,8 @@ Paths are workspace-relative and normalized. A source is always accounted for as
   "text": "...",
   "html": null,
   "latex": null,
-  "asset": null,
+  "asset_path": null,
+  "asset_role": null,
   "section_path": ["Chapter 5", "5.2 Fourier Transform"],
   "chapter_id": "ch05",
   "method": "pypdf|pymupdf|pdfium|agent_vision|manual",
@@ -157,7 +157,7 @@ Every quiz item, teaching example, chunk, wiki file, and progress phase refers t
 
 ### 4.4 Typed AI review queue
 
-`.ingest/review_queue.json` replaces disconnected free-text warnings:
+`.ingest/review_queue.jsonl` replaces disconnected free-text warnings. Each exact-schema line is one issue; the abbreviated example below describes the same logical fields without pretending to be the persisted wire schema:
 
 ```json
 {
@@ -208,75 +208,76 @@ Process exit code and readiness are separate concepts.
 
 ### Phase A - contracts and regression baseline
 
-- [ ] Add `scripts/ingestion/` with stdlib models, atomic JSON/JSONL I/O, stable IDs, source manifest, review queue, and patch validation.
-- [ ] Preserve every input file and page in the manifest/IR, including empty and image-only pages.
-- [ ] Add schema versioning and explicit `chapter_id` / `phase_id` mapping.
-- [ ] Add unit tests for deterministic IDs, path normalization, issue lifecycle, patch replay, and invalid patch rejection.
+- [x] Add `scripts/ingestion/` with stdlib models, atomic JSON/JSONL I/O, stable IDs, source manifest, review queue, and patch validation.
+- [x] Preserve every input file and page in the manifest/IR, including empty and image-only pages.
+- [x] Add schema versioning and explicit `chapter_id` / `phase_id` mapping.
+- [x] Add unit tests for deterministic IDs, path normalization, issue lifecycle, patch replay, and invalid patch rejection.
 
 Exit gate: contracts are independently testable and do not change legacy compiled outputs yet.
 
 ### Phase B - compatibility integration and correctness fixes
 
-- [ ] Make the existing material builder emit the source manifest, content-unit IR, and typed review queue while retaining its current CLI.
-- [ ] Normalize old parse warnings, skipped entries, visual review entries, and missing-answer entries into typed issues.
-- [ ] Fix the PDF capability matrix so preflight and runtime use one adapter registry.
-- [ ] Keep real chapter numbers independent from study phase order.
-- [ ] Assign `source_type` to lecture examples/quizzes and block unassigned chapter items from a chapter-ready result.
-- [ ] Run `validate_workspace.py` as the last official ingest step.
-- [ ] Make compiled writes transactional enough that a failed build cannot mix old and new fact generations.
+- [x] Make the existing material builder emit the source manifest, content-unit IR, and typed review queue while retaining its current CLI.
+- [x] Normalize old parse warnings, skipped entries, visual review entries, and missing-answer entries into typed issues.
+- [x] Fix the PDF capability matrix so preflight and runtime use one adapter registry.
+- [x] Keep real chapter numbers independent from study phase order.
+- [x] Assign `source_type` to lecture examples/quizzes and block unassigned chapter items from a chapter-ready result.
+- [x] Run `validate_workspace.py` as the last official ingest step.
+- [x] Make compiled writes crash-recoverable so a failed/interrupted build cannot mix old and new fact generations.
 
 Exit gate: legacy commands work, non-contiguous chapters are correct, and unresolved blocking issues cannot be called ready.
 
 ### Phase C - structure-aware compilation and retrieval
 
-- [ ] Compile wiki, teaching examples, and quiz candidates from content units plus validated patches.
-- [ ] Extend chunk records with stable unit IDs, parent section/chapter IDs, source spans, and context prefixes.
-- [ ] Keep tables, formulas, figures/captions, code, and question/answer units intact unless a single unit exceeds the hard limit.
-- [ ] Merge concept/knowledge-point postings into retrieval index generation.
-- [ ] Generate lightweight terms/concepts from deterministic headings, definitions, formulas, and question tags; mark any AI-enriched term explicitly.
-- [ ] Enforce index freshness during validation and retrieval.
-- [ ] Add retrieval evaluation for exact question IDs, bilingual terms, formulas, neighboring context, hard negatives, Recall@1/5, and MRR.
+- [x] Compile wiki, teaching examples, and quiz candidates from content units plus validated patches.
+- [x] Extend chunk records with stable unit IDs, parent section/chapter IDs, source spans, and context prefixes.
+- [x] Keep tables, formulas, figures/captions, code, and question/answer units intact unless a single unit exceeds the hard limit.
+- [x] Merge concept/knowledge-point postings into retrieval index generation.
+- [x] Generate lightweight terms/concepts from deterministic headings, formulas, question tags, and supplied bilingual terms; preserve AI provenance on reviewed enrichments.
+- [x] Enforce index freshness during validation and retrieval using the runtime loader as the validation oracle.
+- [x] Add strict gold-query evaluation with Recall@1, Recall@5, and MRR, plus formula/question/source-page and hard-negative coverage tests.
 
 Exit gate: source-to-chunk-to-answer trace is complete and stale indexes fail closed.
 
 ### Phase D - skill and language contract repair
 
-- [ ] Route canonical state values (`中文`, `English`, `双语`) correctly; aliases are input-only.
-- [ ] Remove the web-prompt exception that invents quiz questions without a bank.
-- [ ] Permit manual ingest fallback only after a real Python capability probe; business failures remain visible.
-- [ ] Require workspace registry/path confirmation in the ingest sub-skill.
-- [ ] Use the official state initialization path before any Markdown fallback.
-- [ ] In the `<=1 day` tier, use the default walkthrough template without asking a preference question.
-- [ ] Clarify that source quotations keep their original language while generated teaching prose follows the target language.
-- [ ] Replace duplicated full locale workflows with concise locale indexes/messages and one control-plane truth.
-- [ ] Add semantic consistency, Markdown-link, template-placeholder, and runtime-context-budget tests.
+- [x] Route canonical state values (`中文`, `English`, `双语`) correctly; aliases are input-only.
+- [x] Remove the web-prompt exception that invents quiz questions without a bank.
+- [x] Permit manual ingest fallback only after a real Python capability probe; business failures remain visible.
+- [x] Require workspace registry/path confirmation in the ingest sub-skill.
+- [x] Use the official state initialization path before any Markdown fallback.
+- [x] In the `<=1 day` tier, use the default walkthrough template without asking a preference question.
+- [x] Clarify that source quotations keep their original language while generated teaching prose follows the target language.
+- [x] Replace duplicated full locale workflows with concise compatibility indexes/messages and one control-plane truth.
+- [x] Add semantic consistency, Markdown-link, template-placeholder, and runtime-context-budget tests.
 
 Exit gate: all entry points agree on bank-only, urgency, state, workspace, language, and failure semantics.
 
 ### Phase E - repository cleanup
 
-- [ ] Remove the unused top-level `quiz_items` mirror.
-- [ ] Fold `wiki_meta.json` freshness into retrieval integrity and stop generating the standalone file.
-- [ ] Move knowledge-point indexing into the main retrieval builder, then remove `build_knowledge_index.py`.
-- [ ] Remove the builder's legacy caption-only wiki gallery; keep one visual compilation path.
-- [ ] Remove the obsolete `spike/llamaindex_rag/` now that its abstention/chunk contract is implemented by the production stdlib retriever.
-- [ ] Keep small `list_*` and `show_*` read-only CLIs because they reduce agent context and token use.
-- [ ] Keep legacy builder/ingest CLI names as thin compatibility entry points for one release; do not retain duplicate implementations.
-- [ ] Move completed `PLAN-*` and old `RELEASE-*` files out of the repository root and add lifecycle metadata.
-- [ ] Rewrite stale architecture/language/localization documents and fix all relative links.
-- [ ] Remove hard-coded dates/phase counts from templates.
+- [x] Remove the unused top-level `quiz_items` mirror.
+- [x] Fold `wiki_meta.json` freshness into retrieval integrity and stop generating the standalone file.
+- [x] Move knowledge-point indexing into the main retrieval builder, then remove `build_knowledge_index.py`.
+- [x] Remove the builder's legacy caption-only wiki gallery; keep one visual compilation path.
+- [x] Remove the obsolete `spike/llamaindex_rag/` now that its abstention/chunk contract is implemented by the production stdlib retriever.
+- [x] Keep small `list_*` and `show_*` read-only CLIs because they reduce agent context and token use.
+- [x] Keep legacy builder/ingest CLI names as compatibility entry points; the structured pipeline has one implementation owner.
+- [x] Move completed `PLAN-*` and old `RELEASE-*` files out of the repository root and add lifecycle metadata.
+- [x] Rewrite stale architecture/language/localization documents and fix all relative links.
+- [x] Remove hard-coded dates/phase counts from templates.
 
 Exit gate: the root contains only active entry/release files, generated outputs have one owner, and no tracked link points to a removed path.
 
 ### Phase F - realistic evaluation and release evidence
 
-- [ ] Add small, redistributable fixtures for text PDF, image-only page, formula, table, question/answer shared page, DOCX, PPTX, and image input.
-- [ ] Test parser capability combinations against the same registry used by preflight.
-- [ ] Add a gold manifest for page accounting, chapter assignment, concept/formula/example/question/answer recall, answer pairing, visual dependency, provenance, and answer leakage.
-- [ ] Test unchanged reruns, rename/dedup, one-file changes, source-hash drift, interrupted writes, and patch idempotence.
-- [ ] Run quick validation for root and every sub-skill.
-- [ ] Run focused ingestion/language tests, then the complete repository suite.
-- [ ] Forward-test raw user scenarios with agents that receive only the installed skill and course fixtures.
+- [x] Add real stdlib-generated DOCX/PPTX packages plus valid, truncated, and rollback-triggering raster fixtures; cover formulas, tables, notes, controls, hidden content, and question/answer leakage in the deterministic gold set.
+- [ ] Add a redistribution-safe real PDF layout fixture pack (text, image-only, multicolumn, and shared prompt/answer crop). Deferred because the default CI intentionally has no mandatory PDF parser/render dependency; tracked as a follow-up rather than weakening the stdlib test floor.
+- [x] Test parser capability combinations against the exact registry used by preflight and runtime detection.
+- [x] Add a gold manifest for page accounting, chapter assignment, concept/formula/example/question/answer recall, answer pairing, visual dependency, provenance, source/page precision, and answer leakage.
+- [x] Test unchanged reruns, source changes, source-hash drift, process crashes, automatic transaction recovery, and patch idempotence.
+- [x] Run quick validation for root and every executable sub-skill.
+- [x] Run focused ingestion/language tests, then the complete repository suite.
+- [x] Forward-test raw user scenarios with an independent agent that receives only the installed skill entry points; all five routes passed, and its wording-boundary suggestions were incorporated.
 
 Exit gate: test evidence covers real adapters and semantic invariants, not only keyword presence and fake backends.
 
@@ -325,12 +326,12 @@ Local ignored/untracked material, student workspaces, and generated reports are 
 
 ## 9. Pull-request delivery checklist
 
-- [ ] Every implementation phase above is updated with completed/deferred status and evidence.
-- [ ] No user-owned unrelated change is staged.
-- [ ] The diff is reviewed for generated files, secrets, binary bloat, and accidental behavior expansion.
-- [ ] Documentation states which source-brief requirements were adapted and which were intentionally excluded.
+- [x] Every implementation phase above is updated with completed/deferred status and evidence.
+- [x] No user-owned unrelated change is staged.
+- [x] The diff is reviewed for generated files, secrets, binary bloat, and accidental behavior expansion.
+- [x] Documentation states which source-brief requirements were adapted and which were intentionally excluded.
 - [ ] Tests and forward scenarios are summarized in the PR body.
-- [ ] Compatibility and migration notes are included.
+- [x] Compatibility and migration notes are included.
 - [ ] Branch is pushed to the maintainer fork.
 - [ ] A cross-fork Draft PR targets `ZeKaiNie/universal-examprep-skill:main`.
 
@@ -341,3 +342,8 @@ This section is updated while executing the plan. A checked item without a linke
 | Date | Phase | Evidence | Status |
 | --- | --- | --- | --- |
 | 2026-07-14 | Audit | Supplied DOCX visually reviewed page-by-page; repository, skills, scripts, reports, and tests audited; official prior art verified. | complete |
+| 2026-07-14 | A-B | Added exact-schema source/content/review/patch stores, strict JSON, crash journal/rollback, one-command orchestration, shared PDF capability registry, and fail-closed readiness validation. | complete |
+| 2026-07-14 | C | Added structure-aware chunks, typed quiz preservation, concept postings, stale-index rejection, integrity hashes, and deterministic Recall@1/5 + MRR evaluation. | complete |
+| 2026-07-14 | D-E | Repaired language/bank/state contracts; reduced locale duplication; retired duplicate indexes, caption gallery, old spike, and root-level historical plans/releases. | complete |
+| 2026-07-14 | F | 1,508 repository tests passed (27 skipped); root and all 10 executable skill folders passed `quick_validate.py` under Python UTF-8 mode. | complete with real-PDF fixture follow-up |
+| 2026-07-14 | Forward test | Independent cold-reader checked urgent Chinese teaching, missing-bank quiz, warning-bearing ingest, one-shot PDF in chat mode, and English missing-visual handling; no blocking ambiguity, wording boundaries tightened. | complete |

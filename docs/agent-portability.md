@@ -23,15 +23,35 @@
 | ChatGPT / Claude Web | `prompts/web_prompt.md`（English: `prompts/web_prompt.en.md`） | 无本地写盘；该提示词已含来源标注/防编题规则。用文本「进度 Summary」做断点，手动挂载题库后只从中出题 |
 | Generic agents | `AGENTS.md` | 一屏浓缩兜底契约 |
 
+## 文件型 host 的建库边界
+
+能读写本地文件并运行 Python 的 host 使用同一条常规入口：
+
+```bash
+python scripts/ingest_course.py --materials <confirmed-materials-dir> --workspace <confirmed-workspace-dir> --json
+```
+
+该入口处理 PDF、DOCX、PPTX、纯文本和 Markdown，建立 `.ingest/` 结构化事实源，编译学生工作区并运行最终 validator。正常返回值有明确业务语义：
+
+- exit `0`：readiness 为 `ready` 或 `usable_with_gaps`；后者必须先向学生说明仍存在的警告；
+- exit `10`：流水线执行完成，但 readiness 为 `blocked`；不得开始授课、测验或阶段完成；
+- 其他非零值：命令或数据失败，必须修复或明确报告，不能伪装成无 Python 降级。
+
+需要 AI 接管时，host 通过 `scripts/ingest_review.py` 的 `list` / `show` / `claim` / `validate-patch` / `apply` / `mark-unrecoverable` / `rebuild` 子命令处理类型化 ReviewIssue。`.ingest/review_queue.jsonl` 与 `.ingest/review_patches.jsonl` 是审查事实源；不要手改派生 wiki、题库或兼容性报告来绕过阻断。每次材料变化、补丁应用或重建后都重新验证 readiness。
+
+Web host 不能执行这条流水线、不能拥有 `.ingest/` 账本，也不能声称本地建库或写盘已经成功。它只能使用用户实际粘贴或挂载的材料与题库，并在回复末尾给出可复制的进度断点。
+
 PDF/教材产物先经过资源偏好门禁，再做能力级路由：缺少 `artifact_mode` 的旧工作区与未知值都按 `chat`
 处理，不自动探测 PDF 能力、不自动生成 HTML/PDF，也不猜用户的订阅套餐。只有用户显式持久化
 `visual`，或本次明确要求 HTML/PDF/打印版时，才进入 host-specific 路由；单次请求不改持久状态。
 不同 host 不共享同一安装入口，详见 [`pdf-capability-adapters.md`](pdf-capability-adapters.md) 与机器可读的
 [`pdf-capability-adapters.json`](pdf-capability-adapters.json)。任何模式都不授权静默下载安装外部 skill 或依赖。
 
-> 兼容性：根目录 `SKILL.md` 仍是默认/兼容触发入口（现为语言中性路由器，按 `study_state.json` 的 `language`
-> 分发到全量入口文案包 `locales/zh/SKILL.md` / `locales/en/SKILL.md`，完整防编题与来源标注规则承载在语言包与
-> `skills/` 控制层）。支持技能集合的 host 可改用 `skills/exam-cram/SKILL.md` 作主入口；二者描述同一行为。
+> 兼容性：根目录 `SKILL.md` 是默认触发入口和语言中性路由器，按 `study_state.json.language` 的规范值加载
+> `skills/` 中的共享控制规则与 `locales/zh/SKILL.md` / `locales/en/SKILL.md` 的轻量兼容文案索引。
+> 完整行为只承载在 `skills/` 控制层；语言入口不是可独立漂移的第二份手册。支持技能集合的 host 也可直接用
+> `skills/exam-cram/SKILL.md` 作主入口。
 
-## 未来适配（本 PR 不实现）
-- `.cursor/rules/*.mdc`、`.windsurf/rules/*.md` 等 host 专用规则副本，连同一个「副本与 `AGENTS.md` 对齐」的检查脚本（见 `docs/skill-architecture.md` 的 Future work）。
+## 其他适配
+
+仓库当前不捆绑 `.cursor/rules/*.mdc` 或 `.windsurf/rules/*.md` 等 host 专用副本。若后续新增，副本必须由 `AGENTS.md` 生成或经对齐测试验证，不能手工形成新的行为事实源。

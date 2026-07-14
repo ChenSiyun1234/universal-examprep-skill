@@ -112,6 +112,14 @@ class IngestEndToEndTest(unittest.TestCase):
         ], "quiz_bank": []}
         self.assertEqual(run_ingest(bad, self.tmp).returncode, 1)
 
+    def test_duplicate_quiz_id_rejected_before_any_workspace_write(self):
+        bad = json.loads(json.dumps(VALID, ensure_ascii=False))
+        bad["quiz_bank"][1]["id"] = "q1"
+        result = run_ingest(bad, self.tmp)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("重复", result.stdout)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "references")))
+
     def test_choice_question_missing_options_fails(self):
         bad = {"course_name": "X",
                "phases": [{"phase_num": 1, "phase_name": "P", "wiki_filename": "a.md", "wiki_content": "x"}],

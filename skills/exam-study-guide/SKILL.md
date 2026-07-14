@@ -17,7 +17,7 @@ Use this module only after the exam workspace and current chapter are confirmed.
 ## Inputs
 
 - Exactly one current-chapter `references/wiki/chNN*.md` file.
-- Optional `study_state.json`; its canonical `language` value from `docs/language-policy.md` controls only the generated interface. A missing state keeps the legacy Chinese default.
+- Optional `study_state.json`; its canonical `language` value (`中文` / `English` / `双语`) controls all agent-generated headings, notices, explanations, labels, and summaries. Missing state follows the session default (English unless the student opened in Chinese); the script's Chinese empty-value fallback exists only for legacy workspaces and is not a new-session language decision.
 - The current-chapter slice of `references/teaching_examples.json`, when that optional manifest exists.
 - The current-chapter slice of `references/quiz_bank.json`.
 - `notebook/chNN.md`, when that chapter notebook exists.
@@ -69,7 +69,7 @@ Use only `$...$` and `$$...$$` as formula delimiters in source Markdown. Forms s
 
 - Do not render the entire course to bypass chapter lazy-loading.
 - Do not run because a host appears to have a low/high subscription. The only standing switch is canonical `artifact_mode=chat|visual`; missing and unknown values fail safe to `chat`.
-- Do not machine-translate source facts. Compile only the wiki, teaching examples, quiz text, and bilingual explanations that are already persisted; language dispatch applies to the derived interface around them.
+- Do not silently machine-translate verbatim source quotations, official question text, or teacher-provided answers. Preserve such quoted evidence in its original language and mark it explicitly as an original-language quotation when it differs from the selected reply language. This exception applies only to faithful source evidence: every agent-generated heading, bridge sentence, explanation, notice, solution, and summary MUST follow the selected `中文` / `English` / `双语` contract. In particular, English purity does not require rewriting a quoted Chinese exam question, but it does forbid Chinese agent prose around that quotation.
 - The raw-material preflight (`check_deps.py --materials <dir> --artifact-mode visual`) cannot know the final chapter content or host PDF backend and therefore must not trigger speculative MathML/browser installation. Before visual generation, rerun it with `--workspace <ws> --chapter <N> --pdf-backend <native|browser|html>`. If that chapter contains formula content without the audited `latex2mathml==3.60.0`, the preflight/renderer prints the exact pinned command. Explain the dependency and obtain consent before installation; never install silently. Never present an older `chNN.html` as the result of a failed render.
 - Reject URL, absolute, parent-traversal, missing, unreadable, or symlinked assets and paths. The sole compatibility exception is `../assets/<safe-relative-tail>` inside a selected `references/wiki/*.md`, because `build_visual_index --apply-wiki` emits that shape. Resolve it only to `<ws>/references/assets/<safe-relative-tail>`, reject every additional `..` and every symlink component, and never extend this exception to teaching examples, quiz items, or notebook content.
 - A missing local browser blocks only the selected `browser` backend. It does not block a successfully probed `native` adapter. Any failed PDF route is an HTML-only degradation, not a PDF success.

@@ -3,14 +3,16 @@
 > This file is the en language pack for student-visible wording; behavior lives in [skills/exam-ingest/SKILL.md](../../../skills/exam-ingest/SKILL.md) (the control layer, single source of truth).
 
 ## Student-facing Output
-A one-line setup receipt, e.g.:
-  `Prep workspace initialized: 3 wiki chapters + 18 questions (including 2 marked ⚠️ AI-generated answer — not from your teacher or textbook). Progress file created. Next up: teaching Chapter 1.`
-  Then hand control back to `exam-cram` for step two (teaching).
+Use the receipt matching validator readiness; never turn process completion into a generic “ready” claim.
 
-Dependency-preflight consent line (asked ONCE when the materials contain PDFs and a backend is missing):
+- `ready`: `Prep workspace initialized and validated: 3 wiki chapters + 18 bank items. No current validator warnings. Next: Chapter 1.`
+- `usable_with_gaps`: `Prep workspace built with 2 declared gaps. I will name them before we begin; teaching may proceed without presenting those gaps as complete.`
+- `blocked`: `The files were compiled, but review is blocking study: 2 source-backed issues remain. I will resolve or explicitly close each one before teaching.`
 
-> Your materials include PDFs; reading them needs one parsing library (a single command: `pip install pymupdf`, takes seconds). Install it now? If not, the PDF files will be skipped and only text materials imported.
+Dependency-preflight consent line (asked once for the exact missing capability reported by the current route):
+
+> This materials route needs `<capability>` and it is not installed. The audited command is `<command>`. Install it now? If not, I will stop this unsupported route and report which files cannot be imported.
 
 Post-install receipt:
 
-> Dependency installed — building your knowledge base. This was a one-time step; you won't be asked again.
+> Dependency available — rerunning the same preflight and build. A different route, machine, or changed environment may require a separate check.

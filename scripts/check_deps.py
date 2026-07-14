@@ -4,8 +4,8 @@
 skill may need beyond the stdlib, probed BEFORE it is needed, never discovered by a runtime crash.
 
 Why: the CORE pipeline is pure stdlib by design, but four capabilities have optional backends —
-PDF text extraction (any of pypdf / pypdfium2 / PyMuPDF), PDF page rendering for the visual index
-(PyMuPDF only), audited LaTeX-to-MathML conversion, and printable-PDF output (a LOCAL Edge/Chrome,
+PDF text extraction (pypdf or PyMuPDF), PDF page rendering for the visual index
+(PyMuPDF or pypdfium2 + Pillow), audited LaTeX-to-MathML conversion, and printable-PDF output (a LOCAL Edge/Chrome,
 not a pip package). Students used
 to hit these as mid-ingest errors; agents are instructed (exam-ingest Workflow step 0) to run THIS
 tool at setup, show the student what is missing and why, and offer the exact install commands —
@@ -34,20 +34,30 @@ for _s in ("stdout", "stderr"):
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from pdf_capabilities import (  # noqa: E402
+    PDF_RENDER_CANDIDATES,
+    PDF_TEXT_CANDIDATES,
+    dependency_candidates,
+)
+
 
 # ---- the manifest（唯一事实源；技能文本只指向本工具，不复制清单内容——防两处漂移）----
-# candidates: (import_name, pip_name)。group 内任一可用即满足。
+# candidates: ((import_name, ...), display packages)。同一候选里的 imports 必须全部可用
+# （例如 pypdfium2 + Pillow），group 内任一完整候选可用即满足。这个结构与
+# build_raw_input_from_workspace.detect_backend() 的真实能力保持一一对应。
 LATEX2MATHML_VERSION = "3.60.0"
 LATEX2MATHML_PIN = "latex2mathml==%s" % LATEX2MATHML_VERSION
 
 GROUPS = (
     {"id": "pdf_text",
-     "candidates": (("pypdf", "pypdf"), ("pypdfium2", "pypdfium2"), ("fitz", "pymupdf")),
+     "candidates": dependency_candidates(PDF_TEXT_CANDIDATES),
+     "install": "pip install pymupdf",
      "needed_when": "materials_have_pdf",
      "purpose_zh": "读取 PDF 课件/试卷文本（ingest 建库）",
      "purpose_en": "extract text from PDF materials (ingest)"},
     {"id": "pdf_render",
-     "candidates": (("fitz", "pymupdf"),),
+     "candidates": dependency_candidates(PDF_RENDER_CANDIDATES),
+     "install": "pip install pymupdf",
      "needed_when": "materials_have_pdf",
      "purpose_zh": "渲染 PDF 页面图（视觉索引/题面图，缺失时仅文字信号、召回打折）",
      "purpose_en": "render PDF pages for the visual index (text-only signals without it)"},
@@ -57,7 +67,8 @@ GROUPS = (
      "purpose_zh": "考前小抄的打印级 PDF 输出（缺失时降级为 HTML + 手动打印，功能不缺失）",
      "purpose_en": "print-grade cheatsheet PDF (degrades to HTML + manual print)"},
     {"id": "mathml",
-     "candidates": (("latex2mathml", LATEX2MATHML_PIN),),
+     "candidates": ((("latex2mathml",), LATEX2MATHML_PIN),),
+     "install": "pip install %s" % LATEX2MATHML_PIN,
      "required_version": LATEX2MATHML_VERSION,
      "needed_when": "visual_artifacts",
      "purpose_zh": "把标准 LaTeX 公式离线转换为浏览器/PDF 可读的原生 MathML",
@@ -418,14 +429,17 @@ def build_report(materials=None, artifact_mode="chat", workspace=None, chapter=N
             available = []
             usable = []
             if should_probe:
-                for imp, pip in g["candidates"]:
+                for imports, pip in g["candidates"]:
                     try:
-                        present = _probe_import(imp)
-                        if not present:
+                        # One candidate may be a compound backend.  Partial presence is not a
+                        # capability: pypdfium2 without PIL cannot execute the builder's to_pil()
+                        # render path and therefore must not make this preflight green.
+                        if not all(_probe_import(imp) for imp in imports):
                             continue
                         if required_version:
-                            actual = installed_distribution_version(imp)
-                            available.append("%s==%s" % (imp, actual or "unknown"))
+                            distribution = imports[0]
+                            actual = installed_distribution_version(distribution)
+                            available.append("%s==%s" % (distribution, actual or "unknown"))
                             if actual == required_version:
                                 usable.append(pip)
                         else:
@@ -433,12 +447,13 @@ def build_report(materials=None, artifact_mode="chat", workspace=None, chapter=N
                             usable.append(pip)
                     except Exception as exc:
                         capability_probe_error = (str(exc) if isinstance(exc, DependencyProbeError)
-                                                  else "Python 模块 %s 探测失败：%s" % (imp, exc))
+                                                  else "Python 模块 %s 探测失败：%s"
+                                                  % (" + ".join(imports), exc))
                         break
                 ok = bool(usable)
             else:
                 ok = None
-            install = "pip install " + g["candidates"][-1][1]   # 推荐末位（pymupdf 功能最全）
+            install = g.get("install") or ("pip install " + g["candidates"][-1][1])
         if capability_probe_error:
             probe_errors.append("%s: %s" % (g["id"], capability_probe_error))
         if capability_probe_error:

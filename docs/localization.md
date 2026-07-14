@@ -1,82 +1,82 @@
 # 本地化边界 / Localization Boundary
 
-本文档定义本技能的**本地化策略与边界**。自 v4 起，**locales/ 语言包拆分正式启用**：旧政策「暂缓拆分、等第二种打包语言出现」的触发条件已经满足——英文已是完整的第二打包语言（英文默认回复 + 英文入口面），继续内联只会放大双语文本的漂移风险。This document defines the localization policy. As of v4 the `locales/` split is **approved and active**: English is now a full second bundled language, which is exactly the trigger the previous "defer until a second locale exists" policy was waiting for.
+本文件说明语言包能做什么、不能做什么。核心原则是：**行为只有一份，文案可以有多份**。
 
----
-
-## 1. v4 模型 / The v4 model
-
-- **控制层（control plane）** 位于 `skills/*/SKILL.md`（`exam-*` 与 `confusion-tracker` 都算），控制段用**英文**，包含固定六段：
-  - `Purpose`
-  - `Activation`
-  - `Inputs`
-  - `Workflow`
-  - `Output Contract`
-  - `Boundaries`
-- **学生可见文案**拆入语言包目录，中英物理分离：
+## 1. 目录职责
 
 ```text
-locales/
-  zh/
-    skills/<name>.md    # 各子技能的学生侧文案（七步模板、来源块、判分反馈……）
-    messages.json       # 全部脚本用户可见消息（msgid → 中文）
-    templates/          # 中文 md 模板（进度/笔记本/错题本/小抄骨架）
-  en/                   # 同构英文包
+SKILL.md                         # 语言中性路由器
+skills/*/SKILL.md                # 控制行为：触发、读写、流程、失败、边界
+locales/zh/SKILL.md              # 中文兼容索引，不是完整流程副本
+locales/en/SKILL.md              # 英文兼容索引，不是完整流程副本
+locales/<lang>/skills/*.md       # 每个子技能的学生可见措辞
+locales/<lang>/messages.json     # 脚本消息目录
+locales/<lang>/templates/*.md    # 工作区模板
+scripts/                         # 单份执行逻辑，通过消息目录渲染用户文案
 ```
 
-- **脚本逻辑只有一份**（`scripts/`，语言中性）：持久化文件与 JSON 只存语言中性 canonical 代号；用户可见消息经 `scripts/i18n.py` 按语言包渲染。**逻辑不进语言包**（locale 文件 must not duplicate control behavior，只含标签、示例、模板、进度提示、小抄措辞）。
-- **英文控制层保持不变**（control plane unchanged）：语言包拆分只动学生可见文案，不动控制段。
-- **学生侧默认语言 = English**（学生用中文开场则切简体中文 Simplified Chinese；`双语` 为显式第三选项）。语言选择在首次对话合并首问中确定，存 `study_state.json` 的 `language`，中途可用 `set --language` 切换。
-- **回退（fallback）**：找不到所选语言包时回退 `zh` 包（历史 canonical 语言，覆盖最全）。
-- `exam-audit` 是只读体检、无学生侧模板，**无需** locale 文件。
+`skills/exam-cram/SKILL.md` 与子技能是 behavioral source of truth。locale 文件不拥有业务规则。
+脚本逻辑只有一份；机器 schema、持久化 domain 值和学生视图分层处理，只有学生可见消息按语言目录渲染。
 
-> 控制层（英文、精确、可测）与学生侧（单语言纯净）的分层定义见 [`language-policy.md`](language-policy.md)；技能集合结构见 [`skill-architecture.md`](skill-architecture.md)。
+## 2. 可以放进语言包的内容
 
----
+- 标题、标签、回执和进度提示；
+- 七步讲解块名、来源块形态、诚实弃答句；
+- 自然语言示例与小抄栏目措辞；
+- 只含展示骨架的工作区模板；
+- 同一消息键的自然中文或英文翻译。
 
-## 2. 拆分启用的理由 / Why the split is now active
+## 3. 禁止放进语言包的内容
 
-- **第二种打包语言已经存在**：英文默认回复 + 英文入口面已随上一版发布——旧政策等待的「第二 locale」触发条件成立。
-- **内联双语已实证漂移**：同一份枚举词表曾在三个脚本里各自硬编码并出现分叉；手工镜像的双语文本没有机械对齐检查就会越漂越远。
-- **配套约束同 PR 落地**：语言包结构对齐测试（zh/en 两包的 msgid 集合、技能文案锚点集合必须相等）与双向纯净 lint 一起进仓，「拆而不散」。
+- 新的触发条件、阶段流转或完成标准；
+- 另一套题库选择、判分或防编题规则；
+- 另一套写盘、错误降级、依赖安装或路径安全规则；
+- 与控制层不同的默认值；
+- 复制整份 `exam-cram` 流程后再翻译维护。
 
----
+行为变化先且只改 `skills/*/SKILL.md`。语言包同一个变更中只更新受影响的学生文案。两个兼容入口只保留导航、canonical 固定话术和最小安全底线。
 
-## 3. 语言包规则 / Language-pack rules
+## 4. 状态与派发
 
-- 每个产出学生侧输出的技能都在 `locales/<lang>/skills/` 有对应文案文件；**每个技能指向其 locale 文件**（控制层显式声明加载哪个包）。
-- locale 文件**不得复制 / 重写控制行为**（must not duplicate control behavior）。
-- locale 文件**只**包含：标签（labels）、示例（examples）、模板（templates）、进度提示（progress messages）、考前小抄措辞（cheat-sheet wording）。
-- zh/en 两包结构必须对齐：msgid 集合相等、技能文案文件集合相等、锚点集合相等——由结构对齐测试强制。
-- `双语` 模式不设第三套文案：zh 包为主体 + 逐块 `> EN:` 镜像（组合规则见 `language-policy.md`）。
+- **机器 schema 层**：JSON 键、稳定 ID、issue/patch 状态、reason code、CLI 子命令和结构化 JSON 输出保持固定机器拼写，不进语言包。
+- **domain 值层**：现有学习模式、时间档位、语言、知识窗口和偏好枚举保持中文 canonical 值；输入别名可归一化，但不能随回复语言改写持久化值。
+- **学生视图层**：对话、notebook 解释、教材、回执和摘要按当前语言输出。若旧 renderer 只能生成中文 canonical 的兼容视图，代理把它当状态视图读取并用当前语言复述，不把原文直接粘贴进英文教学。
+- `study_state.json.language` 的规范值是 `中文`、`English`、`双语`，不是语言中性代号。
+- `zh`、`en`、`bilingual` 只是命令输入别名，由 `update_progress.py` 归一化后保存。
+- 新对话默认英文；学生用中文开场则默认简体中文。双语只能显式选择。
+- `双语` 不建立第三套目录：逐块组合 zh 与 en，中文在前、`> EN:` 镜像在后。
+- 所选文案包缺失是打包错误，必须明确报告，不能静默换成另一种回复语言。仅持久化层中文 canonical 模板可在文档明确允许且已告知时作为旧工作区兼容回退；代理生成的对话仍使用所选语言。
+- `exam-audit` 没有固定学生模板，因此没有单独的 locale 片段；它仍按语言状态生成报告。
 
----
+机器可读 JSON 不是学生文案；面向学生的脚本消息才通过 `messages.json` 本地化。每个新输出必须在设计时明确归属其中一层，禁止用“全部脚本输出都中文”或“全部 JSON 都翻译”这样的笼统规则。
 
-## 4. 翻译规则 / Translation rules
+## 5. 翻译不改变安全语义
 
-本地化时必须：
+翻译时必须保持：
 
-- **语义上保留三类来源标注**（canonical provenance categories，措辞见 [`language-policy.md`](language-policy.md)）：
-  - 来自资料（material-sourced，🟢）
-  - AI 补充（AI supplemental，🟡）
-  - AI 生成答案（AI-generated answer，⚠️）
-- **保持「AI 生成答案非老师/教材提供」的警示清晰**，绝不让 AI 生成内容看起来像老师给的标准答案。
-- **不得削弱「只从 `quiz_bank.json` 出题」**（quiz_bank-only quizzing）。
-- **不得削弱进度断点**（progress checkpointing，`study_progress.md`）。
-- **不得改动 schema、workflow 或安全边界**（safety boundaries）。
-- **避免直译**：若逐字翻译会让学生侧文本不自然，应改成目标语言里自然、应试的说法。
+- 测验只从 `quiz_bank.json` 抽取；没有题库就不能生成替代关卡；
+- 🟢 来自资料 / 🟡 AI补充，可能与你老师讲的不完全一致 / ⚠️ AI生成答案，非老师/教材提供 三类来源；
+- 视觉题先展示题面侧资产，缺图则跳过；
+- `study_state.json` 先读、用 `update_progress.py` 写；
+- 无状态但 Python 可用时先 `init`；只有 Python 确实不能运行才手工维护 md；
+- `≤1天` 不询问模板偏好；明确不要题时阶段最多 `covered_unverified`；
+- 工作区路径必须由用户确认；命令业务失败必须明确暴露。
 
----
+可以为了自然表达改写句式，但不能弱化这些行为。
 
-## 5. zh 包必保留的中文标签 / Required Chinese labels (zh pack)
+## 6. 原文引用边界
 
-下列是学生侧的 **canonical 中文词汇**——部分嵌在学生侧模板里（如 `当前阶段`），部分是判分反馈 / 诚实弃答 / 来源标注时的固定说法（如 `资料里没有明确答案`、来源标注）。它们必须原样保留在 `zh` 语言包中。来源标注用词以 [`language-policy.md`](language-policy.md) 为准（canonical 单一来源）。
+课件原句、考试题面、老师答案的逐字引文可以保留原语言，并明确标注为原文引用。智能体生成的标题、衔接、解释、解答和总结仍按当前语言输出。不要为了“语言纯净”悄悄改写证据，也不要借“原文引用”夹带未翻译的智能体 prose。
 
-- `当前阶段`
-- `题面图`、`这题在问什么`、`图里要读的量`、`核心公式`、`逐步演算`、`答案自检`、`知识点溯源`（七步讲解模板的七个块标题，exam-tutor）
-- `题目来源`、`答案来源`（每题固定来源块，exam-tutor 与 exam-quiz 判分反馈）
-- `这题考什么`、`标准答题步骤`（exam-quiz 判分反馈用语）
-- `易错点`、`3分钟速记`、`现在轮到你`（讲解收尾块——**默认不输出**，仅学生要求或存有偏好时按需给；输出时用这三个 canonical 措辞。`易错点` 另用于 exam-quiz 判分反馈；小抄为四段版式：必背结论/公式 → 例题 → 例题解答 → 要点解释）
-- `已记录到错题本`
-- `资料里没有明确答案`（诚实弃答）
-- `🟡 AI补充，可能与你老师讲的不完全一致`（AI 补充提醒，canonical 见 `language-policy.md`）
+## 7. 对齐检查
+
+每次新增或修改语言文案应同时检查：
+
+- zh/en 子技能文件名单一致；
+- `messages.json` 键集合一致；
+- 固定标签语义一一对应；
+- 英文学生面零 CJK、中文学生面无英文句子；
+- 相对链接存在；
+- 模板没有日期、阶段号或固定课时等样例硬编码。
+
+详细固定词表和组合规则见 [`language-policy.md`](language-policy.md)，整体结构见 [`skill-architecture.md`](skill-architecture.md)。

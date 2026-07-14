@@ -112,6 +112,25 @@ class MaterialsAwareness(unittest.TestCase):
             row = [r for r in rep["groups"] if r["id"] == "pdf_text"][0]
             self.assertIs(row["needed"], True)
 
+    def test_pdf_backend_capability_truth_table_matches_material_builder(self):
+        cases = (
+            ({"pypdf"}, True, False),
+            ({"fitz"}, True, True),
+            ({"pypdfium2"}, False, False),       # renderer is incomplete without Pillow
+            ({"pypdfium2", "PIL"}, False, True),
+            ({"pypdf", "pypdfium2", "PIL"}, True, True),
+        )
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "lec01.pdf"), "wb") as stream:
+                stream.write(b"%PDF")
+            for present, text_ok, render_ok in cases:
+                with self.subTest(present=present), \
+                        mock.patch.object(check_deps, "_probe_import",
+                                          side_effect=lambda name, have=present: name in have):
+                    rows = {row["id"]: row for row in check_deps.build_report(d)["groups"]}
+                self.assertIs(rows["pdf_text"]["ok"], text_ok)
+                self.assertIs(rows["pdf_render"]["ok"], render_ok)
+
     def test_text_only_materials_not_needed(self):
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "notes.md"), "w", encoding="utf-8") as stream:

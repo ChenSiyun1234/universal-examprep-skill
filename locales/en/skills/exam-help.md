@@ -6,7 +6,7 @@
 One screen to understand this exam-prep skill suite. Detailed rules live in the root `SKILL.md` and each subskill.
 
 ### Four-step workflow
-1. **Build the library** (`exam-ingest`): upload your materials → auto-build the wiki + quiz bank + progress file.
+1. **Build and validate the library** (`exam-ingest`): upload your materials → run the one-command course ingest → build structured source records, the wiki, quiz bank, and progress state → review any blocked items before studying.
 2. **Teach** (`exam-tutor`): lazy-load chapter by chapter; metaphor-first concept teaching / key-problem walkthroughs / run the algorithm before drawing.
    Compile a completed chapter with `exam-study-guide` only after an explicit standing `visual` choice or an explicit one-shot HTML/PDF/print request; the default `chat` mode performs no automatic compilation.
 3. **Quiz** (`exam-quiz`): draw questions from the quiz bank and grade; after two misses you get a hint / skip / archive.
@@ -24,14 +24,18 @@ The workspace field is `artifact_mode`, with only the canonical values `chat` / 
 - An explicit one-shot HTML/PDF/print request may temporarily override `chat` without modifying the stored choice; `set --artifact-mode chat` returns to the standing economical path. The agent never reads or guesses the student's subscription plan and never switches based on a presumed quota.
 
 ### Workspace files
-- `references/wiki/chN_*.md` per-chapter knowledge base (the only knowledge source; read on demand) · `references/quiz_bank.json` canonical quiz bank (the only answer source)
-- `study_plan.md` stage plan · `study_progress.md` progress + mistakes + 💡 confusion points (updated every round; read first after a restart) · `study_guide/chNN.html` optional human-readable chapter material
+- `.ingest/` is the build/review truth: source versions, structured content units, typed review issues, replayable patches, and integrity hashes. Do not edit it by hand.
+- `study_state.json` is progress truth and is read first after a restart; `study_progress.md` is its generated compatibility view. If that renderer retains canonical Chinese state vocabulary, the coach restates it in English instead of pasting it as English teaching prose.
+- `references/wiki/chN_*.md` is the compiled per-chapter teaching source · `references/quiz_bank.json` is the only quiz/grading source · `notebook/` stores full explanations · `study_guide/chNN.html` is an optional reading artifact.
+
+### Ingestion readiness
+The normal entry is `scripts/ingest_course.py`. Exit 10 means the files were compiled but content readiness is blocked; the coach must resolve the typed review queue and validate again before teaching or quizzing. `usable_with_gaps` is usable only after the remaining warnings are named; `ready` has no current validator errors or warnings.
 
 ### 6 quiz types
 `choice` multiple choice · `subjective` subjective/calculation · `diagram` diagram drawing · `fill_blank` fill in the blank · `true_false` true/false · `code` code.
 
 ### Anti-hallucination & source labeling
-- Teaching and grading stay within the wiki/quiz-bank scope; if the materials don't cover it, the coach honestly declines to answer.
+- Teaching and grading stay within the wiki/quiz-bank scope; any explicit AI supplement is labeled, and an unsupported answer is declined rather than presented as course fact.
 - 🟢 From your materials · 🟡 AI-supplemented — may differ from what your teacher taught · ⚠️ AI-generated answer — not from your teacher or textbook.
 - No made-up questions when the quiz bank has a relevant one; AI-generated content is never disguised as teacher-provided.
 

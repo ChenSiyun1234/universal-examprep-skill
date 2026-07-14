@@ -6,7 +6,8 @@ entries; mistakes/chNN.md mirrors the mistake entries; both index.md files are D
 views, deterministically rebuilt from the chapter files on every write.
 
 Why: before v4 every seven-step walkthrough and grading feedback evaporated with the chat
-(PLAN-v4.md §1.3) — the one thing a student wants to re-read at review time lived nowhere.
+(docs/history/plans/PLAN-v4.md §1.3) — the one thing a student wants to re-read at review time
+lived nowhere.
 This official tool is the only write path: entry bodies arrive on STDIN (UTF-8), files are
 written atomically (temp + os.replace, same conventions as update_progress.save), and the
 same --id AND --type in the same chapter REPLACES the entry in place, so re-teaching a

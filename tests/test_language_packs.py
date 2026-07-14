@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """v4-P2 — language-pack structural alignment lint. Stdlib only.
 
-The P2 split moved all student-visible wording out of the control layer into
-locales/: locales/zh/SKILL.md + locales/en/SKILL.md are the full-entry manuals,
-locales/<lang>/skills/*.md the per-skill packs, locales/<lang>/templates/ the
-workspace templates, locales/<lang>/messages.json the msgid catalogs. This
+Student-visible wording lives under locales/: locales/zh/SKILL.md and
+locales/en/SKILL.md are compact compatibility indices, locales/<lang>/skills/*.md
+the per-skill packs, locales/<lang>/templates/ the workspace templates, and
+locales/<lang>/messages.json the msgid catalogs. This
 module locks the two language trees to each other and to the engine:
 
   P1  pack rosters — zh and en carry the SAME per-skill pack file names, and
@@ -114,7 +114,7 @@ class P1PackRosters(unittest.TestCase):
         self.assertNotIn("exam-audit.md", zh,
                          u"exam-audit 是只读体检，设计上没有学生侧文案包")
 
-    def test_full_entry_packs_exist(self):
+    def test_compatibility_entries_exist(self):
         for rel in ("locales/zh/SKILL.md", "locales/en/SKILL.md"):
             self.assertTrue(os.path.isfile(os.path.join(ROOT, *rel.split("/"))), rel)
 

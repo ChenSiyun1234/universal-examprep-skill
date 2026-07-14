@@ -4,9 +4,15 @@
 
 ## Unreleased
 
-- 暂无。
+- **结构化课程建库**：新增 `ingest_course.py` 作为 PDF/DOCX/PPTX/txt/Markdown 到已校验工作区的唯一常规入口；返回码 `0` 表示可进入学习，`10` 表示流程成功但 readiness 仍被内容问题阻断。
+- **类型化 AI 接管**：建库中间态统一落入 `.ingest/` 的 source manifest、ContentUnit、chapter mapping、ReviewIssue 队列与 append-only ReviewPatch 账本；`ingest_review.py` 提供认领、校验、应用、不可恢复标记、重建与复验流程。
+- **文档契约对齐**：主技能、子技能、双语文案、文件格式和跨宿主说明统一 readiness 门禁、来源漂移、页锚点与审查事实源；移除过度承诺、易漂移体积数字和运行时版本时代措辞，并明确机器 schema / canonical domain 值 / 学生视图三层语言边界。
+- **仓库结构收敛**：完成的 v4/v4.1 计划移入 `docs/history/plans/`，v3 发布说明移入 `docs/releases/`；这些维护者历史文档不再进入学生运行时分发包或 GitHub 源码归档。
+- **实验目录退役**：移除已被生产标准库 BM25 检索器吸收的 `spike/llamaindex_rag/` 独立实验，保留其历史背景但不再维护两套实现。
 
 ## V4.1 — 2026-07-14
+
+> 完整实施记录见 [`docs/history/plans/PLAN-v4.1-real-world-hardening.md`](docs/history/plans/PLAN-v4.1-real-world-hardening.md)。
 
 - **真实课程完整性加固**：视觉覆盖拆为 wiki / 题面 / 答案三侧；空白/纯图 PDF 页也进入分母，回挂只认可带原页 provenance 的图片，索引同时绑定工作区输入、原始 PDF 内容/路径清单和派生结果哈希并在阶段完成时检查 freshness。答案专属页延后到解答区；手工提前暴露和题答共享整页 fail-closed。
 - **教学例题不再随题库清理消失**：新增 `references/teaching_examples.json`、append-only `references/teaching_baseline.json` 与按章列举工具；较小 raw input/重写报告不能缩减基线，可判分题库仍是唯一答案源，教学层只保证 worked examples 可达。
@@ -17,9 +23,19 @@
 - **额度友好的产物模式**：新增持久化 `artifact_mode=chat|visual`。旧工作区默认 `chat`，保留对话 + notebook/state 而不自动生成章节 HTML/PDF 或小抄 PDF；只有用户显式选择 `visual` 才持续生成视觉教材，单次 HTML/PDF/打印请求可临时覆盖且不改状态。智能体不探测或猜测订阅套餐。
 - **结论语义收紧**：validator 明确输出 `ready` / `usable_with_gaps` / `blocked`；`ok=true` 只代表结构可运行。根 skill metadata 与发布版本对齐。
 
+## V4.0 — 2026-07-12
+
+> 完整设计与实施路线见 [`docs/history/plans/PLAN-v4.md`](docs/history/plans/PLAN-v4.md)。此前 changelog 从 V3.0 直接跳到 V4.1；本节补齐已发布的 V4.0 历史，不代表一次新的发布。
+
+- **语言与状态分层**：引入 `locales/zh|en` 语言包、共享 i18n 层与旧工作区兼容迁移，减少控制逻辑和学生可见文案的耦合。
+- **轻量检索**：按块构建纯标准库 BM25 索引，支持中英术语桥、top-k、最低分弃答和检索轨迹；生产实现吸收了早期 LlamaIndex spike 的结果契约，无需运行时重依赖。
+- **笔记本与错题本落盘**：讲解、判分、疑难点和复盘按章持久化，并由确定性目录重建保持可回看、可追溯。
+- **小抄与 PDF 编译**：从持久化事实源编译考前小抄，支持页数约束、HTML/PDF 输出及视觉检查。
+- **工作区与分发瘦身**：增加工作区注册和确认流程；以显式运行时清单构建精简 zip，并在发布流程附加产物。
+
 ## V3.0
 
-> 把 V2.1 的地基（分章知识库 + 固定题库 + 来源标注 + 模块化 `skills/`）建成完整备考引擎：会处理真实试卷、按剩余时间调整教法、说你的语言，并第一次用可复现实测给「绝不瞎编」背书。以下全部为 V2.1 之后新增。发布通告见 `RELEASE-v3.md`。
+> 把 V2.1 的地基（分章知识库 + 固定题库 + 来源标注 + 模块化 `skills/`）建成完整备考引擎：会处理真实试卷、按剩余时间调整教法、说你的语言，并第一次用可复现实测给「绝不瞎编」背书。以下全部为 V2.1 之后新增。发布通告见 [`docs/releases/v3.md`](docs/releases/v3.md)。
 
 ### 教学：会因人而变
 
@@ -57,7 +73,7 @@
 
 - **四段式考前小抄**：必背 → 例题 → 例题解答 → 要点解释。
 - **只读工作区体检** `exam-audit`：直接读事实源的健康检查；架构收敛（删死模板、修 init 阶梯 bug、stale 措辞清理）。
-- 统一运行账本（live smoke / rejudge 自动记账）；1000+ 单元测试 + Ubuntu/Windows × Python 3.8/3.12 CI；实验性 `spike/llamaindex_rag` LlamaIndex RAG 独立实验。
+- 统一运行账本（live smoke / rejudge 自动记账）；1000+ 单元测试 + Ubuntu/Windows × Python 3.8/3.12 CI；当时包含实验性 `spike/llamaindex_rag` LlamaIndex RAG 独立实验（其契约后来并入 V4.0 生产检索器，实验目录已在后续版本退役）。
 
 ## V2.1
 

@@ -47,6 +47,20 @@ RUNTIME_DIRS = (
 )
 # dev-only scripts that live in scripts/ but must NOT ship (nothing today; listed for the test seam)
 SCRIPT_EXCLUDES = ("build_dist.py",)   # the builder itself is a dev tool
+# Maintainer-only documentation is useful in a source checkout but is not part of the
+# student-facing runtime contract. Prefixes use normalized repo-relative forward slashes.
+PATH_EXCLUDES = (
+    "docs/plans/",
+    "docs/history/",
+    "docs/releases/",
+)
+
+
+def is_runtime_path(rel):
+    """Whether a normalized repo-relative path belongs in the student runtime bundle."""
+    norm = (rel or "").replace("\\", "/").lstrip("./")
+    return not any(norm == prefix.rstrip("/") or norm.startswith(prefix)
+                   for prefix in PATH_EXCLUDES)
 
 
 def manifest():
@@ -63,6 +77,8 @@ def manifest():
                 if d == "scripts" and fn in SCRIPT_EXCLUDES:
                     continue
                 rel = os.path.relpath(os.path.join(dirpath, fn), ROOT).replace("\\", "/")
+                if not is_runtime_path(rel):
+                    continue
                 out.append(rel)
     return sorted(set(out))
 
