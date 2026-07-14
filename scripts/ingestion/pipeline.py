@@ -29,7 +29,13 @@ from .models import (
     render_answer_value,
 )
 from .quality import assess_page
-from .storage import IngestionStore, atomic_write_json, atomic_write_text, read_json
+from .storage import (
+    IngestionStore,
+    _workspace_root,
+    atomic_write_json,
+    atomic_write_text,
+    read_json,
+)
 
 
 PAYLOAD_VERSION = 1
@@ -310,7 +316,10 @@ def _quiz_metadata(item, answer_record=None, answer_value_marker=False):
 def build_payload(materials_root, source_paths, pages, sections=(), quiz_items=(), report=None):
     """Build the strict ingestion envelope embedded in ``raw_input.json``."""
 
-    root = os.path.abspath(materials_root)
+    # ``abspath`` preserves Windows 8.3 aliases (for example RUNNER~1), while
+    # authoritative store paths are resolved to their long form.  Persist one
+    # canonical spelling so manifests and later containment checks agree.
+    root = str(_workspace_root(materials_root))
     if not os.path.isdir(root):
         raise ValueError("materials_root must be an existing directory")
 
@@ -687,6 +696,12 @@ def _persist_payload_unlocked(workspace, payload):
     workspace = os.path.abspath(workspace)
     source_root = os.path.abspath(payload["source_root"])
     store = IngestionStore(workspace, source_root=source_root)
+    # Always derive artifact paths from the roots validated by IngestionStore.
+    # On Windows the caller's lexical path can be an 8.3 alias even though
+    # ``safe_workspace_entry`` returns the same directory under its long name;
+    # mixing those spellings makes Path.relative_to reject a valid child.
+    workspace_root = store.workspace
+    source_root = str(store.source_root)
     sources = [SourceRecord.from_dict(row) for row in payload["sources"]]
 
     source_ids = [source.source_id for source in sources]
@@ -780,8 +795,8 @@ def _persist_payload_unlocked(workspace, payload):
         issues.append(issue)
         evidence_specs.append((evidence_rel, evidence_payload))
 
-    unbound_path = safe_workspace_entry(workspace, UNBOUND_REVIEW_PATH)
-    manifest_path = safe_workspace_entry(workspace, BUILD_MANIFEST_PATH)
+    unbound_path = safe_workspace_entry(workspace_root, UNBOUND_REVIEW_PATH)
+    manifest_path = safe_workspace_entry(workspace_root, BUILD_MANIFEST_PATH)
     artifact_paths = {
         "source_manifest": store.manifest.path,
         "base_content_units": store.base_units_path,
@@ -793,7 +808,7 @@ def _persist_payload_unlocked(workspace, payload):
         "unbound_review": unbound_path,
     }
     transaction_paths = [
-        str(path.relative_to(Path(workspace))).replace(os.sep, "/")
+        str(path.relative_to(workspace_root)).replace(os.sep, "/")
         for path in artifact_paths.values()
     ]
     transaction_paths.append(BUILD_MANIFEST_PATH)
@@ -803,7 +818,9 @@ def _persist_payload_unlocked(workspace, payload):
         store.manifest.replace_all(sources)
         store.sync_base(units, mappings)
         for evidence_rel, evidence_payload in evidence_specs:
-            atomic_write_json(safe_workspace_entry(workspace, evidence_rel), evidence_payload)
+            atomic_write_json(
+                safe_workspace_entry(workspace_root, evidence_rel), evidence_payload
+            )
         store.review_queue.reconcile(issues)
         store.refresh_source_statuses()
         if not store.ledger_path.exists():
@@ -827,7 +844,7 @@ def _persist_payload_unlocked(workspace, payload):
             "page_quality": payload["page_quality"],
             "artifacts": {
                 name: {
-                    "path": str(path.relative_to(Path(workspace))).replace(os.sep, "/"),
+                    "path": str(path.relative_to(workspace_root)).replace(os.sep, "/"),
                     "sha256": file_sha256(path),
                 }
                 for name, path in sorted(artifact_paths.items())
