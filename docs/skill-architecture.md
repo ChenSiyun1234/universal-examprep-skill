@@ -16,6 +16,7 @@ skills/
   exam-cram/        # 主技能：编排者，承载阶梯/模式/契约
   exam-ingest/      # 子：从学生材料初始化工作区（wiki + 题库 + 进度）
   exam-tutor/       # 子：按章惰性加载授课（含零基础重点题精讲、画图先跑算法）
+  exam-study-guide/ # 子：把当前章事实源编译为公式可读、自包含的 HTML/PDF 教材
   exam-quiz/        # 子：题库抽题判分，支持 6 大题型
   exam-review/      # 子：错题 + 概念疑难点复盘
   exam-cheatsheet/  # 子：考前小抄 / 总复习走查
@@ -30,6 +31,7 @@ skills/
 | --- | --- |
 | 冷启动建库 | `exam-ingest` |
 | 按章授课 | `exam-tutor`（+ `skills/confusion-tracker` 记疑难点） |
+| 章节可视教材 | `exam-study-guide`（只编译已经持久化的当前章内容） |
 | 刷题判分 | `exam-quiz` |
 | 错题/疑难复盘 | `exam-review`（+ `skills/confusion-tracker`） |
 | 考前小抄 | `exam-cheatsheet` |

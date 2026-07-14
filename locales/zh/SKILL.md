@@ -29,9 +29,17 @@
    * **学习模式**（存 `mode`）：`零基础从头讲`（从第一章第一个知识点顺讲，讲完即把该点全部关联题从易到难讲透）/ `某章起步补弱`（已会章节罗列知识点各配一道较难题、不会的按零基础展开）/ `查缺补漏`（全章知识点各一道较难题，困惑再展开）。
    * **时间宽裕度**（存 `time_budget`，叠加在模式上，决定提问节奏）：`≤1天` / `1-3天` / `3-7天` / `>7天`。
    * **回复语言**（存 `language`）：`English`（缺省——学生用中文开场则 `中文`）/ `中文` / `双语`——提问时语言行三语呈现「语言 / Language：中文 / English / 双语」，模式/档位选项在语言确定前**附英文对照**（首问是唯一允许的混语言点——语言未定时英文学生也要能读懂选项）；别名（`zh`/`en`/`bilingual` 等）由脚本归一。
-2. **≤1天 / 紧迫开场例外——严禁反而去问**：若用户开场已表明紧迫（如「明天就考」「别问我」「直接讲重点」），**不要停下来问模式/时间/语言**——直接**推断并静默持久化**（默认 `零基础从头讲` + `≤1天` + 学生开场所用语言；**绝不推断 `双语`**——双语只能显式选择或会话中 `set --language 双语` 切换）后立即开讲。在 ≤1天 档，向用户提任何澄清/偏好问题本身就是违约（浪费复习时间）。
-3. **各档提问节奏**：≤1天 严禁提问；1-3天 讲完几点后随机回问此前复杂/多次困惑的点，忘了就重讲；3-7天 用**知识点窗口**（近期讲过的默认还会=窗口内；窗口外的先问是否记得，记得则挪回窗口——`update_progress.py window-add` / `window-set-status`，存 `knowledge_window`）；>7天 窗口外的点用对应难题实测（会→归窗口、不会→重讲）。
+2. **≤1天 / 紧迫开场例外——严禁反而去问**：若用户开场已表明紧迫（如「明天就考」「别问我」「直接讲重点」），**不要停下来问模式/时间/语言**——直接**推断并静默持久化**（默认 `零基础从头讲` + `≤1天` + 学生开场所用语言；**绝不推断 `双语`**——双语只能显式选择或会话中 `set --language 双语` 切换）后立即开讲。在 ≤1天 档，开场澄清、偏好确认和反思式追问本身就是违约（浪费复习时间）；这不禁止用于验证掌握度的标准题库练习或阶段测验。
+3. **各档提问节奏**：≤1天 跳过开场澄清/偏好确认和反思式追问，立即讲解；需要验证掌握度时仍可使用标准题库阶段测验。只有学生明确说「不要出题 / 不要问我」时才持久化 `preferences.no_questions=true`、完全不出互动题，并把阶段上限设为 `covered_unverified`；1-3天 讲完几点后随机回问此前复杂/多次困惑的点，忘了就重讲；3-7天 用**知识点窗口**（近期讲过的默认还会=窗口内；窗口外的先问是否记得，记得则挪回窗口——`update_progress.py window-add` / `window-set-status`，存 `knowledge_window`）；>7天 窗口外的点用对应难题实测（会→归窗口、不会→重讲）。
 4. **旧四模式已废弃**：`normal`/`sprint`/`panic`/`mock` 由 `set --mode` 自动迁移并警告（`panic`→零基础从头讲＋≤1天、`sprint`→查缺补漏＋1-3天、`normal`/`mock`→查缺补漏）。模式/宽裕度显示在进度面板，与「讲解模板」偏好（`preferences`）分离。
+
+### 输出资源模式（独立偏好，不是首次必问的第四项）
+
+`study_state.json.artifact_mode` 只取 `chat` / `visual`。旧工作区缺字段或值未知时按 `chat` 安全处理；智能体绝不读取或猜测用户的订阅套餐。
+
+- **`chat`（对话省额，默认）**：照常在对话中教学并保存必要的 `notebook` 与 `state`，不自动生成章节 HTML/PDF，也不自动生成小抄 PDF。自动进入最终复习时可直接给对话总结；用户明确要小抄时可编译 `cheatsheet.md`，但不会仅因此打印 PDF。
+- **`visual`（视觉教材）**：只能由用户明确选择，并用 `update_progress.py set --artifact-mode visual` 持久化；完整章节生成 HTML + PDF 并逐页视觉验收，最终小抄可生成打印版。该模式仍不授权静默安装依赖或外部技能。
+- 用户一次性明确要求某章 HTML/PDF/打印版时，可临时覆盖 `chat`，但不修改持久状态；长期返回省额模式用 `set --artifact-mode chat`。不要把这项塞进首次模式×时间×语言的合并提问。
 
 ### 第二步：按章节惰性加载授课
 1. **精准读取 Wiki**：在每一阶段的教学开始前，智能体**必须且仅**调用 `view_file` 工具读取该阶段关联的 Wiki 文件（例如 `references/wiki/ch1_concepts.md`）。**严禁**一次性读取或将全书知识塞入上下文。
@@ -47,6 +55,7 @@
    * **⑦ 知识点溯源**：章节 + Wiki 文件 + 可点击的原文页链接（如 `[lecture03.pdf 第 12 页](../lecture03.pdf#page=12)`）；来源不明就如实写「来源未知」，绝不编造。
    * 每题在 ⑦ 后固定输出一行来源块：`题目来源：…｜答案来源：…｜<🟢/🟡/⚠️ canonical 标签>`，**默认输出到此为止**。【易错点】/【3分钟速记】/【现在轮到你】默认不输出，仅学生主动要求或已存偏好时才给（旧版【考点拆解】/【标准答题模板/步骤】已并入 ②/④⑤，不再单列）。学习目标不变：「能在考场上默写出这道题的答题框架」。
    * 讲解模板变体（七步精讲/文科变体）作为**偏好**存进 `study_state.json` 的 `preferences`（`update_progress.py set --pref 讲解模板=…`，与 --mode 分离），进度面板 ⚙️ 偏好区随时可见、随时可改。
+5. **章节教材按产物模式路由**：完成当前教学单元并持久化事实源后，`chat` 停在对话 + `notebook` 与 `state`；`visual` 先按 PDF 能力表探测并选择原生或浏览器后端，做本章/本后端依赖预检，再生成当前章自包含 HTML 与 PDF 并逐页视觉验收。不得在内容感知预检前开始渲染，也不得在能力路由前直接调用 `study_guide_render.py --pdf`；已有原生 PDF 能力时不应被本地浏览器缺失阻断。一次性明确要求 HTML/PDF/打印版时可临时走相应渲染路径，但不改 `artifact_mode`。
 
 ### 第三步：标准真题通关测验
 1. **标准抽题**：从 `references/quiz_bank.json` 中过滤并提取属于当前章节的题目。**禁止**现场随机编造不符合大纲的题目。
@@ -65,7 +74,7 @@
 
 ### 第四步：易错扫雷与冲刺
 1. **错题本重温**：进入最后一阶段，智能体必须读取错题记录——存在 `study_state.json` 时从其 `mistake_archive`/`confusion_log` 读取（事实源；`study_progress.md` 是可能过期的生成视图），否则读 `study_progress.md`——再重新调取 `references/quiz_bank.json` 中的原题，进行扫雷测试。**重做错题时同样遵守第三步的「依赖图的题视觉优先 + `fail-closed`」门禁**：`requires_assets=true` / `maybe_requires_assets=true` / `stub` / `page_reference` 的错题，须先把题面侧图/原页上下文真正显示出来；显示不了就跳过，不让学生重做一道看不到题面的题。
-2. **生成考前小抄**：全员通关后，在工作区为用户编译**带溯源的考前极简速记小抄** `cheatsheet.md`——每条要点末尾带来源小箭头链接（如 `[→](mistakes/ch02.md#q13)`），点开即回到错题本/笔记本/`wiki` 原文；随后用 `scripts/cheatsheet_render.py --pages <页数>` 渲染成按页数排版的打印版 PDF（无本地浏览器时自动降级为 `cheatsheet.html` 加一行打印指引）。旧版 `walkthrough.md` 已退役：不再生成，工作区里已有的旧文件保留不删。
+2. **按产物模式处理最终复习与小抄**：在 `chat` 下，自动进入的最终复习只给对话总结，不自动编译文件；用户明确要小抄时，才在工作区编译**带溯源的考前极简速记小抄** `cheatsheet.md`——每条要点末尾带来源小箭头链接（如 `[→](mistakes/ch02.md#q13)`），点开即回到错题本/笔记本/`wiki` 原文。只有已显式持久化 `visual`，或本次明确要求 PDF/打印版时，才继续用 `scripts/cheatsheet_render.py --pages <页数>` 渲染打印版 PDF（无本地浏览器时降级为 `cheatsheet.html` 加一行打印指引）；单次请求不改持久状态。旧版 `walkthrough.md` 已退役：不再生成，工作区里已有的旧文件保留不删。
 
 ---
 
@@ -78,7 +87,7 @@
 2. **答案与解析锁定 (`references/quiz_bank.json`)**：
    * 测验时的标准答案和解题步骤必须从 JSON 题库中读取，绝不现场进行复杂的符号或代数推导，以此实现 100% 的计算结果防幻觉。
 3. **断点状态锁定 (`study_state.json` / `study_progress.md`)**：
-   * 智能体在每次交互（授课完成、答对题、归档错题）后，必须更新进度：存在 `study_state.json`（结构化状态）时它是唯一事实源——一律经 `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py"`（`set` / `add-mistake` / `add-confusion` / `set-*-status` / `set-check`）更新，`study_progress.md` 会自动重渲染、严禁手改；无状态文件时：Python 可用就先跑 `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> init` 建立事实源再更新（`ingest.py` 新建的工作区只有 `study_progress.md`、没有状态文件，正是这一步补上），真无法运行 Python 才直接更新 `study_progress.md`。每次会话重启时，第一步先读 `study_state.json`（存在时），否则读 `study_progress.md`，以此重置 AI 的记忆位置。
+   * 智能体在每次交互（授课完成、答对题、归档错题）后，必须更新进度：存在 `study_state.json`（结构化状态）时它是唯一事实源——一律经 `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py"`（`set` / `add-mistake` / `add-confusion` / `set-*-status` / `record-phase-evidence` / `complete-phase`）更新，`study_progress.md` 会自动重渲染、严禁手改；新版视觉/教学清单工作区不得用裸 `done=true` 代替章节证据，`set-check` 也会经过同一门禁。无状态文件时：Python 可用就先跑 `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> init` 建立事实源再更新（`ingest.py` 新建的工作区只有 `study_progress.md`、没有状态文件，正是这一步补上），真无法运行 Python 才直接更新 `study_progress.md`。每次会话重启时，第一步先读 `study_state.json`（存在时），否则读 `study_progress.md`，以此重置 AI 的记忆位置。
 4. **笔记本落盘与工作区落点**：
    * **先落盘、再给摘要**：实质性输出（七步精讲、判分反馈、疑难解答、复盘结论）默认先经 `scripts/notebook.py` 写入工作区 `notebook/`（答错/跳过的题同步镜像 `mistakes/`），聊天里只给 3–5 行摘要加一行完整链接（如 完整解答：`notebook/ch02.md#q13`｜目录：`notebook/index.md`）；仅进度面板、速查卡、一次性逃生提示可以只走聊天。纯网页端无文件读写时保持原有纯聊天＋文本断点模式；落盘失败必须明说并把完整内容贴在聊天里。
    * **建区必确认**：任何工作区创建前必须让用户明确确认目标路径（可给建议默认值，静默建区即违约）；建好后用 `update_progress.py workspace-register` 登记进 `~/.exam-cram/workspaces.json`，激活时先跑 `workspace-list` 认课（注册表为空→先问材料文件夹在哪并给 30 秒上手演示；非空→确认继续哪门课）；每次开场进度面板固定带一行工作区绝对路径。
@@ -129,6 +138,6 @@
 
 * **根目录 `SKILL.md` 仍是默认 / 兼容触发入口**（现为语言中性路由器，`中文` 模式下加载本文件作为全量入口文案），完整防编题与来源标注规则见本文件；已经安装本技能的用户无需做任何改动。
 * **支持技能集合的宿主** 可改用主技能 `skills/exam-cram/SKILL.md`；它与本文件描述的是同一套行为。
-* **子技能是按任务拆分的单一职责模块**：`exam-ingest`（建库）/ `exam-tutor`（授课）/ `exam-quiz`（抽题判分）/ `exam-review`（复盘）/ `exam-cheatsheet`（小抄）/ `exam-audit`（只读体检）/ `exam-help`（速查）/ `confusion-tracker`（概念疑难追踪），均在 `skills/` 下。
+* **子技能是按任务拆分的单一职责模块**：`exam-ingest`（建库）/ `exam-tutor`（授课）/ `exam-study-guide`（公式与图片可读的章节教材）/ `exam-quiz`（抽题判分）/ `exam-review`（复盘）/ `exam-cheatsheet`（小抄）/ `exam-audit`（只读体检）/ `exam-help`（速查）/ `confusion-tracker`（概念疑难追踪），均在 `skills/` 下。
 * **不读完整规则的通用代理**可读根目录 `AGENTS.md`（一屏防幻觉浓缩契约）。
 * 详见 [`docs/skill-architecture.md`](docs/skill-architecture.md) 与 [`docs/agent-portability.md`](docs/agent-portability.md)。

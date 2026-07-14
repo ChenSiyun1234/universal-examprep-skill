@@ -25,7 +25,8 @@ FIXTURE = os.path.join(BS, SCEN.get("fixture", "fixtures/mini_course"))
 _BY_NAME = {s["name"]: s for s in SCEN["scenarios"]}
 REPLY_VERIFIABLE = ["quiz_bank_only", "scope_override", "provenance_labels", "zero_basic_key_question",
                     "teaching_template", "time_budget_no_questions", "knowledge_window_recheck",
-                    "language_first_ask", "visual_first_assets", "checkpoint_recovery"]
+                    "language_first_ask", "visual_first_assets", "checkpoint_recovery",
+                    "artifact_mode_routing"]
 
 
 def _read(rel):

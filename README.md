@@ -102,12 +102,12 @@ The skill adapts how deep it teaches, how fast, and whether it asks you question
 
 | Budget | Behavior |
 |---|---|
-| **≤ 1 day** | All-out sprint — **never asks you anything**, silently infers defaults (teach-from-scratch), goes straight in |
+| **≤ 1 day** | All-out sprint — skips opening clarification/preference questions and reflective follow-ups, silently infers defaults, and goes straight in; standard-bank drills/checkpoints may still verify mastery |
 | **1–3 days** | Hits the essentials, compresses the rest |
 | **3–7 days** | Normal pace, asks which chapters you're solid on |
 | **> 7 days** | Relaxed — for chapters you say you know, it **quizzes to verify** rather than taking your word |
 
-**Preferences** (remembers your habits): whether walkthroughs append the "common mistakes" / "3-minute recap" closing blocks, reply language (Chinese / English / bilingual), and per-chapter mastery windows (`window-add` / `window-set-status`) — all persisted, changed by a single line anytime. See [`docs/language-policy.md`](docs/language-policy.md) and [`docs/skill-architecture.md`](docs/skill-architecture.md).
+**Preferences** (remembers your habits): whether walkthroughs append the "common mistakes" / "3-minute recap" closing blocks, reply language (Chinese / English / bilingual), an explicit `no_questions` request (which suppresses all interactive questions and caps a phase at `covered_unverified`), and per-chapter mastery windows (`window-add` / `window-set-status`) — all persisted, changed by a single line anytime. See [`docs/language-policy.md`](docs/language-policy.md) and [`docs/skill-architecture.md`](docs/skill-architecture.md).
 
 ---
 
@@ -141,21 +141,24 @@ Can't write local files — use the drop-in prompt instead: copy [`prompts/web_p
 
 ## Sub-skills
 
-The monolith is split into 9 single-purpose sub-skills the agent loads on demand:
+The monolith is split into 10 single-purpose skills the agent loads on demand:
 
 | Sub-skill | What it does |
 |---|---|
 | `exam-cram` | Orchestrator — runs the 4-step workflow + study-mode routing |
 | `exam-ingest` | Builds the workspace from your materials (knowledge base + quiz bank + progress) |
 | `exam-tutor` | Lazy per-chapter teaching (7-step walkthroughs, draw-it-runs-algorithm-first) |
+| `exam-study-guide` | Compiles one chapter into formula-readable, self-contained HTML and optional visually checked PDF |
 | `exam-quiz` | Draws & grades from the bank (6 question types: MC / short / draw / fill / T-F / code) |
 | `exam-review` | Mistakes and concept-confusion review |
 | `exam-cheatsheet` | Pre-exam cheat sheet |
 | `exam-audit` | Read-only workspace health check |
 | `exam-help` | One-screen quick reference (workflow / modes / file conventions) |
-| `confusion-tracker` | Logs concept questions as you go into a pre-exam blind-spot list |
+| [`confusion-tracker`](skills/confusion-tracker/SKILL.md) | Logs concept questions as you go into a pre-exam blind-spot list |
 
-All nine live under [`skills/`](skills/) (e.g. [`skills/confusion-tracker/SKILL.md`](skills/confusion-tracker/SKILL.md)), loaded on demand.
+All ten live under [`skills/`](skills/) (e.g. [`skills/exam-study-guide/SKILL.md`](skills/exam-study-guide/SKILL.md)), loaded on demand. PDF tooling is routed per host without silent downloads; see [`docs/pdf-capability-adapters.md`](docs/pdf-capability-adapters.md).
+
+Chapter artifacts are opt-in. The default `chat` output mode keeps the v3-style conversation flow (plus the normal progress/notebook files) and does not automatically build HTML/PDF. Say “save tokens / chat only” or set `--artifact-mode chat`; say “visual study guide / I want printable PDFs” or set `--artifact-mode visual` for automatic chapter HTML + visually checked PDF. An agent must never guess this from your subscription plan, and a one-off PDF request does not silently change the saved preference.
 
 ---
 
@@ -174,7 +177,9 @@ The real paid benchmark is expensive (tens of dollars / hours per matrix), run m
 
 ## FAQ
 
-**No Python installed?** Fine. When the agent finds no Python it silently switches to "manual write mode", creating the knowledge-base tree itself — no difference to you.
+**No Python installed?** The core workspace can still fall back to manual-write mode. The self-contained MathML HTML/PDF study-guide renderer is different: it requires Python and fails loudly with the missing prerequisite instead of pretending raw Markdown is a finished handout.
+
+**On a limited plan?** `artifact_mode=chat` is the safe default, so normal tutoring does not spend extra generation effort on chapter HTML/PDF. Switch to `visual` only when you want printable chapter artifacts; PDF rendering itself is local, but the richer material workflow can consume more context and generation.
 
 **Only photos / scanned PDFs / a recording?** First transcribe with any free web multimodal AI ("extract the highlights and questions as plain text, keep the star/underline markers"), paste into a `.txt`, then have the agent build the workspace; the rest is plain-text and smooth. Recordings: transcribe first, then feed.
 

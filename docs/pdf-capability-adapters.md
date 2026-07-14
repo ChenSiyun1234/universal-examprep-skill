@@ -1,0 +1,84 @@
+# PDF capability adapters
+
+本仓库把“如何组织考试教材”和“某个 Agent 如何操作 PDF”分开。前者由本仓库的
+`exam-study-guide` skill 与 `scripts/study_guide_render.py` 负责；后者可以复用宿主原生能力，
+但不能改变本仓库的来源标注、题面图先于答案图、路径安全和逐页视觉验收契约。
+
+机器可读路由表见 [`pdf-capability-adapters.json`](pdf-capability-adapters.json)。表中的 GitHub
+引用固定到 `review_commit`；安装命令仍会获取上游当前版本，因此只能在用户明确同意后执行，
+并应重新检查许可证、实际加载的 skill 和行为差异。
+
+## 路由顺序
+
+1. 宿主已经提供且探测成功的 PDF skill：选定 `native`；完成本章预检后，用仓库渲染器生成经过校验的自包含 HTML，再让原生能力把这份 HTML 打印/转换到规范 PDF 路径；不重复安装，也不要求 Edge/Chrome。
+2. 没有原生能力：使用本仓库 `exam-study-guide` 与本地 Edge/Chrome 浏览器打印后备。
+3. 后备能力不足且用户同意：只建议安装该宿主的官方来源。
+4. 依赖、浏览器或渲染能力仍缺失：明确失败并给出缺项；禁止留下含 raw LaTeX 的伪成品。
+
+每条实际执行路径都必须遵守同一顺序：**探测并选定后端 → 对当前章和该后端做依赖预检 →
+生成并验证 HTML → 生成 PDF → 逐页视觉验收**。选择原生能力不等于先生成文件；依赖预检仍须发生在
+章节 HTML 渲染之前。
+
+公式渲染使用经审查固定的 `latex2mathml==3.60.0`（MIT，审查 commit
+`de87cf0f228416e3152218c12b8bdb4ee6f4ecca`）。该版本支持本仓库的 Python 3.7+ 范围；上游当前
+版本要求更高的 Python，不能给旧运行时一条无法安装的“最新版”命令。wheel/sdist SHA-256、来源与
+许可证记录在机器表的 `audited_dependencies`。首次材料预检只处理从原材料即可确定的 PDF 读取/渲染依赖，
+不会因为 `visual` 偏好就猜测当前章一定有公式或一定走浏览器。章节事实源落盘并选定后端后，运行：
+
+```text
+python scripts/check_deps.py --workspace <ws> --chapter <N> --artifact-mode visual --pdf-backend <native|browser|html>
+```
+
+只有本章实际含标准公式时才把 `latex2mathml` 标为需要；只有选中 `browser` 后端时才把 Edge/Chrome
+标为需要。缺失时只给固定安装建议，仍须用户同意。
+
+无论走哪条路径，最终 PDF 都必须把每一页渲染为 PNG，检查最新渲染，并在已知视觉缺陷为零后
+才能交付。外部 skill 负责提供工具能力，不能替代这项验收。
+
+## Agent-specific adapters
+
+### Codex
+
+- 首选：运行时已经可见的 `pdf` skill。
+- 探测成功后先生成 `study_guide/chNN.html`，再由该原生 skill 把这份 HTML 转成规范路径的 PDF；预检使用
+  `--pdf-backend native`，不得因为本地浏览器缺失提前失败。
+- 当前插件目录：[`openai/plugins`](https://github.com/openai/plugins)。
+- [`openai/skills` 的历史 PDF skill](https://github.com/openai/skills/tree/49f948faa9258a0c61caceaf225e179651397431/skills/.curated/pdf)
+  只作为 Apache-2.0 行为参考；该仓库已声明 deprecated，不作为新的安装建议。
+- 如果原生 `pdf` 不可见，直接使用本仓库后备，不静默从历史目录安装。
+
+### Claude Code
+
+- 若 `pdf` 或 `document-skills:pdf` 已可见，直接使用。
+- 已安装能力探测成功时，预检使用 `--pdf-backend native`，并让它消费已经校验的章节 HTML；只有回退到
+  仓库浏览器打印时才改用 `--pdf-backend browser`。
+- 缺失时可在得到用户同意后运行官方命令：
+
+  ```text
+  /plugin marketplace add anthropics/skills
+  /plugin install document-skills@anthropic-agent-skills
+  ```
+
+- 审查快照是 Anthropic 官方仓库的
+  [`skills/pdf`](https://github.com/anthropics/skills/tree/9d2f1ae187231d8199c64b5b762e1bdf2244733d/skills/pdf)。
+  该文档 skill 是 proprietary/source-available，许可证禁止复制、派生和再分发，因此本仓库只链接，
+  不 vendor、不“针对场景改写”它。
+- 上游当前存在插件可能加载超出声明范围 skill 的
+  [公开 issue](https://github.com/anthropics/skills/issues/1087)。安装后应检查实际 skill 列表；
+  本仓库不会自动执行该安装。
+
+### 通用 Agent Skills host
+
+- 本仓库的 `skills/exam-study-guide/SKILL.md` 遵循
+  [Agent Skills specification](https://agentskills.io/specification)，由宿主按普通项目 skill 加载。
+- 如果宿主不会自动发现 skill，也可以直接运行 `scripts/study_guide_render.py`；仓库后备属于
+  `--pdf-backend browser`，因此只有这一路径才要求 Edge/Chrome。依赖缺失时按预检/脚本的 fail-loud
+  信息处理。
+- Cursor、Windsurf 或仅支持项目规则的 Agent 走这一后备路径，并继续读取 `AGENTS.md` 的核心契约。
+
+## 选择与升级规则
+
+- “热门”只能用于发现候选，不是采用标准。候选必须同时满足官方来源、任务匹配、许可证可用、
+  可固定审查版本和可回退。
+- 每次改动 `review_commit` 都要重新阅读 skill、许可证和安装清单，并运行合成教材回归。
+- 不把外部 GitHub URL 写成运行时自动下载钩子；复习流程不应因网络、上游漂移或供应链变更而失控。

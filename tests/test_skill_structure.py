@@ -14,7 +14,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 SKILL_DIRS = [
-    "exam-cram", "exam-ingest", "exam-tutor", "exam-quiz",
+    "exam-cram", "exam-ingest", "exam-tutor", "exam-study-guide", "exam-quiz",
     "exam-review", "exam-cheatsheet", "exam-audit", "exam-help",
     "confusion-tracker",
 ]
@@ -48,11 +48,44 @@ def frontmatter(text):
     return fm
 
 
+def nested_frontmatter_value(text, section, key):
+    """Read one scalar from a single-indented frontmatter mapping.
+
+    The repository deliberately keeps its structure checks dependency-free, so
+    this small reader covers the root skill's ``metadata.version`` without
+    pulling in a YAML package.
+    """
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return None
+    in_section = False
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        if line and not line[0].isspace():
+            in_section = line.strip() == f"{section}:"
+            continue
+        if in_section and line.startswith("  ") and ":" in line:
+            child_key, _, value = line.strip().partition(":")
+            if child_key == key:
+                return value.strip().strip('"').strip("'")
+    return None
+
+
 class TestSkillCollectionStructure(unittest.TestCase):
 
     def test_root_skill_md_still_exists(self):
         self.assertTrue(os.path.isfile(os.path.join(ROOT, "SKILL.md")),
                         "root SKILL.md must remain as the compatibility entrypoint")
+
+    def test_root_skill_metadata_matches_v4_release(self):
+        version = nested_frontmatter_value(read("SKILL.md"), "metadata", "version")
+        self.assertEqual(
+            version,
+            "4.0",
+            "root SKILL.md metadata must be bumped with the v4 release; stale metadata "
+            "makes a current install look like an older skill",
+        )
 
     def test_all_expected_skill_files_exist(self):
         for d in SKILL_DIRS:
@@ -89,6 +122,7 @@ class TestSkillCollectionStructure(unittest.TestCase):
 
     def test_portability_doc_exists(self):
         self.assertTrue(os.path.isfile(os.path.join(ROOT, "docs", "agent-portability.md")))
+        self.assertTrue(os.path.isfile(os.path.join(ROOT, "docs", "pdf-capability-adapters.md")))
 
     def test_skill_architecture_doc_exists(self):
         self.assertTrue(os.path.isfile(os.path.join(ROOT, "docs", "skill-architecture.md")))
@@ -96,6 +130,37 @@ class TestSkillCollectionStructure(unittest.TestCase):
     def test_existing_confusion_tracker_skill_preserved(self):
         # the confusion-tracker sub-skill now lives inside skills/ (moved in PR E)
         self.assertTrue(os.path.isfile(os.path.join(ROOT, "skills", "confusion-tracker", "SKILL.md")))
+
+    def test_tutor_reaches_teaching_examples_through_chapter_slice(self):
+        body = read("skills", "exam-tutor", "SKILL.md")
+        self.assertIn("list_teaching_examples.py", body)
+        self.assertIn("--chapter <N>", body)
+        self.assertIn("nonzero exit", body)
+
+    def test_human_reading_view_is_routed_without_silent_skill_download(self):
+        tutor = read("skills", "exam-tutor", "SKILL.md")
+        agents = read("AGENTS.md")
+        self.assertIn("study_guide_render.py", tutor)
+        self.assertIn("pdf-capability-adapters.md", tutor)
+        self.assertIn("never silently download", tutor.lower())
+        self.assertIn("pdf-capability-adapters.json", agents)
+
+    def test_artifact_mode_is_explicit_economical_and_one_shot_safe(self):
+        cram = read("skills", "exam-cram", "SKILL.md")
+        cheatsheet = read("skills", "exam-cheatsheet", "SKILL.md")
+        help_en = read("locales", "en", "skills", "exam-help.md")
+        help_zh = read("locales", "zh", "skills", "exam-help.md")
+
+        for body in (cram, cheatsheet, help_en, help_zh):
+            self.assertIn("artifact_mode", body)
+            self.assertIn("chat", body)
+            self.assertIn("visual", body)
+        self.assertIn("never a fourth required", cram.lower())
+        self.assertIn("subscription tier", cram.lower())
+        self.assertIn("one-shot", cram.lower())
+        self.assertIn("does not modify the persisted value", cheatsheet)
+        self.assertIn("不自动生成章节 HTML/PDF", help_zh)
+        self.assertIn("do not automatically build chapter HTML/PDF", help_en)
 
 
 if __name__ == "__main__":

@@ -386,21 +386,23 @@ def no_unsolicited_closing_blocks(text):
     return not any(_heading_present(text, name) for name in OPTIONAL_CLOSER_NAMES)
 
 
-# ---- A6：时间宽裕度行为（≤1天严禁提问 / 窗口外知识点回问或实测）------------------------------
-# ≤1天 契约是「一个问题都不许问」——所以判定不靠白名单 cue，而是：只要出现**面向用户、需其回答的
-# 非反问问句**就算违约。两个信号：(1) 整段收尾即停下等学生（最后一句是问句）；(2) 中途出现明确要
-# 学生拿主意/许可/报状态/选择的问句。自答式反问（你可能会问…？/问完立刻自答）与纯陈述句不算。
-# DRIFT 侧 run_drift.py 有一份等价副本，二者由 tests parity 锁一致。
+# ---- A6：时间宽裕度行为（≤1天紧迫节奏 / 窗口外知识点回问或实测）--------------------------
+# ≤1天默认禁止开场澄清、偏好确认与反思式追问，但不禁止标准题库 drill/checkpoint。
+# 只有学生明确设置 no_questions 时才是「一个互动问题都不许问」。底层问句探测仍识别两类信号：
+# (1) 整段收尾即停下等学生（最后一句是问句）；(2) 中途出现明确要学生拿主意/许可/报状态/选择的问句。
+# 自答式反问（你可能会问…？/问完立刻自答）与纯陈述句不算。DRIFT 侧 run_drift.py 有一份问句
+# 识别副本，二者由 tests parity 锁一致。
 _STUDENT_ASK_CUE = re.compile(
     r"你想|你要|你希望|你打算|你更|你觉得|你认为|你选|你决定|你来定|由你|你自己|你先|"
     r"你(?:还)?记得|你会(?:不会)?|你能(?:不能)?|你有(?:没有)?|你是(?:不是|否)|你(?:比较)?熟|"
     r"你复习到|你学到|要不要|想不想|请问|需要我|哪一?章|从哪|"
     r"(?:先讲|先复习|先看|先做|先学|讲|复习|看|做|来)[^，。？?！!\n]{0,8}还是|"
     r"需(?:不需)?要(?:我|先)|要(?:不要)?先|用不用(?:先|我)|该(?:先|不该)|哪个先|先哪|先(?:讲|复习|看|做|学|过)(?:什么|哪|谁)|"
-    # 通用许可/回检/下一步问句（还有问题吗 / 可以吗 / 接下来怎么安排）——≤1天 里这些也算提问
+    # 通用许可/回检/下一步问句（还有问题吗 / 可以吗 / 接下来怎么安排）——这些是元问句信号
     r"还有(?:什么|没有)?问题|有没有(?:什么)?问题|有问题吗|还有(?:不懂|不会|疑问)|哪里不(?:懂|会|清楚)|"
     r"可以吗|可不可以|行吗|行不行|好吗|好不好|方便吗|需要吗|要吗|"
     r"接下来(?:怎么|怎样|如何|想|要|需要)|下一步(?:怎么|想|要)|怎么安排|如何安排|怎么(?:样)?进行|"
+    r"下列(?:哪|何)|哪一(?:项|种)|请(?:选择|判断|计算|回答|作答)|which of the following|choose|calculate|answer(?: this)?\b|"
     r"do you\b|would you\b|are you\b|have you\b|can you\b|which chapter\b|what.*\byou\b|"
     r"should i\b|shall i\b|want me to\b|which.*first\b|any questions\b",
     re.I)
@@ -415,9 +417,10 @@ _SELF_ANSWER = re.compile(
 
 
 def asks_student_question(text):
-    """是否向学生抛出了需其回答的**非反问**问句（会停下来等学生）。≤1天 契约=一个问题都不许问，
-    故：整段收尾是非反问问句（停下等学生），或中途出现明确要学生拿主意/许可/报状态/选择的问句，
-    都算。自答式反问（你可能会问…？/问完立刻自答）与纯陈述句不算。跨软换行、行内非行尾问号、中英皆识别。"""
+    """是否向学生抛出了需其回答的**非反问**问句（会停下来等学生）。
+    这是通用问句信号，不独立决定≤1天是否违规：经题库核验的 drill/checkpoint 由
+    urgent_question_cadence_ok 豁免；明确 no_questions 时则任何互动问句都禁止。自答式反问
+    （你可能会问…？/问完立刻自答）与纯陈述句不算。跨软换行、行内非行尾问号、中英皆识别。"""
     t = re.sub(r"[ \t]*\n[ \t]*", " ", text or "").strip()  # 软换行并为空格：跨行问句也能识别
     sents = [s.strip() for s in re.split(r"(?<=[？?。！!；;])\s*", t) if s.strip()]
     if not sents:
@@ -507,7 +510,7 @@ def language_first_ask_ok(text):
 
 def language_persist_ok(text, urgent=False, expected_lang=None):
     """持久化契约：一条 set 同时带全三旗标（顺序无关）且 --language ∈ canonical。
-    urgent=紧迫开场变体：另须 零问句 + 默认 零基础从头讲/≤1天 + 语言 ∈ {中文, English}
+    urgent=紧迫开场变体：另须零开场澄清/偏好问句 + 默认 零基础从头讲/≤1天 + 语言 ∈ {中文, English}
     （双语只能显式选择，**绝不静默推断**）；expected_lang=按开场语言的推断期望——
     中文开场静默持久化 English 也算违约（契约：推断学生开场所用语言）。"""
     f = _set_flags(text)
@@ -540,9 +543,41 @@ def language_persist_ok(text, urgent=False, expected_lang=None):
     return _flag_lang(f["language"]) in ("zh", "en", "bilingual")
 
 
+def urgent_question_cadence_ok(text, fixture_path=None, no_questions=False):
+    """≤1天节奏门禁：禁止澄清/偏好/反思式追问，但允许真实标准题库 checkpoint。
+
+    题库豁免必须同时满足 [#id] 真实存在且题面与 fixture 内 quiz_bank.json 匹配；仅贴伪 ID，
+    或在题库题后夹带「还有问题吗」，都不会被豁免。学生显式要求 no_questions 时，
+    no_questions=True 直接禁止所有互动问句。
+    """
+    if not asks_student_question(text):
+        return True
+    if no_questions or not fixture_path:
+        return False
+    try:
+        bank = load_quiz_bank_map(fixture_path)
+    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+        return False
+    ids = extract_question_ids(text)
+    question_map = {i: v["question"] for i, v in bank.items()}
+    if not ids or not assert_quiz_ids_in_bank(text, question_map):
+        return False
+
+    # 只移除经核验的题库题面及 ID，再检查剩余文本；有真题不能掩盖后续偏好追问。
+    # 题面中间的软换行允许不同，避免格式化换行误伤合法 checkpoint。
+    remainder = text or ""
+    for qid in dict.fromkeys(ids):
+        question = str(bank[qid].get("question") or "")
+        if question:
+            flexible = r"\s*".join(re.escape(ch) for ch in question)
+            remainder = re.sub(flexible, "", remainder, count=1)
+        remainder = re.sub(r"\[#" + re.escape(qid) + r"\]", "", remainder)
+    return not asks_student_question(remainder)
+
+
 def urgent_no_student_questions_ok(text):
-    """≤1天档：严禁向用户提问（任何问题都在浪费复习时间）——纯讲解陈述句，没有面向学生的问句。"""
-    return not asks_student_question(text)
+    """显式 no_questions 的向后兼容检查：不允许任何互动问句。"""
+    return urgent_question_cadence_ok(text, no_questions=True)
 
 
 # 回想类复核（问学生是否记得）与出题实测类复核分开——>7天 档契约要求用难题实测，不能只问「还记得吗」。
@@ -992,6 +1027,112 @@ def validate_fixture_workspace(path):
     return V._exit_code(errors) == 0, errors, warnings, stats
 
 
+def artifact_mode_routing_ok(text, expected):
+    """Deterministic command-trace oracle for the chat/visual artifact gate.
+
+    The trace format is intentionally host-neutral: ordinary commands are literal, while a native
+    host adapter records ``PDF_ADAPTER[native] -> study_guide/chNN.pdf``.  This checks routing and
+    persisted preference semantics, not whether a particular host happens to expose a PDF tool.
+    """
+    value = text or ""
+    lower = value.lower()
+    lines = value.splitlines()
+
+    def _positions(predicate):
+        return [i for i, line in enumerate(lines) if predicate(line, line.lower())]
+
+    set_visual = _positions(
+        lambda line, low: "update_progress.py" in low and " set " in (" " + low + " ")
+        and re.search(r"--artifact-mode\s+(?:visual|视觉教材|完整教材)", line, re.I)
+    )
+    set_chat = _positions(
+        lambda line, low: "update_progress.py" in low and " set " in (" " + low + " ")
+        and re.search(r"--artifact-mode\s+(?:chat|对话省额|只在对话)", line, re.I)
+    )
+    render = _positions(lambda _line, low: "study_guide_render.py" in low)
+    html_render = _positions(
+        lambda _line, low: "study_guide_render.py" in low and "--pdf" not in low
+    )
+    browser_pdf = _positions(
+        lambda _line, low: "study_guide_render.py" in low and "--pdf" in low
+    )
+    native_pdf = _positions(
+        lambda _line, low: "pdf_adapter[native]" in low
+        and re.search(r"study_guide[/\\]ch\d+\.pdf", low) is not None
+    )
+    preflight = _positions(
+        lambda _line, low: "check_deps.py" in low
+        and "--workspace" in low and "--chapter" in low
+        and "--artifact-mode visual" in low
+        and re.search(r"--pdf-backend\s+(?:native|browser|html)", low) is not None
+    )
+    explicit_visual = _positions(
+        lambda line, _low: re.search(
+            r"学生\s*[:：].*(?:不在乎\s*token|token\s*不敏感|视觉教材|以后.*(?:pdf|打印版)|每章.*(?:pdf|打印版))",
+            line, re.I,
+        ) is not None
+    )
+    explicit_pdf = _positions(
+        lambda line, _low: re.search(r"学生\s*[:：].*(?:这|本|当前).*(?:pdf|打印版)", line, re.I)
+        is not None
+    )
+    state_chat_ok = _positions(
+        lambda _line, low: "state_write=ok" in low and "artifact_mode=chat" in low
+    )
+    state_visual_ok = _positions(
+        lambda _line, low: "state_write=ok" in low and "artifact_mode=visual" in low
+    )
+    preflight_ok = _positions(lambda _line, low: "preflight_exit=0" in low)
+    html_ok = _positions(lambda _line, low: "html_exit=0" in low)
+    pdf_ok = _positions(lambda _line, low: "pdf_exit=0" in low)
+    failed = _positions(
+        lambda _line, low: (
+            "probe_error" in low
+            or re.search(r"(?:preflight|html|pdf)_exit\s*=\s*(?:[1-9]\d*|error|fail)", low)
+            is not None
+            or re.search(r"state_write\s*=\s*(?!ok\b)\S+", low) is not None
+            or re.search(r"missing_needed\s*=\s*\[\s*[^\]\s]", low) is not None
+        )
+    )
+    if failed:
+        return False
+
+    if expected == "chat":
+        return (bool(set_chat and state_chat_ok) and set_chat[0] < state_chat_ok[0]
+                and not set_visual and not render and not preflight
+                and "--pdf-backend" not in lower and "pdf_adapter[" not in lower)
+
+    if expected == "visual":
+        if not (set_visual and state_visual_ok and explicit_visual and preflight and preflight_ok
+                and html_render and html_ok and pdf_ok):
+            return False
+        # The user's explicit standing choice must precede persistence; selected-backend preflight
+        # precedes rendering so a missing content dependency is discovered before generation.
+        if not (explicit_visual[0] < set_visual[0] < state_visual_ok[0]
+                < preflight[0] < preflight_ok[0] < html_render[0] < html_ok[0]):
+            return False
+        chosen_line = lines[preflight[0]].lower()
+        if "--pdf-backend native" in chosen_line:
+            return bool(native_pdf and html_ok[0] < native_pdf[0] < pdf_ok[0]
+                        and not browser_pdf)
+        if "--pdf-backend browser" in chosen_line:
+            return bool(browser_pdf and html_ok[0] < browser_pdf[0] < pdf_ok[0])
+        return False
+
+    if expected == "one_shot":
+        state_markers = _positions(lambda _line, low: "artifact_mode=chat" in low)
+        if not (len(state_markers) >= 2 and explicit_pdf and preflight and preflight_ok
+                and html_render and html_ok and pdf_ok):
+            return False
+        pdf_action = native_pdf or browser_pdf
+        return (not set_visual and not set_chat and bool(pdf_action)
+                and state_markers[0] < explicit_pdf[0] < preflight[0] < preflight_ok[0]
+                < html_render[0] < html_ok[0] < pdf_action[0] < pdf_ok[0]
+                < state_markers[-1])
+
+    return False
+
+
 # ---------------- scenario runner (mock = deterministic) ----------------
 
 def load_scenarios():
@@ -1101,10 +1242,15 @@ def check_scenario_mock(name, sc, fixture_path=FIXTURE):
             f"negated_bilingual_caught={not urgent_bi_negated} "
             f"opening_language_mismatch_caught={not urgent_mm} urgent_question_caught={not urgent_q}")
     if name == "time_budget_no_questions":
-        # ≤1天档：好例纯讲解无学生问句；反例向学生抛澄清/偏好问句 → 被抓
-        good = urgent_no_student_questions_ok(_read(_p(sc["mock_output"])))
-        bad = urgent_no_student_questions_ok(_read(_p(sc["mock_negative"])))
-        return (good and not bad), f"urgent_no_questions_good={good} question_in_1day_caught={not bad}"
+        # 显式 no_questions：好例零互动问句、偏好问句被抓；普通≤1天仍允许真实题库 checkpoint。
+        good = urgent_question_cadence_ok(_read(_p(sc["mock_output"])), fixture_path,
+                                          no_questions=True)
+        bad = urgent_question_cadence_ok(_read(_p(sc["mock_negative"])), fixture_path,
+                                         no_questions=True)
+        checkpoint = urgent_question_cadence_ok(_read(_p(sc["mock_bank_checkpoint"])), fixture_path)
+        return (good and not bad and checkpoint), (
+            f"explicit_no_questions_good={good} clarification_caught={not bad} "
+            f"bank_checkpoint_allowed={checkpoint}")
     if name == "knowledge_window_recheck":
         # 3-7天：好例回问/实测都算；反例默认还会 → 被抓。
         good = window_out_rechecked(_read(_p(sc["mock_output"])))
@@ -1192,6 +1338,28 @@ def check_scenario_mock(name, sc, fixture_path=FIXTURE):
         good = workspace_target_confirmed_ok(_read(_p(sc["mock_output"])))
         bad = workspace_target_confirmed_ok(_read(_p(sc["mock_negative"])))
         return (good and not bad), f"confirm_before_create_good={good} silent_create_caught={not bad}"
+    if name == "artifact_mode_routing":
+        chat = artifact_mode_routing_ok(_read(_p(sc["mock_chat"])), "chat")
+        chat_bad = artifact_mode_routing_ok(_read(_p(sc["mock_chat_negative"])), "chat")
+        chat_unpersisted = artifact_mode_routing_ok(
+            _read(_p(sc["mock_chat_not_persisted"])), "chat")
+        visual = artifact_mode_routing_ok(_read(_p(sc["mock_visual"])), "visual")
+        guessed = artifact_mode_routing_ok(_read(_p(sc["mock_visual_subscription_guess"])),
+                                           "visual")
+        preflight_failed = artifact_mode_routing_ok(
+            _read(_p(sc["mock_visual_preflight_failed"])), "visual")
+        one_shot = artifact_mode_routing_ok(_read(_p(sc["mock_one_shot"])), "one_shot")
+        persisted = artifact_mode_routing_ok(_read(_p(sc["mock_one_shot_persisted"])),
+                                             "one_shot")
+        probe_error = artifact_mode_routing_ok(
+            _read(_p(sc["mock_one_shot_probe_error"])), "one_shot")
+        return (chat and not chat_bad and not chat_unpersisted and visual and not guessed
+                and not preflight_failed and one_shot and not persisted and not probe_error), (
+            f"chat_no_artifact={chat} chat_auto_pdf_caught={not chat_bad} "
+            f"chat_unpersisted_caught={not chat_unpersisted} explicit_visual_routed={visual} "
+            f"subscription_guess_caught={not guessed} "
+            f"failed_preflight_caught={not preflight_failed} one_shot_keeps_chat={one_shot} "
+            f"one_shot_persist_caught={not persisted} probe_error_caught={not probe_error}")
     return False, "unknown scenario"
 
 
@@ -1428,8 +1596,10 @@ def live_reply_check(name, sc, reply, fixture_path):
               and question_source_block_ok(reply, ai_answer=ai) and no_unsolicited_closing_blocks(reply))
         return ok, f"ids_in_bank={all_in_bank} on_topic={on_topic} seven_step+source(ai={ai})+no_closers={ok}"
     if name == "time_budget_no_questions":
-        ok = urgent_no_student_questions_ok(reply)
-        return ok, f"no_student_questions_in_1day={ok}"
+        # 本 live 场景的 prompt 明确写了「别问我问题」，因此按 no_questions=true 检查；
+        # 普通≤1天的题库 checkpoint 豁免由同一函数的默认分支与 deterministic mock 覆盖。
+        ok = urgent_question_cadence_ok(reply, fixture_path, no_questions=True)
+        return ok, f"explicit_no_questions_respected={ok}"
     if name == "knowledge_window_recheck":
         ok = window_out_rechecked(reply)
         return ok, f"out_of_window_rechecked={ok}"
@@ -1451,6 +1621,12 @@ def live_reply_check(name, sc, reply, fixture_path):
         # group this with the file-mutation SKIP cases.
         ok = resume_refers_to_phase(reply, sc["expected_phase"])
         return ok, f"resume_refers_to_phase({sc['expected_phase']})={ok}"
+    if name == "artifact_mode_routing":
+        # The live prompt explicitly asks for the economical standing choice.  This one-turn check
+        # can prove the agent did not auto-render or silently switch to visual; the visual/one-shot
+        # positive branches are covered by deterministic command traces and long-session drift.
+        ok = artifact_mode_routing_ok(reply, "chat")
+        return ok, f"explicit_chat_did_not_render_or_switch={ok}"
     return None   # state/file-mutation or best-effort scenario → not reply-verifiable one-shot
 
 

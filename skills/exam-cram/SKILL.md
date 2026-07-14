@@ -6,8 +6,9 @@ description: >
   本地文件以防长会话漂移与编题。当用户即将考试、需要急救式复习计划、刷题、错题复盘或考前速记时
   使用（关键词：期末/备考/复习/突击/刷题/划重点/错题/考前；exam, cram, study plan, quiz, review）。
   不适用于长期学习规划或与考试无关的写作/编程任务。
-argument-hint: "[零基础从头讲|某章起步补弱|查缺补漏] (旧 normal|sprint|panic|mock 自动迁移)"
 license: MIT
+metadata:
+  argument-hint: "[零基础从头讲|某章起步补弱|查缺补漏] (旧 normal|sprint|panic|mock 自动迁移)"
 ---
 
 # Exam Cram Coach
@@ -18,7 +19,7 @@ Act as the coordinator/orchestrator for last-minute exam prep. Teach and grade O
 
 ## Activation
 
-Activate when the user is approaching an exam and asks for a cram plan, drill questions, mistake review, concept Q&A, or a pre-exam cheatsheet (keywords: `期末/备考/复习/突击/刷题/划重点/错题/考前`; exam, cram, study plan, quiz, review). On first activation, ask ONE combined question establishing the learning mode (零基础从头讲 / 某章起步补弱 / 查缺补漏 — each option carries an English gloss in the ask, e.g. 零基础从头讲 (from scratch), so a non-Chinese student can parse it before any `language` is persisted), the time budget (≤1天 / 1-3天 / 3-7天 / >7天, likewise glossed), and the reply language — render the language line trilingually so any student can parse it: 「语言 / Language：中文 / English / 双语 (bilingual — 题目与讲解并排双语 / questions & explanations side-by-side)」 — and persist all three in ONE call (see Modes below), UNLESS the student's opening already signals urgency (「明天就考」 / 「别问我」 / 「直接讲重点」), in which case infer all three silently (零基础从头讲 + ≤1天 + the language of the student's own opening message) and start teaching without asking, because asking would itself violate the ≤1天 no-question rule. A legacy `argument-hint` value (`normal|sprint|panic|mock`) is accepted only as a migration input. Do not activate for long-term study planning or for writing/coding tasks unrelated to an exam.
+Activate when the user is approaching an exam and asks for a cram plan, drill questions, mistake review, concept Q&A, or a pre-exam cheatsheet (keywords: `期末/备考/复习/突击/刷题/划重点/错题/考前`; exam, cram, study plan, quiz, review). On first activation, ask ONE combined question establishing the learning mode (零基础从头讲 / 某章起步补弱 / 查缺补漏 — each option carries an English gloss in the ask, e.g. 零基础从头讲 (from scratch), so a non-Chinese student can parse it before any `language` is persisted), the time budget (≤1天 / 1-3天 / 3-7天 / >7天, likewise glossed), and the reply language — render the language line trilingually so any student can parse it: 「语言 / Language：中文 / English / 双语 (bilingual — 题目与讲解并排双语 / questions & explanations side-by-side)」 — and persist all three in ONE call (see Modes below), UNLESS the student's opening already signals urgency (「明天就考」 / 「别问我」 / 「直接讲重点」), in which case infer all three silently (零基础从头讲 + ≤1天 + the language of the student's own opening message) and start teaching without an opening clarification/preference ask. Artifact output is a separate standing preference, never a fourth required opening question and never inferred from a subscription tier; see Artifact output below. A legacy `argument-hint` value (`normal|sprint|panic|mock`) is accepted only as a migration input. Do not activate for long-term study planning or for writing/coding tasks unrelated to an exam.
 
 ## Inputs
 
@@ -45,13 +46,13 @@ Visual-first asset rule: whenever a delegated mode touches a stored item with `r
 
 After restoring state, pick the ONE step that matches the user's intent and current phase, and route there:
 
-1. **Teaching**: when the current phase has a linked wiki chapter, read only that one chapter file (`view_file`); never read the whole book or load the full bank into context. Delegate to `exam-tutor`.
+1. **Teaching**: when the current phase has a linked wiki chapter, read only that one chapter file (`view_file`); never read the whole book or load the full bank into context. Delegate to `exam-tutor`. After the unit is persisted and completed, apply the artifact-output gate below: `chat` stays in conversation + notebook/state and performs no automatic chapter HTML/PDF work; `visual` compiles the current chapter to HTML + PDF and performs full-page visual QA. An explicit one-shot HTML/PDF/print request overrides `chat` only for that request.
 2. **Quiz**: filter `references/quiz_bank.json` for this chapter's items and drill/grade from them; never invent questions when relevant items exist. Delegate to `exam-quiz`. Six quiz types: choice / subjective / diagram / fill_blank / true_false / code. For diagram items (binary-tree rotation, graph traversal, state machines, etc.), run the algorithm to compute the structure first, then render; never hand-draw from memory.
 3. **Concept Q&A**: when the user asks why/what/how-to-derive, answer only from the current wiki chapter. If the point is a confusion, record it via `confusion-tracker` into the progress file.
 4. **Escape hatch**: when the user answers wrong twice in a row, offer three choices (view hint / skip and archive the mistake / continue) and proceed by the user's choice.
-5. **Final review / cheatsheet**: trigger when the workspace reaches the final-review stage (all study phases cleared — judged from `study_state.json`'s `current_phase`/`phase_checklist` when it exists, else `study_progress.md`, against `study_plan.md`), OR when the user explicitly asks for a cheatsheet/review — NOT on any mode name alone. A fresh 零基础从头讲 student (or a legacy panic migration) goes to step 1 teaching first (key-question coaching via `exam-tutor`); the cheatsheet is built from that taught content, not by jumping to an empty review. Load the mistake archive and confusion records first, then run sweep-and-cheatsheet. Delegate to `exam-review` and `exam-cheatsheet`.
+5. **Final review / cheatsheet**: trigger when the workspace reaches the final-review stage (all study phases cleared — judged from `study_state.json`'s `current_phase`/`phase_checklist` when it exists, else `study_progress.md`, against `study_plan.md`), OR when the user explicitly asks for a cheatsheet/review — NOT on any learning mode name alone. A fresh 零基础从头讲 student (or a legacy panic migration) goes to step 1 teaching first (key-question coaching via `exam-tutor`); the review is built from taught content, not by jumping to an empty review. Load the mistake archive and confusion records first, then delegate the sweep to `exam-review`. Under `artifact_mode=chat`, an automatically reached final review stays as a conversational summary and does not auto-build a cheat-sheet file or PDF; an explicit request for a cheat sheet may compile `cheatsheet.md`, but PDF rendering still requires `visual` or an explicit PDF/print request. Delegate compilation/rendering to `exam-cheatsheet` only when that gate is satisfied.
 
-After each learning or checkpoint event, update the progress state (phase, check-ins, mistake archive, confusion records) — via `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> set/add-mistake/add-confusion/set-mistake-status/set-confusion-status/set-check` (the script resolves from the skill package root, like ingest — do NOT look for `scripts/` under the student workspace's current directory) when `study_state.json` exists (it regenerates `study_progress.md`); when it does not but Python works, FIRST run `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> init` to establish the source of truth (a freshly ingested workspace has only the md), then update via the same tool; only edit `study_progress.md` directly in the true no-Python fallback — and refresh the progress panel at the end of the reply. When file I/O is unavailable (pure web client), switch to "text breakpoints": output a copyable progress Summary at the end of each turn and ask the user to paste it back next turn.
+After each learning or checkpoint event, update the progress state (phase, check-ins, mistake archive, confusion records) — via `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> set/add-mistake/add-confusion/set-mistake-status/set-confusion-status/record-phase-evidence/complete-phase/set-check` (the script resolves from the skill package root, like ingest — do NOT look for `scripts/` under the student workspace's current directory) when `study_state.json` exists (it regenerates `study_progress.md`); when it does not but Python works, FIRST run `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> init` to establish the source of truth (a freshly ingested workspace has only the md), then update via the same tool; only edit `study_progress.md` directly in the true no-Python fallback — and refresh the progress panel at the end of the reply. When file I/O is unavailable (pure web client), switch to "text breakpoints": output a copyable progress Summary at the end of each turn and ask the user to paste it back next turn.
 
 ### Modes — 3 learning modes × 4 time tiers × reply language
 
@@ -63,7 +64,7 @@ On FIRST activation you MUST establish THREE things (each only if not already in
 - **查缺补漏** — list every chapter's knowledge points once, one harder example per point, expand further only on confusion.
 
 **Time budget (state `time_budget`, one of), layered on the mode — governs whether/when you may ask the student questions and how the knowledge window behaves:**
-- **≤1天** — NEVER ask the student clarifying questions (any question wastes finite review time); just teach and drill.
+- **≤1天** — do not ask opening clarification/preference questions or reflective follow-ups; start teaching immediately. This does not forbid bank-backed drills or checkpoints when they materially verify mastery. If the student explicitly says 「不要出题 / 不要问我」, persist `set --pref no_questions=true`, ask no interactive questions, and finish the phase only as `covered_unverified`, never `verified`.
 - **1-3天** — after teaching a few points, randomly re-ask earlier complex / repeatedly-confused points; if forgotten, re-teach.
 - **3-7天** — **knowledge-window system**: points recently taught are "in-window" (`window-add --point <知识点>` → 在窗口), assumed still known by default; for out-of-window points ask whether they still remember, and on yes move them back in (`window-set-status --point <知识点> --status 在窗口` — a `--point`/`--index` locator is required, add `--chapter` for a cross-chapter name); window size scales with elapsed time / conversation length.
 - **>7天** — out-of-window points get **tested with their linked hard question** (`exam-quiz`): solves it → back in window (`已实测`); can't → re-teach in full.
@@ -71,6 +72,15 @@ On FIRST activation you MUST establish THREE things (each only if not already in
 Window state persists in `study_state.json.knowledge_window` (via `window-add` / `window-set-status`, structured-state-backed); mode + budget show in the progress panel; this is separate from the 讲解模板 preference (`preferences`).
 
 **Deprecated old modes (migrated, do not reintroduce):** the former `normal` / `sprint` / `panic` / `mock` are retired. `update_progress.py set --mode` auto-migrates them (panic→零基础从头讲＋≤1天, sprint→查缺补漏＋1-3天, normal/mock→查缺补漏) and warns; `mock` (test-first) is a checkpoint cadence, not a learning mode — use `exam-quiz` for that. `argument-hint` values are accepted only as migration inputs.
+
+### Artifact output — separate standing resource preference
+
+`study_state.json.artifact_mode` has two canonical values:
+
+- **`chat`** — the safe default for missing/legacy/unknown values. Teach in the conversation and keep the normal notebook/state persistence, but do not automatically compile chapter HTML/PDF or a cheat-sheet PDF.
+- **`visual`** — only an explicit student choice may persist it: `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> set --artifact-mode visual`. Completed chapters receive HTML + PDF plus page-render visual QA; final cheat-sheet compilation may also render its printable PDF. This still never authorizes silent dependency or skill installation.
+
+Persist an explicit return to the economical path with `set --artifact-mode chat`. A one-shot request such as “make this chapter a PDF” temporarily overrides `chat` for that artifact without modifying the stored choice. Never inspect, infer, or claim to know the student's subscription tier, and never add artifact output as a fourth item to the required first-contact question.
 
 ## Output Contract
 
@@ -115,6 +125,7 @@ This coordinator orchestrates the following single-responsibility subskills (eac
 | --- | --- |
 | [`exam-ingest`](../exam-ingest/SKILL.md) | Workspace missing: initialize the LLM wiki + question bank + progress from the student's materials |
 | [`exam-tutor`](../exam-tutor/SKILL.md) | Teach the current wiki chapter (incl. zero-basic key-question walkthroughs; diagrams run the algorithm first) |
+| [`exam-study-guide`](../exam-study-guide/SKILL.md) | Compile the completed current chapter only for standing `visual` or an explicit one-shot HTML/PDF/print request |
 | [`exam-quiz`](../exam-quiz/SKILL.md) | Draw and grade questions from the bank; supports the 6 question types |
 | [`exam-review`](../exam-review/SKILL.md) | Replay mistakes and concept confusions (works with `confusion-tracker`) |
 | [`exam-cheatsheet`](../exam-cheatsheet/SKILL.md) | Build the pre-exam cheatsheet / final review sweep |

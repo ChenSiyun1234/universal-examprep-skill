@@ -5,12 +5,14 @@ Recall-first is the whole point: a page with an embedded image but NO caption ke
 flagged; detector vocabulary must be multi-domain (circuit/flowchart/waveform …), never bound to one
 subject. Pure stdlib; PDF backends are faked — no real pypdf/PyMuPDF needed, no network, no LLM."""
 import json
+import hashlib
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS = os.path.join(ROOT, "scripts")
@@ -122,7 +124,18 @@ class ClassifyPage(unittest.TestCase):
 
     def test_many_drawings_is_visual(self):
         self.assertTrue(BVI.classify_page("text", images=0, drawings=9)["has_visual"])
+        self.assertTrue(BVI.classify_page("captionless Venn", images=0, drawings=4)["has_visual"])
         self.assertFalse(BVI.classify_page("text", images=0, drawings=2)["has_visual"])  # underlines ≠ figure
+
+    def test_captionless_multirow_mapping_table_is_visual(self):
+        text = ("Experiment              Set Theory\n"
+                "Outcome                 Element\n"
+                "Sample Space            Universal Set\n"
+                "Event                   Set")
+        got = BVI.classify_page(text, images=0, drawings=1)
+        self.assertTrue(got["has_visual"])
+        self.assertIn("table", got["visual_kinds"])
+        self.assertTrue(got["signals"]["layout_table"])
 
     def test_multi_domain_keywords_not_subject_bound(self):
         for text, kind in [("电路如原理图所示", "circuit"), ("见流程图", "flowchart"),
@@ -141,6 +154,25 @@ class ClassifyPage(unittest.TestCase):
 
 
 class BuildIndices(unittest.TestCase):
+    def test_canonical_markdown_relpath_normalizes_lexical_aliases(self):
+        tmp = tempfile.mkdtemp()
+        canonical_wiki = os.path.join(tmp, "ws", "references", "wiki")
+        canonical_asset = os.path.join(tmp, "ws", "references", "assets", "page.png")
+        original_realpath = BVI.os.path.realpath
+
+        def canonicalize(path):
+            if path == "wiki-dir-alias":
+                return canonical_wiki
+            if path == "asset-alias":
+                return canonical_asset
+            return original_realpath(path)
+
+        with mock.patch.object(BVI.os.path, "realpath", side_effect=canonicalize):
+            self.assertEqual(
+                BVI._canonical_rel_posix("wiki-dir-alias", "asset-alias"),
+                "../assets/page.png",
+            )
+
     def test_end_to_end_indices_and_suspects(self):
         tmp = tempfile.mkdtemp()
         ws, _mat, rc = _build(tmp)
@@ -159,6 +191,94 @@ class BuildIndices(unittest.TestCase):
         self.assertFalse(rec["plain_1"]["requires_assets"])
         # per-chapter rollup exists and counts the suspect in its chapter
         self.assertEqual(qidx["per_chapter"]["1"]["suspects"], 1)
+        # v4.1: prompt and answer coverage are separate denominators. The legacy `suspects`
+        # field remains a prompt-side alias for old readers.
+        self.assertEqual(qidx["prompt_suspects"], qidx["suspects"])
+        self.assertEqual([s["id"] for s in qidx["answer_suspects"]], ["ansfig_1"])
+        self.assertEqual(qidx["per_chapter"]["2"]["answer_suspects"], 1)
+        # Both outputs bind their zero/nonzero results to the same exact mutable inputs.
+        self.assertEqual(fig["integrity"], qidx["integrity"])
+        self.assertEqual(fig["integrity"]["schema_version"], 2)
+        self.assertTrue(fig["integrity"]["mode"]["materials_scan"])
+        bank_bytes = open(os.path.join(ws, "references", "quiz_bank.json"), "rb").read()
+        self.assertEqual(fig["integrity"]["inputs"]["references/quiz_bank.json"]["sha256"],
+                         hashlib.sha256(bank_bytes).hexdigest())
+        pdf_bytes = open(os.path.join(_mat, "lectures", "ch01.pdf"), "rb").read()
+        self.assertEqual(fig["integrity"]["materials"]["lectures/ch01.pdf"]["sha256"],
+                         hashlib.sha256(pdf_bytes).hexdigest())
+        inventory = json.dumps(["lectures/ch01.pdf", "lectures/ch02.pdf"],
+                               ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        self.assertEqual(fig["integrity"]["material_inventory_sha256"],
+                         hashlib.sha256(inventory).hexdigest())
+        self.assertEqual(set(fig["integrity"]["outputs"]),
+                         {"figure_page_index.json", "image_question_index.json"})
+
+    def test_index_output_hardlink_is_replaced_without_overwriting_outside_inode(self):
+        tmp = tempfile.mkdtemp()
+        ws = _mk_workspace(tmp)
+        outside = os.path.join(tmp, "outside.json")
+        with open(outside, "wb") as stream:
+            stream.write(b"outside-stays")
+        target = os.path.join(ws, "references", "figure_page_index.json")
+        if os.path.exists(target):
+            os.remove(target)
+        try:
+            os.link(outside, target)
+        except (OSError, NotImplementedError):
+            self.skipTest("hard links unavailable")
+        self.assertEqual(BVI.run(["--workspace", ws], backend=_default_backend()), 0)
+        self.assertEqual(open(outside, "rb").read(), b"outside-stays")
+        self.assertFalse(os.path.samefile(outside, target))
+
+    def test_symlinked_quiz_bank_is_rejected_without_reading_outside(self):
+        tmp = tempfile.mkdtemp()
+        ws = _mk_workspace(tmp)
+        bank = os.path.join(ws, "references", "quiz_bank.json")
+        outside = os.path.join(tmp, "outside-bank.json")
+        os.replace(bank, outside)
+        try:
+            os.symlink(outside, bank)
+        except (OSError, NotImplementedError):
+            self.skipTest("no symlink privilege")
+        with self.assertRaises(SystemExit) as cm:
+            BVI.run(["--workspace", ws], backend=_default_backend())
+        self.assertEqual(cm.exception.code, 2)
+
+    def test_symlinked_references_parent_is_rejected_before_index_write(self):
+        tmp = tempfile.mkdtemp()
+        ws = _mk_workspace(tmp)
+        real_refs = os.path.join(tmp, "outside-references")
+        os.replace(os.path.join(ws, "references"), real_refs)
+        try:
+            os.symlink(real_refs, os.path.join(ws, "references"), target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("no symlink privilege")
+        before = set(os.listdir(real_refs))
+        with self.assertRaises(SystemExit) as cm:
+            BVI.run(["--workspace", ws], backend=_default_backend())
+        self.assertEqual(cm.exception.code, 2)
+        self.assertEqual(set(os.listdir(real_refs)), before)
+
+    def test_declared_required_asset_missing_is_always_a_prompt_suspect(self):
+        tmp = tempfile.mkdtemp()
+        ws = _mk_workspace(tmp)
+        bank_path = os.path.join(ws, "references", "quiz_bank.json")
+        bank = json.load(open(bank_path, encoding="utf-8"))
+        bank.append({
+            "id": "declared_missing", "chapter": 1, "type": "subjective",
+            "question": "Use the required figure.", "answer": "x", "source": "material",
+            "requires_assets": True,
+            "assets": [{"path": "references/assets/does-not-exist.png", "role": "question_context"}],
+        })
+        json.dump(bank, open(bank_path, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+        self.assertEqual(BVI.run(["--workspace", ws], backend=_default_backend()), 0)
+        suspects = _load(ws, "image_question_index.json")["prompt_suspects"]
+        hit = next(row for row in suspects if row["id"] == "declared_missing")
+        self.assertIn("已声明", hit["reason"])
+        self.assertEqual(BVI.run(["--workspace", ws, "--apply"], backend=_default_backend()), 0)
+        post = _load(ws, "image_question_index.json")
+        self.assertTrue(any(row["id"] == "declared_missing" for row in post["prompt_suspects"]))
+        self.assertEqual(post["prompt_applied"], 0)
 
     def test_apply_attaches_page_asset_and_keeps_validator_green(self):
         tmp = tempfile.mkdtemp()
@@ -174,10 +294,53 @@ class BuildIndices(unittest.TestCase):
         self.assertTrue(os.path.isfile(os.path.join(ws, a["path"])))          # png actually written
         self.assertTrue(os.path.isfile(os.path.join(ws, "references", "quiz_bank.json.bak")))
         self.assertEqual(_load(ws, "image_question_index.json")["suspects"], [])   # re-indexed post-apply
+        # A visual answer page is repaired independently and is NEVER promoted to a prompt-side gate.
+        answer_q = next(x for x in bank if x["id"] == "ansfig_1")
+        answer_assets = [a for a in answer_q.get("assets", []) if a.get("role") == "answer_context"]
+        self.assertEqual(len(answer_assets), 1)
+        self.assertTrue(os.path.isfile(os.path.join(ws, answer_assets[0]["path"])))
+        self.assertNotIn("maybe_requires_assets", answer_q)
+        post = _load(ws, "image_question_index.json")
+        self.assertEqual(post["answer_suspects"], [])
+        self.assertEqual(post["answer_applied"], 1)
         # the applied workspace must still pass the fail-closed validator (real CLI run)
         r = subprocess.run([sys.executable, os.path.join(SCRIPTS, "validate_workspace.py"), ws],
                            capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_apply_repairs_overlapping_and_teaching_only_examples_in_both_layers(self):
+        tmp = tempfile.mkdtemp()
+        ws = _mk_workspace(tmp)
+        bank_path = os.path.join(ws, "references", "quiz_bank.json")
+        bank = json.load(open(bank_path, encoding="utf-8"))
+        overlap = dict(next(q for q in bank if q["id"] == "suspect_1"))
+        overlap.update({"teaching_role": "worked_example", "title": "overlap"})
+        teaching_only = {
+            "id": "teaching_only_visual", "chapter": 1, "teaching_role": "worked_example",
+            "title": "teaching only", "type": "subjective", "question": "Study the shown case.",
+            "source": "material", "source_file": "lectures/ch01.pdf", "source_pages": [2],
+        }
+        teaching_path = os.path.join(ws, "references", "teaching_examples.json")
+        with open(teaching_path, "w", encoding="utf-8") as f:
+            json.dump([overlap, teaching_only], f, ensure_ascii=False, indent=2)
+        mat = os.path.join(tmp, "mat")
+        _mk_materials(mat, ["ch01.pdf", "ch02.pdf"])
+
+        self.assertEqual(BVI.run(["--workspace", ws, "--materials", mat, "--apply"],
+                                 backend=_default_backend()), 0)
+        updated_bank = json.load(open(bank_path, encoding="utf-8"))
+        updated_teaching = json.load(open(teaching_path, encoding="utf-8"))
+        for item in (next(q for q in updated_bank if q["id"] == "suspect_1"),
+                     next(q for q in updated_teaching if q["id"] == "suspect_1"),
+                     next(q for q in updated_teaching if q["id"] == "teaching_only_visual")):
+            self.assertIs(item.get("maybe_requires_assets"), True)
+            self.assertTrue(any(a.get("role") == "question_context" for a in item.get("assets", [])))
+        self.assertTrue(os.path.isfile(bank_path + ".bak"))
+        self.assertTrue(os.path.isfile(teaching_path + ".bak"))
+        qidx = _load(ws, "image_question_index.json")
+        self.assertEqual(qidx["prompt_suspects"], [])
+        self.assertEqual(len(qidx["teaching_questions"]), 2)
+        self.assertEqual(qidx["teaching_prompt_applied"], 2)
 
     def test_apply_without_render_backend_exits_3(self):
         tmp = tempfile.mkdtemp()
@@ -212,6 +375,376 @@ class BuildIndices(unittest.TestCase):
         self.assertTrue(any("no_media_backend" in w for w in fig["warnings"]))
         pages = [p["page"] for p in fig["files"]["lectures/ch01.pdf"]["visual_pages"]]
         self.assertNotIn(2, pages)                                            # structural page honestly lost
+
+    def test_wiki_visual_coverage_and_apply_wiki_are_idempotent(self):
+        tmp = tempfile.mkdtemp()
+        ws = _mk_workspace(tmp)
+        wiki = os.path.join(ws, "references", "wiki", "ch1.md")
+        with open(wiki, "w", encoding="utf-8") as f:
+            f.write("# ch1\n\n<!-- lectures/ch01.pdf p.1 -->\nplain\n\n"
+                    "<!-- lectures/ch01.pdf p.2 -->\nvector-only visual\n")
+        mat = os.path.join(tmp, "mat")
+        _mk_materials(mat, ["ch01.pdf"])
+        be = FakeBackend(texts_by_name={"ch01.pdf": ["plain", "vector-only visual"]},
+                         media_by_name={"ch01.pdf": [(0, 0), (1, 0)]})
+
+        rc = BVI.run(["--workspace", ws, "--materials", mat], backend=be)
+        self.assertEqual(rc, 0)
+        cov = _load(ws, "figure_page_index.json")["wiki_visual_coverage"]
+        self.assertEqual((cov["detected"], cov["embedded"], cov["missing"]), (1, 0, 1))
+        self.assertEqual(cov["missing_pages"][0]["source_file"], "lectures/ch01.pdf")
+        self.assertTrue(any(w.startswith("wiki_visual_missing") for w in cov["warnings"]))
+
+        argv = ["--workspace", ws, "--materials", mat, "--apply-wiki"]
+        self.assertEqual(BVI.run(argv, backend=be), 0)
+        cov2 = _load(ws, "figure_page_index.json")["wiki_visual_coverage"]
+        self.assertEqual((cov2["detected"], cov2["embedded"], cov2["missing"]), (1, 1, 0))
+        text1 = open(wiki, encoding="utf-8").read()
+        self.assertEqual(text1.count("<!-- wiki-visual-index:"), 1)
+        self.assertIn("../assets/", text1)
+
+        # Re-running the mutating command must reuse the stable page asset and not duplicate markup.
+        self.assertEqual(BVI.run(argv, backend=be), 0)
+        text2 = open(wiki, encoding="utf-8").read()
+        self.assertEqual(text2, text1)
+
+    def test_solution_page_is_deferred_from_wiki_but_applied_as_answer_context(self):
+        tmp = tempfile.mkdtemp()
+        ws = _mk_workspace(tmp)
+        bank_path = os.path.join(ws, "references", "quiz_bank.json")
+        item = {
+            "id": "solution_guard", "chapter": 1, "type": "subjective",
+            "question": "Read the prompt diagram.", "answer": "Worked solution.",
+            "source": "material", "source_file": "lectures/ch01.pdf", "source_pages": [1],
+            "answer_source_file": "lectures/ch01.pdf", "answer_source_pages": [2],
+        }
+        with open(bank_path, "w", encoding="utf-8") as f:
+            json.dump([item], f, ensure_ascii=False, indent=2)
+        old_answer = os.path.join(ws, "references", "assets", "old-answer.png")
+        with open(old_answer, "wb") as f:
+            f.write(PNG)
+        wiki = os.path.join(ws, "references", "wiki", "ch1.md")
+        with open(wiki, "w", encoding="utf-8") as f:
+            f.write(
+                "# ch1\n\n"
+                "<!-- lectures/ch01.pdf p.1 -->\nprompt source\n\n"
+                "<!-- lectures/ch01.pdf p.2 -->\nsolution source\n\n"
+                "<!-- wiki-visual-index: lectures/ch01.pdf p.2 -->\n"
+                "![原页图示 lectures/ch01.pdf p.2](../assets/old-answer.png)\n")
+        mat = os.path.join(tmp, "mat")
+        _mk_materials(mat, ["ch01.pdf"])
+        be = FakeBackend(texts_by_name={"ch01.pdf": ["prompt visual", "solution visual"]},
+                         media_by_name={"ch01.pdf": [(1, 0), (1, 0)]})
+
+        rc = BVI.run(["--workspace", ws, "--materials", mat, "--apply", "--apply-wiki"],
+                     backend=be)
+        self.assertEqual(rc, 0)
+        wiki_text = open(wiki, encoding="utf-8").read()
+        self.assertNotIn("wiki-visual-index: lectures/ch01.pdf p.2", wiki_text)
+        self.assertNotIn("old-answer.png", wiki_text)
+        self.assertIn("wiki-visual-index: lectures/ch01.pdf p.1", wiki_text)
+
+        updated = json.load(open(bank_path, encoding="utf-8"))
+        roles = [a.get("role") for a in updated[0].get("assets", [])]
+        self.assertIn("question_context", roles)
+        self.assertIn("answer_context", roles)
+        self.assertIs(updated[0].get("maybe_requires_assets"), True)
+
+        fig = _load(ws, "figure_page_index.json")
+        cov = fig["wiki_visual_coverage"]
+        self.assertEqual(cov["detected"], cov["embedded"] + cov["missing"])
+        self.assertEqual(cov["total_visual_pages"],
+                         cov["detected"] + cov["deferred_answer_count"]
+                         + cov["shared_prompt_answer_count"])
+        self.assertEqual((cov["detected"], cov["embedded"], cov["missing"]), (1, 1, 0))
+        self.assertEqual(cov["deferred_answer_count"], 1)
+        self.assertEqual([(p["source_file"], p["page"], p["status"])
+                          for p in cov["deferred_answer_pages"]],
+                         [("lectures/ch01.pdf", 2, "deferred_answer")])
+        self.assertEqual(cov["removed_deferred_answer_blocks"], 1)
+        self.assertEqual(cov["manual_answer_exposure_count"], 0)
+        qidx = _load(ws, "image_question_index.json")
+        self.assertEqual(qidx["answer_suspects"], [])
+        self.assertEqual(qidx["wiki_deferred_answer_blocks_removed"], 1)
+
+    def test_shared_prompt_answer_page_blocks_whole_page_prompt_and_wiki_apply(self):
+        tmp = tempfile.mkdtemp()
+        ws = _mk_workspace(tmp)
+        bank_path = os.path.join(ws, "references", "quiz_bank.json")
+        with open(bank_path, "w", encoding="utf-8") as f:
+            json.dump([{
+                "id": "shared_page_guard", "chapter": 1, "type": "subjective",
+                "question": "Prompt and worked answer share this page.",
+                "answer": "Worked answer.", "source": "material",
+                "source_file": "lectures/ch01.pdf", "source_pages": [1],
+                "answer_source_file": "lectures/ch01.pdf", "answer_source_pages": [1],
+            }], f, ensure_ascii=False, indent=2)
+        old_page = os.path.join(ws, "references", "assets", "old-shared-page.png")
+        with open(old_page, "wb") as f:
+            f.write(PNG)
+        wiki = os.path.join(ws, "references", "wiki", "ch1.md")
+        with open(wiki, "w", encoding="utf-8") as f:
+            f.write("# ch1\n\n<!-- lectures/ch01.pdf p.1 -->\nshared source\n\n"
+                    "<!-- wiki-visual-index: lectures/ch01.pdf p.1 -->\n"
+                    "![原页图示 lectures/ch01.pdf p.1](../assets/old-shared-page.png)\n")
+        mat = os.path.join(tmp, "mat")
+        _mk_materials(mat, ["ch01.pdf"])
+        be = FakeBackend(texts_by_name={"ch01.pdf": ["prompt and solution diagram"]},
+                         media_by_name={"ch01.pdf": [(1, 0)]})
+
+        rc = BVI.run(["--workspace", ws, "--materials", mat, "--apply", "--apply-wiki"],
+                     backend=be)
+        self.assertEqual(rc, 2)
+        wiki_text = open(wiki, encoding="utf-8").read()
+        self.assertNotIn("wiki-visual-index: lectures/ch01.pdf p.1", wiki_text)
+        self.assertNotIn("old-shared-page.png", wiki_text)
+
+        updated = json.load(open(bank_path, encoding="utf-8"))[0]
+        roles = [a.get("role") for a in updated.get("assets", [])]
+        self.assertNotIn("question_context", roles)       # whole-page prompt auto-apply is blocked
+        self.assertIn("answer_context", roles)            # answer-side display remains valid
+        self.assertNotIn("maybe_requires_assets", updated)
+
+        cov = _load(ws, "figure_page_index.json")["wiki_visual_coverage"]
+        self.assertEqual((cov["detected"], cov["embedded"], cov["missing"]), (0, 0, 0))
+        self.assertEqual(cov["total_visual_pages"],
+                         cov["detected"] + cov["deferred_answer_count"]
+                         + cov["shared_prompt_answer_count"])
+        self.assertEqual(cov["shared_prompt_answer_count"], 1)
+        self.assertEqual(cov["shared_prompt_answer_blocker_count"], 1)
+        self.assertEqual(cov["shared_prompt_answer_pages"][0]["status"],
+                         "shared_prompt_answer")
+        qidx = _load(ws, "image_question_index.json")
+        self.assertEqual(qidx["shared_prompt_answer_count"], 1)
+        self.assertEqual(qidx["shared_prompt_answer_blocker_count"], 1)
+        self.assertEqual([s["id"] for s in qidx["prompt_suspects"]], ["shared_page_guard"])
+        self.assertEqual(qidx["answer_suspects"], [])
+        self.assertTrue(any(w.startswith("shared_prompt_answer_page:")
+                            for w in qidx["warnings"]))
+        self.assertTrue(any(w.startswith("apply_skip_shared_prompt_answer_page:")
+                            for w in qidx["warnings"]))
+
+    def test_audited_prompt_crop_resolves_shared_page_blocker_but_wiki_stays_deferred(self):
+        tmp = tempfile.mkdtemp()
+        ws = _mk_workspace(tmp)
+        crop = os.path.join(ws, "references", "assets", "shared-prompt-crop.png")
+        with open(crop, "wb") as f:
+            f.write(PNG)
+        bank_path = os.path.join(ws, "references", "quiz_bank.json")
+        with open(bank_path, "w", encoding="utf-8") as f:
+            json.dump([{
+                "id": "shared_page_cropped", "chapter": 1, "type": "subjective",
+                "question": "Prompt and worked answer share this page.",
+                "answer": "Worked answer.", "source": "material",
+                "source_file": "lectures/ch01.pdf", "source_pages": [1],
+                "answer_source_file": "lectures/ch01.pdf", "answer_source_pages": [1],
+                "assets": [{"path": "references/assets/shared-prompt-crop.png",
+                            "role": "question_context", "type": "crop_image"}],
+            }], f, ensure_ascii=False, indent=2)
+        wiki = os.path.join(ws, "references", "wiki", "ch1.md")
+        with open(wiki, "w", encoding="utf-8") as f:
+            f.write("# ch1\n\n<!-- lectures/ch01.pdf p.1 -->\nshared source\n")
+        mat = os.path.join(tmp, "mat")
+        _mk_materials(mat, ["ch01.pdf"])
+        be = FakeBackend(texts_by_name={"ch01.pdf": ["prompt and solution diagram"]},
+                         media_by_name={"ch01.pdf": [(1, 0)]})
+
+        rc = BVI.run(["--workspace", ws, "--materials", mat, "--apply", "--apply-wiki"],
+                     backend=be)
+        self.assertEqual(rc, 0)
+        self.assertNotIn("wiki-visual-index", open(wiki, encoding="utf-8").read())
+        updated = json.load(open(bank_path, encoding="utf-8"))[0]
+        self.assertTrue(any(a.get("type") == "crop_image" and a.get("role") == "question_context"
+                            for a in updated.get("assets", [])))
+        self.assertTrue(any(a.get("role") == "answer_context" for a in updated.get("assets", [])))
+        cov = _load(ws, "figure_page_index.json")["wiki_visual_coverage"]
+        self.assertEqual(cov["shared_prompt_answer_count"], 1)
+        self.assertEqual(cov["shared_prompt_answer_blocker_count"], 0)
+        qidx = _load(ws, "image_question_index.json")
+        self.assertEqual(qidx["prompt_suspects"], [])
+        self.assertEqual(qidx["shared_prompt_answer_count"], 1)
+        self.assertEqual(qidx["shared_prompt_answer_blocker_count"], 0)
+
+    def test_manual_answer_page_image_is_preserved_and_fails_closed(self):
+        tmp = tempfile.mkdtemp()
+        ws = _mk_workspace(tmp)
+        bank_path = os.path.join(ws, "references", "quiz_bank.json")
+        with open(bank_path, "w", encoding="utf-8") as f:
+            json.dump([{
+                "id": "manual_solution", "chapter": 1, "type": "subjective",
+                "question": "Prompt", "answer": "Solution", "source": "material",
+                "source_file": "lectures/ch01.pdf", "source_pages": [1],
+                "answer_source_file": "lectures/ch01.pdf", "answer_source_pages": [2],
+            }], f, ensure_ascii=False, indent=2)
+        manual = os.path.join(ws, "references", "assets", "manual-answer.png")
+        with open(manual, "wb") as f:
+            f.write(PNG)
+        wiki = os.path.join(ws, "references", "wiki", "ch1.md")
+        with open(wiki, "w", encoding="utf-8") as f:
+            f.write("# ch1\n\n<!-- lectures/ch01.pdf p.1 -->\nprompt\n\n"
+                    "<!-- lectures/ch01.pdf p.2 -->\n"
+                    "![hand-authored worked answer](../assets/manual-answer.png)\n")
+        mat = os.path.join(tmp, "mat")
+        _mk_materials(mat, ["ch01.pdf"])
+        be = FakeBackend(texts_by_name={"ch01.pdf": ["prompt", "solution"]},
+                         media_by_name={"ch01.pdf": [(1, 0), (1, 0)]})
+
+        rc = BVI.run(["--workspace", ws, "--materials", mat, "--apply-wiki"], backend=be)
+        self.assertEqual(rc, 2)
+        self.assertIn("manual-answer.png", open(wiki, encoding="utf-8").read())
+        cov = _load(ws, "figure_page_index.json")["wiki_visual_coverage"]
+        self.assertEqual(cov["detected"], cov["embedded"] + cov["missing"])
+        self.assertEqual(cov["deferred_answer_count"], 1)
+        self.assertEqual(cov["manual_answer_exposure_count"], 1)
+        self.assertEqual(cov["manual_answer_exposure_pages"][0]["coverage_issue"],
+                         "manual_answer_exposure")
+        self.assertTrue(any(w.startswith("wiki_answer_manual_exposure:")
+                            for w in cov["warnings"]))
+        self.assertEqual(_load(ws, "image_question_index.json")["manual_answer_exposure_count"], 1)
+
+    def test_text_only_answer_page_manual_wiki_image_is_still_detected(self):
+        tmp = tempfile.mkdtemp()
+        ws = _mk_workspace(tmp)
+        bank_path = os.path.join(ws, "references", "quiz_bank.json")
+        with open(bank_path, "w", encoding="utf-8") as f:
+            json.dump([{
+                "id": "text_answer_manual", "chapter": 1, "type": "subjective",
+                "question": "Prompt", "answer": "Text-only solution", "source": "material",
+                "source_file": "lectures/ch01.pdf", "source_pages": [1],
+                "answer_source_file": "lectures/ch01.pdf", "answer_source_pages": [2],
+            }], f, ensure_ascii=False, indent=2)
+        manual = os.path.join(ws, "references", "assets", "manual-text-answer.png")
+        with open(manual, "wb") as f:
+            f.write(PNG)
+        wiki = os.path.join(ws, "references", "wiki", "ch1.md")
+        with open(wiki, "w", encoding="utf-8") as f:
+            f.write("# ch1\n\n<!-- lectures/ch01.pdf p.1 -->\nprompt\n\n"
+                    "<!-- lectures/ch01.pdf p.2 -->\n"
+                    "![hand-authored answer page](../assets/manual-text-answer.png)\n")
+        mat = os.path.join(tmp, "mat")
+        _mk_materials(mat, ["ch01.pdf"])
+        be = FakeBackend(texts_by_name={"ch01.pdf": ["plain prompt", "plain solution"]},
+                         media_by_name={"ch01.pdf": [(0, 0), (0, 0)]})
+
+        rc = BVI.run(["--workspace", ws, "--materials", mat, "--apply-wiki"], backend=be)
+        self.assertEqual(rc, 2)
+        self.assertIn("manual-text-answer.png", open(wiki, encoding="utf-8").read())
+        fig = _load(ws, "figure_page_index.json")
+        cov = fig["wiki_visual_coverage"]
+        self.assertEqual(fig["files"]["lectures/ch01.pdf"]["visual_pages"], [])
+        self.assertEqual(cov["deferred_answer_count"], 1)
+        self.assertEqual(cov["inventory_only_answer_page_count"], 1)
+        self.assertTrue(cov["deferred_answer_pages"][0]["inventory_only"])
+        self.assertEqual(cov["manual_answer_exposure_count"], 1)
+        self.assertEqual(_load(ws, "image_question_index.json")["manual_answer_exposure_count"], 1)
+
+    def test_logo_in_page_block_is_not_visual_coverage_but_provenance_gallery_is(self):
+        tmp = tempfile.mkdtemp()
+        ws = _mk_workspace(tmp)
+        wiki = os.path.join(ws, "references", "wiki", "ch1.md")
+        logo = os.path.join(ws, "references", "logo.png")
+        with open(logo, "wb") as f:
+            f.write(PNG)
+        with open(wiki, "w", encoding="utf-8") as f:
+            f.write("# ch1\n\n<!-- lectures/ch01.pdf p.2 -->\n"
+                    "![course logo](../logo.png)\n")
+        mat = os.path.join(tmp, "mat")
+        _mk_materials(mat, ["ch01.pdf"])
+        be = FakeBackend(texts_by_name={"ch01.pdf": ["plain", "visual"]},
+                         media_by_name={"ch01.pdf": [(0, 0), (1, 0)]})
+        self.assertEqual(BVI.run(["--workspace", ws, "--materials", mat], backend=be), 0)
+        cov = _load(ws, "figure_page_index.json")["wiki_visual_coverage"]
+        self.assertEqual((cov["embedded"], cov["missing"]), (0, 1))
+
+        with open(wiki, "a", encoding="utf-8") as f:
+            f.write("\n![lectures/ch01.pdf 第 2 页图示](../logo.png)\n")
+        self.assertEqual(BVI.run(["--workspace", ws, "--materials", mat], backend=be), 0)
+        cov = _load(ws, "figure_page_index.json")["wiki_visual_coverage"]
+        self.assertEqual((cov["embedded"], cov["missing"]), (1, 0))
+
+    def test_apply_wiki_rejects_symlinked_wiki_parent(self):
+        tmp = tempfile.mkdtemp()
+        ws = _mk_workspace(tmp)
+        wiki_dir = os.path.join(ws, "references", "wiki")
+        outside = os.path.join(tmp, "outside-wiki")
+        shutil.rmtree(wiki_dir)
+        os.makedirs(outside)
+        with open(os.path.join(outside, "ch1.md"), "w", encoding="utf-8") as f:
+            f.write("# outside\n<!-- lectures/ch01.pdf p.1 -->\n")
+        try:
+            os.symlink(outside, wiki_dir, target_is_directory=True)
+        except (OSError, NotImplementedError, AttributeError):
+            self.skipTest("no symlink privilege")
+        mat = os.path.join(tmp, "mat")
+        _mk_materials(mat, ["ch01.pdf"])
+        be = FakeBackend(texts_by_name={"ch01.pdf": ["visual"]},
+                         media_by_name={"ch01.pdf": [(1, 0)]})
+        with self.assertRaises(SystemExit) as caught:
+            BVI.run(["--workspace", ws, "--materials", mat, "--apply-wiki"], backend=be)
+        self.assertEqual(caught.exception.code, 2)
+        self.assertNotIn("wiki-visual-index", open(os.path.join(outside, "ch1.md"),
+                                                    encoding="utf-8").read())
+
+    def test_image_only_page_missing_exact_anchor_stays_in_denominator_and_is_repaired(self):
+        tmp = tempfile.mkdtemp()
+        ws = _mk_workspace(tmp)
+        wiki = os.path.join(ws, "references", "wiki", "ch1.md")
+        with open(wiki, "w", encoding="utf-8") as f:
+            f.write("# ch1\n\n<!-- lectures/ch01.pdf p.1 -->\nplain\n")
+        mat = os.path.join(tmp, "mat")
+        _mk_materials(mat, ["ch01.pdf"])
+        be = FakeBackend(texts_by_name={"ch01.pdf": ["plain", ""]},
+                         media_by_name={"ch01.pdf": [(0, 0), (1, 0)]})
+
+        self.assertEqual(BVI.run(["--workspace", ws, "--materials", mat], backend=be), 0)
+        cov = _load(ws, "figure_page_index.json")["wiki_visual_coverage"]
+        self.assertEqual((cov["detected"], cov["missing"]), (1, 1))
+        self.assertTrue(cov["missing_pages"][0]["anchor_inferred"])
+        self.assertEqual(cov["missing_pages"][0]["reason"], "source_page_anchor_missing")
+
+        self.assertEqual(BVI.run(["--workspace", ws, "--materials", mat, "--apply-wiki"],
+                                 backend=be), 0)
+        repaired = _load(ws, "figure_page_index.json")["wiki_visual_coverage"]
+        self.assertEqual((repaired["detected"], repaired["embedded"], repaired["missing"]),
+                         (1, 1, 0))
+        text0 = open(wiki, encoding="utf-8").read()
+        self.assertIn("<!-- lectures/ch01.pdf p.2 -->", text0)
+        self.assertEqual(text0.count("<!-- wiki-visual-index:"), 1)
+
+    def test_apply_wiki_enforces_per_chapter_cap_and_lists_every_missing_page(self):
+        tmp = tempfile.mkdtemp()
+        ws = _mk_workspace(tmp)
+        # Keep this cap-focused fixture free of answer-only pages. Answer-page
+        # deferral is covered by dedicated tests below.
+        with open(os.path.join(ws, "references", "quiz_bank.json"), "w", encoding="utf-8") as f:
+            json.dump([], f)
+        wiki = os.path.join(ws, "references", "wiki", "ch1.md")
+        with open(wiki, "w", encoding="utf-8") as f:
+            f.write("# ch1\n\n" + "\n\n".join(
+                "<!-- lectures/ch01.pdf p.%d -->\np%d" % (n, n) for n in range(1, 32)))
+        mat = os.path.join(tmp, "mat")
+        _mk_materials(mat, ["ch01.pdf"])
+        be = FakeBackend(
+            texts_by_name={"ch01.pdf": ["plain"] * 31},
+            media_by_name={"ch01.pdf": [(1, 0)] * 31})
+        rc = BVI.run(["--workspace", ws, "--materials", mat, "--apply-wiki"], backend=be)
+        self.assertEqual(rc, 0)
+        cov = _load(ws, "figure_page_index.json")["wiki_visual_coverage"]
+        self.assertEqual((cov["detected"], cov["embedded"], cov["missing"]), (31, 30, 1))
+        self.assertEqual(len(cov["missing_pages"]), 1)             # complete, uncapped manifest
+        self.assertEqual(cov["missing_pages"][0]["reason"], "chapter_cap")
+        self.assertTrue(any(w.startswith("wiki_visual_cap") for w in cov["warnings"]))
+
+    def test_nul_text_is_reported_with_source_page(self):
+        tmp = tempfile.mkdtemp()
+        ws = _mk_workspace(tmp)
+        mat = os.path.join(tmp, "mat")
+        _mk_materials(mat, ["ch01.pdf"])
+        be = FakeBackend(texts_by_name={"ch01.pdf": ["diagram\x00labels"]},
+                         media_by_name={"ch01.pdf": [(1, 0)]})
+        self.assertEqual(BVI.run(["--workspace", ws, "--materials", mat], backend=be), 0)
+        warnings = _load(ws, "figure_page_index.json")["warnings"]
+        self.assertTrue(any(w.startswith("nul_text: lectures/ch01.pdf p.1") for w in warnings))
 
     def test_missing_workspace_or_bad_bank_exit_2(self):
         with self.assertRaises(SystemExit) as cm:
@@ -769,7 +1302,7 @@ class OfficialTools(unittest.TestCase):
         src = open(os.path.join(ROOT, "skills", "exam-ingest", "SKILL.md"), encoding="utf-8").read()
         self.assertIn("AFTER ingest has created the workspace", src)
         # the cross-check instruction must appear AFTER the ingest.py step, not under the builder step
-        self.assertLess(src.index("scripts/ingest.py"), src.index("Recall cross-check"))
+        self.assertLess(src.index("scripts/ingest.py"), src.index("Three-sided visual cross-check"))
 
     def test_figref_regex_has_token_boundary(self):
         self.assertFalse(BVI.classify_page("It is comfortable 1 and profitable 2024.")["has_visual"])

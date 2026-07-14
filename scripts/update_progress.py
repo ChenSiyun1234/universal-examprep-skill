@@ -13,6 +13,8 @@ view from it. A write failure is FAIL-LOUD (non-zero exit + message) — never s
     python scripts/update_progress.py --workspace <ws> set --scope homework-only --mode 查缺补漏
     python scripts/update_progress.py --workspace <ws> add-mistake --id hw_hw1_3 --chapter 2 --note "Venn 阴影判断错"
     python scripts/update_progress.py --workspace <ws> add-confusion --chapter 1 --note "循环队列取模"
+    python scripts/update_progress.py --workspace <ws> record-phase-evidence --kind wiki --ref references/wiki/ch1.md
+    python scripts/update_progress.py --workspace <ws> complete-phase --status covered_unverified
     python scripts/update_progress.py --workspace <ws> render               # json → md（修复被手改的 md）
     python scripts/update_progress.py --workspace <ws> show                 # 打印当前状态 JSON
     python scripts/update_progress.py workspace-register --course 数据结构 --path <dir> [--materials <dir>]
@@ -25,10 +27,12 @@ Exit codes: 0 ok · 1 write/render failure · 2 bad input/usage.
 """
 import argparse
 import datetime
+import hashlib
 import json
 import os
 import re
 import sys
+from urllib.parse import unquote
 
 for _s in ("stdout", "stderr"):
     try:
@@ -37,10 +41,21 @@ for _s in ("stdout", "stderr"):
         pass
 
 import i18n
+import notebook as _notebook
 
 STATE_NAME = "study_state.json"
 MD_NAME = "study_progress.md"
 SCHEMA_VERSION = 1
+
+# v4.1 Step 4: phase completion is evidence-backed in manifest-aware workspaces.  The new
+# field is additive within schema v1 so legacy state remains readable without an eager migration.
+PHASE_EVIDENCE_STATUSES = ("covered_unverified", "verified")
+PHASE_EVIDENCE_FIELDS = ("wiki", "visual", "teaching_examples", "notebook", "checkpoint")
+PHASE_EVIDENCE_CORE = ("wiki", "visual", "teaching_examples", "notebook")
+CHECKPOINT_OUTCOMES = ("passed", "wrong", "skipped")
+PHASE_MANIFESTS = ("references/image_question_index.json",
+                   "references/figure_page_index.json",
+                   "references/teaching_examples.json")
 
 # ---- v4：词表唯一定义点在 scripts/i18n.py——本文件只留兼容名 ----
 # 持久化从此只存语言中性 canonical 代号（from_scratch / le1d / zh / in_window / to_review …）；
@@ -48,10 +63,12 @@ SCHEMA_VERSION = 1
 LEARNING_MODES = i18n.MODES
 TIME_TIERS = i18n.TIERS
 LANGUAGES = i18n.LANGS
+ARTIFACT_MODES = i18n.ARTIFACT_MODES
 
 _normalize_mode = i18n.canon_mode
 _normalize_tier = i18n.canon_tier
 _normalize_language = i18n.canon_language
+_normalize_artifact_mode = i18n.canon_artifact_mode
 
 
 def _disp(kind, code):
@@ -66,9 +83,9 @@ def _die(msg, code=2):
 
 def default_state():
     return {"version": SCHEMA_VERSION, "current_phase": 1, "scope": None, "mode": None,
-            "time_budget": None, "language": None, "preferences": {},
+            "time_budget": None, "language": None, "artifact_mode": "chat", "preferences": {},
             "mistake_archive": [], "confusion_log": [], "knowledge_window": [],
-            "phase_checklist": [], "last_updated": None}
+            "phase_checklist": [], "phase_evidence": {}, "last_updated": None}
 
 
 # ---------------- md → state (migration; tolerant of both bullet and table forms) ----------------
@@ -112,6 +129,8 @@ def parse_md(text):
     prefs["preferences"] = preferences
     lm = re.search(r"(?:语言偏好|Language preference)\**\s*[：:]\s*(.+)", t, re.I)
     prefs["language"] = lm.group(1).strip() if lm else None
+    am = re.search(r"(?:输出资源模式|Artifact mode)\**\s*[：:]\s*(.+)", t, re.I)
+    prefs["artifact_mode"] = am.group(1).strip() if am else None
     mistakes, confusions, checklist, window = [], [], [], []
     cur, in_checklist, in_window, tbl_cols, window_cols = None, False, False, None, None
     for ln in t.splitlines():
@@ -244,6 +263,852 @@ def parse_md(text):
     return phase, mistakes, confusions, checklist, window, prefs
 
 
+# ---------------- v4.1 phase evidence (additive, legacy-safe) ----------------
+
+def phase_manifest_status(ws):
+    """Return (legacy|ready|broken, reason) without letting partial v4.1 output fail open."""
+    refs = os.path.join(ws, "references")
+    paths = {
+        "figure": os.path.join(refs, "figure_page_index.json"),
+        "image": os.path.join(refs, "image_question_index.json"),
+        "teaching": os.path.join(refs, "teaching_examples.json"),
+    }
+    parsed, parse_errors = {}, {}
+    for key, path in paths.items():
+        if not os.path.lexists(path):
+            continue
+        if os.path.islink(path):
+            parse_errors[key] = "符号链接"
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                parsed[key] = json.load(f)
+        except (OSError, UnicodeDecodeError, ValueError) as e:
+            parse_errors[key] = str(e)
+
+    figure = parsed.get("figure")
+    image = parsed.get("image")
+    teaching = parsed.get("teaching")
+    markers = {
+        # An unreadable/symlinked manifest cannot be classified as safely-legacy; treat it as a
+        # capability marker and fail closed instead of using parse failure to bypass the gate.
+        "figure": "figure" in parse_errors
+                  or (isinstance(figure, dict) and "wiki_visual_coverage" in figure),
+        "image": "image" in parse_errors
+                 or (isinstance(image, dict)
+                     and ("prompt_suspects" in image or "answer_suspects" in image)),
+        # teaching_examples.json is itself a v4.1 marker; v4.0 never emitted it.
+        "teaching": os.path.lexists(paths["teaching"]),
+    }
+    if not any(markers.values()):
+        return "legacy", "未发现 v4.1 manifest 标记"
+    ready = (not parse_errors
+             and isinstance(figure, dict)
+             and isinstance(figure.get("wiki_visual_coverage"), dict)
+             and isinstance(image, dict)
+             and isinstance(image.get("prompt_suspects"), list)
+             and isinstance(image.get("answer_suspects"), list)
+             and isinstance(teaching, list))
+    if ready:
+        return "ready", "v4.1 manifest 三件套齐备"
+    missing = [key for key in paths if key not in parsed and key not in parse_errors]
+    details = []
+    if missing:
+        details.append("缺失 " + "/".join(missing))
+    if parse_errors:
+        details.append("损坏/不安全 " + ", ".join("%s=%s" % x for x in sorted(parse_errors.items())))
+    if not details:
+        details.append("字段/schema 不完整")
+    return "broken", "；".join(details)
+
+
+def phase_manifest_present(ws):
+    return phase_manifest_status(ws)[0] == "ready"
+
+
+def phase_number_from_check(text):
+    """Return the phase number represented by one checklist label, or None for non-phase rows."""
+    m = re.search(r"阶段\s*(\d+)|第\s*(\d+)\s*阶段|[Pp]hase\s*(\d+)", text or "")
+    if not m:
+        return None
+    n = int(next(g for g in m.groups() if g))
+    return n if n >= 1 else None
+
+
+def _phase_evidence_shape_errors(state):
+    ev = state.get("phase_evidence", {})
+    if not isinstance(ev, dict):
+        return ["phase_evidence 必须是对象（phase 字符串 → evidence 对象），当前 %s"
+                % type(ev).__name__]
+    errors = []
+    for key, record in ev.items():
+        if not isinstance(key, str) or not key.isdigit() or int(key) < 1 or str(int(key)) != key:
+            errors.append("phase_evidence 的键必须是规范正整数字符串，当前 %r" % key)
+            continue
+        if not isinstance(record, dict):
+            errors.append("phase_evidence[%s] 必须是对象，当前 %s" % (key, type(record).__name__))
+            continue
+        for field in PHASE_EVIDENCE_FIELDS:
+            refs = record.get(field)
+            if refs is None:
+                continue
+            if not isinstance(refs, list):
+                errors.append("phase_evidence[%s].%s 必须是数组" % (key, field))
+                continue
+            if field == "checkpoint":
+                for item in refs:
+                    if not isinstance(item, dict):
+                        errors.append("phase_evidence[%s].checkpoint 必须是 {id,outcome} 对象数组；"
+                                      "只有 ID 不能证明答对" % key)
+                        continue
+                    if not isinstance(item.get("id"), str) or not item["id"].strip():
+                        errors.append("phase_evidence[%s].checkpoint[].id 必须是非空字符串" % key)
+                    if item.get("outcome") not in CHECKPOINT_OUTCOMES:
+                        errors.append("phase_evidence[%s].checkpoint[].outcome 必须是 %s"
+                                      % (key, "/".join(CHECKPOINT_OUTCOMES)))
+            elif any(not isinstance(x, str) or not x.strip() for x in refs):
+                errors.append("phase_evidence[%s].%s 必须是非空字符串数组" % (key, field))
+        status = record.get("status")
+        if status is not None and status not in PHASE_EVIDENCE_STATUSES:
+            errors.append("phase_evidence[%s].status 必须是 %s，当前 %r"
+                          % (key, "/".join(PHASE_EVIDENCE_STATUSES), status))
+        for field in ("updated_at", "completed_at"):
+            if record.get(field) is not None and not isinstance(record[field], str):
+                errors.append("phase_evidence[%s].%s 必须是字符串或省略" % (key, field))
+    return errors
+
+
+def _local_evidence_ref(ws, ref):
+    """Resolve a workspace-relative evidence ref. Return (rel, fragment, full, error)."""
+    if not isinstance(ref, str) or not ref.strip():
+        return None, None, None, "引用必须是非空字符串"
+    raw = ref.strip().replace("\\", "/")
+    if any(c in raw for c in ("\x00", "\r", "\n")):
+        return None, None, None, "引用含控制字符"
+    if "://" in raw or raw.startswith("/") or re.match(r"^[A-Za-z]:", raw):
+        return None, None, None, "路径必须是工作区内的相对路径，不得是 URL/绝对路径"
+    path_part, sep, fragment = raw.partition("#")
+    segs = [s for s in path_part.split("/") if s not in ("", ".")]
+    if not segs or ".." in segs:
+        return None, None, None, "路径不得为空或含 .. 路径穿越"
+    rel = "/".join(segs)
+    full = os.path.join(ws, *segs)
+    ws_real = os.path.normcase(os.path.realpath(ws))
+    full_real = os.path.normcase(os.path.realpath(full))
+    if full_real != ws_real and not full_real.startswith(ws_real + os.sep):
+        return None, None, None, "路径经符号链接逃出工作区"
+    if os.path.islink(full):
+        return None, None, None, "证据文件不得是符号链接"
+    if not os.path.isfile(full):
+        return None, None, None, "证据文件不存在: %s" % rel
+    return rel, unquote(fragment) if sep else "", full, None
+
+
+def _markdown_anchors(path):
+    anchors, counts, fence = set(), {}, None
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            fence, marker = _notebook._fence_step(fence, line)
+            if marker or fence is not None:
+                continue
+            m = re.match(r"^ {0,3}#{1,6}\s+(.*?)\s*$", line)
+            if not m:
+                continue
+            slug = _notebook.github_slug(m.group(1))
+            n = counts.get(slug, 0)
+            counts[slug] = n + 1
+            anchors.add(slug if n == 0 else "%s-%d" % (slug, n))
+    return anchors
+
+
+def _json_ids(path, teaching_only=False):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, UnicodeDecodeError, ValueError) as e:
+        return None, "无法读取/解析 %s: %s" % (os.path.basename(path), e)
+    if not isinstance(data, list):
+        return None, "%s 顶层必须是数组" % os.path.basename(path)
+    ids = set()
+    # quiz_bank.json and teaching_examples.json both define items ONLY at the top-level array.
+    # Recursing through arbitrary metadata would let a nested decoy `{id: ...}` become checkpoint
+    # evidence even though no runtime selector can ever serve or grade it.
+    for value in data:
+        if not isinstance(value, dict):
+            continue
+        ident = value.get("id")
+        is_teaching = (value.get("source_type") == "example"
+                       or value.get("teaching_role") in ("worked_example", "paired_problem"))
+        if ident is not None and (not teaching_only or is_teaching):
+            ids.add(str(ident))
+    return ids, None
+
+
+def _read_json_value(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f), None
+    except (OSError, UnicodeDecodeError, ValueError) as e:
+        return None, "%s 无法读取/解析: %s" % (os.path.basename(path), e)
+
+
+def _workspace_digest(ws, rel):
+    """Return (sha256, error) for a regular workspace child without following symlinks."""
+    parts = rel.replace("\\", "/").split("/")
+    if (not parts or any(part in ("", ".", "..") for part in parts)
+            or os.path.isabs(rel) or re.match(r"^[A-Za-z]:", rel)):
+        return None, "不安全的相对路径"
+    current = os.path.abspath(ws)
+    for part in parts:
+        current = os.path.join(current, part)
+        if os.path.islink(current):
+            return None, "路径含符号链接"
+    ws_real, path_real = os.path.realpath(ws), os.path.realpath(current)
+    try:
+        inside = (os.path.commonpath([os.path.normcase(path_real), os.path.normcase(ws_real)])
+                  == os.path.normcase(ws_real))
+    except ValueError:
+        inside = False
+    if not inside:
+        return None, "路径解析到工作区外"
+    if not os.path.isfile(current):
+        return None, "文件不存在或不是普通文件"
+    digest = hashlib.sha256()
+    try:
+        with open(current, "rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as exc:
+        return None, "读取失败: %s" % exc
+    return digest.hexdigest(), None
+
+
+def _external_digest(root, rel):
+    """Return (sha256, error) for a captured source-material child without following links."""
+    if not isinstance(root, str) or not root.strip() or not os.path.isabs(root):
+        return None, "materials_root 不是绝对路径"
+    parts = str(rel or "").replace("\\", "/").split("/")
+    if (not parts or any(part in ("", ".", "..") for part in parts)
+            or os.path.isabs(str(rel or "")) or re.match(r"^[A-Za-z]:", str(rel or ""))):
+        return None, "不安全的材料相对路径"
+    current = os.path.abspath(root)
+    for part in parts:
+        current = os.path.join(current, part)
+        if os.path.islink(current):
+            return None, "材料路径含符号链接"
+    root_real, path_real = os.path.realpath(root), os.path.realpath(current)
+    try:
+        inside = (os.path.commonpath([os.path.normcase(path_real), os.path.normcase(root_real)])
+                  == os.path.normcase(root_real))
+    except ValueError:
+        inside = False
+    if not inside:
+        return None, "材料路径解析到根目录外"
+    if not os.path.isfile(current):
+        return None, "原始材料不存在或不是普通文件"
+    digest = hashlib.sha256()
+    try:
+        with open(current, "rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as exc:
+        return None, "读取失败: %s" % exc
+    return digest.hexdigest(), None
+
+
+def _material_inventory_digest(root):
+    """Re-scan PDF paths using the visual builder's material-pruning contract."""
+    if not isinstance(root, str) or not root.strip() or not os.path.isabs(root):
+        return None, "materials_root 不是绝对路径"
+    if not os.path.isdir(root) or os.path.islink(root):
+        return None, "materials_root 不存在、不是目录或是符号链接"
+    try:
+        from build_raw_input_from_workspace import (
+            ALWAYS_PRUNE, _is_leftover_workspace, _is_workspace_root)
+    except Exception as exc:  # pragma: no cover - the package always ships this helper
+        return None, "无法加载材料目录剪枝规则: %s" % exc
+    paths = []
+    for base, dirs, files in os.walk(root):
+        for dirname in list(dirs):
+            full = os.path.join(base, dirname)
+            if (dirname in ALWAYS_PRUNE or _is_leftover_workspace(full, dirname)
+                    or _is_workspace_root(full)):
+                dirs.remove(dirname)
+        for filename in sorted(files):
+            if filename.lower().endswith(".pdf"):
+                paths.append(os.path.relpath(os.path.join(base, filename), root).replace("\\", "/"))
+    raw = json.dumps(sorted(paths), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest(), None
+
+
+def _manifest_result_digest(value):
+    try:
+        payload = {key: val for key, val in value.items() if key != "integrity"}
+        raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+                         allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        return None, "派生结果无法 canonicalize: %s" % exc
+    return hashlib.sha256(raw).hexdigest(), None
+
+
+def _visual_integrity_problems(ws, figure, image, wiki_names):
+    """Reject stale visual indices whose mutable inputs no longer match their snapshot."""
+    figure_meta = figure.get("integrity") if isinstance(figure, dict) else None
+    image_meta = image.get("integrity") if isinstance(image, dict) else None
+    if not isinstance(figure_meta, dict) or not isinstance(image_meta, dict):
+        return ["视觉索引缺 integrity freshness 快照；请重新运行 build_visual_index.py"]
+    if figure_meta != image_meta:
+        return ["figure/image 两份视觉索引的 integrity 快照不一致；请在同一次运行中重建"]
+    meta = figure_meta
+    problems = []
+    if meta.get("schema_version") != 2:
+        problems.append("视觉索引 integrity.schema_version 必须为 2；请重建以绑定原始 PDF 与派生结果")
+    if not isinstance(meta.get("generated_at"), str) or not meta["generated_at"].strip():
+        problems.append("视觉索引 integrity.generated_at 缺失")
+    mode = meta.get("mode")
+    if not isinstance(mode, dict):
+        problems.append("视觉索引 integrity.mode 不是对象")
+    elif mode.get("materials_scan") is not True:
+        problems.append("视觉索引生成模式未运行 materials scan，freshness 证据不完整")
+    inputs = meta.get("inputs")
+    if not isinstance(inputs, dict):
+        problems.append("视觉索引 integrity.inputs 不是对象")
+        return problems
+    required = {"references/quiz_bank.json", "references/teaching_examples.json"}
+    required.update("references/wiki/" + name for name in wiki_names)
+    for optional_rel in ("references/teaching_baseline.json", "ingest_report.json"):
+        if os.path.lexists(os.path.join(ws, *optional_rel.split("/"))):
+            required.add(optional_rel)
+    for rel in sorted(required - set(inputs)):
+        problems.append("视觉索引 freshness 未记录 %s 的 sha256" % rel)
+    # Verify every captured dependency, including prompt/answer and wiki image assets.  Asset
+    # readability is part of the zero-suspect/embedded conclusion and must not go stale silently.
+    for rel, recorded in sorted(inputs.items()):
+        if not isinstance(rel, str):
+            problems.append("视觉索引 integrity.inputs 含非字符串路径")
+            continue
+        if not isinstance(recorded, dict) or not re.fullmatch(r"[0-9a-f]{64}",
+                                                              str(recorded.get("sha256") or "")):
+            problems.append("视觉索引 freshness 未记录 %s 的 sha256" % rel)
+            continue
+        actual, error = _workspace_digest(ws, rel)
+        if error:
+            problems.append("视觉索引 freshness 无法核验 %s：%s" % (rel, error))
+        elif actual != recorded["sha256"]:
+            problems.append("视觉索引已 stale：%s 内容在索引生成后发生变化" % rel)
+    materials = meta.get("materials")
+    material_root = mode.get("materials_root") if isinstance(mode, dict) else None
+    if not isinstance(materials, dict):
+        problems.append("视觉索引 integrity.materials 不是对象")
+    else:
+        indexed_pdfs = set((figure.get("files") or {}).keys()) if isinstance(figure.get("files"), dict) else set()
+        for rel in sorted(indexed_pdfs - set(materials)):
+            problems.append("视觉索引 freshness 未记录原始 PDF %s 的 sha256" % rel)
+        for rel, recorded in sorted(materials.items()):
+            if not isinstance(rel, str):
+                problems.append("视觉索引 integrity.materials 含非字符串路径")
+                continue
+            if not isinstance(recorded, dict) or not re.fullmatch(
+                    r"[0-9a-f]{64}", str(recorded.get("sha256") or "")):
+                problems.append("视觉索引 freshness 未记录原始 PDF %s 的 sha256" % rel)
+                continue
+            actual, error = _external_digest(material_root, rel)
+            if error:
+                problems.append("视觉索引 freshness 无法核验原始 PDF %s：%s" % (rel, error))
+            elif actual != recorded["sha256"]:
+                problems.append("视觉索引已 stale：原始 PDF %s 在索引生成后发生变化" % rel)
+        recorded_inventory = meta.get("material_inventory_sha256")
+        if not re.fullmatch(r"[0-9a-f]{64}", str(recorded_inventory or "")):
+            problems.append("视觉索引 freshness 未记录原始材料 PDF 路径清单")
+        else:
+            actual_inventory, error = _material_inventory_digest(material_root)
+            if error:
+                problems.append("视觉索引 freshness 无法核验原始材料 PDF 路径清单：%s" % error)
+            elif actual_inventory != recorded_inventory:
+                problems.append("视觉索引已 stale：原始材料 PDF 路径清单在索引生成后发生变化")
+    outputs = meta.get("outputs")
+    manifests = {"figure_page_index.json": figure, "image_question_index.json": image}
+    if not isinstance(outputs, dict):
+        problems.append("视觉索引 integrity.outputs 不是对象")
+    else:
+        for name, manifest in manifests.items():
+            recorded = outputs.get(name)
+            if not isinstance(recorded, dict) or not re.fullmatch(
+                    r"[0-9a-f]{64}", str(recorded.get("sha256") or "")):
+                problems.append("视觉索引 freshness 未绑定派生结果 %s" % name)
+                continue
+            actual, error = _manifest_result_digest(manifest)
+            if error:
+                problems.append("视觉索引 freshness 无法核验派生结果 %s：%s" % (name, error))
+            elif actual != recorded["sha256"]:
+                problems.append("视觉索引已 stale：%s 的派生结果在生成后发生变化" % name)
+    return problems
+
+
+def _declared_prompt_asset_problems(ws, layers, chapter_keys):
+    """Independently enforce current prompt-asset readability for the phase.
+
+    Hash freshness catches post-index edits, while this check makes the invariant explicit even for
+    a malformed/hand-built index: every current-chapter item declaring requires/maybe must have only
+    readable question-side assets before phase completion.
+    """
+    roles = {"question_context", "figure", "diagram", "table"}
+    problems = []
+    for layer_name, items in layers:
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict) or not (item.get("requires_assets") is True
+                                                  or item.get("maybe_requires_assets") is True):
+                continue
+            scope = _scope_number(item.get("phase")) or _scope_number(item.get("chapter"))
+            if scope is not None and scope not in chapter_keys:
+                continue
+            ident = str(item.get("id") or "?")
+            prompt_assets = [a for a in (item.get("assets") or [])
+                             if isinstance(a, dict) and a.get("role") in roles]
+            if not prompt_assets:
+                problems.append("%s[%s] 声明图依赖但没有题面侧 asset" % (layer_name, ident))
+                continue
+            bad = []
+            for asset in prompt_assets:
+                raw = asset.get("path")
+                if not isinstance(raw, str) or not raw.strip():
+                    bad.append("<missing path>")
+                    continue
+                _digest, error = _workspace_digest(ws, raw.strip().replace("\\", "/"))
+                if error:
+                    bad.append("%s (%s)" % (raw, error))
+            if bad:
+                problems.append("%s[%s] 有不可读题面 asset：%s" %
+                                (layer_name, ident, ", ".join(bad[:5])))
+    return problems
+
+
+def _scope_number(value):
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
+        return str(value)
+    if isinstance(value, str):
+        m = re.fullmatch(r"\s*(?:第\s*)?(?:chapter\s*)?0*(\d+)(?:\s*章)?\s*", value, re.I)
+        if m and int(m.group(1)) >= 1:
+            return str(int(m.group(1)))
+    return None
+
+
+def _items_by_id(value):
+    if not isinstance(value, list):
+        return {}
+    return {str(item["id"]): item for item in value
+            if isinstance(item, dict) and item.get("id") is not None}
+
+
+def _teaching_baseline_for_phase(ws, chapter_keys, teaching, quiz):
+    """Return ``(expected_ids, problems)`` from ingest's durable teaching baseline.
+
+    New reports persist an exact per-chapter ID map.  Early v4.1 reports only carried a flat ID list;
+    retained IDs can still be scoped from either current layer, but an ID missing from both layers has
+    lost its chapter too.  In that ambiguous legacy case every phase completion fails closed until the
+    example/report is repaired instead of silently treating the phase as teaching-N/A.
+    """
+    baseline_path = os.path.join(ws, "references", "teaching_baseline.json")
+    report_path = os.path.join(ws, "ingest_report.json")
+    if os.path.lexists(baseline_path):
+        if os.path.islink(baseline_path) or not os.path.isfile(baseline_path):
+            return set(), ["references/teaching_baseline.json 不是安全的普通文件"]
+        source_path = baseline_path
+        source_name = "references/teaching_baseline.json"
+    elif os.path.isfile(report_path) and not os.path.islink(report_path):
+        source_path = report_path
+        source_name = "ingest_report.json"
+    else:
+        return set(), []
+    report, error = _read_json_value(source_path)
+    if error:
+        return set(), ["教学例题保留基线无法读取：%s" % error]
+    if not isinstance(report, dict):
+        return set(), ["%s 顶层必须是对象，无法核对教学例题保留基线" % source_name]
+    if source_name.endswith("teaching_baseline.json") and report.get("schema_version") != 1:
+        return set(), ["references/teaching_baseline.json schema_version 必须为 1"]
+    raw_ids = report.get("teaching_example_ids")
+    if raw_ids is None and source_name.endswith("teaching_baseline.json"):
+        return set(), ["references/teaching_baseline.json 缺少 teaching_example_ids"]
+    if raw_ids is None:                         # pre-baseline legacy report
+        return set(), []
+    if not (isinstance(raw_ids, list)
+            and all(isinstance(x, str) and x.strip() for x in raw_ids)
+            and len({x.strip() for x in raw_ids}) == len(raw_ids)):
+        return set(), ["%s.teaching_example_ids 必须是无重复的非空字符串数组" % source_name]
+    baseline = {x.strip() for x in raw_ids}
+    expected = set()
+    problems = []
+    mapped_ids = set()
+    raw_map = report.get("teaching_example_ids_by_chapter")
+    if raw_map is not None:
+        if not isinstance(raw_map, dict):
+            problems.append("%s.teaching_example_ids_by_chapter 必须是对象" % source_name)
+        else:
+            for raw_scope, raw_values in raw_map.items():
+                scope = _scope_number(raw_scope)
+                if scope is None or not (isinstance(raw_values, list)
+                                         and all(isinstance(x, str) and x.strip()
+                                                 for x in raw_values)):
+                    problems.append("teaching_example_ids_by_chapter[%r] 必须是可解析章节对应的字符串数组"
+                                    % raw_scope)
+                    continue
+                values = {x.strip() for x in raw_values}
+                if len(values) != len(raw_values):
+                    problems.append("teaching_example_ids_by_chapter[%r] 含重复 ID" % raw_scope)
+                mapped_ids.update(values)
+                if scope in chapter_keys:
+                    expected.update(values)
+            if mapped_ids != baseline:
+                problems.append("teaching_example_ids_by_chapter 与 teaching_example_ids 全集不一致")
+
+    teaching_by_id = _items_by_id(teaching)
+    quiz_by_id = _items_by_id(quiz)
+    missing_from_both = baseline - set(teaching_by_id) - set(quiz_by_id)
+    if raw_map is None:
+        # Scope every retained legacy ID from whichever live layer still carries it.
+        for ident in sorted(baseline - missing_from_both):
+            item = teaching_by_id.get(ident) or quiz_by_id.get(ident)
+            scope = _scope_number(item.get("phase")) or _scope_number(item.get("chapter"))
+            if scope is None:
+                problems.append("教学例题保留基线 %s 在现存层中没有可解析 chapter/phase" % ident)
+            elif scope in chapter_keys:
+                expected.add(ident)
+        if missing_from_both:
+            problems.append("教学例题保留基线同时从 quiz_bank 与 teaching_examples 消失，且旧报告没有"
+                            "逐章映射，无法安全判定所属阶段: %s" % ", ".join(sorted(missing_from_both)))
+    else:
+        missing_here = missing_from_both & expected
+        if missing_here:
+            problems.append("本阶段教学例题保留基线同时从 quiz_bank 与 teaching_examples 消失: %s"
+                            % ", ".join(sorted(missing_here)))
+    return expected, problems
+
+
+def _phase_scope_context(ws, record, phase):
+    """Validate evidence belongs to this plan phase; return problems/wiki names/chapter keys."""
+    plan_wikis = _plan_phase_wikis(ws)
+    expected = set(plan_wikis.get(phase) or [])
+    recorded = {ref.strip().replace("\\", "/").split("#", 1)[0]
+                for ref in record.get("wiki") or [] if isinstance(ref, str)}
+    problems = []
+    if expected:
+        missing = expected - recorded
+        if missing:
+            problems.append("wiki evidence 未命中阶段 %d 在 study_plan.md 指定的文件: %s"
+                            % (phase, ", ".join(sorted(missing))))
+        wrong = recorded - expected
+        if wrong:
+            problems.append("wiki evidence 含其他阶段文件: %s" % ", ".join(sorted(wrong)))
+    selected = expected or recorded
+    wiki_names = {x.rsplit("/", 1)[-1] for x in selected}
+    wiki_chapters = set()
+    for name in wiki_names:
+        m = re.match(r"ch0*(\d+)(?:\D|$)", name, re.I)
+        if m:
+            wiki_chapters.add(str(int(m.group(1))))
+    chapter_keys = wiki_chapters or {str(phase)}
+
+    for ref in record.get("notebook") or []:
+        if not isinstance(ref, str):
+            continue
+        m = re.search(r"(?:^|/)ch0*(\d+)(?:\D|$)", ref.replace("\\", "/"), re.I)
+        if m and str(int(m.group(1))) not in chapter_keys:
+            problems.append("notebook evidence 明显属于其他章: %s（本阶段章=%s）"
+                            % (ref, "/".join(sorted(chapter_keys))))
+
+    quiz, qerr = _read_json_value(os.path.join(ws, "references", "quiz_bank.json"))
+    if not qerr:
+        quiz_by_id = _items_by_id(quiz)
+        for cp in record.get("checkpoint") or []:
+            if not isinstance(cp, dict):
+                continue
+            item = quiz_by_id.get(str(cp.get("id")))
+            if not item:
+                continue
+            scope = _scope_number(item.get("phase")) or _scope_number(item.get("chapter"))
+            if scope not in chapter_keys:
+                problems.append("checkpoint %s 属于 phase/chapter=%s，不属于当前阶段章 %s"
+                                % (cp.get("id"), scope or "未知", "/".join(sorted(chapter_keys))))
+
+    teaching, terr = _read_json_value(os.path.join(ws, "references", "teaching_examples.json"))
+    if not terr:
+        teaching_by_id = _items_by_id(teaching)
+        for ident in record.get("teaching_examples") or []:
+            item = teaching_by_id.get(str(ident))
+            if not item:
+                continue
+            scope = _scope_number(item.get("phase")) or _scope_number(item.get("chapter"))
+            if scope not in chapter_keys:
+                problems.append("教学例题 %s 属于 phase/chapter=%s，不属于当前阶段章 %s"
+                                % (ident, scope or "未知", "/".join(sorted(chapter_keys))))
+    return problems, wiki_names, chapter_keys
+
+
+def _phase_manifest_content(ws, record, phase):
+    """Return (problems, teaching_required) for a complete v4.1 manifest trio."""
+    problems, wiki_names, chapter_keys = _phase_scope_context(ws, record, phase)
+    if not phase_manifest_present(ws):
+        return problems, True
+    refs = os.path.join(ws, "references")
+    figure, ferr = _read_json_value(os.path.join(refs, "figure_page_index.json"))
+    image, ierr = _read_json_value(os.path.join(refs, "image_question_index.json"))
+    teaching, terr = _read_json_value(os.path.join(refs, "teaching_examples.json"))
+    quiz, qerr = _read_json_value(os.path.join(refs, "quiz_bank.json"))
+    problems.extend(x for x in (ferr, ierr, terr, qerr) if x)
+    if any((ferr, ierr, terr, qerr)):
+        return problems, True
+
+    # Zero suspects is meaningful only when the recall net actually ran with all needed backends and
+    # source PDFs.  These warning prefixes make one or more denominators unknowable, so accepting the
+    # numeric zeros would recreate the original false-ready failure.
+    recall_blockers = (
+        "no_materials", "no_pdfs_found", "no_media_backend", "pdf_text_failed", "media_failed",
+        "source_pdf_not_indexed", "answer_source_pdf_not_indexed", "wiki_visual_no_wiki_dir",
+        "wiki_visual_read_failed", "wiki_visual_unsafe_wiki_dir", "wiki_apply_unmapped",
+        "wiki_answer_manual_exposure", "shared_prompt_answer_page",
+        "integrity_input_unreadable", "integrity_material_unreadable",
+    )
+    blocked_warnings = []
+    for manifest in (figure, image):
+        for warning in manifest.get("warnings") or []:
+            text = str(warning)
+            if text.startswith(recall_blockers) and text not in blocked_warnings:
+                blocked_warnings.append(text)
+    if blocked_warnings:
+        problems.append("视觉召回网未完整运行，不能把 0 疑漏当作完成证据: %s"
+                        % "；".join(blocked_warnings[:8]))
+
+    problems.extend(_visual_integrity_problems(ws, figure, image, wiki_names))
+    problems.extend(_declared_prompt_asset_problems(
+        ws, (("quiz_bank", quiz), ("teaching_examples", teaching)), chapter_keys))
+
+    coverage = figure.get("wiki_visual_coverage") or {}
+    per_chapter = coverage.get("per_chapter")
+    pages = coverage.get("pages")
+    manual_answer_rows = coverage.get("manual_answer_exposure_pages")
+    if not isinstance(manual_answer_rows, list):
+        problems.append("wiki_visual_coverage.manual_answer_exposure_pages 不是数组")
+    else:
+        relevant_manual = [row for row in manual_answer_rows
+                           if isinstance(row, dict)
+                           and (row.get("wiki_file") in wiki_names
+                                or row.get("wiki_file") is None)]
+        if relevant_manual:
+            labels = ["%s p.%s" % (row.get("source_file") or "?", row.get("page") or "?")
+                      for row in relevant_manual[:5]]
+            problems.append("当前阶段 wiki 仍提前暴露 %d 个答案专属页：%s"
+                            % (len(relevant_manual), "、".join(labels)))
+    shared_blocker_rows = coverage.get("shared_prompt_answer_blocker_pages")
+    shared_blocker_count = coverage.get("shared_prompt_answer_blocker_count")
+    if not isinstance(shared_blocker_rows, list):
+        problems.append("wiki_visual_coverage.shared_prompt_answer_blocker_pages 不是数组")
+    elif (not isinstance(shared_blocker_count, int) or isinstance(shared_blocker_count, bool)
+          or shared_blocker_count < 0 or shared_blocker_count != len(shared_blocker_rows)):
+        problems.append("wiki_visual_coverage 共享题解页 blocker 计数与列表不一致")
+    else:
+        relevant_shared = [row for row in shared_blocker_rows
+                           if isinstance(row, dict)
+                           and (row.get("wiki_file") in wiki_names
+                                or row.get("wiki_file") is None)]
+        if relevant_shared:
+            labels = ["%s p.%s" % (row.get("source_file") or "?", row.get("page") or "?")
+                      for row in relevant_shared[:5]]
+            problems.append("当前阶段有 %d 个题面/答案共享整页尚无审核裁图：%s"
+                            % (len(relevant_shared), "、".join(labels)))
+    if not isinstance(per_chapter, dict):
+        problems.append("figure_page_index 的 wiki_visual_coverage.per_chapter 不是对象")
+    else:
+        for wiki_name in wiki_names:
+            counts = per_chapter.get(wiki_name)
+            if counts is None:
+                continue                         # no detected visual pages in this wiki = visual N/A
+            if not isinstance(counts, dict) or not isinstance(counts.get("missing"), int):
+                problems.append("%s 的 wiki_visual_coverage 计数无效" % wiki_name)
+            elif counts["missing"] != 0:
+                problems.append("%s 仍有 %d 个 wiki 视觉页 missing（必须为 0）"
+                                % (wiki_name, counts["missing"]))
+    if isinstance(pages, list):
+        missing_rows = [p for p in pages if isinstance(p, dict)
+                        and p.get("wiki_file") in wiki_names and p.get("status") == "missing"]
+        if missing_rows and not any("wiki 视觉页 missing" in p for p in problems):
+            problems.append("当前阶段仍有 %d 个 wiki 视觉页 missing（必须为 0）" % len(missing_rows))
+        unmapped = [p for p in pages if isinstance(p, dict) and p.get("wiki_file") is None
+                    and p.get("status") == "missing"]
+        if unmapped:
+            problems.append("仍有 %d 个已检测视觉页未映射到任何 wiki，不能从阶段分母静默排除"
+                            % len(unmapped))
+
+    for field in ("prompt_suspects", "answer_suspects"):
+        rows = image.get(field)
+        if not isinstance(rows, list):
+            problems.append("image_question_index.%s 不是数组" % field)
+            continue
+        unscoped = []
+        scoped = []
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            scope = _scope_number(item.get("phase")) or _scope_number(item.get("chapter"))
+            if scope is None:
+                unscoped.append(item)
+            elif scope in chapter_keys:
+                scoped.append(item)
+        if unscoped:
+            ids = ", ".join(str(x.get("id")) for x in unscoped[:5])
+            problems.append("%s 含 %d 个无可解析 chapter/phase 的疑漏（%s），不能静默排除"
+                            % (field, len(unscoped), ids))
+        if scoped:
+            ids = ", ".join(str(x.get("id")) for x in scoped[:5])
+            problems.append("当前阶段 %s=%d（%s），必须先补齐到 0" % (field, len(scoped), ids))
+
+    expected = set()
+    unscoped_teaching = []
+    if isinstance(teaching, list):
+        for item in teaching:
+            if not isinstance(item, dict) or item.get("id") is None:
+                continue
+            scope = _scope_number(item.get("phase")) or _scope_number(item.get("chapter"))
+            if scope is None:
+                unscoped_teaching.append(str(item["id"]))
+            elif scope in chapter_keys:
+                expected.add(str(item["id"]))
+    if unscoped_teaching:
+        problems.append("teaching_examples 含无可解析 chapter/phase 的条目，不能从阶段全集静默排除: %s"
+                        % ", ".join(unscoped_teaching[:8]))
+    baseline_expected, baseline_problems = _teaching_baseline_for_phase(
+        ws, chapter_keys, teaching, quiz)
+    expected.update(baseline_expected)
+    problems.extend(baseline_problems)
+    recorded = set(record.get("teaching_examples") or [])
+    missing_examples = expected - recorded
+    if missing_examples:
+        problems.append("教学例题 evidence 未覆盖本阶段 manifest 全集: %s"
+                        % ", ".join(sorted(missing_examples)))
+    return problems, bool(expected)
+
+
+def phase_evidence_ref_error(ws, field, ref):
+    """Validate one evidence reference; return a human-readable error or None."""
+    if field in ("wiki", "visual", "notebook"):
+        rel, fragment, full, error = _local_evidence_ref(ws, ref)
+        if error:
+            return error
+        if field == "wiki" and not (rel.startswith("references/wiki/") and rel.endswith(".md")):
+            return "wiki 证据必须位于 references/wiki/*.md"
+        if field == "visual":
+            visual_manifest = rel in PHASE_MANIFESTS[:2]
+            visual_asset = rel.startswith("references/assets/")
+            if not (visual_manifest or visual_asset):
+                return "visual 证据必须是视觉 manifest 或 references/assets/ 下的本地资产"
+        if field == "notebook":
+            if not (rel.startswith("notebook/") and rel.endswith(".md")):
+                return "notebook 证据必须位于 notebook/*.md"
+            if not fragment:
+                return "notebook 证据必须带真实条目锚点（path.md#anchor）"
+            try:
+                if fragment not in _markdown_anchors(full):
+                    return "notebook 证据锚点不存在: %s#%s" % (rel, fragment)
+            except (OSError, UnicodeDecodeError) as e:
+                return "notebook 证据无法读取: %s" % e
+        return None
+
+    checkpoint = field == "checkpoint"
+    ident_value = ref.get("id") if checkpoint and isinstance(ref, dict) else ref
+    if (not isinstance(ident_value, str) or not ident_value.strip()
+            or any(c in ident_value for c in ("\x00", "\r", "\n"))):
+        return "%s 证据 ID 必须是非空单行字符串" % field
+    ident = ident_value.strip()
+    if field == "teaching_examples":
+        teaching_path = os.path.join(ws, "references", "teaching_examples.json")
+        if os.path.isfile(teaching_path):
+            ids, error = _json_ids(teaching_path)
+            # A baseline item may intentionally remain only in the canonical bank.  The teaching
+            # manifest is a reachability snapshot, not a second answer source, so accept the union.
+            legacy_ids, legacy_error = _json_ids(
+                os.path.join(ws, "references", "quiz_bank.json"), teaching_only=True)
+            if not legacy_error:
+                ids = (ids or set()) | legacy_ids
+        else:
+            ids, error = _json_ids(os.path.join(ws, "references", "quiz_bank.json"), teaching_only=True)
+        if error:
+            return error
+        if ident not in ids:
+            return "教学例题 ID 不在 teaching_examples/legacy example bank 中: %s" % ident
+        return None
+    if field == "checkpoint":
+        ids, error = _json_ids(os.path.join(ws, "references", "quiz_bank.json"))
+        if error:
+            return error
+        if ident not in ids:
+            return "checkpoint ID 不在 references/quiz_bank.json 中: %s" % ident
+        return None
+    return "未知 phase evidence 字段: %s" % field
+
+
+def _no_questions_preference(state):
+    prefs = state.get("preferences") or {}
+    for key in ("no_questions", "no-questions", "不要出题", "不要问我"):
+        if key not in prefs:
+            continue
+        value = str(prefs.get(key) or "").strip().lower()
+        if value in ("1", "true", "yes", "on", "是", "不出题", "不要问"):
+            return True
+    return False
+
+
+def _phase_completion_problems(record, status, teaching_required=True):
+    problems = []
+    required_core = tuple(x for x in PHASE_EVIDENCE_CORE
+                          if x != "teaching_examples" or teaching_required)
+    missing = [field for field in required_core if not (record.get(field) or [])]
+    if missing:
+        problems.append("缺必需证据: %s" % ", ".join(missing))
+    if status == "verified":
+        checkpoints = record.get("checkpoint") or []
+        distinct_ids = {x.get("id") for x in checkpoints
+                        if isinstance(x, dict) and isinstance(x.get("id"), str)}
+        if len(distinct_ids) < 2:
+            problems.append("verified 至少需要 2 个不同题目的已处理 checkpoint")
+        if not any(isinstance(x, dict) and x.get("outcome") == "passed" for x in checkpoints):
+            problems.append("verified 至少需要 1 个 outcome=passed 的 checkpoint")
+    return problems
+
+
+def phase_evidence_errors(ws, state, enforce_manifest_gate=True):
+    """Shared validator surface used by validate_workspace.py and the mutation commands."""
+    errors = _phase_evidence_shape_errors(state)
+    if errors:
+        return errors
+    manifest_state, manifest_reason = phase_manifest_status(ws)
+    if manifest_state == "broken":
+        errors.append("v4.1 manifest 处于 partial/broken 状态，阶段门禁拒绝 fail-open：" + manifest_reason)
+    evidence = state.get("phase_evidence") or {}
+    for phase, record in evidence.items():
+        status = record.get("status")
+        if status:
+            for problem in _phase_record_problems(ws, state, int(phase), status):
+                errors.append("phase_evidence[%s] 状态 %s：%s" % (phase, status, problem))
+        else:
+            for field in PHASE_EVIDENCE_FIELDS:
+                for ref in record.get(field) or []:
+                    problem = phase_evidence_ref_error(ws, field, ref)
+                    if problem:
+                        errors.append("phase_evidence[%s].%s 引用无效：%s" % (phase, field, problem))
+    if enforce_manifest_gate and manifest_state == "ready":
+        for row in state.get("phase_checklist") or []:
+            phase = phase_number_from_check(row.get("text") or "")
+            if phase is None or not row.get("done"):
+                continue
+            record = evidence.get(str(phase))
+            if not isinstance(record, dict) or record.get("status") not in PHASE_EVIDENCE_STATUSES:
+                errors.append("phase_evidence[%d] 缺完成状态：新版 manifest 工作区不能只靠 done=true 完成阶段"
+                              % phase)
+    return errors
+
+
 # ---------------- state → md (generated view; keeps validator/T4-parseable shape) ----------------
 
 def _md_cell(v, default="-"):
@@ -281,12 +1146,31 @@ def render_md(state):
     if state.get("language"):
         # 语言偏好也要能从生成视图迁回来——init --force 恢复路径不丢 set --language
         lines.append("* **语言偏好**：%s" % _md_cell(_disp("lang", state["language"]), default=""))
+    # Always render the resource-output mode so init --force can round-trip the explicit choice.
+    # Old/missing/unknown state is effective chat-only; unknown raw values remain visible for audit.
+    artifact = state.get("artifact_mode")
+    lines.append("* **输出资源模式**：%s" % _md_cell(
+        _disp("artifact", artifact) if artifact else _disp("artifact", "chat"), default=""))
     lines.append("")
     if state.get("phase_checklist"):
         # 打卡区随 state 一起渲染回来——迁移绝不丢每阶段完成状态；勾选走 set-check 官方路径
         lines += ["## 📊 知识点打卡状态",
                   "\n".join("- [%s] %s" % ("x" if r.get("done") else " ", _md_cell(r.get("text"), default=""))
                             for r in state["phase_checklist"]), ""]
+    if state.get("phase_evidence"):
+        status_words = {
+            "covered_unverified": "已覆盖但未验证",
+            "verified": "已验证",
+            None: "证据收集中",
+        }
+        evidence_lines = []
+        for phase in sorted(state["phase_evidence"], key=lambda x: int(x)):
+            record = state["phase_evidence"][phase]
+            counts = ", ".join("%s=%d" % (field, len(record.get(field) or []))
+                               for field in PHASE_EVIDENCE_FIELDS)
+            evidence_lines.append("- 阶段 %s：%s（%s）" %
+                                  (phase, status_words.get(record.get("status"), record.get("status")), counts))
+        lines += ["## 🧾 阶段证据状态", "\n".join(evidence_lines), ""]
     lines += [
         "## ❌ 错题档案记录",
         _tbl(state["mistake_archive"], ("错题ID", "关联章节", "错误原因分析", "状态"), "待复盘"),
@@ -385,6 +1269,13 @@ def cmd_init(ws, args):
     path = os.path.join(ws, STATE_NAME)
     if os.path.isfile(path) and not args.force:
         _die("study_state.json 已存在（init 幂等保护）；确要从 md 重建请加 --force")
+    preserved_phase_evidence = {}
+    if os.path.isfile(path) and args.force:
+        old = load_state(ws)
+        shape_errors = _phase_evidence_shape_errors(old)
+        if shape_errors:
+            _die("study_state.json 损坏：" + shape_errors[0], 1)
+        preserved_phase_evidence = old.get("phase_evidence") or {}
     md_path = os.path.join(ws, MD_NAME)
     if os.path.islink(md_path):
         # isfile 会跟随链接把工作区外的文件迁进事实源——与 validator 同口径先拒
@@ -415,7 +1306,8 @@ def cmd_init(ws, args):
             phase = min(plan0)      # 空白初始化也要落在计划内——默认 1 可能不在阶段列表里
     st = default_state()
     st.update({"current_phase": phase, "mistake_archive": mistakes, "confusion_log": confusions,
-               "phase_checklist": checklist, "knowledge_window": window})
+               "phase_checklist": checklist, "knowledge_window": window,
+               "phase_evidence": preserved_phase_evidence})
     # A6：迁移时把旧四模式归一到新模式（panic/sprint/…）、时间宽裕度归一到 4 档；未知值保留
     if prefs.get("mode"):
         cmode, mig_tier, _w = _normalize_mode(prefs["mode"])
@@ -432,7 +1324,11 @@ def cmd_init(ws, args):
         prefs["language"], _lw = _normalize_language(prefs["language"])
         if _lw:
             sys.stderr.write("update_progress[warn]: " + _lw + "\n")
-    for k in ("scope", "mode", "time_budget", "language"):   # A2 范围/模式/语言偏好随迁移带走
+    if prefs.get("artifact_mode"):
+        prefs["artifact_mode"], _aw = _normalize_artifact_mode(prefs["artifact_mode"])
+        if _aw:
+            sys.stderr.write("update_progress[warn]: " + _aw + "\n")
+    for k in ("scope", "mode", "time_budget", "language", "artifact_mode"):
         if prefs.get(k):
             st[k] = prefs[k]
     if prefs.get("preferences"):                    # ⚙️ 偏好区（讲解风格等）同理——恢复路径不丢偏好
@@ -457,7 +1353,8 @@ def _migrate_enums(ws, st):
         if mig_tier and not st.get("time_budget"):
             st["time_budget"], changed = mig_tier, True
     for field, canon in (("time_budget", lambda v: i18n.canon_tier(v)[0]),
-                         ("language", lambda v: i18n.canon_language(v)[0])):
+                         ("language", lambda v: i18n.canon_language(v)[0]),
+                         ("artifact_mode", lambda v: i18n.canon_artifact_mode(v)[0])):
         v = st.get(field)
         if isinstance(v, str) and v:
             c = canon(v)
@@ -522,6 +1419,11 @@ def _require_state(ws, repairing_phase=False):
         elif not isinstance(v, list) or any(not isinstance(x, dict) for x in v):
             _die("study_state.json 损坏：%s 必须是对象数组，当前 %s——请修复 state "
                  "或 init --force 从 md 重建" % (field, type(v).__name__), 1)
+    if st.get("phase_evidence") is None:
+        st["phase_evidence"] = {}                    # additive schema：旧 state 无字段时无损补空
+    shape_errors = _phase_evidence_shape_errors(st)
+    if shape_errors:
+        _die("study_state.json 损坏：" + shape_errors[0], 1)
     # 行内字段形态也要在变更/渲染前把关——render 对 note/text 调字符串方法，坏类型不能等到中途崩栈
     for field in ("mistake_archive", "confusion_log"):
         for x in st[field]:
@@ -540,6 +1442,12 @@ def _require_state(ws, repairing_phase=False):
     elif not isinstance(st["preferences"], dict):
         _die("study_state.json 损坏：preferences 必须是对象，当前 %s"
              % type(st["preferences"]).__name__, 1)
+    if st.get("artifact_mode") is None:
+        # Additive state field: v3 and early-v4 workspaces keep their chat-only behavior.
+        st["artifact_mode"] = "chat"
+    elif not isinstance(st["artifact_mode"], str):
+        _die("study_state.json 损坏：artifact_mode 必须是字符串，当前 %s"
+             % type(st["artifact_mode"]).__name__, 1)
     return st
 
 
@@ -575,6 +1483,36 @@ def _plan_phases(ws):
             if n >= 1:
                 nums.add(n)
     return nums
+
+
+def _plan_phase_wikis(ws):
+    """Map structural phase rows in study_plan.md to their declared references/wiki/*.md files."""
+    path = os.path.join(ws, "study_plan.md")
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except (OSError, UnicodeDecodeError) as e:
+        _die("study_plan.md 无法读取，不能校验 phase evidence 的章节归属: %s" % e, 1)
+    mapping, current = {}, None
+    for line in lines:
+        stripped = line.lstrip()
+        structural = (stripped.startswith("#") or stripped.startswith("|")
+                      or bool(re.match(r"[-*]\s", stripped))
+                      or bool(re.match(r"\d+\s*[.)、）]", stripped)))
+        if not structural:
+            continue
+        matches = list(re.finditer(r"阶段\s*(\d+)|第\s*(\d+)\s*阶段|[Pp]hase\s*(\d+)", line))
+        if matches:
+            current = int(next(g for g in matches[0].groups() if g))
+            if current >= 1:
+                mapping.setdefault(current, set())
+        refs = {x.replace("\\", "/") for x in
+                re.findall(r"references[\\/]wiki[\\/][\w.\-]+\.md", line, re.I)}
+        if current is not None and refs:
+            mapping.setdefault(current, set()).update(refs)
+    return mapping
 
 
 def cmd_set(ws, args):
@@ -632,6 +1570,16 @@ def cmd_set(ws, args):
             changed.append("language=%s" % _disp("lang", clang))
             if lwarn:
                 sys.stderr.write("update_progress[warn]: " + lwarn + "\n")
+    if args.artifact_mode is not None:
+        if not args.artifact_mode:
+            st["artifact_mode"] = "chat"
+            changed.append("artifact_mode=%s（安全默认）" % _disp("artifact", "chat"))
+        else:
+            artifact_mode, awarn = _normalize_artifact_mode(args.artifact_mode)
+            st["artifact_mode"] = artifact_mode
+            changed.append("artifact_mode=%s" % _disp("artifact", artifact_mode))
+            if awarn:
+                sys.stderr.write("update_progress[warn]: " + awarn + "\n")
     for kv in (args.pref or []):
         if "=" not in kv:
             _die("--pref 需要 key=value 形式，当前 %r" % kv)
@@ -639,7 +1587,7 @@ def cmd_set(ws, args):
         st.setdefault("preferences", {})[k.strip()] = v.strip()
         changed.append("pref %s" % k.strip())
     if not changed:
-        _die("set 没有任何改动参数（--phase/--scope/--mode/--time-budget/--language/--pref）")
+        _die("set 没有任何改动参数（--phase/--scope/--mode/--time-budget/--language/--artifact-mode/--pref）")
     save(ws, st, "set：" + "、".join(changed))
     return 0
 
@@ -755,6 +1703,125 @@ def cmd_set_status(ws, args, field, label):
     return 0
 
 
+def _phase_check_row(state, phase):
+    hits = [row for row in state.get("phase_checklist") or []
+            if phase_number_from_check(row.get("text") or "") == phase]
+    if not hits:
+        _die("phase_checklist 中找不到阶段 %d；先修复进度模板再完成阶段" % phase)
+    if len(hits) > 1:
+        _die("phase_checklist 中阶段 %d 有 %d 行，无法确定要完成哪一行" % (phase, len(hits)))
+    return hits[0]
+
+
+def _phase_record_problems(ws, state, phase, status):
+    record = (state.get("phase_evidence") or {}).get(str(phase))
+    if not isinstance(record, dict):
+        return ["缺 phase_evidence[%d]；先逐项运行 record-phase-evidence" % phase]
+    problems = []
+    manifest_state, manifest_reason = phase_manifest_status(ws)
+    if manifest_state == "broken":
+        problems.append("v4.1 manifest 处于 partial/broken 状态：%s" % manifest_reason)
+    for field in PHASE_EVIDENCE_FIELDS:
+        for ref in record.get(field) or []:
+            problem = phase_evidence_ref_error(ws, field, ref)
+            if problem:
+                problems.append("%s 引用无效：%s" % (field, problem))
+    content_problems, teaching_required = _phase_manifest_content(ws, record, phase)
+    problems.extend(content_problems)
+    problems.extend(_phase_completion_problems(record, status, teaching_required=teaching_required))
+    if status == "verified" and _no_questions_preference(state):
+        problems.append("preferences.no_questions=true 时不能标为 verified；阶段上限是 covered_unverified")
+    return problems
+
+
+def _complete_phase_in_state(ws, state, phase, status, row=None):
+    problems = _phase_record_problems(ws, state, phase, status)
+    if problems:
+        _die("阶段 %d 无法完成为 %s：%s" % (phase, status, "；".join(problems)))
+    record = state["phase_evidence"][str(phase)]
+    record["status"] = status
+    record["completed_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    (row or _phase_check_row(state, phase))["done"] = True
+
+
+def cmd_record_phase_evidence(ws, args):
+    st = _require_state(ws)
+    manifest_state, manifest_reason = phase_manifest_status(ws)
+    if manifest_state == "broken":
+        _die("v4.1 manifest 处于 partial/broken 状态，拒绝记录阶段证据：" + manifest_reason)
+    phase = args.phase if args.phase is not None else st["current_phase"]
+    if phase < 1:
+        _die("--phase 必须 ≥1")
+    plan = _plan_phases(ws)
+    if plan and phase not in plan:
+        _die("--phase %d 不在 study_plan.md 的阶段列表 %s 中" % (phase, sorted(plan)))
+    field = "teaching_examples" if args.kind == "teaching-example" else args.kind
+    if field == "checkpoint":
+        if not args.outcome:
+            _die("checkpoint evidence 必须带 --outcome passed|wrong|skipped；只有题目 ID 不能证明答对")
+        value = {"id": args.ref.strip(), "outcome": args.outcome}
+    else:
+        if args.outcome:
+            _die("--outcome 只用于 --kind checkpoint")
+        value = args.ref.strip()
+    problem = phase_evidence_ref_error(ws, field, value)
+    if problem:
+        _die("拒绝记录 %s evidence：%s" % (field, problem))
+
+    record = st.setdefault("phase_evidence", {}).setdefault(str(phase), {})
+    rows = record.setdefault(field, [])
+    changed = False
+    if field == "checkpoint":
+        existing = next((x for x in rows if isinstance(x, dict) and x.get("id") == value["id"]), None)
+        if existing is None:
+            rows.append(value)
+            changed = True
+        elif existing.get("outcome") != value["outcome"]:
+            existing["outcome"] = value["outcome"]
+            changed = True
+    elif value not in rows:
+        rows.append(value)
+        changed = True
+    record["updated_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    if changed:
+        # Evidence changed after completion: force an explicit re-evaluation instead of preserving a stale badge.
+        record.pop("status", None)
+        record.pop("completed_at", None)
+        for row in st.get("phase_checklist") or []:
+            if phase_number_from_check(row.get("text") or "") == phase:
+                row["done"] = False
+    save(ws, st, "phase evidence：阶段 %d +%s" % (phase, field))
+    return 0
+
+
+def cmd_complete_phase(ws, args):
+    st = _require_state(ws)
+    phase = args.phase if args.phase is not None else st["current_phase"]
+    if phase != st["current_phase"]:
+        _die("complete-phase 只能完成 current_phase=%d，不能直接完成阶段 %d"
+             % (st["current_phase"], phase))
+    if args.next_phase is not None:
+        plan = sorted(_plan_phases(ws))
+        if plan:
+            try:
+                pos = plan.index(phase)
+            except ValueError:
+                _die("current_phase=%d 不在 study_plan.md 阶段列表 %s 中" % (phase, plan))
+            expected = plan[pos + 1] if pos + 1 < len(plan) else None
+        else:
+            expected = phase + 1
+        if args.next_phase != expected:
+            _die("--next-phase 必须是计划中紧接阶段 %d 的下一阶段 %s，不能跳跃或回退"
+                 % (phase, expected if expected is not None else "（已无下一阶段）"))
+    row = _phase_check_row(st, phase)
+    _complete_phase_in_state(ws, st, phase, args.status, row=row)
+    if args.next_phase is not None:
+        st["current_phase"] = args.next_phase
+    save(ws, st, "阶段 %d → %s%s" %
+         (phase, args.status, ("；断点 → %d" % args.next_phase) if args.next_phase is not None else ""))
+    return 0
+
+
 def cmd_set_check(ws, args):
     """打卡官方路径：md 是生成视图不许手改——勾/取消勾知识点打卡项走这里（--index 或 --match 定位）。"""
     st = _require_state(ws)
@@ -771,8 +1838,34 @@ def cmd_set_check(ws, args):
             _die("匹配到 %d 个打卡项（%r）——请用更具体的 --match 或 --index" % (len(hits), args.match))
     else:
         _die("set-check 需要 --index 或 --match 定位打卡项")
-    for r in hits:
-        r["done"] = not args.undone
+    row = hits[0]
+    phase = phase_number_from_check(row.get("text") or "")
+    manifest_state, manifest_reason = phase_manifest_status(ws)
+    if args.undone:
+        row["done"] = False
+        if phase is not None:
+            record = (st.get("phase_evidence") or {}).get(str(phase))
+            if isinstance(record, dict):
+                record.pop("status", None)
+                record.pop("completed_at", None)
+    elif phase is not None and manifest_state == "broken":
+        _die("v4.1 manifest 处于 partial/broken 状态，set-check 拒绝 fail-open：" + manifest_reason)
+    elif phase is not None and manifest_state == "ready":
+        if phase != st["current_phase"]:
+            _die("新版 manifest 工作区只能完成 current_phase=%d；当前选中阶段 %d"
+                 % (st["current_phase"], phase))
+        record = (st.get("phase_evidence") or {}).get(str(phase)) or {}
+        checkpoints = record.get("checkpoint") or []
+        can_verify = (len(checkpoints) >= 2
+                      and any(isinstance(x, dict) and x.get("outcome") == "passed" for x in checkpoints)
+                      and not _no_questions_preference(st))
+        _complete_phase_in_state(ws, st, phase,
+                                 "verified" if can_verify else "covered_unverified", row=row)
+    else:
+        row["done"] = True
+        if phase is not None:
+            sys.stderr.write("update_progress[warn]: 旧工作区没有视觉/教学 manifest，"
+                             "set-check 继续按旧布尔打卡兼容；该勾选不代表已有 phase_evidence。\n")
     save(ws, st, "打卡%s：%s" % ("取消" if args.undone else "完成", (hits[0].get("text") or "")[:40]))
     return 0
 
@@ -915,6 +2008,8 @@ def run(argv=None):
     p_set.add_argument("--mode", default=None)
     p_set.add_argument("--time-budget", dest="time_budget", default=None)
     p_set.add_argument("--language", default=None)
+    p_set.add_argument("--artifact-mode", dest="artifact_mode", default=None,
+                       help="output resources: chat/visual (explicit choice; never inferred from subscription)")
     p_set.add_argument("--pref", action="append", default=None, help="key=value; repeatable")
     # A6：window 子命令——知识点窗口进出（3-7 天/>7 天档的窗口系统落点）
     p_wa = sub.add_parser("window-add")
@@ -944,6 +2039,25 @@ def run(argv=None):
     p_chk.add_argument("--index", type=int, default=None, help="locate a check-in item by 1-based index")
     p_chk.add_argument("--match", default=None, help="locate by containing text (must match exactly one)")
     p_chk.add_argument("--undone", action="store_true", help="untick (default is tick-done)")
+    p_evidence = sub.add_parser(
+        "record-phase-evidence",
+        help="record one safe phase artifact / checkpoint outcome; repeat for each evidence item")
+    p_evidence.add_argument("--phase", type=int, default=None,
+                            help="phase number (default: current_phase)")
+    p_evidence.add_argument("--kind", required=True,
+                            choices=("wiki", "visual", "teaching-example", "notebook", "checkpoint"))
+    p_evidence.add_argument("--ref", required=True,
+                            help="workspace-relative path, teaching example ID, or quiz ID")
+    p_evidence.add_argument("--outcome", choices=CHECKPOINT_OUTCOMES, default=None,
+                            help="required for checkpoint: passed/wrong/skipped")
+    p_complete = sub.add_parser(
+        "complete-phase",
+        help="evidence-gated completion: covered_unverified or verified")
+    p_complete.add_argument("--phase", type=int, default=None,
+                            help="phase number (default: current_phase)")
+    p_complete.add_argument("--status", choices=PHASE_EVIDENCE_STATUSES, required=True)
+    p_complete.add_argument("--next-phase", type=int, default=None,
+                            help="optionally advance current_phase in the same atomic save")
     sub.add_parser("render")
     sub.add_parser("show")
     # v4 §2.5：全局工作区注册表（冻结位置 EXAMPREP_HOME|~/.exam-cram 下 workspaces.json）
@@ -983,6 +2097,10 @@ def run(argv=None):
         return cmd_window_set_status(ws, args)
     if args.cmd == "set-check":
         return cmd_set_check(ws, args)
+    if args.cmd == "record-phase-evidence":
+        return cmd_record_phase_evidence(ws, args)
+    if args.cmd == "complete-phase":
+        return cmd_complete_phase(ws, args)
     if args.cmd == "render":
         return cmd_render(ws, args)
     return cmd_show(ws, args)

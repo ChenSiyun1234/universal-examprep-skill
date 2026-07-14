@@ -21,14 +21,16 @@ Why this module exists (v4 language layering, see PLAN-v4.md §2.2):
     fail-loud philosophy as the old _normalize_* trio this module replaces.
 
 Public surface:
-    MODES, TIERS, LANGS, WINDOW_STATUSES, ROW_STATUSES        # canonical code tuples
+    MODES, TIERS, LANGS, ARTIFACT_MODES, WINDOW_STATUSES, ROW_STATUSES
     canon_mode(v)      -> (code_or_original, implied_tier_or_None, warning_or_None)
     canon_tier(v)      -> (code_or_original, warning_or_None)
     canon_language(v)  -> (code_or_original, warning_or_None)
+    canon_artifact_mode(v) -> (code_or_original, warning_or_None)
     canon_window_status(v) -> code_or_original   (strict check is the caller's job)
     canon_row_status(v)    -> code_or_original   (unknown free strings pass through)
     display(kind, code, lang="zh") -> student-visible string (passthrough when unknown)
     workspace_language(state_or_None) -> "zh" | "en" | "bilingual"
+    workspace_artifact_mode(state_or_None) -> "chat" | "visual"
     catalog(lang) -> dict (embedded catalog merged with locales/<lang>/messages.json)
     msg(msgid, lang, **fmt) -> formatted message string (P2 fills the inventory)
 """
@@ -39,6 +41,7 @@ import os
 MODES = ("from_scratch", "shore_up", "fill_gaps")
 TIERS = ("le1d", "d1_3", "d3_7", "gt7d")
 LANGS = ("zh", "en", "bilingual")
+ARTIFACT_MODES = ("chat", "visual")
 WINDOW_STATUSES = ("in_window", "out_window", "verified")
 # Row statuses: the KNOWN lifecycle set. `set-*-status` stays free-string tolerant —
 # unknown statuses pass through untouched; only known vocabulary is normalized.
@@ -58,6 +61,8 @@ _ZH = {
     "lang.zh": "中文",
     "lang.en": "English",
     "lang.bilingual": "双语",
+    "artifact.chat": "对话省额",
+    "artifact.visual": "视觉教材",
     "window.in_window": "在窗口",
     "window.out_window": "窗口外",
     "window.verified": "已实测",
@@ -88,6 +93,8 @@ _EN = {
     "lang.zh": "Chinese",
     "lang.en": "English",
     "lang.bilingual": "Bilingual",
+    "artifact.chat": "chat-only",
+    "artifact.visual": "visual study guide",
     "window.in_window": "in window",
     "window.out_window": "out of window",
     "window.verified": "verified by quiz",
@@ -156,6 +163,23 @@ _LANG_IN.update({
     "bi": "bilingual", "zh+en": "bilingual", "中英": "bilingual", "中英双语": "bilingual",
 })
 
+_ARTIFACT_IN = {c: c for c in ARTIFACT_MODES}
+_ARTIFACT_IN.update({_ZH["artifact." + c]: c for c in ARTIFACT_MODES})
+_ARTIFACT_IN.update({_EN["artifact." + c].lower(): c for c in ARTIFACT_MODES})
+_ARTIFACT_IN.update({
+    # Explicit output-resource choices only.  These aliases do not inspect or infer a
+    # subscription tier; callers must persist a choice made by the user/host.
+    "对话模式": "chat", "只在对话教学": "chat", "仅对话": "chat", "聊天教学": "chat",
+    "省额度": "chat", "省token": "chat", "低token": "chat", "v3": "chat",
+    "chat only": "chat", "conversation only": "chat", "low-token": "chat",
+    "save tokens": "chat",
+    "打印pdf": "visual", "生成pdf": "visual", "pdf": "visual", "可打印教材": "visual",
+    "完整教材": "visual", "不在乎token": "visual", "不在乎 token": "visual",
+    "token不敏感": "visual", "token 不敏感": "visual",
+    "study guide": "visual", "printable": "visual", "token-insensitive": "visual",
+    "print pdf": "visual", "visual": "visual",
+})
+
 _WINDOW_IN = {c: c for c in WINDOW_STATUSES}
 _WINDOW_IN.update({_ZH["window." + c]: c for c in WINDOW_STATUSES})
 _WINDOW_IN.update({_EN["window." + c]: c for c in WINDOW_STATUSES})
@@ -205,6 +229,22 @@ def canon_language(v):
         return _LANG_IN[key], None
     return v, ("非标准语言偏好「%s」——canonical 仅 %s；已按原值保留，请确认是否规范化"
                % (v, "/".join(LANGS)))
+
+
+def canon_artifact_mode(v):
+    """→ (code 或原值, warning 或 None)。
+
+    This normalizes an explicit resource-output preference only.  Unknown values are retained
+    for auditability; :func:`workspace_artifact_mode` separately fails safe to ``chat``.
+    """
+    v = (v or "").strip()
+    if v in _ARTIFACT_IN:
+        return _ARTIFACT_IN[v], None
+    key = v.lower()
+    if key in _ARTIFACT_IN:
+        return _ARTIFACT_IN[key], None
+    return v, ("非标准输出资源模式「%s」——canonical 仅 %s；已按原值保留，运行时回退为 chat"
+               % (v, "/".join(ARTIFACT_MODES)))
 
 
 def canon_window_status(v):
@@ -267,3 +307,16 @@ def workspace_language(state):
     v = (state or {}).get("language") if isinstance(state, dict) else state
     code, _w = canon_language(v or "")
     return code if code in LANGS else "zh"
+
+
+def workspace_artifact_mode(state):
+    """Return the effective output-resource mode, failing safe for old or unknown state.
+
+    Missing fields keep v3-compatible chat teaching.  A PDF/visual workflow is therefore
+    enabled only by a recognized, explicitly persisted ``visual`` choice.
+    """
+    v = (state or {}).get("artifact_mode") if isinstance(state, dict) else state
+    if not isinstance(v, str):
+        return "chat"
+    code, _w = canon_artifact_mode(v)
+    return code if code in ARTIFACT_MODES else "chat"

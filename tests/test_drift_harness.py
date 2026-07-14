@@ -481,6 +481,7 @@ class DriftHarness(unittest.TestCase):
             # R2-IAO 通用面向用户问句 + 收尾问句 + 反问自答，两份副本判定一致
             "还有问题吗？", "接下来怎么安排？", "我先讲第1章，可以吗？", "我们开始吧，好吗？",
             "Any questions?", "栈是后进先出，对吧？其实就是这样。", "你可能会问：为什么？因为如此。",
+            "题目：栈的存取顺序是下列哪一种？\nA. LIFO\nB. FIFO",
         ]
         for c in cases:
             self.assertEqual(BS.asks_student_question(c), D._asks_student_question(c),

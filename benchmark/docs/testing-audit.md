@@ -52,10 +52,10 @@ A 线各阶段又新增 **5 个 Tier 2 确定性行为场景**（`behavior_smoke
 - 视觉题 题面图门禁（`visual_first_assets`，P0-V1/A1）
 - 范围过滤 + 越界覆盖声明（`scope_override`，A2）
 - 七步讲解模板 + 每题来源块（`teaching_template`，A5）
-- ≤1天档严禁向学生提问（`time_budget_no_questions`，A6）
+- ≤1天跳过澄清/偏好/反思式追问，但允许经题库核验的 checkpoint；显式 `no_questions` 才禁止所有互动题并封顶 `covered_unverified`（`time_budget_no_questions`，A6）
 - 窗口外知识点须真复核（`knowledge_window_recheck`，A6；>7天须出题实测）
 
-另有 **1 个 Tier 4 长会话 replay 场景**（`benchmark/drift/scenarios/mode_urgent_no_questions.json`，**不是** Tier 2 smoke）：模式漂移——≤1天零提问 `urgent_mode_questions` + 紧迫开场推断并落盘 `urgent_mode_persisted`。
+另有 **1 个 Tier 4 长会话 replay 场景**（`benchmark/drift/scenarios/mode_urgent_no_questions.json`，**不是** Tier 2 smoke）：该场景的学生已显式要求不要提问，因此验证零互动问句 `urgent_mode_questions` + 紧迫开场推断并落盘 `urgent_mode_persisted`；它不代表普通≤1天禁止题库 checkpoint。
 
 **仍诚实**：确定性层只证明探测器对**预期产物**成立，**不证明真 LLM agent 一定产出这些行为**。**behavior_smoke `--llm` 单轮真 agent 冒烟已接通**（B2：逐场景驱动、套用与 `--mock` 相同的探测器、状态类场景诚实 SKIP，接线由 `tests/test_behavior_smoke_live.py` 用 stub 确定性验证）；真付费跑仍 opt-in、不进 CI（`RUN_SKILL_BEHAVIOR_LLM=1` 或 `--agent-cmd`）、尚未实际跑过真模型；**LLM Wiki 惰性加载**与**画图先跑算法再画**仍为 best-effort / 未覆盖。详见 [`../behavior_smoke/README.md`](../behavior_smoke/README.md) 与 [`coverage-matrix.md`](coverage-matrix.md)。
 
