@@ -19,6 +19,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Verify release tag matches root skill metadata
+        env:
+          EXPECTED_RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: >-
+          python -m unittest
+          tests.test_skill_structure.TestSkillCollectionStructure.test_release_tag_matches_root_skill_metadata_when_provided
+          -v
       - name: Build runtime zip (explicit manifest, stdlib only)
         run: python scripts/build_dist.py --out dist/universal-exam-cram-coach.zip
       - name: Attach to release

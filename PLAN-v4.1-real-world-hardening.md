@@ -201,7 +201,7 @@
 
 ### Step 5 — 版本与结论措辞
 
-- [x] 把根 skill metadata 与 v4.0 对齐，并增加结构测试。
+- [x] 先修复 v4.0 tag 被 metadata 3.0 误报的问题；v4.1 发版时把 metadata 升为 4.1，并增加 release tag 一致性门禁。
 - [x] 把 `visual_suspects=0`、validator 0 warning 的文档措辞限定到真实范围。
 - [x] 增加 `ready / usable_with_gaps` 判定契约。
 
@@ -238,7 +238,7 @@
 ### Step 6 — 验证
 
 - [x] 运行视觉、builder、ingest、validator、state 定向测试。
-- [x] 运行全量 `unittest`（最终 1513 tests，26 skipped，exit 0）。
+- [x] 运行全量 `unittest`（v4.1 发版最终 1514 tests，27 skipped，exit 0；release-only tag 门禁另以 `v4.1` 环境实跑通过）。
 - [x] 接管草稿 PR 首轮 CI：修正符号链接错误分类顺序，以及 Windows 8.3/长路径混用导致的 Markdown 资源路径越界；增加确定性别名回归测试。
 - [x] 运行 skill 结构/分发构建检查。
 - [x] 用无真实课程内容的合成 PDF/假 backend 做端到端回归。
@@ -262,7 +262,7 @@
 4. 从 canonical bank 移除 worked example 后，validator 能证明教学索引仍保留它；若两处都缺失则告警。
 5. 新版 manifest 存在时，无 phase evidence 的 `set-check` 失败且不污染 `study_state.json`。
 6. `≤1天` 允许无互动 checkpoint，但视觉/例题/notebook 证据仍为必需。
-7. 根 `SKILL.md` 不再把 v4.0 声明成 3.0。
+7. 根 `SKILL.md` 声明 4.1，且 release job 会拒绝与 metadata 不一致的 tag。
 8. 旧工作区与旧 raw input 继续可读；新增字段均为向后兼容。
 9. 全量测试通过，分发包包含新增运行时脚本/契约文件。
 10. 含 `\\frac`/`\\sum` 的章节在 HTML 中呈现为 MathML 而非 raw 反斜杠；缺数学转换依赖时命令非零退出且不留下伪成品。
