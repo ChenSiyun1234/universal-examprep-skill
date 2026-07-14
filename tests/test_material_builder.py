@@ -926,23 +926,35 @@ class Hygiene(unittest.TestCase):
             self.assertNotIn(dep, head)
 
     def test_no_committed_course_pdfs_or_images(self):
-        # the repo must not carry real course PDFs or slide images
-        # exempt the repo's own branding dir (assets/ holds the README hero/mascot, not course material)
-        assets_dir = os.path.join(ROOT, "assets")
-        for dirpath, _dirs, files in os.walk(ROOT):
-            if ".git" in dirpath:
-                continue
-            in_assets = os.path.abspath(dirpath) == os.path.abspath(assets_dir)
-            for fn in files:
-                low = fn.lower()
-                if low.endswith(".pdf"):
-                    self.fail("committed PDF found: %s" % os.path.join(dirpath, fn))
-                if low.endswith((".png", ".jpg", ".jpeg")):
-                    if in_assets:  # project branding (mascot/hero), intentionally committed
-                        continue
-                    size = os.path.getsize(os.path.join(dirpath, fn))
-                    self.assertLess(size, 4096, "suspiciously large image (real slide?): %s" %
-                                    os.path.join(dirpath, fn))
+        # the repo must not carry real course PDFs or slide images.
+        # Scan TRACKED files only (git ls-files) — the test name says "committed"; local benchmark
+        # artifacts (cheatsheet.pdf, rendered page PNGs under gitignored results/ or skill_workspace/)
+        # are NOT committed and must not trip this. Falls back to a working-tree walk outside a git
+        # checkout (CI tarball) so the guard still runs.
+        try:
+            out = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True,
+                                 text=True, encoding="utf-8")
+            tracked = [f for f in out.stdout.splitlines() if f.strip()] if out.returncode == 0 else None
+        except (OSError, ValueError):
+            tracked = None
+        if tracked is None:                                    # not a git checkout — walk the tree
+            tracked = []
+            for dirpath, _dirs, files in os.walk(ROOT):
+                if ".git" in dirpath:
+                    continue
+                for fn in files:
+                    tracked.append(os.path.relpath(os.path.join(dirpath, fn), ROOT).replace("\\", "/"))
+        for rel in tracked:
+            low = rel.lower()
+            if low.endswith(".pdf"):
+                self.fail("committed PDF found: %s" % rel)
+            if low.endswith((".png", ".jpg", ".jpeg")):
+                if rel.split("/")[0] == "assets":              # project branding (mascot/hero), intentional
+                    continue
+                p = os.path.join(ROOT, *rel.split("/"))
+                if os.path.isfile(p):
+                    self.assertLess(os.path.getsize(p), 4096,
+                                    "suspiciously large image (real slide?): %s" % rel)
 
 
 if __name__ == "__main__":
