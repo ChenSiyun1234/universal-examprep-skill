@@ -238,7 +238,7 @@
 ### Step 6 — 验证
 
 - [x] 运行视觉、builder、ingest、validator、state 定向测试。
-- [x] 运行全量 `unittest`（v4.1 发版最终 1514 tests，27 skipped，exit 0；release-only tag 门禁另以 `v4.1` 环境实跑通过）。
+- [x] 运行全量 `unittest`（基于作者 `main` 的 v4.1 干净发布分支最终 1441 tests，27 skipped，exit 0；release-only tag 门禁另以 `v4.1` 环境实跑通过）。
 - [x] 接管草稿 PR 首轮 CI：修正符号链接错误分类顺序，以及 Windows 8.3/长路径混用导致的 Markdown 资源路径越界；增加确定性别名回归测试。
 - [x] 运行 skill 结构/分发构建检查。
 - [x] 用无真实课程内容的合成 PDF/假 backend 做端到端回归。
