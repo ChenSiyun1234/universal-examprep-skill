@@ -330,10 +330,10 @@ Local ignored/untracked material, student workspaces, and generated reports are 
 - [x] No user-owned unrelated change is staged.
 - [x] The diff is reviewed for generated files, secrets, binary bloat, and accidental behavior expansion.
 - [x] Documentation states which source-brief requirements were adapted and which were intentionally excluded.
-- [ ] Tests and forward scenarios are summarized in the PR body.
+- [x] Tests and forward scenarios are summarized in the PR body.
 - [x] Compatibility and migration notes are included.
-- [ ] Branch is pushed to the maintainer fork.
-- [ ] A cross-fork Draft PR targets `ZeKaiNie/universal-examprep-skill:main`.
+- [x] Branch is pushed to the maintainer fork.
+- [x] A cross-fork Draft PR targets `ZeKaiNie/universal-examprep-skill:main` ([#23](https://github.com/ZeKaiNie/universal-examprep-skill/pull/23)).
 
 ## 10. Implementation log
 
