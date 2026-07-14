@@ -21,6 +21,8 @@ from urllib.parse import unquote
 # 的先例把 scripts/ 放进 sys.path 再导入，validator 与生成器绝不各养一套 slug 规则。
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import notebook as _notebook
+import update_progress as _progress
+import i18n as _i18n
 
 SIX_TYPES = {"choice", "subjective", "diagram", "fill_blank", "true_false", "code"}
 MATERIAL_SOURCES = {"teacher", "material"}
@@ -44,6 +46,21 @@ ASSET_ROLES = {"question_context", "answer_context", "figure", "table", "diagram
 QUESTION_SIDE_ROLES = {"question_context", "figure", "diagram", "table"}
 ASSET_TYPES = {"page_image", "crop_image", "diagram", "table_image", "other_image"}
 QUESTION_TEXT_STATUS = {"full", "stub", "page_reference"}
+
+# Human-facing Markdown must not depend on a host-specific TeX extension.  Standard dollar
+# delimiters are accepted as the durable source form; the study-guide renderer turns them into
+# offline MathML.  A curated command vocabulary avoids treating Windows paths such as D:\\EEC as
+# mathematics while still catching the commands observed in the real EEC 160 notebook.
+LATEX_COMMAND_RE = re.compile(
+    r"\\(?:frac|dfrac|tfrac|sqrt|sum|prod|int|oint|lim|log|ln|sin|cos|tan|exp|"
+    r"min|max|sup|inf|begin|end|left|right|middle|cup|cap|setminus|mid|vert|"
+    r"leq|geq|le|ge|neq|approx|equiv|in|notin|subset|subseteq|supset|supseteq|"
+    r"mathbb|mathcal|mathbf|mathrm|text|operatorname|overline|underline|vec|hat|"
+    r"bar|dot|ddot|cdot|times|div|pm|mp|to|rightarrow|leftarrow|Rightarrow|"
+    r"Leftrightarrow|infty|partial|nabla|forall|exists|Pr|"
+    r"alpha|beta|gamma|delta|epsilon|theta|lambda|mu|pi|rho|sigma|tau|phi|psi|omega)\b",
+    re.IGNORECASE,
+)
 
 
 def _unsafe_ref(s):
@@ -85,6 +102,18 @@ def _plan_phase_nums(text):
 def _reject_const(c):
     # json.loads accepts NaN/Infinity/-Infinity by default; reject them so quiz_bank.json is strict JSON.
     raise ValueError(f"非标准 JSON 常量 {c}（NaN/Infinity 不允许）")
+
+
+def _scope_number(value):
+    """Normalize an integer or common chapter label to its canonical positive string."""
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
+        return str(value)
+    if isinstance(value, str):
+        match = re.fullmatch(
+            r"\s*(?:第\s*)?(?:chapter\s*)?0*(\d+)(?:\s*章)?\s*", value, re.I)
+        if match and int(match.group(1)) >= 1:
+            return str(int(match.group(1)))
+    return None
 
 
 def _is_symlink(p):
@@ -141,6 +170,61 @@ def _md_anchors(path):
     return anchors
 
 
+def _strip_markdown_code(text):
+    """Replace fenced and inline-code content with whitespace while retaining newlines."""
+    out, fence = [], None
+    for line in (text or "").splitlines(True):
+        fence, marker = _notebook._fence_step(fence, line)
+        if marker or fence is not None:
+            out.append("\n" if line.endswith(("\n", "\r")) else "")
+            continue
+        # Markdown inline-code spans can use any matching run of backticks.  Replace, do not
+        # delete, so diagnostic line numbers remain stable.
+        line = re.sub(r"(`+).*?\1", lambda m: " " * len(m.group(0)), line)
+        out.append(line)
+    return "".join(out)
+
+
+def _strip_standard_math(text):
+    """Blank complete $...$ / $$...$$ spans, preserving newlines for diagnostics."""
+    chars = list(text or "")
+    n, i = len(chars), 0
+    while i < n:
+        if chars[i] != "$" or (i and chars[i - 1] == "\\"):
+            i += 1
+            continue
+        width = 2 if i + 1 < n and chars[i + 1] == "$" else 1
+        j = i + width
+        close = None
+        while j < n:
+            if chars[j] == "$" and (j == 0 or chars[j - 1] != "\\"):
+                if width == 1:
+                    close = j
+                    break
+                if j + 1 < n and chars[j + 1] == "$":
+                    close = j
+                    break
+            # Inline math may not silently consume the next paragraph.  Display math may span.
+            if width == 1 and chars[j] in "\r\n":
+                break
+            j += 1
+        if close is None:
+            i += width
+            continue
+        end = close + width
+        for k in range(i, end):
+            if chars[k] not in "\r\n":
+                chars[k] = " "
+        i = end
+    return "".join(chars)
+
+
+def _raw_latex_lines(text):
+    """1-based lines containing TeX commands outside standard math/code spans."""
+    prose = _strip_standard_math(_strip_markdown_code(text))
+    return sorted({prose.count("\n", 0, m.start()) + 1 for m in LATEX_COMMAND_RE.finditer(prose)})
+
+
 def validate(ws):
     """Return (errors, warnings, stats). errors may carry level 'error' or 'fatal'."""
     errors, warnings, stats = [], [], {}
@@ -187,6 +271,7 @@ def validate(ws):
 
     # ---- wiki filenames must be safe ----
     wiki_files = set()
+    raw_math_hits = {}
     if has_wiki:
         try:
             entries = sorted(os.listdir(wiki_dir))
@@ -204,7 +289,54 @@ def validate(ws):
             if not SAFE_WIKI.match(entry):
                 err(f"不安全的 wiki 文件名（疑似路径穿越/非法字符）: {entry}")
             wiki_files.add(entry)
+            if os.path.isfile(full_e):
+                try:
+                    wiki_text = _read(full_e)
+                    nul_count = wiki_text.count("\x00")
+                    if nul_count:
+                        warn(f"references/wiki/{entry} 含 {nul_count} 个 NUL 字节——PDF 文本可能把图/"
+                             "空间布局退化成二进制残渣，须对照原页复核")
+                    math_lines = _raw_latex_lines(wiki_text)
+                    if math_lines:
+                        raw_math_hits[f"references/wiki/{entry}"] = math_lines
+                except (OSError, UnicodeDecodeError) as e:
+                    err(f"references/wiki/{entry} 无法按 UTF-8 读取: {e}")
         stats["wiki_files"] = len(wiki_files)
+
+    # Notebook/mistake entries are the other durable teaching sources.  Do not follow symlinks
+    # just to lint them; path validation elsewhere remains fail-closed for referenced artifacts.
+    for dirname in ("notebook", "mistakes"):
+        root = os.path.join(ws, dirname)
+        if not os.path.isdir(root) or _is_symlink(root):
+            continue
+        for entry in sorted(os.listdir(root)):
+            full = os.path.join(root, entry)
+            if not entry.lower().endswith(".md") or not os.path.isfile(full) or _is_symlink(full):
+                continue
+            try:
+                math_lines = _raw_latex_lines(_read(full))
+            except (OSError, UnicodeDecodeError):
+                continue
+            if math_lines:
+                raw_math_hits[f"{dirname}/{entry}"] = math_lines
+
+    cheat_math = os.path.join(ws, "cheatsheet.md")
+    if os.path.isfile(cheat_math) and not _is_symlink(cheat_math):
+        try:
+            math_lines = _raw_latex_lines(_read(cheat_math))
+        except (OSError, UnicodeDecodeError):
+            math_lines = []
+        if math_lines:
+            raw_math_hits["cheatsheet.md"] = math_lines
+
+    for rel, lines in sorted(raw_math_hits.items()):
+        preview = ", ".join(str(n) for n in lines[:8])
+        suffix = "…" if len(lines) > 8 else ""
+        warn(f"{rel} 第 {preview}{suffix} 行含标准数学分隔符之外的 raw/伪分隔 LaTeX；"
+             "请改用 $...$ 或 $$...$$，再由 study_guide_render.py 转为 MathML")
+    if raw_math_hits:
+        stats["raw_latex_files"] = len(raw_math_hits)
+        stats["raw_latex_occurrences"] = sum(len(v) for v in raw_math_hits.values())
 
     # ---- path-traversal in wiki references inside the .md files ----
     def scan_refs(text, where):
@@ -230,6 +362,116 @@ def validate(ws):
                 scan_refs(_read(p), name)
             except OSError as e:
                 err(f"{name}（必需文件）无法读取: {e}", level="fatal")
+
+    # ---- v4.1 completeness: optional visual index, warning-level (runnable schema stays compatible) ----
+    fig_index_path = os.path.join(ws, "references", "figure_page_index.json")
+    if os.path.isfile(fig_index_path) and not _is_symlink(fig_index_path):
+        try:
+            fig_index = json.loads(_read(fig_index_path), parse_constant=_reject_const)
+        except (ValueError, OSError, UnicodeDecodeError) as e:
+            warn(f"figure_page_index.json 无法读取，wiki 视觉覆盖未经核对: {e}")
+            fig_index = None
+        if isinstance(fig_index, dict):
+            coverage = fig_index.get("wiki_visual_coverage")
+            if coverage is None:
+                warn("figure_page_index.json 未包含 wiki_visual_coverage（旧索引仍可用，但不能证明 wiki 视觉完整；"
+                     "请重跑 build_visual_index.py）")
+            elif not isinstance(coverage, dict):
+                warn("figure_page_index.json 的 wiki_visual_coverage 不是对象，视觉完整性统计不可用")
+            else:
+                detected = coverage.get("detected")
+                embedded = coverage.get("embedded")
+                missing = coverage.get("missing")
+                if not all(isinstance(x, int) and not isinstance(x, bool) and x >= 0
+                           for x in (detected, embedded, missing)):
+                    warn("wiki_visual_coverage 的 detected/embedded/missing 必须是非负整数")
+                else:
+                    stats["wiki_visual_detected"] = detected
+                    stats["wiki_visual_embedded"] = embedded
+                    stats["wiki_visual_missing"] = missing
+                    if detected != embedded + missing:
+                        warn("wiki_visual_coverage 计数不一致：detected != embedded + missing（索引可能陈旧/损坏）")
+                    if missing:
+                        rows = coverage.get("missing_pages")
+                        preview = []
+                        if isinstance(rows, list):
+                            for row in rows[:8]:
+                                if isinstance(row, dict):
+                                    preview.append("%s p.%s" % (row.get("source_file", "?"), row.get("page", "?")))
+                        warn("wiki 视觉覆盖缺口：已检测 %d 页、已嵌入 %d 页、缺失 %d 页%s——"
+                             "工作区可运行，但不能据此宣称内容完整"
+                             % (detected, embedded, missing,
+                                 ("（" + "、".join(preview) + ("…" if isinstance(rows, list) and len(rows) > 8 else "") + "）")
+                                 if preview else ""))
+                deferred = coverage.get("deferred_answer_count", 0)
+                manual_exposure = coverage.get("manual_answer_exposure_count", 0)
+                shared_count = coverage.get("shared_prompt_answer_count", 0)
+                shared_blockers = coverage.get("shared_prompt_answer_blocker_count", 0)
+                if not isinstance(deferred, int) or isinstance(deferred, bool) or deferred < 0:
+                    warn("wiki_visual_coverage.deferred_answer_count 必须是非负整数")
+                else:
+                    stats["wiki_visual_deferred_answer"] = deferred
+                if (not isinstance(manual_exposure, int) or isinstance(manual_exposure, bool)
+                        or manual_exposure < 0):
+                    warn("wiki_visual_coverage.manual_answer_exposure_count 必须是非负整数")
+                else:
+                    stats["wiki_manual_answer_exposure"] = manual_exposure
+                    if manual_exposure:
+                        warn("wiki 仍提前暴露 %d 个答案专属页；必须移除手工/旧式嵌图后重建视觉索引，"
+                             "否则不得宣称内容完整" % manual_exposure)
+                if (not isinstance(shared_count, int) or isinstance(shared_count, bool)
+                        or shared_count < 0):
+                    warn("wiki_visual_coverage.shared_prompt_answer_count 必须是非负整数")
+                else:
+                    stats["wiki_visual_shared_prompt_answer"] = shared_count
+                if (not isinstance(shared_blockers, int) or isinstance(shared_blockers, bool)
+                        or shared_blockers < 0):
+                    warn("wiki_visual_coverage.shared_prompt_answer_blocker_count 必须是非负整数")
+                else:
+                    stats["wiki_shared_prompt_answer_blockers"] = shared_blockers
+                    if isinstance(shared_count, int) and not isinstance(shared_count, bool) \
+                            and shared_blockers > shared_count:
+                        warn("wiki_visual_coverage 计数不一致：共享页 blocker 数大于共享页总数")
+                    if shared_blockers:
+                        rows = coverage.get("shared_prompt_answer_blocker_pages")
+                        preview = []
+                        if isinstance(rows, list):
+                            for row in rows[:8]:
+                                if isinstance(row, dict):
+                                    preview.append("%s p.%s" %
+                                                   (row.get("source_file", "?"), row.get("page", "?")))
+                        warn("题面与答案共页且缺少经审核的独立题面裁图：%d 页%s——整页图不得在提问前展示"
+                             % (shared_blockers,
+                                ("（" + "、".join(preview) + "）") if preview else ""))
+
+    image_index_path = os.path.join(ws, "references", "image_question_index.json")
+    if os.path.isfile(image_index_path) and not _is_symlink(image_index_path):
+        try:
+            image_index = json.loads(_read(image_index_path), parse_constant=_reject_const)
+        except (ValueError, OSError, UnicodeDecodeError) as e:
+            warn(f"image_question_index.json 无法读取，题面/答案视觉疑漏未经核对: {e}")
+            image_index = None
+        if isinstance(image_index, dict):
+            prompt_rows = image_index.get("prompt_suspects", image_index.get("suspects", []))
+            answer_rows = image_index.get("answer_suspects")
+            if not isinstance(prompt_rows, list):
+                warn("image_question_index.json 的 prompt_suspects/suspects 不是数组")
+            else:
+                stats["visual_prompt_suspects"] = len(prompt_rows)
+                if prompt_rows:
+                    ids = [str(x.get("id")) for x in prompt_rows[:8] if isinstance(x, dict) and x.get("id") is not None]
+                    warn("题面侧视觉疑漏 %d 道%s——未补 question_context 前不能把疑漏数 0/非0 当作内容完整结论"
+                         % (len(prompt_rows), ("（" + "、".join(ids) + "）") if ids else ""))
+            if answer_rows is None:
+                warn("image_question_index.json 未包含 answer_suspects（旧索引未核对答案侧视觉覆盖）")
+            elif not isinstance(answer_rows, list):
+                warn("image_question_index.json 的 answer_suspects 不是数组")
+            else:
+                stats["visual_answer_suspects"] = len(answer_rows)
+                if answer_rows:
+                    ids = [str(x.get("id")) for x in answer_rows[:8] if isinstance(x, dict) and x.get("id") is not None]
+                    warn("答案侧视觉疑漏 %d 道%s——须补 answer_context，且只能在解答阶段展示"
+                         % (len(answer_rows), ("（" + "、".join(ids) + "）") if ids else ""))
 
     # ---- quiz_bank.json schema ----
     if has_qb:
@@ -342,7 +584,7 @@ def validate(ws):
                     err(f"{tag} assets[{ai}] 必须是对象（含 path/role/type/caption）")
                     continue
                 role, atype, apath = a.get("role"), a.get("type"), a.get("path")
-                if role is not None and (not isinstance(role, str) or role not in ASSET_ROLES):
+                if not isinstance(role, str) or role not in ASSET_ROLES:
                     err(f"{tag} assets[{ai}] role 非法: {role!r}（应为 {sorted(ASSET_ROLES)} 中的字符串）")
                 if atype is not None and (not isinstance(atype, str) or atype not in ASSET_TYPES):
                     err(f"{tag} assets[{ai}] type 非法: {atype!r}（应为 {sorted(ASSET_TYPES)} 中的字符串）")
@@ -431,6 +673,199 @@ def validate(ws):
             elif dr is not None and diff is None:
                 warn(f"{tag} 有 difficulty_reason 但无 difficulty（建议补 1–5 评分）")
         stats["quiz_types"] = type_counts
+
+    # ---- v4.1 teaching-example reachability (optional, backward compatible) ----
+    # This is a PARALLEL teaching snapshot, not another assessment bank.  IDs may therefore
+    # deliberately overlap quiz_bank.  ingest_report.teaching_example_ids is the durable baseline
+    # that lets us warn if later AI review removes an Example from BOTH layers.
+    teaching_path = os.path.join(ws, "references", "teaching_examples.json")
+    teaching_items, teaching_ids = [], set()
+    teaching_exists = os.path.exists(teaching_path)
+    if teaching_exists:
+        teaching_link = _is_symlink(teaching_path)
+        teaching_real = os.path.realpath(teaching_path)
+        teaching_escapes = (os.path.isfile(teaching_path)
+                            and teaching_real != ws_real
+                            and not teaching_real.startswith(ws_real + os.sep))
+        if teaching_link or teaching_escapes:
+            err("references/teaching_examples.json 经符号链接逃出工作区")
+        elif not os.path.isfile(teaching_path):
+            err("references/teaching_examples.json 必须是普通文件")
+        else:
+            try:
+                teaching_items = json.loads(_read(teaching_path), parse_constant=_reject_const)
+            except (ValueError, OSError, UnicodeDecodeError) as e:
+                err(f"teaching_examples.json 不是合法 JSON: {e}", level="fatal")
+                teaching_items = None
+            if teaching_items is not None and not isinstance(teaching_items, list):
+                err("teaching_examples.json 顶层必须是 JSON 数组", level="fatal")
+                teaching_items = None
+
+    if isinstance(teaching_items, list):
+        stats["teaching_examples"] = len(teaching_items)
+        role_counts = {"paired_problem": 0, "worked_example": 0}
+        for i, ex in enumerate(teaching_items):
+            if not isinstance(ex, dict):
+                err(f"教学例题[{i}] 必须是对象")
+                continue
+            ex_id = ex.get("id")
+            tag = f"教学例题[{ex_id if ex_id is not None else i}]"
+            if not isinstance(ex_id, str) or not ex_id.strip():
+                err(f"{tag} 缺少非空字符串 id")
+            elif ex_id in teaching_ids:
+                err(f"重复的教学例题 id: {ex_id}")
+            else:
+                teaching_ids.add(ex_id)
+            role = ex.get("teaching_role")
+            if role not in role_counts:
+                err(f"{tag} teaching_role 非法: {role!r}（应为 paired_problem/worked_example）")
+            else:
+                role_counts[role] += 1
+            if ex.get("chapter") in (None, "") and ex.get("phase") in (None, ""):
+                err(f"{tag} 缺少 chapter 或 phase（无法按当前章惰性列举）")
+            question = ex.get("question")
+            if not isinstance(question, str) or not question.strip():
+                err(f"{tag} 缺少非空教学内容 question")
+            source_file = ex.get("source_file")
+            if not isinstance(source_file, str) or not source_file.strip():
+                err(f"{tag} 缺少非空字符串 source_file")
+            elif _unsafe_ref(source_file):
+                err(f"{tag} source_file 路径不安全（{_unsafe_ref(source_file)}）: {source_file!r}")
+            answer_source_file = ex.get("answer_source_file")
+            if answer_source_file is not None:
+                if not isinstance(answer_source_file, str) or not answer_source_file.strip():
+                    err(f"{tag} answer_source_file 必须是非空字符串")
+                elif _unsafe_ref(answer_source_file):
+                    err(f"{tag} answer_source_file 路径不安全（{_unsafe_ref(answer_source_file)}）: "
+                        f"{answer_source_file!r}")
+            for pf in ("source_pages", "answer_source_pages"):
+                pages = ex.get(pf)
+                if pf == "answer_source_pages" and pages is None:
+                    continue
+                if not (isinstance(pages, list) and pages and all(
+                        isinstance(p, int) and not isinstance(p, bool) and p > 0 for p in pages)):
+                    err(f"{tag} {pf} 必须是非空正整数页码数组")
+
+            teaching_requires_raw = ex.get("requires_assets")
+            teaching_maybe_raw = ex.get("maybe_requires_assets")
+            if teaching_requires_raw is not None and not isinstance(teaching_requires_raw, bool):
+                err(f"{tag} requires_assets 必须是布尔型 true/false，当前 {teaching_requires_raw!r}")
+            if teaching_maybe_raw is not None and not isinstance(teaching_maybe_raw, bool):
+                err(f"{tag} maybe_requires_assets 必须是布尔型 true/false，当前 {teaching_maybe_raw!r}")
+            requires = teaching_requires_raw is True or teaching_maybe_raw is True
+            assets = ex.get("assets")
+            valid_assets = 0
+            valid_prompt_assets = 0
+            if assets is not None and not isinstance(assets, list):
+                err(f"{tag} assets 必须是数组")
+                assets = []
+            for ai, asset in enumerate(assets or []):
+                if not isinstance(asset, dict):
+                    err(f"{tag} assets[{ai}] 必须是对象")
+                    continue
+                role, atype = asset.get("role"), asset.get("type")
+                if not isinstance(role, str) or role not in ASSET_ROLES:
+                    err(f"{tag} assets[{ai}] role 非法: {role!r}")
+                if atype is not None and (not isinstance(atype, str) or atype not in ASSET_TYPES):
+                    err(f"{tag} assets[{ai}] type 非法: {atype!r}")
+                full, unsafe = _asset_safety(ws, asset.get("path"))
+                readable = full and os.path.isfile(full) and os.access(full, os.R_OK)
+                if unsafe:
+                    err(f"{tag} assets[{ai}] 不安全的 path: {unsafe}")
+                elif readable:
+                    valid_assets += 1
+                    if isinstance(role, str) and role in QUESTION_SIDE_ROLES:
+                        valid_prompt_assets += 1
+                elif requires:
+                    err(f"{tag} 必需教学资源文件不存在或不可读: {asset.get('path')}")
+                else:
+                    warn(f"{tag} 教学资源文件不存在或不可读: {asset.get('path')}")
+            if requires and not assets:
+                err(f"{tag} requires_assets/maybe_requires_assets=true 但缺 assets")
+            elif requires and valid_assets == 0:
+                err(f"{tag} requires_assets/maybe_requires_assets=true 但无有效 asset")
+            elif requires and valid_prompt_assets == 0:
+                err(f"{tag} requires_assets/maybe_requires_assets=true 但无题面侧有效 asset（role 须含 "
+                    f"{sorted(QUESTION_SIDE_ROLES)} 之一）；只有 answer_context/worked_solution 不能先展示题面")
+        stats["teaching_example_roles"] = role_counts
+
+    quiz_items_for_overlap = data if has_qb and isinstance(data, list) else []
+    quiz_ids = {q.get("id") for q in quiz_items_for_overlap
+                if isinstance(q, dict)
+                and isinstance(q.get("id"), (str, int, float, bool))}
+    stats["teaching_quiz_overlap"] = len(teaching_ids & quiz_ids)
+
+    ingest_report_path = os.path.join(ws, "ingest_report.json")
+    teaching_baseline_path = os.path.join(ws, "references", "teaching_baseline.json")
+    expected_teaching_ids = set()
+    expected_teaching_by_chapter = {}
+    baseline_source = None
+    baseline_name = None
+    if os.path.lexists(teaching_baseline_path):
+        if _is_symlink(teaching_baseline_path) or not os.path.isfile(teaching_baseline_path):
+            err("references/teaching_baseline.json 必须是安全的普通文件")
+        else:
+            baseline_source = teaching_baseline_path
+            baseline_name = "references/teaching_baseline.json"
+    elif os.path.isfile(ingest_report_path) and not _is_symlink(ingest_report_path):
+        baseline_source = ingest_report_path
+        baseline_name = "ingest_report.json"
+    if baseline_source:
+        try:
+            ingest_report = json.loads(_read(baseline_source), parse_constant=_reject_const)
+        except (ValueError, OSError, UnicodeDecodeError) as e:
+            err(f"{baseline_name} 无法读取，不能核对教学例题保留性: {e}")
+            ingest_report = None
+        if (baseline_name == "references/teaching_baseline.json"
+                and isinstance(ingest_report, dict)
+                and ingest_report.get("schema_version") != 1):
+            err("references/teaching_baseline.json schema_version 必须为 1")
+        raw_expected = ingest_report.get("teaching_example_ids") if isinstance(ingest_report, dict) else None
+        if raw_expected is not None:
+            if not (isinstance(raw_expected, list)
+                    and all(isinstance(x, str) and x.strip() for x in raw_expected)
+                    and len(raw_expected) == len(set(raw_expected))):
+                err(f"{baseline_name} 的 teaching_example_ids 不是非空字符串数组，不能核对保留性")
+            else:
+                expected_teaching_ids = set(raw_expected)
+        elif baseline_name == "references/teaching_baseline.json":
+            err("references/teaching_baseline.json 缺少 teaching_example_ids")
+        raw_by_chapter = (ingest_report.get("teaching_example_ids_by_chapter")
+                          if isinstance(ingest_report, dict) else None)
+        if raw_by_chapter is not None:
+            if not isinstance(raw_by_chapter, dict):
+                err(f"{baseline_name} 的 teaching_example_ids_by_chapter 不是对象，不能逐章核对保留性")
+            else:
+                mapped = set()
+                valid_map = True
+                for raw_chapter, raw_ids in raw_by_chapter.items():
+                    chapter = _scope_number(raw_chapter)
+                    if chapter is None or not (isinstance(raw_ids, list)
+                                               and all(isinstance(x, str) and x.strip()
+                                                       for x in raw_ids)):
+                        err(f"{baseline_name} teaching_example_ids_by_chapter[{raw_chapter!r}] "
+                             "必须是可解析章节对应的字符串数组")
+                        valid_map = False
+                        continue
+                    values = {x.strip() for x in raw_ids}
+                    if len(values) != len(raw_ids):
+                        err(f"{baseline_name} teaching_example_ids_by_chapter[{raw_chapter!r}] 含重复 ID")
+                        valid_map = False
+                    expected_teaching_by_chapter[chapter] = values
+                    mapped.update(values)
+                if valid_map and expected_teaching_ids and mapped != expected_teaching_ids:
+                    err(f"{baseline_name} 的逐章教学例题 ID 与 teaching_example_ids 全集不一致")
+        elif baseline_name == "references/teaching_baseline.json":
+            err("references/teaching_baseline.json 缺少 teaching_example_ids_by_chapter")
+    missing_from_both = expected_teaching_ids - teaching_ids - quiz_ids
+    stats["teaching_examples_expected"] = len(expected_teaching_ids)
+    stats["teaching_example_baseline_chapters"] = len(expected_teaching_by_chapter)
+    stats["teaching_examples_retained"] = len(expected_teaching_ids & teaching_ids)
+    stats["teaching_examples_missing_from_both"] = len(missing_from_both)
+    if missing_from_both:
+        err("教学例题保留基线同时从 canonical bank 与 teaching_examples.json 消失: %s——"
+            "阶段教学证据已不可达，必须恢复或重新导入，不能把 worked example 静默排除"
+            % "、".join(sorted(missing_from_both)))
 
     # ---- study_progress consistency (best-effort, lenient → warnings only) ----
     prog_path = os.path.join(ws, "study_progress.md")
@@ -583,13 +1018,42 @@ def validate(ws):
             prefs = st.get("preferences")
             if prefs is not None and not isinstance(prefs, dict):
                 err(f"study_state.json 的 preferences 必须是对象，当前 {type(prefs).__name__}")
+            artifact = st.get("artifact_mode")
+            if artifact is not None and not isinstance(artifact, str):
+                err(f"study_state.json 的 artifact_mode 必须是字符串，当前 {type(artifact).__name__}")
+            elif isinstance(artifact, str):
+                artifact_code, _artifact_warning = _i18n.canon_artifact_mode(artifact)
+                if artifact_code not in _i18n.ARTIFACT_MODES:
+                    warn(f"study_state.json 的 artifact_mode={artifact!r} 非标准；"
+                         "运行时将安全回退为 chat（请用 update_progress.py set --artifact-mode 修正）")
+            stats["artifact_mode_effective"] = _i18n.workspace_artifact_mode(st)
+            # v4.1 Step 4: in workspaces with a visual/teaching manifest, a phase checklist bool is
+            # no longer sufficient. Reuse the updater's schema/path/outcome vocabulary so the writer
+            # and validator cannot drift (legacy workspaces without manifests remain readable).
+            phase_problems = _progress.phase_evidence_errors(ws, st, enforce_manifest_gate=True)
+            for problem in phase_problems:
+                err("study_state.json phase_evidence：" + problem)
+            pe = st.get("phase_evidence")
+            if isinstance(pe, dict):
+                stats["phases_covered_unverified"] = sum(
+                    1 for x in pe.values() if isinstance(x, dict)
+                    and x.get("status") == "covered_unverified")
+                stats["phases_verified"] = sum(
+                    1 for x in pe.values() if isinstance(x, dict) and x.get("status") == "verified")
             # md is a GENERATED view — a phase mismatch means someone hand-patched it（下次渲染会丢）
             prog_path2 = os.path.join(ws, "study_progress.md")
             if isinstance(cp, int) and os.path.isfile(prog_path2):
                 try:
-                    m2 = re.search(r"(?:当前进行阶段|当前阶段)\D*?(\d+)", _read(prog_path2))
+                    progress_text = _read(prog_path2)
+                    m2 = re.search(r"(?:当前进行阶段|当前阶段)\D*?(\d+)", progress_text)
                     if m2 and int(m2.group(1)) != cp:
                         warn(f"study_progress.md 的阶段（{m2.group(1)}）与 study_state.json（{cp}）不一致——"
+                             "md 是生成视图，请用 update_progress.py render 重建，不要手改 md")
+                    ma = re.search(r"(?:输出资源模式|Artifact mode)\**\s*[：:]\s*(.+)",
+                                   progress_text, re.I)
+                    if ma and _i18n.workspace_artifact_mode(ma.group(1).strip()) != \
+                            _i18n.workspace_artifact_mode(st):
+                        warn("study_progress.md 的输出资源模式与 study_state.json 不一致——"
                              "md 是生成视图，请用 update_progress.py render 重建，不要手改 md")
                 except OSError:
                     pass
@@ -605,6 +1069,13 @@ def _exit_code(errors):
     return 1 if errors else 0
 
 
+def _readiness(errors, warnings):
+    """Separate structural runnability (`ok`) from content readiness."""
+    if errors:
+        return "blocked"
+    return "usable_with_gaps" if warnings else "ready"
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Validate a cram workspace against docs/file-format.md")
     ap.add_argument("workspace", help="workspace directory")
@@ -617,9 +1088,11 @@ def main(argv=None):
 
     errors, warnings, stats = validate(args.workspace)
     code = _exit_code(errors)
+    readiness = _readiness(errors, warnings)
 
     if args.json:
         print(json.dumps({"exit_code": code, "ok": code == 0, "workspace": args.workspace,
+                          "readiness": readiness,
                           "errors": errors, "warnings": warnings, "stats": stats},
                          ensure_ascii=False, indent=2))
     else:
@@ -630,7 +1103,11 @@ def main(argv=None):
             print(f"  [{'致命' if e['level'] == 'fatal' else '错误'}] {e['msg']}")
         for w in warnings:
             print(f"  [告警] {w['msg']}")
-        verdict = {0: "✓ 通过（无错误）", 1: "✗ 有校验错误", 2: "✗ 工作区损坏/不可读"}[code]
+        verdict = {
+            "ready": "✓ ready（可运行，且静态检查无告警）",
+            "usable_with_gaps": "△ usable_with_gaps（可运行，但仍有告警/完整性缺口）",
+            "blocked": "✗ blocked（存在校验错误）",
+        }[readiness]
         print(f"结论: {verdict}（错误 {sum(1 for e in errors)} / 告警 {len(warnings)}）")
     return code
 

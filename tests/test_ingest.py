@@ -154,6 +154,189 @@ class IngestEndToEndTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("q9", r.stdout)  # 点名缺答案的题
 
+    def test_teaching_examples_persist_independently_and_do_not_add_missing_answers(self):
+        example = {
+            "id": "lecture_example_1_2", "chapter": 1,
+            "type": "subjective", "question": "A completed worked demonstration.",
+            "answer_status": "unknown", "source": "material",
+            "source_file": "ch01.pdf", "source_pages": [3],
+            "teaching_role": "worked_example", "assets": [],
+        }
+        data = {
+            "course_name": "X",
+            "phases": [{"phase_num": 1, "phase_name": "P", "wiki_filename": "a.md",
+                        "wiki_content": "# Chapter 1\nExample 1.2"}],
+            "quiz_bank": [{"id": "q1", "chapter": 1, "type": "subjective",
+                           "question": "Assessable question", "answer": "answer"}],
+            "teaching_examples": [dict(example)],
+        }
+        r = run_ingest(data, self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        path = os.path.join(self.tmp, "references", "teaching_examples.json")
+        self.assertTrue(os.path.isfile(path))
+        saved = json.loads(read(path))
+        self.assertEqual(saved, [example])
+        report = json.loads(read(self.tmp, "ingest_report.json"))
+        self.assertEqual(report["teaching_examples"], 1)
+        self.assertEqual(report["teaching_example_ids"], ["lecture_example_1_2"])
+        self.assertEqual(report["teaching_examples_by_chapter"], {"1": 1})
+        self.assertEqual(report["teaching_example_ids_by_chapter"],
+                         {"1": ["lecture_example_1_2"]})
+        self.assertEqual(report["missing_answer_ids"], [])
+        baseline = json.loads(read(
+            self.tmp, "references", "teaching_baseline.json"))
+        self.assertEqual(baseline["policy"], "append_only")
+        self.assertEqual(baseline["teaching_example_ids"], ["lecture_example_1_2"])
+        self.assertFalse(any(name.startswith(".teaching_examples.json.")
+                             for name in os.listdir(os.path.join(self.tmp, "references"))))
+
+    def test_teaching_manifest_destination_symlink_is_rejected_without_touching_target(self):
+        os.makedirs(os.path.join(self.tmp, "references"))
+        outside = os.path.join(os.path.dirname(self.tmp), "outside-teaching.json")
+        with open(outside, "w", encoding="utf-8") as f:
+            f.write("OUTSIDE-SENTINEL")
+        link = os.path.join(self.tmp, "references", "teaching_examples.json")
+        try:
+            os.symlink(outside, link)
+        except (OSError, NotImplementedError, AttributeError):
+            self.skipTest("no symlink privilege")
+        data = dict(VALID, teaching_examples=[])
+        result = run_ingest(data, self.tmp)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("符号链接", result.stdout + result.stderr)
+        self.assertEqual(read(outside), "OUTSIDE-SENTINEL")
+
+    def test_references_parent_symlink_escape_is_rejected_before_writes(self):
+        outside = tempfile.mkdtemp(prefix="outside-references-")
+        self.addCleanup(shutil.rmtree, outside, ignore_errors=True)
+        link = os.path.join(self.tmp, "references")
+        try:
+            os.symlink(outside, link, target_is_directory=True)
+        except (OSError, NotImplementedError, AttributeError):
+            self.skipTest("no symlink privilege")
+        result = run_ingest(dict(VALID, teaching_examples=[]), self.tmp)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("符号链接", result.stdout + result.stderr)
+        self.assertEqual(os.listdir(outside), [])
+
+    def test_quiz_bank_hardlink_is_replaced_without_mutating_outside_inode(self):
+        self.assertEqual(run_ingest(VALID, self.tmp).returncode, 0)
+        outside = os.path.join(os.path.dirname(self.tmp), "outside-quiz-hardlink.json")
+        self.addCleanup(lambda: os.path.exists(outside) and os.remove(outside))
+        with open(outside, "w", encoding="utf-8") as stream:
+            stream.write("OUTSIDE-HARDLINK-SENTINEL")
+        quiz_path = os.path.join(self.tmp, "references", "quiz_bank.json")
+        os.remove(quiz_path)
+        try:
+            os.link(outside, quiz_path)
+        except (OSError, NotImplementedError, AttributeError):
+            self.skipTest("hard links unavailable")
+
+        result = run_ingest(VALID, self.tmp)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(read(outside), "OUTSIDE-HARDLINK-SENTINEL")
+        self.assertFalse(os.path.samefile(outside, quiz_path))
+        self.assertEqual(len(json.loads(read(quiz_path))), len(VALID["quiz_bank"]))
+
+    def test_wiki_destination_symlink_is_rejected_without_touching_target(self):
+        self.assertEqual(run_ingest(VALID, self.tmp).returncode, 0)
+        outside = os.path.join(os.path.dirname(self.tmp), "outside-wiki.md")
+        self.addCleanup(lambda: os.path.exists(outside) and os.remove(outside))
+        with open(outside, "w", encoding="utf-8") as stream:
+            stream.write("OUTSIDE-WIKI-SENTINEL")
+        wiki_path = os.path.join(self.tmp, "references", "wiki", "ch1_concepts.md")
+        os.remove(wiki_path)
+        try:
+            os.symlink(outside, wiki_path)
+        except (OSError, NotImplementedError, AttributeError):
+            self.skipTest("no symlink privilege")
+
+        result = run_ingest(VALID, self.tmp)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("符号链接", result.stdout + result.stderr)
+        self.assertEqual(read(outside), "OUTSIDE-WIKI-SENTINEL")
+
+    def test_legacy_raw_input_without_teaching_examples_does_not_require_manifest(self):
+        data = {
+            "course_name": "X",
+            "phases": [{"phase_num": 1, "phase_name": "P", "wiki_filename": "a.md",
+                        "wiki_content": "x"}],
+            "quiz_bank": [],
+        }
+        r = run_ingest(data, self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(
+            self.tmp, "references", "teaching_examples.json")))
+
+    def test_legacy_rerun_preserves_existing_teaching_manifest_and_report_baseline(self):
+        example = {
+            "id": "lecture_example_1_2", "chapter": 1,
+            "type": "subjective", "question": "A completed worked demonstration.",
+            "answer_status": "unknown", "source": "material",
+            "source_file": "ch01.pdf", "source_pages": [3],
+            "teaching_role": "worked_example", "assets": [],
+        }
+        base = {
+            "course_name": "X",
+            "phases": [{"phase_num": 1, "phase_name": "P", "wiki_filename": "a.md",
+                        "wiki_content": "x"}],
+            "quiz_bank": [],
+        }
+        first = dict(base, teaching_examples=[example])
+        self.assertEqual(run_ingest(first, self.tmp).returncode, 0)
+        # A legacy producer omits the new field.  It must not erase either the manifest or the
+        # retention baseline used by validate_workspace.py.
+        self.assertEqual(run_ingest(base, self.tmp).returncode, 0)
+        saved = json.loads(read(self.tmp, "references", "teaching_examples.json"))
+        report = json.loads(read(self.tmp, "ingest_report.json"))
+        self.assertEqual(saved, [example])
+        self.assertEqual(report["teaching_example_ids"], ["lecture_example_1_2"])
+        self.assertEqual(report["teaching_example_ids_by_chapter"],
+                         {"1": ["lecture_example_1_2"]})
+        self.assertEqual(report["teaching_examples"], 1)
+
+    def test_explicit_smaller_snapshot_cannot_shrink_independent_teaching_baseline(self):
+        examples = [
+            {"id": "ex1", "chapter": 1, "type": "subjective",
+             "question": "Chapter 1 demonstration", "source_file": "ch01.pdf",
+             "source_pages": [1], "teaching_role": "worked_example", "assets": []},
+            {"id": "ex2", "chapter": 2, "type": "subjective",
+             "question": "Chapter 2 demonstration", "source_file": "ch02.pdf",
+             "source_pages": [1], "teaching_role": "worked_example", "assets": []},
+        ]
+        data = dict(VALID, teaching_examples=examples)
+        self.assertEqual(run_ingest(data, self.tmp).returncode, 0)
+
+        smaller = dict(VALID, teaching_examples=[examples[1]])
+        result = run_ingest(smaller, self.tmp)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        baseline = json.loads(read(
+            self.tmp, "references", "teaching_baseline.json"))
+        report = json.loads(read(self.tmp, "ingest_report.json"))
+        current = json.loads(read(
+            self.tmp, "references", "teaching_examples.json"))
+        self.assertEqual(baseline["teaching_example_ids"], ["ex1", "ex2"])
+        self.assertEqual(baseline["teaching_example_ids_by_chapter"],
+                         {"1": ["ex1"], "2": ["ex2"]})
+        self.assertEqual(report["teaching_example_ids"], ["ex1", "ex2"])
+        self.assertEqual(report["current_teaching_example_ids"], ["ex2"])
+        self.assertEqual([item["id"] for item in current], ["ex2"])
+
+    def test_invalid_teaching_example_role_fails_loudly(self):
+        data = {
+            "course_name": "X",
+            "phases": [{"phase_num": 1, "phase_name": "P", "wiki_filename": "a.md",
+                        "wiki_content": "x"}],
+            "quiz_bank": [],
+            "teaching_examples": [{
+                "id": "e1", "chapter": 1, "teaching_role": "quiz_me",
+                "source_file": "ch01.pdf", "source_pages": [1],
+            }],
+        }
+        r = run_ingest(data, self.tmp)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("teaching_role", r.stdout)
+
     # ---------- 幂等：保护 study_progress.md ----------
     def test_rerun_does_not_clobber_progress(self):
         run_ingest(VALID, self.tmp)

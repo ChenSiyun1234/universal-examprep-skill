@@ -8,12 +8,21 @@
 ```text
 <workspace>/
   study_plan.md            # 阶段复习计划（各阶段关联哪个 wiki 章节）
-  study_progress.md        # 当前断点 + 知识点打卡 + 错题档案 + 💡 概念疑难点记录
+  study_state.json         # 结构化进度唯一事实源（存在时）
+  study_progress.md        # state 的生成视图；无 Python 时才手工维护
+  ingest_report.json       # 导入告警、当前快照统计与兼容基线
   references/
     wiki/
       ch1_concepts.md      # 分章节知识库（唯一知识源，按需 lazy-load）
       ch2_*.md
     quiz_bank.json         # 标准题库（唯一答案源）
+    teaching_examples.json # 可选教学例题层（不是判分答案源，按章 lazy-load）
+    teaching_baseline.json # append-only 教学例题保留事实源；不得手改或缩减
+    figure_page_index.json # 材料视觉页 + wiki 视觉覆盖
+    image_question_index.json # 题面/答案侧视觉覆盖
+    assets/                # 本地题面、答案与 wiki 页面图
+  notebook/                # 持久化讲解/反馈（条目锚点可作阶段证据）
+  study_guide/             # 派生的人类阅读版：chNN.html；可选 chNN.pdf
 ```
 
 约定：
@@ -75,7 +84,7 @@
 
 讲义里很多 **Quiz / Example** 题依赖一张图：文氏图（Venn）、页内插图、表格等。题面文字本身不足以独立成题——**不显示那张图，学生根本无法作答**。为此题库项新增一组**可选、向后兼容**字段（老题库不带这些字段仍然有效）。配套的官方入口 **[`scripts/build_raw_input_from_workspace.py`](../scripts/build_raw_input_from_workspace.py) 从 PDF 材料产出这些字段**（整页渲染成 asset、保留原页出处、抽取 Example/Quiz 题—解对）；校验器与出题在缺图时**fail-closed**。
 
-> 官方流程（脚本随 `python` 调用，无需可执行位）：`python scripts/build_raw_input_from_workspace.py --materials <dir> --out raw_input.json --asset-root <ws>/references/assets` → `python scripts/ingest.py -i raw_input.json -o <ws>` → `python scripts/validate_workspace.py <ws>`。PDF 文本/渲染为**可选依赖**——文本 `pip install pypdf`；渲染 `pip install pymupdf`（自带 PNG）或 `pypdfium2 Pillow`（缺 Pillow 时 pypdfium2 不算渲染后端）。缺依赖会清晰报错；纯 `.txt/.md` 无需依赖。渲染须用 `--asset-root` 指向 `<ws>/references/assets`，否则 auto 跳过渲染并告警、required 报错。
+> 官方流程（脚本随 `python` 调用，无需可执行位）：`python scripts/build_raw_input_from_workspace.py --materials <dir> --out raw_input.json --asset-root <ws>/references/assets` → `python scripts/ingest.py -i raw_input.json -o <ws>` → `python scripts/build_visual_index.py --workspace <ws> --materials <dir> --apply --apply-wiki` → `python scripts/validate_workspace.py <ws>`。PDF 文本/渲染为**可选依赖**——文本 `pip install pypdf`；渲染 `pip install pymupdf`（自带 PNG）或 `pypdfium2 Pillow`（缺 Pillow 时 pypdfium2 不算渲染后端）。缺依赖会清晰报错；纯 `.txt/.md` 无需依赖。渲染须用 `--asset-root` 指向 `<ws>/references/assets`，否则 auto 跳过渲染并告警、required 报错。
 
 ### 题项新增可选字段
 
@@ -153,10 +162,14 @@ For any item with `requires_assets=true` or `maybe_requires_assets=true`:
 
 `scripts/build_visual_index.py --workspace <ws> --materials <课程文件夹>` 在 `references/` 下生成两个索引（可再生成物，可随时重建）：
 
-- **`image_question_index.json`** —— 每道题的视觉档案（requires/maybe、题面/答案 asset 路径、`source_file`/`source_pages`、有无官方答案、**答案页是否视觉页**）+ 按章汇总（总题数 × requires × maybe × 疑漏）+ **suspects 疑漏名单**：出处页命中视觉页、但题库未标图依赖且无题面 asset 的题。
-- **`figure_page_index.json`** —— 材料里**每个视觉页**（文件 + 页码 + 视觉类型 `figure/table/diagram/chart/graph/plot/screenshot/circuit/tree/map/geometry/flowchart`）。判定是**分层确定性启发式、不绑任何学科**：① 结构信号（页内嵌图/大量矢量对象，需 `pip install pymupdf`，**没有关键词的图页也能抓到**）→ ② 图号/表号与坐标轴排版 → ③ 多学科中英词面（最弱）。缺 PyMuPDF 时结构信号缺失，索引会如实标 `media_signals=false` 并告警。
+- **`image_question_index.json`** —— 每道题的视觉档案（requires/maybe、题面/答案 asset 路径、`source_file`/`source_pages`、有无官方答案、答案页是否视觉页）+ 按章汇总。疑漏必须分开读：`prompt_suspects` 是题目出处页命中视觉页但无可用题面 asset；`answer_suspects` 是答案出处页命中视觉页但无可用答案 asset。旧字段 `suspects` 仅是 `prompt_suspects` 的兼容别名。**`prompt_suspects=0` 不能证明答案侧或 wiki 侧完整。**
+- **`figure_page_index.json`** —— 材料里**每个已检测视觉页**（文件 + 页码 + 视觉类型 `figure/table/diagram/chart/graph/plot/screenshot/circuit/tree/map/geometry/flowchart`），以及 `wiki_visual_coverage`：`detected` / `embedded` / `missing` 总数、按 wiki 章节计数和逐页状态/原因。判定是**分层确定性启发式、不绑任何学科**：① 结构信号（页内嵌图/矢量对象，需 `pip install pymupdf`，没有关键词的图页也能抓到）→ ② 表格列间距、图号/表号与坐标轴排版 → ③ 多学科中英词面（最弱）。缺 PyMuPDF 时结构信号缺失，索引会如实标 `media_signals=false` 并告警。它是召回优先的确定性候选集，不是“人工确认的全部语义图片”。
 
-默认**只报告不改**；`--apply` 会把每个疑漏题的原页渲染成 PNG（挂 `question_context`/`page_image` 题面 asset）并标 `maybe_requires_assets=true`（先备份 `quiz_bank.json.bak`），因此回写后仍满足上表的 fail-closed 门控。配套官方工具：`list_image_questions.py`（按章 总数×requires×maybe×疑漏）、`list_figure_pages.py`（视觉页清单，可按类型过滤）、`show_question_assets.py`（输出某题应先展示的题面图 Markdown，POSIX 相对路径，违约即 exit 1）。
+默认**只报告不改**。`--apply` 会先备份 `quiz_bank.json.bak`，再分别修复两侧：题面疑漏挂 `question_context` 并标 `maybe_requires_assets=true`；答案疑漏只挂 `answer_context`，绝不改变题面门禁或提前展示顺序。`--apply-wiki` 把检测页按 `<!-- source.pdf p.N -->` 页锚幂等回挂到 wiki；默认每章最多 30 页，超出上限或渲染失败的页仍完整保留在 `missing` 清单并带原因。回写后必须重新读取三侧结果，而不是沿用回写前计数。
+
+题面/答案页角色是全局顺序门禁：只被答案出处引用的视觉页进入 `deferred_answer_pages`，不进入 concepts/wiki gallery，也不计作 wiki `missing`；`--apply` 只会把它放进对应 item 的 `answer_context`。旧版自动生成的答案页 wiki block 可由 `--apply-wiki` 幂等移除；无法证明归属的手工/旧式嵌图会保留原文但写入 `manual_answer_exposure_pages`，索引命令非零退出并阻断阶段完成。若同一整页同时含题面与解答，不能把整页自动当作安全题面图或 wiki 概念图；它进入 `shared_prompt_answer_pages`，尚无经审核题面裁图时还必须进入 `shared_prompt_answer_blocker_pages`。相应 `*_count` 必须与数组长度一致；完整 v4.1 manifest 缺任一安全数组不会默认成空，而是要求重建索引，防止旧/手写空字段绕过泄题门禁。真正没有 v4.1 manifest trio 的 legacy 工作区仍走下文的兼容路径。打印路径或忽略一次非零退出均不算修复。
+
+配套官方工具：`list_image_questions.py`（按章 总数×requires×maybe×题面疑漏）、`list_figure_pages.py`（视觉页清单，可按类型过滤）、`show_question_assets.py`（输出某题应先展示的题面图 Markdown，POSIX 相对路径，违约即 exit 1）。PDF 页文本含 NUL/控制字节会进入视觉索引/validator 告警，因为“文本后端返回字符串”不等于空间图表已经被语义保留。
 
 ## 5. 题目标签体系（A2，可选字段，向后兼容）
 
@@ -175,3 +188,95 @@ For any item with `requires_assets=true` or `maybe_requires_assets=true`:
 `scripts/build_knowledge_index.py`（知识点 ↔ 章节/wiki/题目 索引，页码级引用留待 A5）。
 
 **生产者**：`scripts/build_raw_input_from_workspace.py` 自 A3 起自动产出 `source_type="homework"` 的作业题（题答分离 PDF 配对 / inline Solution / 中英标记），页码出处齐全；其余 source_type 值可手工标注或由后续 ingest 增强补齐。
+
+## 6. 教学例题层 (`teaching_examples.json`)
+
+官方材料 builder 在现有 `quiz_bank` 之外，平行输出顶层 `teaching_examples` 数组；`ingest.py` 将其原样持久化为 `references/teaching_examples.json`。两层用途不同：
+
+- `quiz_bank.json` 是唯一判分/答案源；题项必须适合抽取、作答与对照答案。
+- `teaching_examples.json` 是例题可达性清单，不是第二套答案源。一个没有独立标准答案、但材料中完整演示过的 Example 可以从 canonical bank 排除，同时继续供 tutor 精讲。
+- 每项保留唯一 `id`、`chapter` 或 `phase`、`teaching_role`（`paired_problem` / `worked_example`）、题面/答案来源页及可用 assets。与 `quiz_bank` ID 重叠合法。
+- tutor 只能惰性读取当前章：`python scripts/list_teaching_examples.py --workspace <ws> --chapter <N> --json`；不得为了讲一章把全课程清单装入上下文。
+- 新工作区以 `references/teaching_baseline.json` 为独立、append-only 的保留事实源。每次 ingest 只能合并新增 ID，不能因较小的 raw input、重跑或重写 `ingest_report.json` 而缩减；同一 ID 改属其他章会 fail-loud。不要手工编辑、删除或“清零”它。基线 ID 从 `quiz_bank` 与教学层同时消失时 validator 阻断阶段完成；只从 gradable bank 移除不算丢失。
+- 没有该文件的旧工作区继续回退读取 `ingest_report.json.teaching_example_ids`；这是兼容路径，不是新格式的首选事实源。
+
+旧 raw input 未带 `teaching_examples` 时，ingest 不创建或覆盖该文件；显式空数组表示生产者确认本次没有教学例题。这样旧工作区保持兼容，新工作区则可证明例题没有在 AI 清理时整体消失。
+
+## 7. 阶段证据 (`study_state.json.phase_evidence`)
+
+新视觉/教学 manifest 工作区不能只靠 `phase_checklist[].done=true` 宣布整章完成。`phase_evidence` 是按阶段号索引的对象，证据字段为：
+
+- `wiki`: `references/wiki/*.md` 路径；必须匹配 `study_plan.md` 为该阶段指定的 wiki。
+- `visual`: 两个视觉 manifest 或 `references/assets/` 下的本地资产引用。
+- `teaching_examples`: 当前阶段教学例题 ID；该阶段清单非空时必须全部记录，为空时此项 N/A。
+- `notebook`: `notebook/*.md#真实锚点`，路径和锚点都必须存在且属于当前章。
+- `checkpoint`: `{ "id": "题库ID", "outcome": "passed|wrong|skipped" }`；只有 ID 不能证明答对，且题项必须属于当前阶段。
+
+官方写入示例：
+
+```powershell
+python scripts/update_progress.py --workspace <ws> record-phase-evidence --kind wiki --ref references/wiki/ch01.md
+python scripts/update_progress.py --workspace <ws> record-phase-evidence --kind visual --ref references/figure_page_index.json
+python scripts/update_progress.py --workspace <ws> record-phase-evidence --kind teaching-example --ref ch01-example-1
+python scripts/update_progress.py --workspace <ws> record-phase-evidence --kind notebook --ref notebook/ch01.md#example-1
+python scripts/update_progress.py --workspace <ws> record-phase-evidence --kind checkpoint --ref ch01-q1 --outcome passed
+python scripts/update_progress.py --workspace <ws> complete-phase --status verified --next-phase 2
+```
+
+`covered_unverified` 要求 wiki、visual、notebook 及非空教学清单的全覆盖；`verified` 还要求至少 2 个不同的已处理 checkpoint，其中至少 1 个 `passed`。显式 `preferences.no_questions=true` 时上限是 `covered_unverified`。`≤1天` 只跳过开场澄清/偏好询问和反思式追问，不禁止必要的题库 checkpoint；学生明确不要出题时才应用上述上限。
+
+两份视觉索引必须带完全一致的 `integrity` 快照：`schema_version`、UTC `generated_at`、生成
+`mode`，以及 quiz bank、teaching manifest、append-only teaching baseline、ingest report、全部 wiki、题库资产、实际计入 wiki coverage 的图片、原始 PDF 内容与 PDF 路径清单 SHA-256；两份派生索引自身也分别绑定 canonical 输出摘要。完成阶段时重新哈希当前输入；索引后任一内容/图片/PDF 被修改、替换、增删都视为 stale，必须重跑
+`build_visual_index.py`。当前章声明 `requires_assets` / `maybe_requires_assets` 的题还会独立重查可读的
+题面侧 asset，不能只靠旧快照或手写空 suspects 绕过。
+
+只有完整 v4.1 manifest trio（含 `wiki_visual_coverage` 的 figure 索引、含 `prompt_suspects`/`answer_suspects` 的 image 索引、教学 manifest）才启用硬门禁。真正的旧 schema 继续兼容并告警；partial/broken 新 manifest 必须 fail-loud，不能伪装成 legacy 以绕过门禁。阶段完成只能作用于 `current_phase`，推进只能去 `study_plan.md` 中紧接的下一阶段。
+
+## 8. Validator 结论语义
+
+`scripts/validate_workspace.py --json` 同时输出两个维度：
+
+- `ok=true` / `exit_code=0`：没有结构化错误，工作区可以运行；warnings 仍可能存在。
+- `readiness=ready`：无 errors 且无 warnings；`usable_with_gaps`：无 errors 但仍有 warning/完整性缺口；`blocked`：存在任一 error。
+
+因此 schema 校验通过、`prompt_suspects=0` 或某一覆盖率为 100% 都不能被单独改写成“全部内容完整”。上层报告必须保留真实分母、剩余 warning 与 readiness 原词。
+
+## 9. 数学事实源与人类教材产物
+
+Markdown 是可检索、可 diff、可溯源的事实源，不保证每个聊天客户端都能排版数学，因此不能把
+`.md` 文件本身当作已经完成的人类教材。
+
+`study_state.json.artifact_mode` 是独立的资源偏好，canonical 值为 `chat` / `visual`：
+
+- 缺字段的旧工作区与 `chat` 一样，只保留正常对话、state 与 notebook，不自动编译 HTML/PDF；
+- `visual` 只在用户明确选择后持久化，完整章节生成 HTML + PDF；
+- 用户明确提出一次性 HTML/PDF/打印请求时可临时覆盖 `chat`，但不改写长期偏好；
+- Agent 不读取或猜测订阅等级。未知值运行时按 `chat` 处理并告警，任何值都不授权静默装依赖。
+
+官方写入入口：`python scripts/update_progress.py --workspace <ws> set --artifact-mode chat|visual`。
+
+- wiki、notebook、mistakes 与 cheatsheet 中的 TeX 数学只使用 `$...$`（行内）或
+  `$$...$$`（独立公式）。普通括号/方括号包裹 TeX 命令不是数学分隔符；`(A\\cup B)`、
+  `[P(A)=\\frac{1}{2}]` 和正文裸 `\\sum` 都是缺陷。
+- `validate_workspace.py` 忽略代码围栏和行内代码，但会对事实源正文中的 raw/伪分隔 LaTeX
+  发出 warning，使 readiness 降为 `usable_with_gaps`。它不猜测并自动重写公式，因为错误迁移
+  可能改变数学含义。
+- 人类阅读版由当前章惰性编译：
+
+  ```text
+  python scripts/study_guide_render.py --workspace <ws> --chapter <N>
+  ```
+
+  输出 `study_guide/chNN.html`，将 TeX 离线转成原生 MathML，并把安全的本地图片内嵌为 data URI。
+  教材汇集当前章 wiki、`teaching_examples.json` 切片、题库切片与 `notebook/chNN.md`；不读其他章，
+  不现场生成新题或答案。题面图位于题面正文/答案之前，答案图只出现在后续可展开答案区。
+  若存在 `study_state.json`，界面标题、空层说明、题面/答案标签、展开按钮与来源标签按其 canonical
+  `language` 派发；双语界面显示中英两侧。事实正文保持原样，渲染器不自动翻译，所需双语讲解必须
+  先由 tutor 按来源契约写入 notebook/wiki。
+  唯一路径兼容例外是 `--apply-wiki` 在 `references/wiki/*.md` 中生成的
+  `../assets/<安全相对路径>`：渲染器只在解析结果严格位于 `references/assets/`、路径各级均非符号链接
+  时接受它。题库/教学清单/notebook 中的 `..` 仍一律拒绝。
+- `--pdf` 使用本地 Edge/Chrome 生成 `study_guide/chNN.pdf`。公式转换依赖或浏览器缺失时命令
+  非零退出并显示精确缺项，不静默安装，也不把含 raw LaTeX 的文件留作成功产物。
+- PDF 工具按宿主选择，见 [`pdf-capability-adapters.md`](pdf-capability-adapters.md)；无论使用 Codex、
+  Claude Code 或通用后备，交付前都必须逐页渲染为 PNG 并检查最新版本。

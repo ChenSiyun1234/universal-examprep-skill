@@ -38,9 +38,10 @@ RUN_SKILL_BEHAVIOR_LLM=1 python benchmark/behavior_smoke/run_behavior_smoke.py -
 | `teaching_template` | A5 七步讲解模板 + 每题来源块 | ①-⑦ 齐全按序（②在④前）、⑦ 落到章节/wiki；来源行 题目来源｜答案来源｜canonical 标签；AI 答案 ⚠️ 进来源行与答案块标题；默认到来源块为止、未经要求的收尾块被抓（学生要求了则豁免）；7 个反例全被抓 |
 | `visual_first_assets` | 视觉题先展示题面侧 asset | mock 输出必须先出现带 `题面图 / question-side asset` 标签的真实 fixture 本地图片；反例（答案图先出现 / 题目前泄露答案图或正文 / 未标注答案图 / 图片前正文 / 题后插图 / `问题：` 后迟到图片 / 不安全或缺失路径 / 只打印路径）必须不合格 |
 | `scope_override` | 越范围出题须先声明（A2） | mock 输出在第一道题**之前**出现 verbatim「⚠️ 临时覆盖你的 <范围> 范围偏好」；反例（题后才声明 / 不声明）必须不合格 |
-| `language_first_ask` | 首问一次合并 模式×时间×语言（A6/A8b），语言行三语呈现；紧迫开场静默推断 | mock 好例=三语语言行+一条三旗标 set；反例漏语言行被抓；紧迫变体=零问句+`--language` ∈ canonical，紧迫反例收尾提问被抓 |
-| `time_budget_no_questions` | ≤1天档严禁向学生提问（A6） | mock 好例纯讲解、无面向学生的问句；反例（问「你想先复习哪一章？」「还有问题吗？」「Should I…」等收尾/通用问句）必须不合格；自答式反问不误伤 |
+| `language_first_ask` | 首问一次合并 模式×时间×语言（A6/A8b），语言行三语呈现；紧迫开场静默推断 | mock 好例=三语语言行+一条三旗标 set；反例漏语言行被抓；紧迫变体=零开场澄清/偏好问句+`--language` ∈ canonical，紧迫反例收尾提问被抓 |
+| `time_budget_no_questions` | ≤1天节奏 + 显式 `no_questions`（A6） | 普通≤1天允许带真实 `[#id]` 且题面匹配的题库 checkpoint；澄清/偏好/反思式追问必须不合格。场景 prompt 明确说“别问我问题”时，所有互动题（包括 checkpoint）都禁止；自答式反问不误伤 |
 | `knowledge_window_recheck` | 窗口外知识点须真复核（A6） | 3-7天好例回问/实测均可、反例默认还会被抓；>7天（`require_test`）只认出题实测——只口头「还记得吗」的坏例被抓；否定式（不问/不实测/我就当你会了）不算复核、否定式安全声明（不会默认你会）不误伤 |
+| `artifact_mode_routing` | 额度友好的 `chat` / `visual` 产物门禁 | mock 命令轨迹验证：`chat` 完章不自动渲染；明确长期选择才持久 `visual`；订阅名称本身不能触发切换；单次 PDF 完成后仍为 `chat`；PDF 必须先选 native/browser 后端再做本章预检与生成。反例分别抓自动 PDF、猜订阅和单次请求污染长期状态 |
 | `notebook_persist_ok` | 教学回合「先落盘、再摘要」（v4 §2.4 红线） | mock 好例同时含 `notebook.py … add-entry` 落盘命令（code-span 里也认）与学生可见 `notebook/chNN.md#锚点` 回执（zh canonical 形如 `完整解答：notebook/ch02.md#q13`，回执章号须与命令 `--chapter` 零填充一致）；反例全程只在聊天里讲、零落盘回执必须不合格 |
 | `workspace_confirm_ok` | 建区必确认——静默创建工作区 = 违约（v4 §2.5 红线） | mock 好例在第一个创建调用（`ingest.py --output-dir` / `workspace-register`）**之前**有辅导方落点确认问句 + 学生对目标路径的肯定答复；反例开场直接 `ingest.py --output-dir` 静默建区必须不合格；问了不等答复、先建后追认、学生拒绝后仍建同样不合格 |
 | `lazy_load_best_effort` | 只读当前章节 | **best-effort**：确定性模式跳过；需 transcript/LLM 才能真验 |

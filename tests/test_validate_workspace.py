@@ -8,6 +8,7 @@ import io
 import os
 import sys
 import json
+import hashlib
 import shutil
 import tempfile
 import unittest
@@ -88,6 +89,120 @@ class TestValidateWorkspace(unittest.TestCase):
         open(os.path.join(d, "study_progress.md"), "w", encoding="utf-8").write(
             prog or "## 当前复习断点\n阶段 1\n\n## 💡 概念疑难点记录\n")
         return d
+
+    def write_teaching_examples(self, ws, items):
+        path = os.path.join(ws, "references", "teaching_examples.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(items, f, ensure_ascii=False)
+        return path
+
+    def teaching_example(self, **over):
+        item = {
+            "id": "lecture_example_1_2", "chapter": 1,
+            "type": "subjective", "question": "A completed worked example.",
+            "answer_status": "unknown", "source": "material",
+            "source_file": "ch01.pdf", "source_pages": [3],
+            "teaching_role": "worked_example", "assets": [],
+        }
+        item.update(over)
+        return item
+
+    def test_teaching_manifest_may_overlap_quiz_bank_and_is_counted(self):
+        example = self.teaching_example()
+        d = self.make_ws([example])
+        self.write_teaching_examples(d, [example])
+        errors, _, stats = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 0, err_text(errors))
+        self.assertEqual(stats["teaching_examples"], 1)
+        self.assertEqual(stats["teaching_quiz_overlap"], 1)
+
+    def test_teaching_manifest_retains_example_after_quiz_bank_removal(self):
+        example = self.teaching_example()
+        d = self.make_ws([])
+        self.write_teaching_examples(d, [example])
+        with open(os.path.join(d, "ingest_report.json"), "w", encoding="utf-8") as f:
+            json.dump({"teaching_example_ids": [example["id"]]}, f)
+        errors, warnings, stats = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 0, err_text(errors))
+        self.assertFalse(any(example["id"] in w["msg"] for w in warnings))
+        self.assertEqual(stats["teaching_examples_retained"], 1)
+
+    def test_expected_example_missing_from_both_layers_is_blocking_error(self):
+        d = self.make_ws([])
+        self.write_teaching_examples(d, [])
+        with open(os.path.join(d, "ingest_report.json"), "w", encoding="utf-8") as f:
+            json.dump({"teaching_example_ids": ["lecture_example_1_2"]}, f)
+        errors, warnings, stats = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 1, err_text(errors))
+        self.assertTrue(any("lecture_example_1_2" in e["msg"] for e in errors))
+        self.assertEqual(stats["teaching_examples_missing_from_both"], 1)
+
+    def test_append_only_baseline_cannot_be_shrunk_by_rewritten_ingest_report(self):
+        d = self.make_ws([])
+        self.write_teaching_examples(d, [])
+        with open(os.path.join(d, "ingest_report.json"), "w", encoding="utf-8") as f:
+            json.dump({"teaching_example_ids": [],
+                       "teaching_example_ids_by_chapter": {}}, f)
+        with open(os.path.join(d, "references", "teaching_baseline.json"),
+                  "w", encoding="utf-8") as f:
+            json.dump({"schema_version": 1, "policy": "append_only",
+                       "teaching_example_ids": ["lecture_example_1_2"],
+                       "teaching_example_ids_by_chapter": {
+                           "1": ["lecture_example_1_2"]}}, f)
+        errors, _, stats = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 1, err_text(errors))
+        self.assertTrue(any("lecture_example_1_2" in e["msg"] for e in errors))
+        self.assertEqual(stats["teaching_examples_missing_from_both"], 1)
+
+    def test_duplicate_teaching_example_ids_are_rejected(self):
+        d = self.make_ws([])
+        example = self.teaching_example()
+        self.write_teaching_examples(d, [example, dict(example)])
+        errors, _, _ = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertIn("lecture_example_1_2", err_text(errors))
+
+    def test_teaching_answer_source_file_path_is_validated_without_quiz_copy(self):
+        d = self.make_ws([])
+        example = self.teaching_example(
+            answer_source_file="../outside.pdf", answer_source_pages=[4])
+        self.write_teaching_examples(d, [example])
+        errors, _, _ = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertIn("answer_source_file", err_text(errors))
+
+    def test_teaching_visual_gate_requires_readable_prompt_side_asset(self):
+        d = self.make_ws([])
+        os.makedirs(os.path.join(d, "references", "assets"))
+        asset_path = os.path.join(d, "references", "assets", "answer.png")
+        open(asset_path, "wb").write(b"png")
+        example = self.teaching_example(
+            requires_assets=True,
+            assets=[{"path": "references/assets/answer.png", "role": "answer_context",
+                     "type": "page_image"}])
+        self.write_teaching_examples(d, [example])
+        errors, _, _ = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertIn("题面侧", err_text(errors))
+
+    def test_teaching_asset_without_role_is_rejected_before_renderer(self):
+        d = self.make_ws([])
+        os.makedirs(os.path.join(d, "references", "assets"))
+        with open(os.path.join(d, "references", "assets", "a.png"), "wb") as f:
+            f.write(b"\x89PNG\r\n")
+        example = self.teaching_example(
+            assets=[{"path": "references/assets/a.png", "type": "page_image"}])
+        self.write_teaching_examples(d, [example])
+        errors, _, _ = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertIn("role 非法", err_text(errors))
+
+    def test_teaching_visual_flags_must_be_real_booleans(self):
+        d = self.make_ws([])
+        self.write_teaching_examples(d, [self.teaching_example(maybe_requires_assets="true")])
+        errors, _, _ = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertIn("maybe_requires_assets 必须是布尔型", err_text(errors))
 
     def test_missing_answer_is_warning_not_error(self):
         # ingest.py accepts answer-less questions (warn-not-fail); Tier 1 must stay compatible (Codex r1)
@@ -355,8 +470,28 @@ class TestValidateWorkspace(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(payload["exit_code"], 0)
         self.assertTrue(payload["ok"])
+        self.assertIn(payload["readiness"], {"ready", "usable_with_gaps"})
         for key in ("errors", "warnings", "stats"):
             self.assertIn(key, payload)
+
+    def test_readiness_distinguishes_warnings_from_structural_errors(self):
+        warn_ws = os.path.join(FX, "warnings_workspace")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = V.main([warn_ws, "--json"])
+        payload = json.loads(buf.getvalue())
+        self.assertEqual(code, 0)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["readiness"], "usable_with_gaps")
+
+        broken_ws = os.path.join(FX, "invalid_workspace_missing_quizbank")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = V.main([broken_ws, "--json"])
+        payload = json.loads(buf.getvalue())
+        self.assertNotEqual(code, 0)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["readiness"], "blocked")
 
     def test_unreadable_workspace_is_exit_2(self):
         errors, _, _, code = run("does_not_exist_dir")
@@ -429,6 +564,14 @@ class TestValidateWorkspace(unittest.TestCase):
     def test_p0a_invalid_asset_role_fails(self):
         item = self._asset_item(assets=[{"path": "references/assets/a.png", "role": "bogus",
                                          "type": "page_image"}])
+        errors, _, _ = V.validate(self._ws_asset(item))
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertIn("role 非法", err_text(errors))
+
+    def test_p0a_asset_without_role_is_rejected_before_renderer(self):
+        item = self._asset_item(
+            requires_assets=False, question_text_status="full",
+            assets=[{"path": "references/assets/a.png", "type": "page_image"}])
         errors, _, _ = V.validate(self._ws_asset(item))
         self.assertEqual(V._exit_code(errors), 1)
         self.assertIn("role 非法", err_text(errors))
@@ -626,6 +769,298 @@ class TestValidateWorkspace(unittest.TestCase):
         errors, _, _ = V.validate(self._ws_asset(item))
         self.assertEqual(V._exit_code(errors), 1)
         self.assertIn("maybe_requires_assets 必须是布尔型", err_text(errors))
+
+    # ---- v4.1 Step 4: phase evidence gate ----
+
+    def _phase_gate_ws(self, status=None, checkpoint=True, done=True):
+        quiz = [self._ok_item(id="q1"),
+                self._ok_item(id="ex1", source_type="example", question="example")]
+        d = self.make_ws(quiz, plan="## 阶段 1：基础 `references/wiki/ch1.md`\n")
+        os.makedirs(os.path.join(d, "notebook"))
+        open(os.path.join(d, "notebook", "ch01.md"), "w", encoding="utf-8").write(
+            "# 第一章\n\n## [#ex1] 例题一\n")
+        teaching_path = os.path.join(d, "references", "teaching_examples.json")
+        with open(teaching_path, "w", encoding="utf-8") as f:
+            json.dump([self.teaching_example(id="ex1")], f, ensure_ascii=False)
+
+        def digest(rel):
+            with open(os.path.join(d, *rel.split("/")), "rb") as f:
+                return hashlib.sha256(f.read()).hexdigest()
+
+        materials_root = os.path.join(os.path.dirname(d), "materials")
+        os.makedirs(materials_root, exist_ok=True)
+        source_pdf = os.path.join(materials_root, "course.pdf")
+        open(source_pdf, "wb").write(b"%PDF-validator-source")
+        integrity = {
+            "schema_version": 2,
+            "generated_at": "2026-07-13T00:00:00Z",
+            "mode": {"materials_scan": True, "apply_questions": False,
+                     "apply_wiki": False, "backend": "fake",
+                     "materials_root": os.path.abspath(materials_root)},
+            "inputs": {
+                "references/quiz_bank.json": {
+                    "sha256": digest("references/quiz_bank.json")},
+                "references/teaching_examples.json": {
+                    "sha256": digest("references/teaching_examples.json")},
+                "references/wiki/ch1.md": {
+                    "sha256": digest("references/wiki/ch1.md")},
+            },
+            "materials": {"course.pdf": {
+                "sha256": hashlib.sha256(open(source_pdf, "rb").read()).hexdigest()}},
+            "material_inventory_sha256": hashlib.sha256(
+                json.dumps(["course.pdf"], ensure_ascii=False,
+                           separators=(",", ":")).encode("utf-8")).hexdigest(),
+        }
+        figure_index = {"integrity": integrity, "wiki_visual_coverage": {
+            "detected": 0, "embedded": 0, "missing": 0,
+            "deferred_answer_count": 0, "deferred_answer_pages": [],
+            "manual_answer_exposure_count": 0, "manual_answer_exposure_pages": [],
+            "shared_prompt_answer_count": 0, "shared_prompt_answer_pages": [],
+            "shared_prompt_answer_blocker_count": 0,
+            "shared_prompt_answer_blocker_pages": [],
+            "per_chapter": {}, "pages": []}}
+        image_index = {"integrity": integrity, "prompt_suspects": [], "answer_suspects": []}
+        outputs = {}
+        for name, value in (("figure_page_index.json", figure_index),
+                            ("image_question_index.json", image_index)):
+            payload = {key: val for key, val in value.items() if key != "integrity"}
+            raw = json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                             separators=(",", ":"), allow_nan=False).encode("utf-8")
+            outputs[name] = {"sha256": hashlib.sha256(raw).hexdigest()}
+        integrity["outputs"] = outputs
+        with open(os.path.join(d, "references", "figure_page_index.json"),
+                  "w", encoding="utf-8") as f:
+            json.dump(figure_index, f)
+        with open(os.path.join(d, "references", "image_question_index.json"),
+                  "w", encoding="utf-8") as f:
+            json.dump(image_index, f)
+        record = {"wiki": ["references/wiki/ch1.md"],
+                  "visual": ["references/figure_page_index.json"],
+                  "teaching_examples": ["ex1"],
+                  "notebook": ["notebook/ch01.md#ex1-例题一"]}
+        if checkpoint:
+            record["checkpoint"] = [{"id": "q1", "outcome": "passed"},
+                                    {"id": "ex1", "outcome": "wrong"}]
+        if status is not None:
+            record["status"] = status
+        state = {"version": 1, "current_phase": 1, "scope": None, "mode": None,
+                 "time_budget": "le1d", "language": "zh", "preferences": {},
+                 "mistake_archive": [], "confusion_log": [], "knowledge_window": [],
+                 "phase_checklist": [{"text": "阶段 1：基础", "done": done}],
+                 "phase_evidence": {} if status is None else {"1": record}}
+        open(os.path.join(d, "study_state.json"), "w", encoding="utf-8").write(
+            json.dumps(state, ensure_ascii=False))
+        return d
+
+    def test_phase_gate_rejects_done_manifest_phase_without_evidence(self):
+        d = self._phase_gate_ws(status=None)
+        errors, _, _ = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 1)
+        self.assertIn("phase_evidence", err_text(errors))
+
+    def test_artifact_mode_unknown_warns_and_fails_safe_to_chat(self):
+        d = self._phase_gate_ws(status="covered_unverified", checkpoint=False)
+        path = os.path.join(d, "study_state.json")
+        state = json.load(open(path, encoding="utf-8"))
+        state["artifact_mode"] = "ultra-render"
+        with open(path, "w", encoding="utf-8") as stream:
+            json.dump(state, stream, ensure_ascii=False)
+        errors, warnings, stats = V.validate(d)
+        self.assertFalse(any("artifact_mode" in e["msg"] for e in errors), err_text(errors))
+        self.assertTrue(any("artifact_mode" in w["msg"] and "chat" in w["msg"]
+                            for w in warnings), warnings)
+        self.assertEqual(stats["artifact_mode_effective"], "chat")
+
+    def test_artifact_mode_non_string_is_invalid(self):
+        d = self._phase_gate_ws(status="covered_unverified", checkpoint=False)
+        path = os.path.join(d, "study_state.json")
+        state = json.load(open(path, encoding="utf-8"))
+        state["artifact_mode"] = ["visual"]
+        with open(path, "w", encoding="utf-8") as stream:
+            json.dump(state, stream, ensure_ascii=False)
+        errors, _, stats = V.validate(d)
+        self.assertTrue(any("artifact_mode 必须是字符串" in e["msg"] for e in errors),
+                        err_text(errors))
+        self.assertEqual(stats["artifact_mode_effective"], "chat")
+
+    def test_phase_gate_accepts_covered_unverified_without_checkpoint(self):
+        d = self._phase_gate_ws(status="covered_unverified", checkpoint=False)
+        errors, _, _ = V.validate(d)
+        phase_errors = [e for e in errors if "phase_evidence" in e["msg"]]
+        self.assertEqual(phase_errors, [], err_text(errors))
+
+    def test_phase_gate_verified_requires_checkpoint(self):
+        d = self._phase_gate_ws(status="verified", checkpoint=False)
+        errors, _, _ = V.validate(d)
+        self.assertTrue(any("phase_evidence" in e["msg"] and "checkpoint" in e["msg"]
+                            for e in errors), err_text(errors))
+
+    def test_phase_gate_verified_rejects_all_wrong_or_skipped(self):
+        d = self._phase_gate_ws(status="verified", checkpoint=True)
+        st_path = os.path.join(d, "study_state.json")
+        st = json.load(open(st_path, encoding="utf-8"))
+        st["phase_evidence"]["1"]["checkpoint"] = [
+            {"id": "q1", "outcome": "wrong"}, {"id": "ex1", "outcome": "skipped"}]
+        open(st_path, "w", encoding="utf-8").write(json.dumps(st, ensure_ascii=False))
+        errors, _, _ = V.validate(d)
+        self.assertTrue(any("phase_evidence" in e["msg"] and "passed" in e["msg"]
+                            for e in errors), err_text(errors))
+
+    def test_phase_gate_checkpoint_id_only_is_invalid_schema(self):
+        d = self._phase_gate_ws(status="verified", checkpoint=True)
+        st_path = os.path.join(d, "study_state.json")
+        st = json.load(open(st_path, encoding="utf-8"))
+        st["phase_evidence"]["1"]["checkpoint"] = ["q1", "ex1"]
+        open(st_path, "w", encoding="utf-8").write(json.dumps(st, ensure_ascii=False))
+        errors, _, _ = V.validate(d)
+        self.assertTrue(any("只有 ID 不能证明答对" in e["msg"] for e in errors), err_text(errors))
+
+    def test_phase_evidence_malformed_shape_is_error(self):
+        d = self._phase_gate_ws(status="covered_unverified", checkpoint=False, done=False)
+        st_path = os.path.join(d, "study_state.json")
+        st = json.load(open(st_path, encoding="utf-8"))
+        st["phase_evidence"] = []
+        open(st_path, "w", encoding="utf-8").write(json.dumps(st, ensure_ascii=False))
+        errors, _, _ = V.validate(d)
+        self.assertTrue(any("phase_evidence 必须是对象" in e["msg"] for e in errors), err_text(errors))
+
+    # ---- v4.1: wiki visual completeness is warning-level, separate from runnable schema ----
+
+    def test_wiki_visual_coverage_gap_warns_without_invalidating_workspace(self):
+        d = self.make_ws([self._ok_item()])
+        idx = {
+            "generated_by": "build_visual_index.py",
+            "wiki_visual_coverage": {
+                "detected": 3, "embedded": 1, "missing": 2,
+                "missing_pages": [
+                    {"wiki_file": "ch1.md", "source_file": "ch01.pdf", "page": 4},
+                    {"wiki_file": "ch1.md", "source_file": "ch01.pdf", "page": 5}],
+            },
+        }
+        with open(os.path.join(d, "references", "figure_page_index.json"), "w", encoding="utf-8") as f:
+            json.dump(idx, f, ensure_ascii=False)
+        errors, warnings, stats = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 0)
+        self.assertIn("wiki 视觉覆盖缺口", warn_text(warnings))
+        self.assertEqual(stats["wiki_visual_detected"], 3)
+        self.assertEqual(stats["wiki_visual_missing"], 2)
+
+    def test_legacy_visual_index_without_coverage_warns_but_stays_valid(self):
+        d = self.make_ws([self._ok_item()])
+        with open(os.path.join(d, "references", "figure_page_index.json"), "w", encoding="utf-8") as f:
+            json.dump({"generated_by": "old", "files": {}}, f)
+        errors, warnings, _ = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 0)
+        self.assertIn("未包含 wiki_visual_coverage", warn_text(warnings))
+
+    def test_manual_answer_only_wiki_exposure_is_reported_as_completeness_gap(self):
+        d = self.make_ws([self._ok_item()])
+        idx = {"generated_by": "build_visual_index.py", "wiki_visual_coverage": {
+            "detected": 0, "embedded": 0, "missing": 0,
+            "deferred_answer_count": 1,
+            "manual_answer_exposure_count": 1,
+            "manual_answer_exposure_pages": [{
+                "wiki_file": "ch1.md", "source_file": "solutions.pdf", "page": 9,
+                "status": "deferred_answer", "coverage_issue": "manual_answer_exposure"}],
+        }}
+        with open(os.path.join(d, "references", "figure_page_index.json"),
+                  "w", encoding="utf-8") as f:
+            json.dump(idx, f, ensure_ascii=False)
+        errors, warnings, stats = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 0)
+        self.assertIn("提前暴露", warn_text(warnings))
+        self.assertEqual(stats["wiki_visual_deferred_answer"], 1)
+        self.assertEqual(stats["wiki_manual_answer_exposure"], 1)
+
+    def test_shared_prompt_answer_blocker_downgrades_static_readiness(self):
+        d = self.make_ws([self._ok_item()])
+        idx = {"generated_by": "build_visual_index.py", "wiki_visual_coverage": {
+            "detected": 0, "embedded": 0, "missing": 0,
+            "deferred_answer_count": 0, "manual_answer_exposure_count": 0,
+            "shared_prompt_answer_count": 1,
+            "shared_prompt_answer_blocker_count": 1,
+            "shared_prompt_answer_blocker_pages": [{
+                "wiki_file": "ch1.md", "source_file": "lecture.pdf", "page": 7,
+                "status": "shared_prompt_answer",
+                "blocker": "audited_question_side_crop_required"}],
+        }}
+        with open(os.path.join(d, "references", "figure_page_index.json"),
+                  "w", encoding="utf-8") as f:
+            json.dump(idx, f, ensure_ascii=False)
+        errors, warnings, stats = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 0)
+        self.assertIn("题面与答案共页", warn_text(warnings))
+        self.assertEqual(stats["wiki_visual_shared_prompt_answer"], 1)
+        self.assertEqual(stats["wiki_shared_prompt_answer_blockers"], 1)
+        self.assertEqual(V._readiness(errors, warnings), "usable_with_gaps")
+
+    def test_wiki_nul_text_warns_with_filename(self):
+        d = self.make_ws([self._ok_item()])
+        wiki = os.path.join(d, "references", "wiki", "ch1.md")
+        with open(wiki, "w", encoding="utf-8") as f:
+            f.write("# ch1\n<!-- ch01.pdf p.50 -->\nA\x00\x00B\n")
+        errors, warnings, _ = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 0)
+        self.assertIn("NUL", warn_text(warnings))
+        self.assertIn("ch1.md", warn_text(warnings))
+
+    def test_standard_dollar_math_is_not_reported_as_raw_latex(self):
+        d = self.make_ws([self._ok_item()])
+        wiki = os.path.join(d, "references", "wiki", "ch1.md")
+        with open(wiki, "w", encoding="utf-8") as f:
+            f.write("# ch1\n$P(A \\cup B)$\n\n$$P(A)=\\frac{1}{2}$$\n")
+        errors, warnings, stats = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 0)
+        self.assertNotIn("raw/伪分隔 LaTeX", warn_text(warnings))
+        self.assertNotIn("raw_latex_files", stats)
+
+    def test_pseudo_delimited_latex_warns_and_downgrades_readiness(self):
+        d = self.make_ws([self._ok_item()])
+        wiki = os.path.join(d, "references", "wiki", "ch1.md")
+        with open(wiki, "w", encoding="utf-8") as f:
+            f.write("# ch1\n(A \\cup B)\n[P(A)=\\frac{1}{2}.]\n")
+        errors, warnings, stats = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 0)
+        self.assertIn("raw/伪分隔 LaTeX", warn_text(warnings))
+        self.assertEqual(stats["raw_latex_files"], 1)
+        self.assertEqual(stats["raw_latex_occurrences"], 2)
+        self.assertEqual(V._readiness(errors, warnings), "usable_with_gaps")
+
+    def test_latex_in_code_examples_is_ignored(self):
+        d = self.make_ws([self._ok_item()])
+        wiki = os.path.join(d, "references", "wiki", "ch1.md")
+        with open(wiki, "w", encoding="utf-8") as f:
+            f.write("# ch1\nUse `\\frac{a}{b}` in source.\n```tex\n\\sum_i x_i\n```\n")
+        errors, warnings, _ = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 0)
+        self.assertNotIn("raw/伪分隔 LaTeX", warn_text(warnings))
+
+    def test_notebook_raw_latex_is_linted_too(self):
+        d = self.make_ws([self._ok_item()])
+        os.makedirs(os.path.join(d, "notebook"))
+        with open(os.path.join(d, "notebook", "ch01.md"), "w", encoding="utf-8") as f:
+            f.write("# notes\nP(A)=\\frac{1}{2}\n")
+        errors, warnings, stats = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 0)
+        self.assertIn("notebook/ch01.md", warn_text(warnings))
+        self.assertEqual(stats["raw_latex_files"], 1)
+
+    def test_prompt_and_answer_visual_suspects_are_counted_and_warned(self):
+        d = self.make_ws([self._ok_item()])
+        idx = {
+            "suspects": [{"id": "q_prompt"}],
+            "prompt_suspects": [{"id": "q_prompt"}],
+            "answer_suspects": [{"id": "q_answer"}, {"id": "q_answer_2"}],
+        }
+        with open(os.path.join(d, "references", "image_question_index.json"), "w", encoding="utf-8") as f:
+            json.dump(idx, f, ensure_ascii=False)
+        errors, warnings, stats = V.validate(d)
+        self.assertEqual(V._exit_code(errors), 0)
+        self.assertEqual(stats["visual_prompt_suspects"], 1)
+        self.assertEqual(stats["visual_answer_suspects"], 2)
+        joined = warn_text(warnings)
+        self.assertIn("题面侧视觉疑漏", joined)
+        self.assertIn("答案侧视觉疑漏", joined)
 
 
 class CheatsheetTraceLint(unittest.TestCase):

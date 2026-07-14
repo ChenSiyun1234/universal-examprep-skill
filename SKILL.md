@@ -3,7 +3,7 @@ name: universal-exam-cram-coach
 description: "帮助学生在临考前进行结构化极速复习：解析课程资料/大纲/重点，按章节生成 wiki 知识库与标准题库，组织针对性刷题与判分，并记录复习进度和错题。当用户即将考试、需要快速复习计划、练习题、错题复盘或考前小抄时使用（关键词：期末/备考/复习/刷题/划重点/错题；exam, cram, study plan, quiz, review）。不适用于长期学习规划、与考试无关的写作或编程任务。"
 license: MIT
 metadata:
-  version: "3.0"
+  version: "4.1"
   author: ZeKaiNie
 ---
 
@@ -24,12 +24,13 @@ Unset language → this is the first conversation: the merged first-ask (mode ×
 
 ## Control layer (behavior)
 
-Behavior lives in the modular skill collection, not in this file. Main skill / orchestrator: [`skills/exam-cram/SKILL.md`](skills/exam-cram/SKILL.md). The 8 sub-skills:
+Behavior lives in the modular skill collection, not in this file. Main skill / orchestrator: [`skills/exam-cram/SKILL.md`](skills/exam-cram/SKILL.md). The 9 sub-skills:
 
 | Sub-skill | Role |
 |---|---|
 | [`exam-ingest`](skills/exam-ingest/SKILL.md) | Build the workspace from materials (wiki + quiz bank + progress) |
 | [`exam-tutor`](skills/exam-tutor/SKILL.md) | Lazy per-chapter teaching (seven-step walkthroughs, visual-first gate) |
+| [`exam-study-guide`](skills/exam-study-guide/SKILL.md) | Compile persisted chapter sources into formula-readable, self-contained HTML/PDF study material |
 | [`exam-quiz`](skills/exam-quiz/SKILL.md) | Select & grade from the bank only (fail-closed on invisible figures) |
 | [`exam-review`](skills/exam-review/SKILL.md) | Replay mistakes & confusions |
 | [`exam-cheatsheet`](skills/exam-cheatsheet/SKILL.md) | Pre-exam cheat sheet |
@@ -41,7 +42,9 @@ Generic agents that will not read the full rules: [`AGENTS.md`](AGENTS.md) (one-
 
 ## Install & run essentials
 
-- Engine scripts live under [`scripts/`](scripts/) (Python standard library only, no pip): `ingest.py` builds the workspace one-shot; `update_progress.py` owns `study_state.json` (the single source of truth — `study_progress.md` is a generated view, never hand-edit it); `select_questions.py` / `select_hard_questions.py` are the official question selectors.
+- Engine scripts live under [`scripts/`](scripts/): core ingest/state/selection paths use the Python standard library; the optional `study_guide_render.py` fails loudly with an exact prerequisite when offline MathML or local PDF printing support is missing. `ingest.py` builds the workspace one-shot; `update_progress.py` owns `study_state.json` (the single source of truth — `study_progress.md` is a generated view, never hand-edit it); `select_questions.py` / `select_hard_questions.py` are the official question selectors.
 - Workspace file contract (wiki / quiz bank / state / asset metadata): [`docs/file-format.md`](docs/file-format.md).
 - Language policy (single-language purity, EN canonical vocabulary, persisted canonical values): [`docs/language-policy.md`](docs/language-policy.md).
 - Install in Claude Code at `~/.claude/skills/universal-exam-cram-coach/` or project-local `.claude/skills/universal-exam-cram-coach/`; load matrix for other hosts: [`docs/agent-portability.md`](docs/agent-portability.md).
+- PDF capabilities differ by host; use the audited, no-silent-download routing table in [`docs/pdf-capability-adapters.md`](docs/pdf-capability-adapters.md).
+- Artifact output is user-controlled: missing/legacy `artifact_mode` defaults to `chat` (normal teaching + state/notebook, no automatic HTML/PDF); only an explicit standing `visual` choice or a one-shot handout request invokes `exam-study-guide`. Agents never infer a subscription tier. Persist the standing choice with `update_progress.py set --artifact-mode chat|visual`.

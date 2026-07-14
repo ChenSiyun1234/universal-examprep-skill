@@ -71,11 +71,12 @@
     },
     {
       "name": "time_budget_no_questions",
-      "claim": "≤1天时间宽裕度下严禁向学生提任何澄清/偏好问句（任何问题都在浪费复习时间）——纯讲解直出",
+      "claim": "≤1天跳过澄清/偏好/反思式追问但允许标准题库 checkpoint；学生显式说不要问时才禁止所有互动题",
       "prompt": "我明天就考了（≤1天），别问我问题，直接讲重点。",
-      "detector": "urgent_no_student_questions_ok",
+      "detector": "urgent_question_cadence_ok",
       "mock_output": "mock/sample_outputs/time_budget_1day_good.txt",
       "mock_negative": "mock/sample_outputs/time_budget_1day_bad.txt",
+      "mock_bank_checkpoint": "mock/sample_outputs/time_budget_1day_bank_checkpoint.txt",
       "best_effort": false
     },
     {
@@ -142,7 +143,7 @@
     },
     {
       "name": "language_first_ask",
-      "claim": "首问回合=完整合并首问（三模式+四档全 gloss+三语语言行）；答复后一条 set 三旗标全 canonical（乱序合法）；紧迫开场静默三旗标（默认 零基础从头讲/≤1天、语言=开场语言、静默推断 双语 被抓、开场显式要双语则放行）且零问句",
+      "claim": "首问回合=完整合并首问（三模式+四档全 gloss+三语语言行）；答复后一条 set 三旗标全 canonical（乱序合法）；紧迫开场静默三旗标（默认 零基础从头讲/≤1天、语言=开场语言、静默推断 双语 被抓、开场显式要双语则放行）且零开场澄清/偏好问句",
       "prompt": "我下周有期末考，帮我复习《数据结构》。",
       "detector": "language_first_ask_ok",
       "mock_output": "mock/sample_outputs/language_ask_good.txt",
@@ -158,6 +159,24 @@
       "mock_negative_unglossed": "mock/sample_outputs/language_ask_unglossed.txt",
       "mock_urgent_bilingual_explicit": "mock/sample_outputs/language_urgent_bilingual_explicit.txt",
       "mock_urgent_bilingual_negated": "mock/sample_outputs/language_urgent_bilingual_negated.txt"
+    },
+    {
+      "name": "artifact_mode_routing",
+      "claim": "chat 完章不自动渲染；只有明确长期选择才持久 visual；单次 PDF 不改长期状态；订阅名称本身不得触发切换；PDF 先选 native/browser 后端再预检与生成",
+      "prompt": "我的额度比较有限，请把长期产物偏好明确保存为 chat；正常教学和笔记照旧，但不要自动生成 HTML/PDF。",
+      "detector": "artifact_mode_routing_ok",
+      "mock_output": "mock/sample_outputs/artifact_mode_chat_good.txt",
+      "mock_negative": "mock/sample_outputs/artifact_mode_chat_auto_pdf_bad.txt",
+      "mock_chat": "mock/sample_outputs/artifact_mode_chat_good.txt",
+      "mock_chat_negative": "mock/sample_outputs/artifact_mode_chat_auto_pdf_bad.txt",
+      "mock_chat_not_persisted": "mock/sample_outputs/artifact_mode_chat_not_persisted_bad.txt",
+      "mock_visual": "mock/sample_outputs/artifact_mode_visual_native_good.txt",
+      "mock_visual_subscription_guess": "mock/sample_outputs/artifact_mode_visual_subscription_guess_bad.txt",
+      "mock_visual_preflight_failed": "mock/sample_outputs/artifact_mode_visual_preflight_failed_bad.txt",
+      "mock_one_shot": "mock/sample_outputs/artifact_mode_one_shot_good.txt",
+      "mock_one_shot_persisted": "mock/sample_outputs/artifact_mode_one_shot_persist_bad.txt",
+      "mock_one_shot_probe_error": "mock/sample_outputs/artifact_mode_one_shot_probe_error_bad.txt",
+      "best_effort": false
     },
     {
       "name": "notebook_persist_ok",

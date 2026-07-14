@@ -1,4 +1,6 @@
 {
+  "artifact.chat": "chat-only",
+  "artifact.visual": "visual study guide",
   "lang.bilingual": "Bilingual",
   "lang.en": "English",
   "lang.zh": "Chinese",

@@ -96,6 +96,46 @@ class CoreExtraction(unittest.TestCase):
         self.assertEqual([it["id"] for it in items], ["lecture_quiz_1_1"])
         self.assertEqual(items[0]["answer_source_pages"], [2])
 
+    def test_teaching_examples_are_parallel_snapshots_not_a_quiz_bank_filter(self):
+        pages = _pages(
+            "ch01.pdf",
+            "Example 1.1 Problem  Compute the value.",
+            "Example 1.1 Solution  The value is 4.",
+            "Example 1.2  A completed worked demonstration with result 7.",
+            "Quiz 1.1  State the theorem.",
+        )
+        lecture = B.extract_lecture_items(pages)
+        sections = B.group_sections(pages)
+        raw = B.build_raw_input("C", sections, lecture)
+
+        # Compatibility: every extracted lecture item still lands in the canonical bank.
+        self.assertEqual(
+            [q["id"] for q in raw["quiz_bank"]],
+            ["lecture_example_1_1", "lecture_example_1_2", "lecture_quiz_1_1"],
+        )
+        # Teaching reachability is an independent snapshot of every Example, including overlap.
+        teaching = {e["id"]: e for e in raw["teaching_examples"]}
+        self.assertEqual(set(teaching), {"lecture_example_1_1", "lecture_example_1_2"})
+        self.assertEqual(teaching["lecture_example_1_1"]["teaching_role"], "paired_problem")
+        self.assertEqual(teaching["lecture_example_1_2"]["teaching_role"], "worked_example")
+        self.assertEqual(teaching["lecture_example_1_1"]["answer_source_pages"], [2])
+        self.assertEqual(teaching["lecture_example_1_2"]["source_pages"], [3])
+        self.assertNotIn("lecture_quiz_1_1", teaching)
+
+    def test_empty_text_pdf_page_keeps_wiki_anchor_for_visual_repair(self):
+        pages = _pages("ch01.pdf", "Chapter 1 prose", "")
+        raw = B.build_raw_input("C", B.group_sections(pages), [])
+        wiki = raw["phases"][0]["wiki_content"]
+        self.assertIn("<!-- ch01.pdf p.2 -->", wiki)
+        self.assertIn("保留原页锚点供视觉覆盖核对", wiki)
+
+    def test_explicit_unpaired_example_problem_is_still_a_paired_problem_teaching_role(self):
+        pages = _pages("ch01.pdf", "Example 1.9 Problem  Compute x, but the solution page is missing.")
+        lecture = B.extract_lecture_items(pages)
+        raw = B.build_raw_input("C", B.group_sections(pages), lecture)
+        self.assertEqual(raw["teaching_examples"][0]["teaching_role"], "paired_problem")
+        self.assertEqual(raw["quiz_bank"][0]["answer_status"], "unknown")
+
     def test_merges_continued_solution_pages(self):
         pages = _pages("ch01.pdf",
                        "Quiz 1.4  Long one.",
@@ -662,6 +702,25 @@ class CliAndRun(unittest.TestCase):
         self.assertTrue(os.path.isfile(png))
         self.assertGreaterEqual(report["pages_rendered"], 1)
 
+    def test_teaching_snapshot_keeps_rendered_assets_and_report_metrics(self):
+        d = _materials_with_pdf()
+        be = FakeBackend({"ch01.pdf": [
+            "Example 1.1 Problem  Shade the Venn diagram at right.",
+            "Example 1.1 Solution  Shade region A.",
+            "Example 1.2  This table demonstrates the completed calculation.",
+        ]})
+        args = _args(d)
+        code, raw, report = B.run(args, backend=be)
+        self.assertEqual(code, 0)
+        bank = {q["id"]: q for q in raw["quiz_bank"]}
+        teaching = {e["id"]: e for e in raw["teaching_examples"]}
+        self.assertEqual(set(teaching), {"lecture_example_1_1", "lecture_example_1_2"})
+        self.assertEqual(teaching["lecture_example_1_1"]["assets"],
+                         bank["lecture_example_1_1"]["assets"])
+        self.assertEqual(report["teaching_examples_detected"], 2)
+        self.assertEqual(report["teaching_example_roles"],
+                         {"paired_problem": 1, "worked_example": 1})
+
     def test_warns_when_asset_required_but_no_render(self):
         d = _materials_with_pdf()
         be = FakeBackend({"ch01.pdf": ["Quiz 1.1  Venn diagram at right.", "Quiz 1.1 Solution  s"]},
@@ -867,23 +926,35 @@ class Hygiene(unittest.TestCase):
             self.assertNotIn(dep, head)
 
     def test_no_committed_course_pdfs_or_images(self):
-        # the repo must not carry real course PDFs or slide images
-        # exempt the repo's own branding dir (assets/ holds the README hero/mascot, not course material)
-        assets_dir = os.path.join(ROOT, "assets")
-        for dirpath, _dirs, files in os.walk(ROOT):
-            if ".git" in dirpath:
-                continue
-            in_assets = os.path.abspath(dirpath) == os.path.abspath(assets_dir)
-            for fn in files:
-                low = fn.lower()
-                if low.endswith(".pdf"):
-                    self.fail("committed PDF found: %s" % os.path.join(dirpath, fn))
-                if low.endswith((".png", ".jpg", ".jpeg")):
-                    if in_assets:  # project branding (mascot/hero), intentionally committed
-                        continue
-                    size = os.path.getsize(os.path.join(dirpath, fn))
-                    self.assertLess(size, 4096, "suspiciously large image (real slide?): %s" %
-                                    os.path.join(dirpath, fn))
+        # the repo must not carry real course PDFs or slide images.
+        # Scan TRACKED files only (git ls-files) — the test name says "committed"; local benchmark
+        # artifacts (cheatsheet.pdf, rendered page PNGs under gitignored results/ or skill_workspace/)
+        # are NOT committed and must not trip this. Falls back to a working-tree walk outside a git
+        # checkout (CI tarball) so the guard still runs.
+        try:
+            out = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True,
+                                 text=True, encoding="utf-8")
+            tracked = [f for f in out.stdout.splitlines() if f.strip()] if out.returncode == 0 else None
+        except (OSError, ValueError):
+            tracked = None
+        if tracked is None:                                    # not a git checkout — walk the tree
+            tracked = []
+            for dirpath, _dirs, files in os.walk(ROOT):
+                if ".git" in dirpath:
+                    continue
+                for fn in files:
+                    tracked.append(os.path.relpath(os.path.join(dirpath, fn), ROOT).replace("\\", "/"))
+        for rel in tracked:
+            low = rel.lower()
+            if low.endswith(".pdf"):
+                self.fail("committed PDF found: %s" % rel)
+            if low.endswith((".png", ".jpg", ".jpeg")):
+                if rel.split("/")[0] == "assets":              # project branding (mascot/hero), intentional
+                    continue
+                p = os.path.join(ROOT, *rel.split("/"))
+                if os.path.isfile(p):
+                    self.assertLess(os.path.getsize(p), 4096,
+                                    "suspiciously large image (real slide?): %s" % rel)
 
 
 if __name__ == "__main__":

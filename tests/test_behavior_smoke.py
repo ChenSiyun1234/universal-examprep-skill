@@ -75,7 +75,11 @@ class BehaviorSmokeTest(unittest.TestCase):
             "mock_liberal", "mock_ai_answer", "mock_negative_skip_ask", "mock_negative_formula_first",
             "mock_negative_no_source", "mock_negative_unlabeled_source", "mock_negative_missing_warn",
             "mock_negative_warn_title", "mock_negative_unsolicited_closers", "mock_optin_closers",
-            "mock_negative_legacy", "mock_test", "mock_negative_recall_only",
+            "mock_negative_legacy", "mock_test", "mock_negative_recall_only", "mock_bank_checkpoint",
+            "mock_chat", "mock_chat_negative", "mock_visual", "mock_visual_subscription_guess",
+            "mock_one_shot", "mock_one_shot_persisted",
+            "mock_chat_not_persisted", "mock_visual_preflight_failed",
+            "mock_one_shot_probe_error",
         )
         for sc in spec["scenarios"]:
             for k in file_keys:
@@ -678,11 +682,30 @@ class BehaviorSmokeTest(unittest.TestCase):
                         and H.has_zero_basic_sections(zb), "零基础七步好例应三项全过")
 
     def test_a6_time_budget_no_questions_detector(self):
-        # ≤1天档：好例纯讲解无学生问句；反例向学生抛澄清/偏好问句必须被抓
+        # 显式 no_questions：好例零互动问句；反例向学生抛澄清/偏好问句必须被抓。
         self.assertTrue(H.urgent_no_student_questions_ok(_read("mock/sample_outputs/time_budget_1day_good.txt")),
-                        "≤1天纯讲解好例不应有学生问句")
+                        "显式 no_questions 的纯讲解好例不应有学生问句")
         self.assertFalse(H.urgent_no_student_questions_ok(_read("mock/sample_outputs/time_budget_1day_bad.txt")),
-                         "≤1天向学生提问必须被抓")
+                         "显式 no_questions 下的互动问句必须被抓")
+        fixture = _bs("fixtures/mini_course")
+        bank_checkpoint = _read("mock/sample_outputs/time_budget_1day_bank_checkpoint.txt")
+        self.assertTrue(H.urgent_question_cadence_ok(bank_checkpoint, fixture),
+                        "普通≤1天不应误杀带真实题库 ID 且题面匹配的 checkpoint")
+        self.assertFalse(H.urgent_question_cadence_ok(bank_checkpoint, fixture, no_questions=True),
+                         "显式 no_questions 应覆盖题库 checkpoint 豁免")
+        solved_demo = ("题目 [#mc_q1]：栈（stack）的存取顺序是下列哪一种？"
+                       "答案：A，因为栈是后进先出。")
+        self.assertTrue(H.urgent_question_cadence_ok(solved_demo, fixture, no_questions=True),
+                        "显式 no_questions 只禁互动题，不应误杀立即自答的教学示例")
+        self.assertFalse(H.urgent_question_cadence_ok(
+            bank_checkpoint + "\n\n还有问题吗？", fixture),
+            "一道真实题库题不能掩盖其后的反思式追问")
+        self.assertFalse(H.urgent_question_cadence_ok(
+            "题目 [#FAKE]：栈（stack）的存取顺序是下列哪一种？", fixture),
+            "伪造题库 ID 不能获得 checkpoint 豁免")
+        self.assertFalse(H.urgent_question_cadence_ok(
+            "栈（stack）的存取顺序是下列哪一种？", fixture),
+            "无 [#id] 的题目不能冒充标准题库 checkpoint")
         # 讲解里的自答式反问（不含学生澄清线索）不算学生问句、不误伤
         self.assertFalse(H.asks_student_question("为什么顺序表随机访问更快？因为地址可直接算出。"))
         self.assertTrue(H.asks_student_question("你想先从哪一章开始？"))
@@ -694,10 +717,10 @@ class BehaviorSmokeTest(unittest.TestCase):
                          "「你可能会问…？」自问自答不算")
         self.assertFalse(H.asks_student_question("您也许好奇：栈和队列有何区别？其实差在存取顺序。"))
         self.assertFalse(H.asks_student_question("栈是后进先出，对吧？其实就是这样。"), "反问后紧接自答不算")
-        # Codex R2-IAO：≤1天 里任何面向用户的非反问问句都算（不靠白名单 cue）——收尾问句 + 通用问句
+        # 底层问句信号要覆盖收尾/通用问句；节奏层只豁免经题库核验的 checkpoint。
         for q in ("还有问题吗？", "接下来怎么安排？", "我先讲第1章，可以吗？", "我们开始吧，好吗？",
                   "有没有什么问题？", "Any questions?"):
-            self.assertTrue(H.asks_student_question(q), "≤1天 通用面向用户问句必须被抓：%s" % q)
+            self.assertTrue(H.asks_student_question(q), "通用面向用户问句必须被识别：%s" % q)
         # 问号非行尾 / 跨软换行 / 英文问句 都能识别（False Negative 防护）
         self.assertTrue(H.asks_student_question("你想先复习哪一章？ 告诉我。"), "问号后有尾巴也要识别")
         self.assertTrue(H.asks_student_question("请问你复习到第几章了？请回复。"))
@@ -832,6 +855,32 @@ class BehaviorSmokeTest(unittest.TestCase):
             self.assertFalse(sc.get("best_effort"), "%s 是确定性断言场景，不应标 best_effort" % nm)
             ok, detail = H.check_scenario_mock(nm, sc, H.FIXTURE)
             self.assertTrue(ok, "%s 场景在 --mock 下应通过（好例过、反例被抓）：%s" % (nm, detail))
+
+    def test_artifact_mode_routing_detector_and_registry(self):
+        self.assertTrue(H.artifact_mode_routing_ok(
+            _read("mock/sample_outputs/artifact_mode_chat_good.txt"), "chat"))
+        self.assertFalse(H.artifact_mode_routing_ok(
+            _read("mock/sample_outputs/artifact_mode_chat_auto_pdf_bad.txt"), "chat"))
+        self.assertFalse(H.artifact_mode_routing_ok(
+            _read("mock/sample_outputs/artifact_mode_chat_not_persisted_bad.txt"), "chat"))
+        self.assertTrue(H.artifact_mode_routing_ok(
+            _read("mock/sample_outputs/artifact_mode_visual_native_good.txt"), "visual"))
+        self.assertFalse(H.artifact_mode_routing_ok(
+            _read("mock/sample_outputs/artifact_mode_visual_subscription_guess_bad.txt"), "visual"))
+        self.assertFalse(H.artifact_mode_routing_ok(
+            _read("mock/sample_outputs/artifact_mode_visual_preflight_failed_bad.txt"), "visual"))
+        self.assertTrue(H.artifact_mode_routing_ok(
+            _read("mock/sample_outputs/artifact_mode_one_shot_good.txt"), "one_shot"))
+        self.assertFalse(H.artifact_mode_routing_ok(
+            _read("mock/sample_outputs/artifact_mode_one_shot_persist_bad.txt"), "one_shot"))
+        self.assertFalse(H.artifact_mode_routing_ok(
+            _read("mock/sample_outputs/artifact_mode_one_shot_probe_error_bad.txt"), "one_shot"))
+
+        spec = H.load_scenarios()
+        scenario = next(s for s in spec["scenarios"] if s["name"] == "artifact_mode_routing")
+        self.assertFalse(scenario.get("best_effort"))
+        ok, detail = H.check_scenario_mock("artifact_mode_routing", scenario, H.FIXTURE)
+        self.assertTrue(ok, detail)
 
     def test_run_mock_exits_zero(self):
         self.assertEqual(_silent(H.main, ["--mock"]), 0)

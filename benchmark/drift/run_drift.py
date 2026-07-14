@@ -757,7 +757,8 @@ def _snapshots(turns, key, base_text):
     return snaps
 
 
-# A6：面向学生的澄清/偏好问句线索（≤1天档严禁——每问一次都在浪费复习时间）。
+# A6：面向学生的互动问句信号。普通≤1天仅禁澄清/偏好/反思式追问，题库 checkpoint 可用；
+# 当前把该原始计数设为 0 的 replay 场景显式声明了 no_questions=true。
 # 这是 benchmark/behavior_smoke/run_behavior_smoke.py 的 asks_student_question 的**逐字等价副本**
 # （两文件互不 import，各自独立、无网络/依赖）；tests/test_drift_harness 的 parity 测试锁二者一致，
 # 改一处必须同步改另一处。
@@ -770,6 +771,7 @@ _STUDENT_ASK_CUE = re.compile(
     r"还有(?:什么|没有)?问题|有没有(?:什么)?问题|有问题吗|还有(?:不懂|不会|疑问)|哪里不(?:懂|会|清楚)|"
     r"可以吗|可不可以|行吗|行不行|好吗|好不好|方便吗|需要吗|要吗|"
     r"接下来(?:怎么|怎样|如何|想|要|需要)|下一步(?:怎么|想|要)|怎么安排|如何安排|怎么(?:样)?进行|"
+    r"下列(?:哪|何)|哪一(?:项|种)|请(?:选择|判断|计算|回答|作答)|which of the following|choose|calculate|answer(?: this)?\b|"
     r"do you\b|would you\b|are you\b|have you\b|can you\b|which chapter\b|what.*\byou\b|"
     r"should i\b|shall i\b|want me to\b|which.*first\b|any questions\b",
     re.I)
@@ -919,7 +921,8 @@ def compute_metrics(scenario, fixture_dir, turns):
     markers_l = [g.lower() for g in goal_markers]                 # case-insensitive, like the drift blocklist
     goal_marker_seen = int(any(any(g in t.get("assistant", "").lower() for g in markers_l) for t in assistant_turns))
 
-    # A6 模式漂移：≤1天时间宽裕度下，任何向学生抛出的澄清/偏好问句都算漂移（浪费复习时间）。
+    # A6 原始互动问句计数。只有显式 no_questions 的场景才应把阈值设为 0；普通≤1天若要
+    # 测 checkpoint，应使用 T2 的题库感知 cadence 探针，不能把这个原始计数误读为时间档禁题。
     # 时间宽裕度从 scenario.time_budget 读；非 ≤1天档本指标恒为 0（不适用）。
     urgent = _tier_is_urgent(scenario.get("time_budget"))        # canonical 归一后判定，别名（明天考/今天…）也算
     urgent_mode_questions = (sum(1 for t in assistant_turns if _asks_student_question(t.get("assistant", "")))
@@ -1157,7 +1160,7 @@ def compute_metrics(scenario, fixture_dir, turns):
 THRESHOLD_RULES = {
     "goal_retention_min": ("goal_retention", "min"),
     "goal_marker_min": ("goal_marker_seen", "min"),   # positive signal: exam goal referenced ≥ N times (0/1)
-    "urgent_mode_questions_max": ("urgent_mode_questions", "max"),  # A6：≤1天档向学生提问的次数上限
+    "urgent_mode_questions_max": ("urgent_mode_questions", "max"),  # A6：显式 no_questions 场景的互动问句上限
     "urgent_mode_persisted_min": ("urgent_mode_persisted", "min"),  # A6：紧迫开场须把 mode/time 落盘（0/1）
     "plan_mutations_max": ("plan_mutations", "max"),
     "quiz_invention_rate_max": ("invention_rate", "max"),
