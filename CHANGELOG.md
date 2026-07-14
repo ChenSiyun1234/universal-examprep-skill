@@ -8,7 +8,7 @@
 
 ## V4.2 — 2026-07-14
 
-> 完整审查、设计与实施记录见 [`docs/plans/knowledge-ingestion-hardening.md`](docs/plans/knowledge-ingestion-hardening.md)。
+> 完整审查、设计与实施记录见 [`docs/history/plans/knowledge-ingestion-hardening.md`](docs/history/plans/knowledge-ingestion-hardening.md)。
 
 - **结构化课程建库**：新增 `ingest_course.py` 作为 PDF/DOCX/PPTX/txt/Markdown 到已校验工作区的唯一常规入口；返回码 `0` 表示可进入学习，`10` 表示工程流程成功但 readiness 仍被内容问题阻断。
 - **可恢复、可追溯的事实层**：建库中间态统一落入 `.ingest/` 的 source manifest、ContentUnit、chapter mapping 与证据文件；稳定 ID、严格 schema、源文件哈希、页码与资产 provenance 让编译结果可重建、来源漂移可检测，多文件事务在中断后可回滚。
