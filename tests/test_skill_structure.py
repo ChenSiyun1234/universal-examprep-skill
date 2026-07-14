@@ -78,13 +78,34 @@ class TestSkillCollectionStructure(unittest.TestCase):
         self.assertTrue(os.path.isfile(os.path.join(ROOT, "SKILL.md")),
                         "root SKILL.md must remain as the compatibility entrypoint")
 
-    def test_root_skill_metadata_matches_v4_release(self):
+    def test_root_skill_metadata_matches_current_release(self):
         version = nested_frontmatter_value(read("SKILL.md"), "metadata", "version")
         self.assertEqual(
             version,
-            "4.0",
-            "root SKILL.md metadata must be bumped with the v4 release; stale metadata "
+            "4.1",
+            "root SKILL.md metadata must be bumped with the current release; stale metadata "
             "makes a current install look like an older skill",
+        )
+
+    def test_release_tag_matches_root_skill_metadata_when_provided(self):
+        tag = os.environ.get("EXPECTED_RELEASE_TAG")
+        if not tag:
+            self.skipTest("release-only tag/metadata gate")
+        version = nested_frontmatter_value(read("SKILL.md"), "metadata", "version")
+        self.assertEqual(
+            tag,
+            "v" + str(version),
+            "release tag and root SKILL.md metadata.version must identify the same version",
+        )
+        changelog_headings = [
+            line.strip() for line in read("CHANGELOG.md").splitlines()
+            if line.startswith("## ")
+        ]
+        self.assertTrue(
+            any(heading == "## V" + str(version)
+                or heading.startswith("## V" + str(version) + " ")
+                for heading in changelog_headings),
+            "CHANGELOG.md must contain a section for the release version",
         )
 
     def test_all_expected_skill_files_exist(self):

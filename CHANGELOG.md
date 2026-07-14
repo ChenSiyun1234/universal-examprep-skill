@@ -4,6 +4,10 @@
 
 ## Unreleased
 
+- 暂无。
+
+## V4.1 — 2026-07-14
+
 - **真实课程完整性加固**：视觉覆盖拆为 wiki / 题面 / 答案三侧；空白/纯图 PDF 页也进入分母，回挂只认可带原页 provenance 的图片，索引同时绑定工作区输入、原始 PDF 内容/路径清单和派生结果哈希并在阶段完成时检查 freshness。答案专属页延后到解答区；手工提前暴露和题答共享整页 fail-closed。
 - **教学例题不再随题库清理消失**：新增 `references/teaching_examples.json`、append-only `references/teaching_baseline.json` 与按章列举工具；较小 raw input/重写报告不能缩减基线，可判分题库仍是唯一答案源，教学层只保证 worked examples 可达。
 - **阶段完成改为证据门禁**：wiki、视觉、教学例题、notebook 与 checkpoint 写入 `phase_evidence`；`verified` 和 `covered_unverified` 分离，旧工作区兼容但不冒充完整。
