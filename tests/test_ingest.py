@@ -11,14 +11,23 @@
 
 import os
 import sys
+import io
 import json
 import shutil
 import tempfile
 import subprocess
 import unittest
+from contextlib import redirect_stdout
+from unittest import mock
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-INGEST = os.path.join(REPO_ROOT, "scripts", "ingest.py")
+SCRIPTS = os.path.join(REPO_ROOT, "scripts")
+sys.path.insert(0, SCRIPTS)
+
+from scripts import ingest as ingest_module
+UnsafePathError = ingest_module.UnsafePathError
+
+INGEST = os.path.join(SCRIPTS, "ingest.py")
 
 VALID = {
     "course_name": "数据结构",
@@ -68,6 +77,19 @@ class IngestEndToEndTest(unittest.TestCase):
         bank = json.loads(read(self.tmp, "references", "quiz_bank.json"))
         self.assertEqual(len(bank), 2)  # 题库是合法 JSON 数组
 
+    def test_path_guard_error_is_reported_without_traceback(self):
+        output = io.StringIO()
+        with mock.patch.object(
+            ingest_module,
+            "safe_workspace_entry",
+            side_effect=UnsafePathError("path contains a symlink entry"),
+        ):
+            with redirect_stdout(output), self.assertRaises(SystemExit) as stopped:
+                ingest_module._safe_output_tree(self.tmp)
+        self.assertEqual(1, stopped.exception.code)
+        self.assertIn("符号链接", output.getvalue())
+        self.assertNotIn("Traceback", output.getvalue())
+
     def test_anchors_replaced_with_generated_content(self):
         run_ingest(VALID, self.tmp)
         plan = read(self.tmp, "study_plan.md")
@@ -111,6 +133,14 @@ class IngestEndToEndTest(unittest.TestCase):
             {"phase_num": 2, "phase_name": "B", "wiki_filename": "dup.md", "wiki_content": "y"},
         ], "quiz_bank": []}
         self.assertEqual(run_ingest(bad, self.tmp).returncode, 1)
+
+    def test_duplicate_quiz_id_rejected_before_any_workspace_write(self):
+        bad = json.loads(json.dumps(VALID, ensure_ascii=False))
+        bad["quiz_bank"][1]["id"] = "q1"
+        result = run_ingest(bad, self.tmp)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("重复", result.stdout)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "references")))
 
     def test_choice_question_missing_options_fails(self):
         bad = {"course_name": "X",

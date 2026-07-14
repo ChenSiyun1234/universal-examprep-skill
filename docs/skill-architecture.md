@@ -1,53 +1,106 @@
 # Skill Architecture — 技能集合结构说明
 
-本文档解释这套备考技能从「单体 SKILL.md」走向「可移植技能集合」后的结构，以及各项防幻觉能力落在哪里。
-**本次重构只加结构、文档与测试，不改 `scripts/ingest.py` 逻辑，不改变任何既有行为。**
+这套技能按“语言中性入口 → 单一控制层 → 可替换文案层 → 结构化建库事实层 → 编译后的学习层”组织，目标是让不同宿主能找到入口，同时避免规则、语言和派生产物各自漂移。
 
-> A8b: student-facing rendering is dispatched by `study_state.json.language` (`中文` default / `English` / `双语`); each language mode is single-language pure — `中文` pure Chinese, `English` pure EN-canonical vocabulary (see docs/language-policy.md).
+## 1. 入口与事实源
 
-## 1. 兼容入口（不破坏现有用法）
-- 根目录 **`SKILL.md`** 保持为**默认 / 兼容入口**，仍承载完整防编题与来源标注规则。已经按旧方式安装本技能的 host 不受影响。
-- 新支持技能集合的 host 可改用 **`skills/exam-cram/SKILL.md`** 作主入口——它与根 `SKILL.md` 描述同一行为。
-- **`AGENTS.md`** 是给「不读完整 SKILL.md 的通用代理」的一屏浓缩契约（防幻觉核心底线）。
+- [`SKILL.md`](../SKILL.md) 是语言中性路由器：读取 `study_state.json.language` 的规范值，定位主技能和对应文案包。它不再承载完整流程。
+- [`skills/exam-cram/SKILL.md`](../skills/exam-cram/SKILL.md) 是主编排器；各 `skills/*/SKILL.md` 各自拥有一个职责的行为契约。
+- [`locales/zh/SKILL.md`](../locales/zh/SKILL.md) 与 [`locales/en/SKILL.md`](../locales/en/SKILL.md) 是轻量兼容索引，不是中文/英文两份行为事实源。
+- [`AGENTS.md`](../AGENTS.md) 是给不读取完整技能的通用代理的浓缩安全底线；详细行为仍以相应子技能为准。
 
-## 2. 技能集合布局
-```
+## 2. 技能集合
+
+```text
 skills/
-  exam-cram/        # 主技能：编排者，承载阶梯/模式/契约
-  exam-ingest/      # 子：从学生材料初始化工作区（wiki + 题库 + 进度）
-  exam-tutor/       # 子：按章惰性加载授课（含零基础重点题精讲、画图先跑算法）
-  exam-study-guide/ # 子：把当前章事实源编译为公式可读、自包含的 HTML/PDF 教材
-  exam-quiz/        # 子：题库抽题判分，支持 6 大题型
-  exam-review/      # 子：错题 + 概念疑难点复盘
-  exam-cheatsheet/  # 子：考前小抄 / 总复习走查
-  exam-audit/       # 子：只读体检工作区，报告问题不改
-  exam-help/        # 子：速查卡
-  confusion-tracker/  # 子：概念疑难点追踪（写 study_progress.md），被 exam-tutor / exam-review 调用
+  exam-cram/          # 恢复断点、模式与阶段编排
+  exam-ingest/        # 材料建库、告警接管、工作区初始化
+  exam-tutor/         # 当前章惰性授课、七步精讲
+  exam-study-guide/   # 当前章 HTML/PDF 阅读视图
+  exam-quiz/          # 题库抽题与判分
+  exam-review/        # 错题和疑难复盘
+  exam-cheatsheet/    # 考前小抄
+  exam-audit/         # 只读工作区体检
+  exam-help/          # 速查卡
+  confusion-tracker/  # 概念疑难追踪
 ```
-每个子技能**单一职责**、各自有 frontmatter（`name` / `description` / `license`）与「Purpose / Activation / Inputs / Workflow / Output Contract / Boundaries」六段；彼此**交叉引用而非复制**。
 
-## 3. 子技能 ↔ 备考生命周期
-| 阶段 | 子技能 |
-| --- | --- |
-| 冷启动建库 | `exam-ingest` |
-| 按章授课 | `exam-tutor`（+ `skills/confusion-tracker` 记疑难点） |
-| 章节可视教材 | `exam-study-guide`（只编译已经持久化的当前章内容） |
-| 刷题判分 | `exam-quiz` |
-| 错题/疑难复盘 | `exam-review`（+ `skills/confusion-tracker`） |
-| 考前小抄 | `exam-cheatsheet` |
-| 工作区体检 | `exam-audit` |
-| 速查 | `exam-help` |
+其中概念疑难追踪的完整路径是 [`skills/confusion-tracker`](../skills/confusion-tracker/SKILL.md)，与其他子技能一样位于共享控制层，而不是语言包中。
 
-> **双语分层**：模块化 `skills/exam-*` 用**英文控制段**（Purpose / Activation / Inputs / Workflow / Output Contract / Boundaries）+ `Student-facing Output` 下的**简体中文学生示例**；根 `SKILL.md` 维持中文优先作兼容入口。详见 [`language-policy.md`](language-policy.md)。学生侧模板目前**有意与控制逻辑同文件、暂不拆 `locales/`**（边界与将来怎么拆见 [`localization.md`](localization.md)）。
+每个子技能保持 Purpose / Activation / Inputs / Workflow / Output Contract / Boundaries 六段结构。跨技能只链接，不复制整段流程。
 
-## 4. 当前能力落点
-- **知识来源透明化（provenance）**：贯穿全部子技能——🟢 来自资料 / 🟡 AI补充，可能与你老师讲的不完全一致 / ⚠️ AI生成答案，非老师/教材提供（canonical 见 `docs/language-policy.md`）；契约写在 `exam-cram` 的 *Knowledge provenance* 与 `AGENTS.md` 规则 4–5、8。
-- **3 学习模式 × 4 时间宽裕度**（A6）：`exam-cram` 的 *Modes* 段（零基础从头讲 / 某章起步补弱 / 查缺补漏，叠加 ≤1天/1-3天/3-7天/>7天）——首次对话问清、存 `study_state.json` 的 `mode`/`time_budget`；3-7天/>7天档的知识点窗口存 `knowledge_window`（`update_progress.py window-add/window-set-status`）。零基础「重点题精讲」= `零基础从头讲` 模式 + `exam-tutor` 的七步模板工作流（旧 `panic` 已迁移至此）。
-- **画图题确定性处理（`type: "diagram"`）**：`exam-tutor`（讲）与 `exam-quiz`（判）的「先跑算法再画图」流程。
-- **6 大题型**（`choice / subjective / diagram / fill_blank / true_false / code`）：`exam-quiz`，与 `scripts/ingest.py` 的 `VALID_QUIZ_TYPES` 一致。
-- **confusion-tracker**：位于 `skills/confusion-tracker/` 的子技能（与其他子技能同级），由 `exam-tutor` 在教学时记录概念疑难点、`exam-review` 在复盘阶段调起。
+## 3. 生命周期路由
 
-## 5. Future work（后续 PR，本 PR 不含）
-- **schema 校验 + workspace validator**：用 stdlib JSON Schema 校验 `quiz_bank.json` / `raw_input.json`，并加一个「检查已建工作区是否健康」的脚本（`exam-audit` 的程序化版本）。
-- **规则副本对齐测试**：把 `AGENTS.md` 作为单一事实源，为各 host 规则副本加一个 stdlib 对齐检查（副本须等于 `AGENTS.md` 正文；`SKILL.md` 与 `AGENTS.md` 共有的防幻觉不变式逐字出现）。
-- **long-horizon drift benchmark**：模拟 15–30 轮长会话 + 中途干扰，量化目标保持率 / 编题率 / 断点恢复一致性（对照「裸文件 agent」vs「使用本技能」），坐实本技能真正要解决的「长程漂移」痛点。
+| 用户动作 | 主处理技能 | 只读的主要当前切片 |
+| --- | --- | --- |
+| 提供材料、首次建库 | `exam-ingest` | 原材料目录、`.ingest/` 来源清单与 typed review |
+| 讲当前章 | `exam-tutor` | 一个 wiki 章节 + 当前章教学例题切片 |
+| 做当前章题 | `exam-quiz` | 题库的当前章筛选结果 |
+| 复盘错题/疑难 | `exam-review` | 状态中的未掌握项 + 对应题目 |
+| 生成视觉教材 | `exam-study-guide` | 已持久化的当前章 wiki、例题、题目、图片、笔记 |
+| 冲刺小抄 | `exam-cheatsheet` | 错题、疑难、知识窗口与 wiki |
+| 体检 | `exam-audit` | 工作区清单与一致性证据 |
+
+## 4. 状态、建库与内容层
+
+```text
+<workspace>/.ingest/               # 建库/接管事实源；不得手改
+  source_manifest.json             # 原材料版本、哈希与解析状态
+  base_content_units.jsonl         # 确定性解析基线
+  content_units.jsonl              # 基线 + 已应用 patch 的编译视图
+  chapter_phase_mappings.jsonl     # 真实章节与学习阶段显式映射
+  review_queue.jsonl               # typed AI/人工接管生命周期
+  review_patches.jsonl             # append-only、可回放补丁 ledger
+  build_manifest.json              # page accounting 与完整性哈希
+study_state.json                 # 结构化进度唯一事实源
+study_progress.md                # 由状态渲染的可读视图
+references/wiki/chNN_*.md        # 按章知识源
+references/quiz_bank.json        # 唯一测验题源
+references/retrieval_index.json  # freshness-bound 轻量检索派生物
+references/teaching_examples.json
+references/teaching_baseline.json
+notebook/chNN.md                 # 持久化完整教学与反馈
+mistakes/chNN.md                 # 错题镜像
+study_guide/chNN.html|pdf        # 当前章派生阅读产物
+```
+
+常规材料入口是 `scripts/ingest_course.py`：预检 → 解析 → 结构化编译 → 状态初始化 → 视觉索引 → validator。退出 10 表示程序完成但内容 readiness 被阻断，必须用 `scripts/ingest_review.py` 逐项接管；不能因为 wiki/题库已经出现就开始教学。review patch 绑定来源哈希并写入 append-only ledger，再重编译 wiki、题库和检索索引。
+
+状态存在时只能经 `scripts/update_progress.py` 修改；无状态但 Python 可用时先 `init`。`study_progress.md`、wiki/题库、检索索引、HTML 和 PDF 都是面向不同用途的编译/派生视图，不能反向覆盖 `.ingest/` 或 `study_state.json` 的事实源。
+
+## 5. 语言层
+
+- 控制规则：`skills/*/SKILL.md`，以英文、精确、可测试的流程为主；触发 metadata、规范状态值和逐字学生话术是明确例外。
+- 学生文案：`locales/<lang>/skills/*.md`、消息目录和模板。
+- 规范语言值：`中文` / `English` / `双语`；根路由器按这些值派发。
+- 原始材料的逐字引文可保留原语言并标明；智能体生成 prose 必须遵守所选语言。
+- 机器契约：JSON keys、stable IDs、hash、reason code 和 lifecycle status 固定，不随翻译改变。
+- 人类可读视图：智能体生成的 notebook、回执与教材按选择语言渲染；状态枚举保持 canonical。若 legacy/generated 进度视图仍是中文 canonical，代理只把它当状态视图读取，再按当前语言复述，不能把两层混为一谈。
+
+详见 [`language-policy.md`](language-policy.md) 和 [`localization.md`](localization.md)。
+
+## 6. 关键不可变式
+
+- 知识来源透明：🟢 来自资料 / 🟡 AI补充，可能与你老师讲的不完全一致 / ⚠️ AI生成答案，非老师/教材提供。
+- 测验只来自 `quiz_bank.json`；没有题库或题面资产不可见时失败关闭。
+- 学习模式和时间档位影响节奏，但不解除来源、状态或资产门禁。
+- 图结构题先运行确定性算法，再渲染。
+- 教学、判分、疑难和复盘先写 notebook，再返回对话摘要。
+- `artifact_mode=chat` 不自动生成 HTML/PDF；`visual` 或一次性请求才进入视觉产物流程。
+- 建库程序的 warnings、skipped、人工审阅项和缺答案项必须逐条接管。
+- 结构化工作区 `readiness=blocked` 时禁止进入授课、测验或阶段完成。
+
+## 7. 验证层
+
+仓库测试覆盖：
+
+- skill frontmatter 与目录清单；
+- zh/en 文案、消息键和模板结构对齐；
+- 语言纯净与 canonical 标签；
+- 状态初始化和写入边界；
+- 题库、范围、视觉资产和来源契约；
+- 工作区 schema/validator；
+- 分发包必须包含路由器、控制层、语言包和脚本；
+- Markdown 相对链接与模板样例硬编码。
+
+新增功能应更新现有事实源及对应语义测试，不应再创建一份 release-era 手册或复制整段规则。

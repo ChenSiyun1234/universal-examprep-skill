@@ -1197,7 +1197,8 @@ class Mutations(unittest.TestCase):
         tutor = open(os.path.join(ROOT, "skills", "exam-tutor", "SKILL.md"), encoding="utf-8").read()
         self.assertIn("set --phase <N>", tutor)
         tracker = open(os.path.join(ROOT, "skills", "confusion-tracker", "SKILL.md"), encoding="utf-8").read()
-        self.assertIn("output contract IS the `update_progress.py add-confusion`", tracker)
+        self.assertIn("through `update_progress.py add-confusion`", tracker)
+        self.assertIn("initialize state first when Python works", tracker)
 
 
     # ---- regression guards for Codex round-9 (5 findings) ----
@@ -1985,8 +1986,10 @@ class Contract(unittest.TestCase):
         self.assertIn("只读事实源", txt)                          # 粘贴的 state 只读恢复
 
     def test_root_skill_final_review_reads_state(self):
-        txt = open(os.path.join(ROOT, "locales", "zh", "SKILL.md"), encoding="utf-8").read()
-        self.assertIn("从其 `mistake_archive`", txt)              # zh 全量入口错题重温读事实源
+        entry = open(os.path.join(ROOT, "locales", "zh", "SKILL.md"), encoding="utf-8").read()
+        review = open(os.path.join(ROOT, "skills", "exam-review", "SKILL.md"), encoding="utf-8").read()
+        self.assertIn("exam-review", entry)                       # 兼容入口只负责路由
+        self.assertIn("mistake_archive", review)                  # 具体读取规则留在控制层
 
     def test_state_scenario_exercises_md_gate(self):
         # 新 state-backed 场景真正武装 md_write_after_state 阈值（basic 场景对该阈值先天空转）

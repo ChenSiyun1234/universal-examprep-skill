@@ -1,14 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Localization boundary — v4 doctrine. Stdlib only.
+"""Localization ownership and dispatch contracts. Stdlib only.
 
-Locks the v4 policy: the `locales/` language-pack split is APPROVED AND ACTIVE (the old
-"defer until a second bundled locale exists" trigger has fired — English is a full second
-bundled language). Script logic stays single-copy and language-neutral; only student-visible
-copy lives in language packs. Required canonical Chinese labels stay pinned for the zh pack.
-
-Note: the pack DIRECTORY structure (locales/zh + locales/en trees, msgid parity) is asserted
-by the language-pack structure tests that land with the split itself; this module pins the
-POLICY document so doc and code cannot drift apart in between.
+Behavior remains single-copy in the control layer; locale packs own student wording only.
+Persisted state uses the repository's canonical values, while command aliases are normalized
+before storage. Directory parity is covered by test_language_packs.
 """
 import os
 import unittest
@@ -22,7 +17,7 @@ REQUIRED_LABELS = [
     "题目来源", "答案来源",
     # exam-quiz 判分反馈仍用旧措辞
     "这题考什么", "标准答题步骤",
-    "现在轮到你", "已记录到错题本", "资料里没有明确答案",
+    "现在轮到你", "已记录到错题本", "资料里没有这道题的答案",
     # AI-supplement reminder uses the canonical marker (single source: docs/language-policy.md)
     "AI补充，可能与你老师讲的不完全一致",
 ]
@@ -38,51 +33,62 @@ class LocalizationBoundaryTest(unittest.TestCase):
         self.assertTrue(os.path.isfile(os.path.join(ROOT, "docs", "localization.md")),
                         "缺少 docs/localization.md")
 
-    def test_split_is_approved_and_active(self):
-        # v4 inverts the old "defer the split" policy — the doc must say the split is ACTIVE
-        # and must NOT still carry the old deferral wording.
+    def test_current_directory_ownership_is_explicit(self):
         d = read("docs", "localization.md")
-        self.assertIn("locales", d, "未提及 locales/ 语言包")
-        self.assertIn("正式启用", d, "未声明 locales/ 拆分已启用（v4 政策）")
-        self.assertIn("approved and active", d.lower(), "缺英文侧的启用声明")
-        self.assertNotIn("暂不", d, "仍残留旧的「暂缓拆分」措辞——v4 政策已反转")
+        for path in ("SKILL.md", "skills/*/SKILL.md", "locales/zh/SKILL.md",
+                     "locales/en/SKILL.md", "locales/<lang>/messages.json", "scripts/"):
+            self.assertIn(path, d, path)
+        self.assertIn("语言中性路由器", d)
+        self.assertIn("不是完整流程副本", d)
 
-    def test_split_trigger_condition_is_recorded(self):
-        # the doc must record WHY the old trigger fired: English is the second bundled language
+    def test_canonical_values_and_aliases_are_distinct(self):
         d = read("docs", "localization.md")
-        self.assertIn("第二", d, "未记录「第二种打包语言」触发条件已满足")
-        self.assertIn("second bundled language", d.lower(), "缺英文侧的触发条件记录")
+        for value in ("`中文`", "`English`", "`双语`"):
+            self.assertIn(value, d)
+        for alias in ("`zh`", "`en`", "`bilingual`"):
+            self.assertIn(alias, d)
+        self.assertIn("归一化后保存", d)
 
     def test_default_student_language_is_english_with_chinese_opener(self):
         # v3+ default: English unless the student opens in Chinese (this doc was stale before)
         d = read("docs", "localization.md")
-        self.assertIn("默认语言 = English", d, "未声明学生侧默认英文")
+        self.assertIn("新对话默认英文", d, "未声明学生侧默认英文")
         self.assertIn("中文开场", d, "未声明中文开场切简体中文的例外")
-        self.assertIn("Simplified Chinese", d)
+        self.assertIn("双语只能显式选择", d)
 
     def test_english_control_plane_stays_stable(self):
-        d = read("docs", "localization.md").lower()
-        self.assertIn("control plane unchanged", d, "未声明英文控制层保持不变")
+        d = read("docs", "localization.md")
+        self.assertIn("skills/exam-cram/SKILL.md", d)
+        self.assertIn("behavioral source of truth", d)
 
     def test_locale_must_not_duplicate_control(self):
-        d = read("docs", "localization.md").lower()
-        self.assertIn("must not duplicate control behavior", d,
-                      "未声明 locale 文件不得复制 / 重写控制行为")
+        d = read("docs", "localization.md")
+        self.assertIn("locale 文件不拥有业务规则", d)
+        self.assertIn("行为变化先且只改 `skills/*/SKILL.md`", d)
 
     def test_script_logic_stays_single_copy(self):
-        # the核心 v4 anti-drift rule: logic is never duplicated per language
         d = read("docs", "localization.md")
         self.assertIn("脚本逻辑只有一份", d, "未声明脚本逻辑单份、语言中性")
-        self.assertIn("canonical 代号", d, "未声明持久化只存语言中性 canonical 代号")
+        self.assertIn("中文 canonical 值", d, "未声明持久化的真实 canonical 形式")
 
-    def test_zh_is_the_fallback_locale(self):
+    def test_missing_selected_pack_fails_loud(self):
         d = read("docs", "localization.md")
-        self.assertIn("回退", d, "未声明语言包缺失时的回退策略")
+        self.assertIn("所选文案包缺失是打包错误", d)
+        self.assertIn("不能静默换成另一种回复语言", d)
 
-    def test_lists_required_chinese_labels(self):
-        d = read("docs", "localization.md")
+    def test_required_chinese_labels_live_in_policy_or_packs(self):
+        pack_dir = os.path.join(ROOT, "locales", "zh", "skills")
+        d = read("docs", "language-policy.md") + "\n" + read("locales", "zh", "SKILL.md")
+        for name in os.listdir(pack_dir):
+            if name.endswith(".md"):
+                d += "\n" + read("locales", "zh", "skills", name)
         for label in REQUIRED_LABELS:
-            self.assertIn(label, d, f"localization.md 未列出必保留中文标签: {label}")
+            self.assertIn(label, d, f"中文 canonical 标签不可达: {label}")
+
+    def test_source_quote_exception_does_not_exempt_agent_prose(self):
+        d = read("docs", "localization.md")
+        self.assertIn("逐字引文可以保留原语言", d)
+        self.assertIn("智能体生成的标题、衔接、解释、解答和总结仍按当前语言输出", d)
 
     def test_existing_student_labels_remain_reachable(self):
         # Until the pack split lands (same PR), the canonical zh labels live in the skill

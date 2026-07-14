@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""v4-P3 — ingest v2 wiring: a fresh workspace gets retrieval_index.json + wiki_meta.json
-(+ terms.json passthrough), wiki chapter files stay byte-for-byte verbatim (v3 contract),
+"""Ingest wiring: a fresh workspace gets one integrity-bearing retrieval_index.json
+(+ terms.json passthrough), wiki chapter files stay byte-for-byte verbatim (legacy contract),
 and the retrieve CLI routes a query to the right chapter of the freshly built workspace."""
 import json
+import hashlib
 import os
 import re
 import shutil
@@ -33,15 +34,19 @@ RAW = {
 }
 
 
-def build_ws():
+def build_ws_from(raw):
     tmp = tempfile.mkdtemp(prefix="ing2_")
     raw_path = os.path.join(tmp, "raw_input.json")
     with open(raw_path, "w", encoding="utf-8") as f:
-        json.dump(RAW, f, ensure_ascii=False)
+        json.dump(raw, f, ensure_ascii=False)
     ws = os.path.join(tmp, "ws")
     r = subprocess.run([PY, os.path.join(SCRIPTS, "ingest.py"), "--input", raw_path,
                         "--output-dir", ws], capture_output=True, text=True, encoding="utf-8")
     return tmp, ws, r
+
+
+def build_ws():
+    return build_ws_from(RAW)
 
 
 class IngestIndex(unittest.TestCase):
@@ -72,14 +77,17 @@ class IngestIndex(unittest.TestCase):
         self.assertTrue(any(i.startswith("ch01#") for i in ids))
         self.assertTrue(any(i.startswith("ch02#") for i in ids))
 
-    def test_wiki_meta_hashes(self):
-        with open(os.path.join(self.ws, "references", "wiki_meta.json"), encoding="utf-8") as f:
-            meta = json.load(f)
+    def test_retrieval_integrity_replaces_standalone_wiki_meta(self):
+        with open(os.path.join(self.ws, "references", "retrieval_index.json"), encoding="utf-8") as f:
+            index = json.load(f)
+        meta = {row["file"]: row["sha256"] for row in index["integrity"]["wiki"]}
         for p in RAW["phases"]:
-            m = meta[p["wiki_filename"]]
-            self.assertEqual(m["chapter"], p["phase_num"])
-            self.assertGreater(m["n_chunks"], 0)
-            self.assertEqual(len(m["sha256"]), 64)
+            relative = "references/wiki/" + p["wiki_filename"]
+            self.assertEqual(
+                meta[relative],
+                hashlib.sha256(p["wiki_content"].encode("utf-8")).hexdigest(),
+            )
+        self.assertFalse(os.path.exists(os.path.join(self.ws, "references", "wiki_meta.json")))
 
     def test_terms_passthrough(self):
         with open(os.path.join(self.ws, "references", "terms.json"), encoding="utf-8") as f:
@@ -99,6 +107,71 @@ class IngestIndex(unittest.TestCase):
                             "--query", "quantum entanglement paradox", "--json"],
                            capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(r.returncode, 4, "材料外问题必须走弃答退出码")
+
+
+class PhaseChapterIdentity(unittest.TestCase):
+    def _read_json(self, workspace, relative):
+        with open(os.path.join(workspace, *relative.split("/")), encoding="utf-8") as stream:
+            return json.load(stream)
+
+    def test_legacy_only_ch05_uses_filename_chapter_not_phase_order(self):
+        # Backward compatibility: raw input produced before chapter/chapter_id fields existed still
+        # carried the true chapter in chNN*.md.  It must no longer be indexed as phase 1 / chapter 1.
+        raw = {
+            "course_name": "Only Chapter Five",
+            "phases": [{"phase_num": 1, "phase_name": "Chapter 5",
+                        "wiki_filename": "ch05.md",
+                        "wiki_content": "# Chapter 5\n\nUnique quasar topic."}],
+            "quiz_bank": [],
+        }
+        tmp, ws, result = build_ws_from(raw)
+        try:
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            index = self._read_json(ws, "references/retrieval_index.json")
+            self.assertEqual({doc["chapter"] for doc in index["docs"]}, {"5"})
+            self.assertTrue(all(doc["id"].startswith("ch05#") for doc in index["docs"]))
+            meta = index["integrity"]["phases"][0]
+            self.assertEqual(meta["chapter"], 5)
+            self.assertEqual(meta["chapter_id"], "ch05")
+            self.assertEqual(meta["phase_num"], 1)
+            self.assertEqual(meta["phase_id"], "phase01")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_explicit_ch02_and_ch07_preserve_order_and_true_chapters(self):
+        raw = {
+            "course_name": "Sparse Chapters",
+            "phases": [
+                {"phase_num": 1, "phase_id": "phase-foundation", "chapter": 2,
+                 "chapter_id": "ch02", "phase_name": "Chapter 2",
+                 "wiki_filename": "ch02.md", "wiki_content": "# Chapter 2\n\nAlpha matrix."},
+                {"phase_num": 2, "phase_id": "phase-advanced", "chapter": 7,
+                 "chapter_id": "ch07", "phase_name": "Chapter 7",
+                 "wiki_filename": "ch07.md", "wiki_content": "# Chapter 7\n\nBeta tensor."},
+            ],
+            "quiz_bank": [],
+        }
+        tmp, ws, result = build_ws_from(raw)
+        try:
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            index = self._read_json(ws, "references/retrieval_index.json")
+            self.assertEqual({doc["chapter"] for doc in index["docs"]}, {"2", "7"})
+            self.assertEqual({doc["id"].split("#", 1)[0] for doc in index["docs"]},
+                             {"ch02", "ch07"})
+            meta = {row["wiki_file"]: row for row in index["integrity"]["phases"]}
+            self.assertEqual(
+                [(meta[name]["phase_num"], meta[name]["phase_id"],
+                  meta[name]["chapter"], meta[name]["chapter_id"])
+                 for name in ("references/wiki/ch02.md", "references/wiki/ch07.md")],
+                [(1, "phase-foundation", 2, "ch02"),
+                 (2, "phase-advanced", 7, "ch07")],
+            )
+            with open(os.path.join(ws, "study_plan.md"), encoding="utf-8") as stream:
+                plan = stream.read()
+            self.assertIn("| **阶段 1** | Chapter 2 | `references/wiki/ch02.md` |", plan)
+            self.assertIn("| **阶段 2** | Chapter 7 | `references/wiki/ch07.md` |", plan)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 RAW_EN = {

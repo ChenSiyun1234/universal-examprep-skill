@@ -9,7 +9,7 @@ license: MIT
 # exam-help — quick-reference card
 
 ## Purpose
-Render a single-screen reference card for the exam-cram skill suite: the four-step workflow, 3 learning modes and 4 time tiers, the separate `chat` / `visual` artifact-output preference, workspace file conventions, six quiz types, anti-hallucination and provenance rules, and when to use each subskill. Read-only.
+Render a single-screen reference card for the exam-cram skill suite: the validated four-step workflow, 3 learning modes and 4 time tiers, the separate `chat` / `visual` artifact-output preference, workspace truth/view conventions, six quiz types, anti-hallucination and provenance rules, and when to use each subskill. Read-only.
 
 ## Activation
 Activate when the user asks how this skill works, what modes exist, what each workspace file is for, or which quiz types are supported (e.g. 「这个技能怎么用 / 有哪些模式 / 文件都是干嘛的 / 支持什么题型」).
@@ -20,10 +20,12 @@ None. Take no files, no arguments, no workspace state. Emit the static card from
 ## Workflow
 1. Print the reference card from the language packs (see Language packs below). If a workspace with a persisted `study_state.json` `language` is in play, follow it (`中文` → zh pack verbatim, `English` → en pack, `双语` → bilingual composition per exam-cram's dispatch rule); otherwise honor an explicit ad-hoc language request. exam-help itself reads no state — the caller passes the language.
 2. Do not read, scan, or load any workspace files (`references/wiki/`, `references/quiz_bank.json`, `study_progress.md`, `study_plan.md`).
-3. Do not run `scripts/ingest.py` or any subskill.
+3. Do not run `scripts/ingest_course.py`, `scripts/ingest.py`, or any subskill.
 4. End. Do not start tutoring, quizzing, ingesting, or grading.
 
 The card MUST state that `artifact_mode` is not a fourth required first-contact question, defaults to `chat` for missing/legacy/unknown state, and is never inferred from a subscription tier. It MUST distinguish an explicit standing `visual` choice from a one-shot HTML/PDF/print request that leaves stored state unchanged. Under `chat`, final review may stay conversational; an explicit cheat-sheet request may compile `cheatsheet.md`, while PDF still requires `visual` or an explicit PDF/print request.
+
+The card MUST also state that `ingest_course.py` is the normal build entry, exit 10 means process success but blocked content readiness, and teaching starts only after validator readiness is not blocked. It must distinguish `.ingest/` build/review truth, `study_state.json` progress truth, and generated human-readable views; it must not tell a state-aware workspace to restore from `study_progress.md` first.
 
 ## Output Contract
 - Output exactly one help card; perform no further action.
@@ -34,10 +36,10 @@ The card MUST state that `artifact_mode` is not a fourth required first-contact 
 
 ## Language packs
 Student-visible wording for this skill lives in per-language packs — load the one matching `study_state.json.language` BEFORE emitting any student-visible output:
-- `zh` → [`../../locales/zh/skills/exam-help.md`](../../locales/zh/skills/exam-help.md)
-- `en` → [`../../locales/en/skills/exam-help.md`](../../locales/en/skills/exam-help.md)
-- `bilingual` → compose from the zh pack with a `> EN:` mirror line per block (rules in [`../../docs/language-policy.md`](../../docs/language-policy.md))
-Unset language → this is the first conversation: the merged first-ask (mode × time budget × language) decides it; default en unless the student opened in Chinese.
+- `中文` → [`../../locales/zh/skills/exam-help.md`](../../locales/zh/skills/exam-help.md)
+- `English` → [`../../locales/en/skills/exam-help.md`](../../locales/en/skills/exam-help.md)
+- `双语` → compose the zh and en packs block by block, zh first with a `> EN:` mirror (rules in [`../../docs/language-policy.md`](../../docs/language-policy.md))
+Aliases such as `zh`, `en`, and `bilingual` are normalized by `update_progress.py`; do not route on them as stored values. Unset language → the merged first-ask decides it; default English unless the student opened in Chinese.
 
 ## Boundaries
 This card is read-only and executes no teaching action. To start reviewing, tell `exam-cram` your subject and remaining time.

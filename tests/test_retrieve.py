@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""v4-P3 — scripts/retrieve.py: BM25 index build/search, zh bigram tokenization, terms.json
+"""scripts/retrieve.py: BM25 index build/search, zh bigram tokenization, terms.json
 cross-lingual expansion, abstain gate, and the old-workspace no-index degradation contract.
 Stdlib only; synthetic corpus fixtures (no real course data)."""
 import json
+import hashlib
 import os
 import shutil
 import subprocess
@@ -32,7 +33,14 @@ def make_ws(chunks, terms=None, write_index=True):
             f.write(c["text"])
     os.makedirs(os.path.join(ws, "references"), exist_ok=True)
     if write_index:
-        idx = retrieve.build_index(chunks)
+        integrity = {"wiki": []}
+        for relative in sorted({chunk["file"] for chunk in chunks}):
+            with open(os.path.join(ws, relative), "rb") as stream:
+                integrity["wiki"].append({
+                    "file": relative,
+                    "sha256": hashlib.sha256(stream.read()).hexdigest(),
+                })
+        idx = retrieve.build_index(chunks, integrity=integrity)
         with open(os.path.join(ws, "references", "retrieval_index.json"), "w", encoding="utf-8") as f:
             json.dump(idx, f, ensure_ascii=False)
     if terms is not None:
@@ -152,7 +160,13 @@ class SnippetFromOwnChunk(unittest.TestCase):
             {"id": "ch05#s02", "file": "references/wiki/ch05.md", "chapter": "5",
              "title": "splay", "text": self.CH2},
         ]
-        idx = retrieve.build_index(chunks)
+        relative = "references/wiki/ch05.md"
+        with open(os.path.join(ws, relative), "rb") as stream:
+            integrity = {"wiki": [{
+                "file": relative,
+                "sha256": hashlib.sha256(stream.read()).hexdigest(),
+            }]}
+        idx = retrieve.build_index(chunks, integrity=integrity)
         if strip_text:
             for d in idx["docs"]:
                 d.pop("text", None)                    # 旧版索引形态（升级前建出的工作区）
@@ -194,7 +208,7 @@ class CliContract(unittest.TestCase):
             self.assertFalse(payload["abstain"])
             self.assertEqual(payload["hits"][0]["id"], "ch02/s01")
             for k in ("id", "file", "score", "text"):
-                self.assertIn(k, payload["hits"][0])   # spike Chunk contract superset
+                self.assertIn(k, payload["hits"][0])   # public citation-shaped hit contract
         finally:
             shutil.rmtree(ws, ignore_errors=True)
 
@@ -228,6 +242,32 @@ class CliContract(unittest.TestCase):
             r = run_cli("--workspace", ws, "--query", "word-ram")
             self.assertEqual(r.returncode, 2)
             self.assertIn("version", r.stderr)
+        finally:
+            shutil.rmtree(ws, ignore_errors=True)
+
+    def test_wiki_hash_drift_fails_closed(self):
+        ws = make_ws(CORPUS)
+        try:
+            relative = CORPUS[0]["file"]
+            path = os.path.join(ws, *relative.split("/"))
+            integrity = []
+            for indexed_file in sorted({chunk["file"] for chunk in CORPUS}):
+                indexed_path = os.path.join(ws, *indexed_file.split("/"))
+                with open(indexed_path, "rb") as stream:
+                    digest = hashlib.sha256(stream.read()).hexdigest()
+                integrity.append({"file": indexed_file, "sha256": digest})
+            index = retrieve.build_index(
+                CORPUS,
+                integrity={"wiki": integrity},
+            )
+            with open(os.path.join(ws, "references", "retrieval_index.json"),
+                      "w", encoding="utf-8") as stream:
+                json.dump(index, stream)
+            with open(path, "a", encoding="utf-8") as stream:
+                stream.write("\nchanged")
+            result = run_cli("--workspace", ws, "--query", "word-ram")
+            self.assertEqual(2, result.returncode)
+            self.assertIn("stale_index", result.stderr)
         finally:
             shutil.rmtree(ws, ignore_errors=True)
 

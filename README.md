@@ -4,7 +4,7 @@
 
 # Exam Cram Coach
 
-*One night left. You studied nothing. It won't make anything up.*
+*One night left. You studied nothing. Every answer should show where it came from.*
 
 English · [中文](README.zh.md)
 
@@ -12,11 +12,11 @@ English · [中文](README.zh.md)
 [![MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/ZeKaiNie/universal-examprep-skill/actions/workflows/ci.yml/badge.svg)](https://github.com/ZeKaiNie/universal-examprep-skill/actions)
 
-**Never fabricates: 100% honest abstention** · in-your-materials-not-the-model's-head 11% → ~99% · context −90% · 6 agents
+**Grounded to your course materials** · bank-only quizzes · source-labeled AI supplements · chapter-sliced retrieval
 
 </div>
 
-You know him. Night before the exam, hair a mess, eyes wide open, hasn't read a single page of the course. This skill is for him — it doesn't pour in more "knowledge" that it isn't sure about; it teaches only what's actually in *your* materials, and says "not in the materials" for everything else.
+You know him. Night before the exam, hair a mess, eyes wide open, hasn't read a single page of the course. This skill is for him: it grounds teaching in *your* materials, labels any AI supplement, and says when the materials do not support an answer.
 
 **30-second start** — clone the repo, then say one line to your agent:
 
@@ -29,25 +29,25 @@ git clone https://github.com/ZeKaiNie/universal-examprep-skill .claude/skills/un
 
 ## Before / after
 
-**With the skill** — every claim carries its source, so you can check it:
+**With the skill** — answers and key walkthroughs carry provenance, so you can check them:
 
 > **[#vis_q1]** In the figure, which set relation does the shaded region show?
 > **The intersection of A and B.**
-> `Question: hw02.pdf p.3 | Answer: hw02_sol.pdf | 🟢 from your materials`
+> `Question source: hw02.pdf p.3 | Answer source: hw02_sol.pdf | 🟢 From your materials`
 
 **Closed-book / plain agent** — sounds just as confident, but you can't tell if it's true:
 
 > The shaded region is the **union**. <sub>(It's actually the intersection; no source label, nothing to check against — this is where hallucination happens.)</sub>
 
-The difference isn't tone. It's whether each claim lands back in your materials.
+The difference isn't tone. It's whether the answer exposes the evidence and any AI-added part.
 
 ---
 
 ## Numbers
 
-The skill's value is **grounding**: connecting what's in your materials but not in the model's head — **accurately**, and **never fabricated**. Two real measurements (judge: Sonnet):
+The skill's value is **grounding**: connecting what's in your materials but not in the model's head, while making unsupported answers visible. The figures below are results from the named benchmark courses/models, not a guarantee for every subject or host (judge: Sonnet):
 
-**① In your materials, not in the model — the skill goes from 11% up to 100%.** Details mined from course transcripts (the professor's examples, obscure studies, exact numbers) that world knowledge can't answer; closed-book collapses, hand the materials back and it returns:
+**① Material-specific retrieval improved on these runs.** Details mined from course transcripts (the professor's examples, obscure studies, exact numbers) are difficult to answer from world knowledge alone; the table reports the measured result for each listed course/model:
 
 <div align="center"><img src="benchmark/docs/img/hard_psyc_correct_en.svg" width="600" alt="materials-specific: closed-book vs with the skill" /></div>
 
@@ -58,11 +58,11 @@ The skill's value is **grounding**: connecting what's in your materials but not 
 | PSYC 110 · Haiku 4.5 | 11% | 98% | **100%** |
 | 6.006 · Haiku 4.5 | 45% | 89% | **91%** |
 
-**② Not in the materials at all — the skill says "not covered" 100% of the time.** On out-of-scope probes, with the skill (and raw files) **all three models, both courses, abstain honestly 100%**; closed-book only 60%–90% (it fabricates a plausible answer). This is the most direct anti-hallucination measure.
+**② Out-of-scope abstention reached 100% in this benchmark slice.** Across the tested probes, three models and two courses abstained on every out-of-scope item with the skill (and with raw files); closed-book measured 60%–90%. See the report for sample design and limitations.
 
 <div align="center"><img src="benchmark/docs/img/oos_psyc_abst_en.svg" width="560" alt="out-of-scope probes: honest abstention rate" /></div>
 
-The skill matches a "raw files agent" on accuracy but costs less — it pulls only the compressed relevant chapters instead of re-scanning the whole file pile each question:
+In these runs, chapter retrieval had similar accuracy to the raw-files arm with the per-question costs shown below. The mechanism retrieves relevant chapter slices instead of re-scanning the whole pile:
 
 <details><summary>Cost per question (same accuracy, less spend)</summary>
 
@@ -81,12 +81,14 @@ Full method, three-arm design, judge calibration, cost, limitations → **[test 
 
 A ladder of "don't make it up unless you have to":
 
-1. **Quiz only from the materials** — questions come from a `quiz_bank.json`, never improvised.
-2. **Forced source labels** — every claim tagged `🟢 from your materials` / `🟡 AI-supplemented, may differ from your teacher` / `⚠️ AI-generated answer`, never passed off as the textbook.
-3. **If it's not in the materials, say so** — abstains honestly on uncovered questions instead of fabricating (100% out-of-scope abstention, measured).
+1. **Quiz only from the prebuilt bank** — questions come from the provenance-labeled `quiz_bank.json`, never improvised. Bank entries may be material-sourced or explicitly AI-generated; the label is never hidden.
+2. **Forced source labels** — every claim tagged `🟢 From your materials` / `🟡 AI-supplemented — may differ from what your teacher taught` / `⚠️ AI-generated answer — not from your teacher or textbook`, never passed off as the textbook.
+3. **If it's not in the materials, say so** — abstains honestly on unsupported questions instead of forcing an answer.
 4. **Draw-it questions run the algorithm first** — for binary trees / graph traversal, it runs the real algorithm in the background to get the topology, then renders — no imagining.
 5. **Figure-dependent questions won't be served without the figure** — no unanswerable question handed to the student.
-6. **Chapter-sliced knowledge base, loaded on demand** — sliced by chapter, loaded by progress, so long chats don't blow up the context. **Context −90%.**
+6. **Chapter-sliced knowledge base, loaded on demand** — reads the current chapter slice instead of loading the full course into every turn.
+
+The local ingest path accepts PDF, DOCX, PPTX, plain text, and Markdown. `scripts/ingest_course.py` is the single regular orchestrator: it builds structured content units and page anchors, compiles the wiki/bank, initializes state, and validates the result. It returns `0` for `ready` or `usable_with_gaps`; return code `10` means the build ran but unresolved review issues block teaching. The agent then works through the typed review queue and append-only patch ledger before rebuilding and validating again—never by silently editing a generated wiki or pretending a warning disappeared.
 
 ---
 
@@ -119,13 +121,13 @@ The skill adapts how deep it teaches, how fast, and whether it asks you question
 
 ### Claude Code
 
-**Recommended — the runtime bundle** (a ~230 KB zip with just the skill, none of the dev weight):
+**Recommended — the runtime bundle** (just the runtime skill, without benchmarks and development tests):
 
 Download `universal-exam-cram-coach.zip` from the [latest release](https://github.com/ZeKaiNie/universal-examprep-skill/releases/latest) and unzip it into `.claude/skills/universal-exam-cram-coach/` (project-local or global `~/.claude/skills/`).
 
-No dependencies to install up front — the core is pure stdlib. If your materials include PDFs, the agent runs the bundled dependency preflight (`scripts/check_deps.py`) at setup and offers the exact one-line install **before** starting, so nothing fails mid-build.
+Basic TXT/Markdown/DOCX/PPTX ingestion uses the standard library. Before the first build, the agent runs the bundled dependency preflight (`scripts/check_deps.py`); if the selected PDF or visual route needs an optional package, it asks before installing it. Unsupported, encrypted, damaged, or scan-only content is reported into the review workflow instead of being silently skipped.
 
-**Or clone the repo** (developer path — brings benchmark/tests along, ~3.4 MB):
+**Or clone the repo** (developer path — includes benchmarks, tests, and maintainer documentation):
 
 ```bash
 git clone https://github.com/ZeKaiNie/universal-examprep-skill .claude/skills/universal-exam-cram-coach
@@ -139,7 +141,7 @@ Clone the repo; have the agent read `AGENTS.md` (a one-screen fallback contract)
 
 Can't write local files — use the drop-in prompt instead: copy [`prompts/web_prompt.en.md`](prompts/web_prompt.en.md) and send it, then paste your materials.
 
-> Full load matrix (per-agent support, entry files) in [`docs/agent-portability.md`](docs/agent-portability.md). The trigger entry is [`SKILL.md`](SKILL.md) (a language-neutral router); [`locales/en/SKILL.md`](locales/en/SKILL.md) is the full English manual it dispatches to (derived rendering of [`locales/zh/SKILL.md`](locales/zh/SKILL.md)).
+> Full load matrix (per-agent support, entry files) in [`docs/agent-portability.md`](docs/agent-portability.md). The trigger entry is [`SKILL.md`](SKILL.md), a language-neutral router. It loads the shared control rules under [`skills/`](skills/) plus the compact English compatibility/wording entry at [`locales/en/SKILL.md`](locales/en/SKILL.md); neither locale is a second behavior manual.
 
 ---
 
@@ -150,7 +152,7 @@ The monolith is split into 10 single-purpose skills the agent loads on demand:
 | Sub-skill | What it does |
 |---|---|
 | `exam-cram` | Orchestrator — runs the 4-step workflow + study-mode routing |
-| `exam-ingest` | Builds the workspace from your materials (knowledge base + quiz bank + progress) |
+| `exam-ingest` | Orchestrates PDF/DOCX/PPTX/text ingestion, typed AI review, compilation, and readiness validation |
 | `exam-tutor` | Lazy per-chapter teaching (7-step walkthroughs, draw-it-runs-algorithm-first) |
 | `exam-study-guide` | Compiles one chapter into formula-readable, self-contained HTML and optional visually checked PDF |
 | `exam-quiz` | Draws & grades from the bank (6 question types: MC / short / draw / fill / T-F / code) |
@@ -162,7 +164,7 @@ The monolith is split into 10 single-purpose skills the agent loads on demand:
 
 All ten live under [`skills/`](skills/) (e.g. [`skills/exam-study-guide/SKILL.md`](skills/exam-study-guide/SKILL.md)), loaded on demand. PDF tooling is routed per host without silent downloads; see [`docs/pdf-capability-adapters.md`](docs/pdf-capability-adapters.md).
 
-Chapter artifacts are opt-in. The default `chat` output mode keeps the v3-style conversation flow (plus the normal progress/notebook files) and does not automatically build HTML/PDF. Say “save tokens / chat only” or set `--artifact-mode chat`; say “visual study guide / I want printable PDFs” or set `--artifact-mode visual` for automatic chapter HTML + visually checked PDF. An agent must never guess this from your subscription plan, and a one-off PDF request does not silently change the saved preference.
+Chapter artifacts are opt-in. The default `chat` output mode keeps teaching in the conversation (plus the normal progress/notebook files) and does not automatically build HTML/PDF. Say “save tokens / chat only” or set `--artifact-mode chat`; say “visual study guide / I want printable PDFs” or set `--artifact-mode visual` for automatic chapter HTML + visually checked PDF. An agent must never guess this from your subscription plan, and a one-off PDF request does not silently change the saved preference.
 
 ---
 
@@ -181,15 +183,15 @@ The real paid benchmark is expensive (tens of dollars / hours per matrix), run m
 
 ## FAQ
 
-**No Python installed?** The core workspace can still fall back to manual-write mode. The self-contained MathML HTML/PDF study-guide renderer is different: it requires Python and fails loudly with the missing prerequisite instead of pretending raw Markdown is a finished handout.
+**No Python installed?** After confirming the interpreter truly cannot start, the core workspace can use a disclosed manual-write fallback with reduced validation. A script/data error while Python runs must be fixed or reported; it must not trigger that fallback. The MathML HTML/PDF renderer requires Python and fails loudly with the missing prerequisite.
 
 **On a limited plan?** `artifact_mode=chat` is the safe default, so normal tutoring does not spend extra generation effort on chapter HTML/PDF. Switch to `visual` only when you want printable chapter artifacts; PDF rendering itself is local, but the richer material workflow can consume more context and generation.
 
-**Only photos / scanned PDFs / a recording?** First transcribe with any free web multimodal AI ("extract the highlights and questions as plain text, keep the star/underline markers"), paste into a `.txt`, then have the agent build the workspace; the rest is plain-text and smooth. Recordings: transcribe first, then feed.
+**Only photos / scanned PDFs / a recording?** Give the original files to the ingest workflow. It renders/reads PDF pages where supported and puts each scanned, skipped, or review-needed item into a typed queue for AI takeover; the agent must claim and resolve it or report the exact file and reason. Audio still needs a transcript before ingestion.
 
 **Stuck on one quiz question?** Just say "this is too hard / I want to skip" — it files the item to your mistake log, lets you through, and revisits it at the end.
 
-**How is this different from just dropping a folder at an AI?** Similar accuracy, but the skill is cheaper (only the relevant chapters per question, not the whole pile) and helps weaker models more. See the [report](benchmark/REPORT.en.md).
+**How is this different from just dropping a folder at an AI?** It adds a persistent state, chapter retrieval, a standard question bank, provenance labels, and fail-closed visual checks. The benchmark compares accuracy/cost for its tested courses; see the [report](benchmark/REPORT.en.md).
 
 ---
 

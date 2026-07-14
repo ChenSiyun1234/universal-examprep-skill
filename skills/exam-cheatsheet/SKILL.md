@@ -11,7 +11,7 @@ license: MIT
 # exam-cheatsheet — pre-exam cheatsheet compiler
 
 ## Purpose
-COMPILE (not free-generate) everything already mastered into a dense cram sheet: `cheatsheet.md` at the workspace root, where **every top-level bullet carries a resolvable source link** into `notebook/`, `mistakes/`, or `references/wiki/`. Render a **PDF at the student's requested page count** only when the persisted artifact mode is `visual` or the student explicitly asks for PDF/print output. Summarize only mastered content. Do not teach new material and do not invent new questions. (`walkthrough.md` is the retired v3 output name: never write it; leave an existing one untouched.)
+COMPILE (not free-generate) everything already mastered into a dense cram sheet: `cheatsheet.md` at the workspace root, where **every top-level bullet carries a resolvable source link** into `notebook/`, `mistakes/`, or `references/wiki/`. Render a **PDF at the student's requested page count** only when the persisted artifact mode is `visual` or the student explicitly asks for PDF/print output. Summarize only mastered content. Do not teach new material and do not invent new questions. (`walkthrough.md` is a retired compatibility filename: never write it; leave an existing one untouched.)
 
 ## Activation
 Trigger when the user explicitly asks for 「给我一份考前小抄 / 速记 / 总复习」 (a pre-exam cheat sheet, quick-recall sheet, or final review), OR when all study phases are basically cleared and review is wrapping up **and** the persisted artifact mode is `visual`. An automatically reached final review under `chat` stays in `exam-review` as a conversational summary and does not invoke this compiler.
@@ -38,7 +38,7 @@ Trigger when the user explicitly asks for 「给我一份考前小抄 / 速记 /
 11. Never invent teacher emphasis that is not in the materials. If the materials do not flag a point, do not present it as a teacher-flagged item.
 
 ## Output Contract
-- Write `cheatsheet.md`: the four fixed sections per mastered chapter, headings in the active reply language — `中文` 「必背结论/公式」→「例题」→「例题解答」→「要点解释」, `English` Must-memorize conclusions & formulas → Worked example → Worked solution → Takeaway — with a refreshed progress panel at the end. Never write `walkthrough.md` (retired v3 name).
+- Write `cheatsheet.md`: the four fixed sections per mastered chapter, headings in the active reply language — `中文` 「必背结论/公式」→「例题」→「例题解答」→「要点解释」, `English` Must-memorize conclusions & formulas → Worked example → Worked solution → Takeaway — with a refreshed progress panel at the end. Never write the retired compatibility file `walkthrough.md`.
 - Every top-level bullet carries its `[→](…)` source link (notebook / mistakes / wiki); `validate_workspace.py` must pass on the written sheet before it is shown.
 - Under `artifact_mode=chat`, automatic final review stays conversational; an explicit cheat-sheet request delivers the validated `cheatsheet.md` but does not render PDF unless that request also asks for PDF/print. Under standing `visual`, or an explicit one-shot PDF/print request, deliver `cheatsheet.pdf` at the requested page count (default 2) via `scripts/cheatsheet_render.py`, or `cheatsheet.html` + print instruction on the no-browser degradation path. Margins stay ≥12 mm; density is tuned with `--font-size`, never by shrinking margins.
 - Provenance is inline and honest: AI-supplemented lines carry 🟡 AI补充，可能与你老师讲的不完全一致; AI-generated answers carry ⚠️ AI生成答案，非老师/教材提供; unlabeled lines are material-sourced (per-line 🟢 tagging not required).
@@ -46,10 +46,10 @@ Trigger when the user explicitly asks for 「给我一份考前小抄 / 速记 /
 
 ## Language packs
 Student-visible wording for this skill lives in per-language packs — load the one matching `study_state.json.language` BEFORE emitting any student-visible output:
-- `zh` → [`../../locales/zh/skills/exam-cheatsheet.md`](../../locales/zh/skills/exam-cheatsheet.md)
-- `en` → [`../../locales/en/skills/exam-cheatsheet.md`](../../locales/en/skills/exam-cheatsheet.md)
-- `bilingual` → compose from the zh pack with a `> EN:` mirror line per block (rules in [`../../docs/language-policy.md`](../../docs/language-policy.md))
-Unset language → this is the first conversation: the merged first-ask (mode × time budget × language) decides it; default en unless the student opened in Chinese.
+- `中文` → [`../../locales/zh/skills/exam-cheatsheet.md`](../../locales/zh/skills/exam-cheatsheet.md)
+- `English` → [`../../locales/en/skills/exam-cheatsheet.md`](../../locales/en/skills/exam-cheatsheet.md)
+- `双语` → compose the zh and en packs block by block, zh first with a `> EN:` mirror (rules in [`../../docs/language-policy.md`](../../docs/language-policy.md))
+Aliases such as `zh`, `en`, and `bilingual` are normalized by `update_progress.py`; do not route on them as stored values. Unset language → the merged first-ask decides it; default English unless the student opened in Chinese.
 
 ## Boundaries
 - Do not put content into the cram sheet that the materials do not cover unless it is tagged 🟡 or ⚠️.

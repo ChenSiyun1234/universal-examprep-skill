@@ -1,0 +1,91 @@
+"""Lightweight, stdlib-only ingestion contracts and persistence.
+
+This package deliberately has no dependency on a particular parser, LLM, vector
+store, or course-workspace builder.  Parsers emit :class:`ContentUnit` records;
+reviewers emit validated :class:`ReviewPatch` records; the store applies those
+records without allowing arbitrary file or object mutation.
+"""
+
+from .identifiers import (
+    UnsafePathError,
+    canonical_json,
+    file_sha256,
+    is_link_or_reparse,
+    make_issue_id,
+    make_patch_id,
+    make_source_id,
+    make_unit_id,
+    normalize_workspace_path,
+    safe_workspace_entry,
+    safe_workspace_path,
+)
+from .models import (
+    ASSET_ROLES,
+    ISSUE_STATUSES,
+    PATCH_OPERATIONS,
+    PATCH_STATUSES,
+    SOURCE_STATUSES,
+    UNIT_KINDS,
+    ChapterPhaseMapping,
+    ContentUnit,
+    EvidenceRef,
+    ReviewIssue,
+    ReviewPatch,
+    SchemaValidationError,
+    SourceRecord,
+    render_answer_value,
+)
+from .storage import (
+    ApplyResult,
+    ConflictError,
+    IngestionStore,
+    PatchApplicationError,
+    ReviewQueue,
+    SourceDriftError,
+    SourceManifest,
+    atomic_write_json,
+    atomic_write_jsonl,
+    atomic_write_text,
+    read_json,
+    read_jsonl,
+)
+
+__all__ = [
+    "ASSET_ROLES",
+    "ISSUE_STATUSES",
+    "PATCH_OPERATIONS",
+    "PATCH_STATUSES",
+    "SOURCE_STATUSES",
+    "UNIT_KINDS",
+    "ApplyResult",
+    "ChapterPhaseMapping",
+    "ConflictError",
+    "ContentUnit",
+    "EvidenceRef",
+    "IngestionStore",
+    "PatchApplicationError",
+    "ReviewIssue",
+    "ReviewPatch",
+    "ReviewQueue",
+    "SchemaValidationError",
+    "SourceDriftError",
+    "SourceManifest",
+    "SourceRecord",
+    "UnsafePathError",
+    "atomic_write_json",
+    "atomic_write_jsonl",
+    "atomic_write_text",
+    "canonical_json",
+    "file_sha256",
+    "is_link_or_reparse",
+    "make_issue_id",
+    "make_patch_id",
+    "make_source_id",
+    "make_unit_id",
+    "normalize_workspace_path",
+    "read_json",
+    "read_jsonl",
+    "render_answer_value",
+    "safe_workspace_entry",
+    "safe_workspace_path",
+]

@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""PR C — bilingual language policy (policy bridge). Stdlib only.
+"""Bilingual language-policy contracts. Stdlib only.
 
 Locks: docs/language-policy.md defines an English control plane + a Simplified-Chinese
 student-facing layer with ONE canonical provenance wording; every direct entrypoint uses
-the canonical labels and NO old competing labels; exam-ingest defaults to Chinese; the
-anti-hallucination protocol and web-portability are preserved; root stays Chinese-first.
+the canonical labels and NO old competing labels; the anti-hallucination protocol and
+web portability are preserved; root stays a language-neutral router.
 """
 import glob as _glob
 import os
@@ -87,11 +87,12 @@ class LanguagePolicyTest(unittest.TestCase):
         self.assertIn("Simplified Chinese", p, "未定义简体中文学生层")
 
     def test_policy_documents_bilingual_split(self):
-        # the policy documents the English-control / Chinese-student split + root stays Chinese-first
+        # The policy documents the control/wording split and the neutral root router.
         p = read("docs", "language-policy.md").lower()
         self.assertIn("control-plane", p, "缺少控制层转换说明")
         self.assertIn("student-facing", p, "缺少学生侧说明")
-        self.assertIn("chinese-first", p, "缺少根 SKILL.md 中文优先说明")
+        self.assertIn("language-neutral router", p, "缺少根 SKILL.md 语言中性路由说明")
+        self.assertIn("compatibility indices", p, "缺少轻量兼容入口说明")
 
     # ---- canonical provenance wording everywhere ----
     def test_canonical_labels_present_in_all_target_files(self):
@@ -162,7 +163,7 @@ class LanguagePolicyTest(unittest.TestCase):
         # the language-default rule now lives in BOTH layers: the root router
         # carries the English default-en dispatch line, the zh pack the zh wording
         router = read("SKILL.md")
-        self.assertIn("default en unless the student opened in Chinese", router,
+        self.assertIn("default English unless the student opened in Chinese", router,
                       "根路由器缺少 default-en 派发行")
         self.assertIn("locales/zh/SKILL.md", router, "根路由器未指向 zh 全量入口包")
         self.assertIn("language-policy", router, "根路由器未指向 docs/language-policy.md")
@@ -219,9 +220,7 @@ class A8bLanguageDispatch(unittest.TestCase):
         self.assertIn("EN CANONICAL VOCABULARY", p, "缺 EN canonical 词表")
         self.assertNotIn("### ANCHOR-INVARIANCE PRINCIPLE", p, "旧锚点不变性小节不应复活")
 class A8cEnEntrypoints(unittest.TestCase):
-    """A8c/C2b/v4-P2：两个派生英文入口（locales/en/SKILL.md / prompts/web_prompt.en.md）。
-    阶段 6 反转：en 面**零 CJK**（钉在 tests/test_language_purity.py T1），本类钉
-    EN canonical 词表在场 + 结构契约；zh 为行为事实源（locales/zh/SKILL.md）。"""
+    """English compatibility surfaces share one control-layer source of truth."""
 
     EN_FILES = (("locales", "en", "SKILL.md"), ("prompts", "web_prompt.en.md"))
 
@@ -237,7 +236,8 @@ class A8cEnEntrypoints(unittest.TestCase):
         for parts in self.EN_FILES:
             t = self._read(parts)
             self.assertFalse(t.startswith("---"), parts)          # 非可触发入口
-            self.assertIn("source of truth", t, parts)            # zh 为事实源声明
+            self.assertIn("source of truth", t, parts)
+            self.assertIn("skills/exam-cram/SKILL.md", t, parts)
 
     def test_en_canonical_vocabulary_present(self):
         need = self.EN_LABELS + (
@@ -280,9 +280,10 @@ class A8cEnEntrypoints(unittest.TestCase):
     def test_root_en_specific_pins(self):
         t = self._read(("locales", "en", "SKILL.md"))
         self.assertIn("set-check", t)
-        self.assertIn("mistake_archive", t)
+        self.assertIn("covered_unverified", t)
         self.assertIn("Before asking, explaining, hinting, or solving", t)
-        self.assertIn("locales/zh/SKILL.md", t)                   # 指回 zh 事实源
+        self.assertIn("compatibility entry", t)
+        self.assertIn("skills/exam-cram/SKILL.md", t)
 
     def test_machine_token_parity_with_zh_root(self):
         zh = self._read(("locales", "zh", "SKILL.md"))

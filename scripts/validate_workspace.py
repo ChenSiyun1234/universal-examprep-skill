@@ -14,6 +14,7 @@ import os
 import re
 import sys
 import json
+import hashlib
 import argparse
 from urllib.parse import unquote
 
@@ -23,6 +24,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import notebook as _notebook
 import update_progress as _progress
 import i18n as _i18n
+import retrieve as _retrieve
+import strict_json as _strict_json
+from ingestion.identifiers import is_link_or_reparse
 
 SIX_TYPES = {"choice", "subjective", "diagram", "fill_blank", "true_false", "code"}
 MATERIAL_SOURCES = {"teacher", "material"}
@@ -81,6 +85,14 @@ def _read(path):
         return f.read()
 
 
+def _sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def _plan_phase_nums(text):
     """Phase numbers in a study_plan.md, as strings — matches ALL supported word orders
     （「阶段N」「第N阶段」「Phase N」，与更新器/T4 解析器同款），否则合法计划会被当成
@@ -120,7 +132,7 @@ def _is_symlink(p):
     # dedicated seam for our own symlink checks. Tests mock THIS, not os.path.islink — because on
     # CPython <3.10 posixpath.realpath() itself calls os.path.islink, so mocking os.path.islink would
     # make realpath() try os.readlink() on a non-link and raise OSError (EINVAL) on Linux/py3.8.
-    return os.path.islink(p)
+    return is_link_or_reparse(p)
 
 
 def _asset_safety(ws, p):
@@ -138,8 +150,11 @@ def _asset_safety(ws, p):
     if ".." in segs:
         return None, "不得含 .. 路径穿越"
     full = os.path.join(ws, *segs)
-    if _is_symlink(full):
-        return full, "asset 不得为符号链接（可能指向工作区外）"
+    current = ws
+    for segment in segs:
+        current = os.path.join(current, segment)
+        if os.path.lexists(current) and is_link_or_reparse(current):
+            return full, "asset 路径不得经过符号链接/junction/reparse point"
     # normcase both sides so a Windows casing difference doesn't falsely reject a contained asset
     ws_real = os.path.normcase(os.path.realpath(ws))
     real = os.path.normcase(os.path.realpath(full))
@@ -228,6 +243,7 @@ def _raw_latex_lines(text):
 def validate(ws):
     """Return (errors, warnings, stats). errors may carry level 'error' or 'fatal'."""
     errors, warnings, stats = [], [], {}
+    ingestion_source_hashes = {}
 
     def err(msg, level="error"):
         errors.append({"level": level, "msg": msg})
@@ -268,6 +284,234 @@ def validate(ws):
             err(f"{label} 经符号链接逃出工作区（技能会读/写这个路径）: {name}")
         elif not os.path.isfile(rp):
             err(f"缺少 {label}: {name}")
+
+    # ---- structured ingestion truth + typed AI review queue ----
+    ingest_dir = os.path.join(ws, ".ingest")
+    if os.path.lexists(ingest_dir):
+        ingest_real = os.path.realpath(ingest_dir)
+        if (_is_symlink(ingest_dir) or not os.path.isdir(ingest_dir)
+                or (ingest_real != ws_real and not ingest_real.startswith(ws_real + os.sep))):
+            err(".ingest/ 不是工作区内的常规目录（拒绝读取结构化事实源）")
+        else:
+            try:
+                from ingestion import IngestionStore, read_json
+            except ImportError as exc:
+                err(f"无法加载结构化 ingestion 校验器: {exc}", level="fatal")
+                IngestionStore = None
+                read_json = None
+
+            build_path = os.path.join(ingest_dir, "build_manifest.json")
+            if not os.path.isfile(build_path) or _is_symlink(build_path):
+                err("存在 .ingest/ 但缺少常规文件 build_manifest.json")
+                build_manifest = None
+            else:
+                try:
+                    build_manifest = read_json(build_path) if read_json else None
+                except Exception as exc:
+                    err(f".ingest/build_manifest.json 无法严格读取: {exc}", level="fatal")
+                    build_manifest = None
+
+            if isinstance(build_manifest, dict) and IngestionStore is not None:
+                if build_manifest.get("pipeline_version") != "ingestion-v1":
+                    err(
+                        ".ingest/build_manifest.json 的 pipeline_version 缺失或不受支持；"
+                        "请用当前 ingest 重建"
+                    )
+                source_root = build_manifest.get("source_root")
+                if not isinstance(source_root, str) or not os.path.isdir(source_root):
+                    err(".ingest/build_manifest.json 的 source_root 不存在；原材料已移动或不可读")
+                    store = None
+                else:
+                    try:
+                        store = IngestionStore(ws, source_root=source_root)
+                        sources = store.manifest.records()
+                        units = store.units()
+                        mappings = store.mappings()
+                        base_units = store.base_units()
+                        base_mappings = store.base_mappings()
+                        ledger_entries = store.ledger_entries()
+                        issues = store.review_queue.issues()
+                        store.verify_compiled_matches_ledger()
+                    except Exception as exc:
+                        err(f".ingest 结构化文件 schema/路径校验失败: {exc}", level="fatal")
+                        store = None
+
+                if store is not None:
+                    stats["ingestion_sources"] = len(sources)
+                    stats["ingestion_units"] = len(units)
+                    stats["ingestion_mappings"] = len(mappings)
+                    stats["ingestion_base_units"] = len(base_units)
+                    stats["ingestion_review_patches"] = len(ledger_entries)
+                    stats["ingestion_review_issues"] = len(issues)
+                    ingestion_source_hashes.update(
+                        (source.path, source.sha256) for source in sources
+                    )
+                    if os.path.lexists(store.pending_patch_path):
+                        err(
+                            ".ingest/pending_patch.json 表示上次审核补丁写入中断；"
+                            "请用原 patch 重试 apply，不能继续教学"
+                        )
+                    if os.path.lexists(store.pending_ingest_path):
+                        err(
+                            ".ingest/pending_ingest.json 表示上次材料入库事务中断；"
+                            "请先重跑入库以触发自动回滚/恢复，不能继续教学"
+                        )
+                    expected_counts = {
+                        "source_count": len(sources),
+                        "unit_count": len(units),
+                        "review_issue_count": len(issues),
+                    }
+                    for count_key, actual_count in expected_counts.items():
+                        if build_manifest.get(count_key) != actual_count:
+                            err(
+                                ".ingest/build_manifest.json 的 %s=%r 与事实源 %d 不一致"
+                                % (count_key, build_manifest.get(count_key), actual_count)
+                            )
+                    for source in sources:
+                        try:
+                            store.manifest.verify_current(source.source_id, source.sha256)
+                        except Exception as exc:
+                            err(f"原材料版本漂移，review patch/索引不可再信任: {source.path}（{exc}）")
+
+                    for unit in units.values():
+                        if not unit.asset_path:
+                            continue
+                        asset_path = os.path.join(
+                            ws, *unit.asset_path.replace("\\", "/").split("/")
+                        )
+                        asset_real = os.path.realpath(asset_path)
+                        if (_is_symlink(asset_path) or not os.path.isfile(asset_path)
+                                or not asset_real.startswith(ws_real + os.sep)):
+                            err(
+                                "ContentUnit 资产缺失/不安全: %s（unit %s）"
+                                % (unit.asset_path, unit.unit_id)
+                            )
+                        else:
+                            expected_asset_hash = unit.metadata.get("asset_sha256")
+                            if (expected_asset_hash is not None
+                                    and _sha256_file(asset_path) != expected_asset_hash):
+                                err(
+                                    "ContentUnit 资产哈希漂移: %s（unit %s）"
+                                    % (unit.asset_path, unit.unit_id)
+                                )
+
+                    for issue in issues:
+                        if issue.status in ("pending", "claimed", "validated", "blocked"):
+                            message = (
+                                f"未接管 ingestion issue {issue.issue_id}: "
+                                f"{','.join(issue.reason_codes)}；{issue.description}；"
+                                f"建议：{issue.suggested_action}"
+                            )
+                            if issue.severity == "blocking":
+                                err(message)
+                            else:
+                                warn(message)
+                        elif issue.status == "unrecoverable":
+                            warn(
+                                f"ingestion issue {issue.issue_id} 已标记不可恢复："
+                                f"{','.join(issue.reason_codes)}（内容完整性存在已知缺口）"
+                            )
+
+                    # Every page known to the quality router must have an explicit
+                    # page_anchor, including blank scanned pages.
+                    page_quality = build_manifest.get("page_quality")
+                    if not isinstance(page_quality, list):
+                        err(".ingest/build_manifest.json 缺少 page_quality 数组")
+                    else:
+                        expected_pages = set()
+                        duplicate_pages = set()
+                        for row in page_quality:
+                            if not isinstance(row, dict):
+                                err(".ingest page_quality 条目必须是对象")
+                                continue
+                            key = (row.get("source_file"), row.get("page"))
+                            if key in expected_pages:
+                                duplicate_pages.add(key)
+                            expected_pages.add(key)
+                        if duplicate_pages:
+                            err(f".ingest page_quality 含重复 source/page: {sorted(duplicate_pages)!r}")
+                        actual_pages = {
+                            (unit.source_file, unit.page)
+                            for unit in units.values() if unit.kind == "page_anchor"
+                        }
+                        missing_pages = expected_pages - actual_pages
+                        if missing_pages:
+                            err(
+                                ".ingest 页面记账不完整，缺 page_anchor: "
+                                + "、".join("%s p.%s" % key for key in sorted(missing_pages)[:20])
+                            )
+                        stats["ingestion_pages"] = len(expected_pages)
+
+                    unbound_path = os.path.join(ingest_dir, "unbound_review.json")
+                    try:
+                        unbound = read_json(unbound_path)
+                    except Exception as exc:
+                        err(f".ingest/unbound_review.json 无法严格读取: {exc}")
+                        unbound = None
+                    entries = unbound.get("entries") if isinstance(unbound, dict) else None
+                    if not isinstance(entries, list):
+                        err(".ingest/unbound_review.json 缺少 entries 数组")
+                    else:
+                        stats["ingestion_unbound_reviews"] = len(entries)
+                        for entry in entries:
+                            if not isinstance(entry, dict):
+                                err(".ingest unbound review 条目必须是对象")
+                                continue
+                            message = (
+                                "未绑定来源的 ingestion 告警：%s；%s"
+                                % (
+                                    ",".join(entry.get("reason_codes") or ["review_required"]),
+                                    entry.get("description") or "无描述",
+                                )
+                            )
+                            if entry.get("severity") == "blocking":
+                                err(message)
+                            else:
+                                warn(message)
+
+                    # Build-manifest hashes prove that AI fixes, compiled units, and
+                    # retrieval products belong to the same build.
+                    integrity_rows = {}
+                    for group_name in ("artifacts", "derived_artifacts"):
+                        group = build_manifest.get(group_name, {})
+                        if group is None:
+                            continue
+                        if not isinstance(group, dict):
+                            err(f".ingest/build_manifest.json 的 {group_name} 必须是对象")
+                            continue
+                        integrity_rows.update(group)
+                    for label, row in integrity_rows.items():
+                        if not isinstance(row, dict) or set(row) != {"path", "sha256"}:
+                            err(f".ingest build artifact {label!r} schema 无效")
+                            continue
+                        relative = row.get("path")
+                        expected_hash = row.get("sha256")
+                        if not isinstance(relative, str) or _unsafe_ref(relative):
+                            err(f".ingest build artifact {label!r} 路径不安全: {relative!r}")
+                            continue
+                        absolute = os.path.join(ws, *relative.replace("\\", "/").split("/"))
+                        real = os.path.realpath(absolute)
+                        if (_is_symlink(absolute) or not os.path.isfile(absolute)
+                                or (real != ws_real and not real.startswith(ws_real + os.sep))):
+                            err(f".ingest build artifact {label!r} 缺失/逃逸: {relative}")
+                        elif not re.fullmatch(r"[0-9a-f]{64}", str(expected_hash)):
+                            err(f".ingest build artifact {label!r} sha256 无效")
+                        elif _sha256_file(absolute) != expected_hash:
+                            err(f".ingest build artifact {label!r} 已漂移: {relative}（请重建）")
+
+            elif build_manifest is not None:
+                err(".ingest/build_manifest.json 顶层必须是对象")
+
+    # A present retrieval index must be self-consistent.  Missing remains a
+    # legacy-compatible degradation; a stale index is worse than no index.
+    retrieval_path = os.path.join(ws, "references", "retrieval_index.json")
+    if os.path.isfile(retrieval_path) and not _is_symlink(retrieval_path):
+        try:
+            _retrieve.load_index(ws)
+        except SystemExit as exc:
+            err(f"references/retrieval_index.json 被运行时检索器拒绝（exit {exc.code}）")
+        except (OSError, UnicodeDecodeError) as exc:
+            err(f"references/retrieval_index.json 无法读取: {exc}")
 
     # ---- wiki filenames must be safe ----
     wiki_files = set()
@@ -367,7 +611,7 @@ def validate(ws):
     fig_index_path = os.path.join(ws, "references", "figure_page_index.json")
     if os.path.isfile(fig_index_path) and not _is_symlink(fig_index_path):
         try:
-            fig_index = json.loads(_read(fig_index_path), parse_constant=_reject_const)
+            fig_index = _strict_json.loads(_read(fig_index_path))
         except (ValueError, OSError, UnicodeDecodeError) as e:
             warn(f"figure_page_index.json 无法读取，wiki 视觉覆盖未经核对: {e}")
             fig_index = None
@@ -447,7 +691,7 @@ def validate(ws):
     image_index_path = os.path.join(ws, "references", "image_question_index.json")
     if os.path.isfile(image_index_path) and not _is_symlink(image_index_path):
         try:
-            image_index = json.loads(_read(image_index_path), parse_constant=_reject_const)
+            image_index = _strict_json.loads(_read(image_index_path))
         except (ValueError, OSError, UnicodeDecodeError) as e:
             warn(f"image_question_index.json 无法读取，题面/答案视觉疑漏未经核对: {e}")
             image_index = None
@@ -476,7 +720,7 @@ def validate(ws):
     # ---- quiz_bank.json schema ----
     if has_qb:
         try:
-            data = json.loads(_read(qb_path), parse_constant=_reject_const)
+            data = _strict_json.loads(_read(qb_path))
         except (ValueError, OSError) as e:
             err(f"quiz_bank.json 不是合法 JSON: {e}", level="fatal")
             return errors, warnings, stats
@@ -600,6 +844,39 @@ def validate(ws):
                         warn(f"{tag} assets[{ai}] 资源文件不存在或不可读: {apath}（建议补齐 references/assets/ 下的文件）")
                 else:
                     asset_ok += 1
+                    try:
+                        with open(full, "rb") as stream:
+                            signature = stream.read(8)
+                    except OSError:
+                        signature = b""
+                    if isinstance(apath, str) and apath.lower().endswith(".png") \
+                            and signature != b"\x89PNG\r\n\x1a\n":
+                        err(f"{tag} assets[{ai}] 声明为 PNG 但文件签名无效: {apath}")
+                        continue
+                    expected_asset_hash = a.get("sha256")
+                    if expected_asset_hash is not None:
+                        if not (isinstance(expected_asset_hash, str)
+                                and re.fullmatch(r"[0-9a-f]{64}", expected_asset_hash)):
+                            err(f"{tag} assets[{ai}] sha256 非法")
+                            continue
+                        if _sha256_file(full) != expected_asset_hash:
+                            err(f"{tag} assets[{ai}] 内容哈希与题库记录不一致: {apath}")
+                            continue
+                    expected_source_hash = a.get("source_sha256")
+                    if expected_source_hash is not None:
+                        source_field = (
+                            "answer_source_file"
+                            if role in ("answer_context", "worked_solution")
+                            else "source_file"
+                        )
+                        source_file = q.get(source_field) or q.get("source_file")
+                        if (not isinstance(expected_source_hash, str)
+                                or not re.fullmatch(r"[0-9a-f]{64}", expected_source_hash)
+                                or ingestion_source_hashes.get(source_file) != expected_source_hash):
+                            err(
+                                f"{tag} assets[{ai}] source_sha256 与当前 {source_field} 不一致"
+                            )
+                            continue
                     if isinstance(role, str) and role in QUESTION_SIDE_ROLES:
                         q_side_ok += 1
             if visual_required and not (isinstance(assets, list) and assets):
@@ -693,7 +970,7 @@ def validate(ws):
             err("references/teaching_examples.json 必须是普通文件")
         else:
             try:
-                teaching_items = json.loads(_read(teaching_path), parse_constant=_reject_const)
+                teaching_items = _strict_json.loads(_read(teaching_path))
             except (ValueError, OSError, UnicodeDecodeError) as e:
                 err(f"teaching_examples.json 不是合法 JSON: {e}", level="fatal")
                 teaching_items = None
@@ -812,7 +1089,7 @@ def validate(ws):
         baseline_name = "ingest_report.json"
     if baseline_source:
         try:
-            ingest_report = json.loads(_read(baseline_source), parse_constant=_reject_const)
+            ingest_report = _strict_json.loads(_read(baseline_source))
         except (ValueError, OSError, UnicodeDecodeError) as e:
             err(f"{baseline_name} 无法读取，不能核对教学例题保留性: {e}")
             ingest_report = None
@@ -960,7 +1237,7 @@ def validate(ws):
         err("study_state.json 存在但不是常规文件（目录/特殊文件）——官方更新器无法持久化 state")
     elif os.path.isfile(state_path):
         try:
-            st = json.loads(_read(state_path))
+            st = _strict_json.loads(_read(state_path))
         except OSError as e:
             # isfile 通过后仍可能读失败（权限变更/竞态删除）——Tier-1 要给结构化报错，不许崩栈
             err(f"study_state.json 存在但无法读取（{e}）——请检查文件权限")
@@ -1027,13 +1304,25 @@ def validate(ws):
                     warn(f"study_state.json 的 artifact_mode={artifact!r} 非标准；"
                          "运行时将安全回退为 chat（请用 update_progress.py set --artifact-mode 修正）")
             stats["artifact_mode_effective"] = _i18n.workspace_artifact_mode(st)
-            # v4.1 Step 4: in workspaces with a visual/teaching manifest, a phase checklist bool is
-            # no longer sufficient. Reuse the updater's schema/path/outcome vocabulary so the writer
-            # and validator cannot drift (legacy workspaces without manifests remain readable).
-            phase_problems = _progress.phase_evidence_errors(ws, st, enforce_manifest_gate=True)
+            # Phase-completion evidence is a learning-progress gate, not an ingestion-readiness
+            # gate.  A fresh/chat-mode workspace may intentionally omit visual manifests; only
+            # enforce the manifest trio once a phase has evidence/done state or visual output is the
+            # standing preference.  Shape validation remains unconditional.
+            pe = st.get("phase_evidence")
+            checklist_started = any(
+                isinstance(row, dict) and row.get("done") is True
+                for row in (st.get("phase_checklist") or ())
+            )
+            evidence_started = isinstance(pe, dict) and bool(pe)
+            if (checklist_started or evidence_started
+                    or _i18n.workspace_artifact_mode(st) == "visual"):
+                phase_problems = _progress.phase_evidence_errors(
+                    ws, st, enforce_manifest_gate=True
+                )
+            else:
+                phase_problems = _progress._phase_evidence_shape_errors(st)
             for problem in phase_problems:
                 err("study_state.json phase_evidence：" + problem)
-            pe = st.get("phase_evidence")
             if isinstance(pe, dict):
                 stats["phases_covered_unverified"] = sum(
                     1 for x in pe.values() if isinstance(x, dict)

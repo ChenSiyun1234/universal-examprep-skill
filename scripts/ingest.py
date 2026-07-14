@@ -10,6 +10,7 @@ import os
 import re
 import sys
 import json
+import math
 import argparse
 import tempfile
 from datetime import datetime
@@ -22,18 +23,88 @@ for _stream in ("stdout", "stderr"):
         pass  # 老版本解释器或非常规环境则保持默认
 
 import i18n
+try:
+    import strict_json
+except ImportError:  # imported as scripts.ingest in unit tests
+    from scripts import strict_json
+
+try:
+    from ingestion.pipeline import (
+        compile_review_outputs,
+        compile_structured_visuals,
+        persist_payload,
+        refresh_build_manifest,
+    )
+    from ingestion.identifiers import (
+        UnsafePathError,
+        is_link_or_reparse,
+        safe_workspace_entry,
+    )
+except ImportError:  # imported as scripts.ingest in unit tests
+    from scripts.ingestion.pipeline import (
+        compile_review_outputs,
+        compile_structured_visuals,
+        persist_payload,
+        refresh_build_manifest,
+    )
+    from scripts.ingestion.identifiers import (
+        UnsafePathError,
+        is_link_or_reparse,
+        safe_workspace_entry,
+    )
 
 SUBJECT_TOKEN = "《科目名称》"               # 模板中待替换的科目占位符
 PHASE_TABLE_MARKER = "<!-- PHASE_TABLE -->"        # study_plan 模板里表格插入点
 PHASE_CHECKLIST_MARKER = "<!-- PHASE_CHECKLIST -->"  # study_progress 模板里打卡列表插入点
 LANGUAGE_MARKER = "<!-- LANGUAGE -->"              # 显式 --lang 时替换为语言代号，否则整行移除
 SAFE_FILENAME = re.compile(r"^[\w.\-]+\.md$")      # 仅允许不含路径的 *.md 文件名
+SAFE_ID = re.compile(r"^[A-Za-z0-9_.\-]+$")
+CHAPTER_ID_RE = re.compile(r"^(?:ch(?:apter)?[_-]?)?0*([1-9]\d*)$", re.I)
+WIKI_CHAPTER_RE = re.compile(r"^ch0*([1-9]\d*)(?:[^0-9].*)?\.md$", re.I)
 VALID_QUIZ_TYPES = {"choice", "subjective", "diagram", "fill_blank", "true_false", "code"}
 VALID_TEACHING_ROLES = {"paired_problem", "worked_example"}
 
 
 def is_blank(value):
     return value is None or (isinstance(value, str) and not value.strip())
+
+
+def _file_sha256(path):
+    import hashlib
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _positive_int(value):
+    """Return a normalized positive int, or None (bool is never accepted as integer identity)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 1 else None
+    if isinstance(value, str) and value.strip().isdigit():
+        parsed = int(value.strip())
+        return parsed if parsed >= 1 else None
+    return None
+
+
+def _chapter_from_id(value):
+    """Accept common raw-input chapter IDs but normalize them to a numeric chapter."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value if value >= 1 else None
+    if not isinstance(value, str):
+        return None
+    match = CHAPTER_ID_RE.fullmatch(value.strip())
+    return int(match.group(1)) if match else None
+
+
+def _chapter_from_wiki_filename(value):
+    if not isinstance(value, str):
+        return None
+    match = WIKI_CHAPTER_RE.fullmatch(os.path.basename(value.strip()))
+    return int(match.group(1)) if match else None
 
 
 def get_template_path(template_name, lang="zh"):
@@ -57,7 +128,7 @@ def fail(messages):
 
 def _safe_output_tree(output_dir):
     """Create references/wiki without following workspace-internal directory symlinks."""
-    if os.path.lexists(output_dir) and os.path.islink(output_dir):
+    if os.path.lexists(output_dir) and is_link_or_reparse(output_dir):
         fail([f"输出工作区是符号链接，拒绝沿链接写盘：{output_dir}"])
     try:
         os.makedirs(output_dir, exist_ok=True)
@@ -65,30 +136,36 @@ def _safe_output_tree(output_dir):
         fail([f"无法创建输出目录：{exc}"])
     if not os.path.isdir(output_dir):
         fail([f"输出路径不是目录：{output_dir}"])
-    root_real = os.path.realpath(output_dir)
-    current = output_dir
-    for name in ("references", "wiki"):
-        current = os.path.join(current, name)
+    root = os.path.abspath(output_dir)
+    current = root
+    for relative in ("references", "references/wiki"):
+        try:
+            current = str(safe_workspace_entry(root, relative))
+        except UnsafePathError as exc:
+            fail([
+                "输出目录 %s 含符号链接/junction/reparse point 或越界路径，拒绝写盘：%s"
+                % (relative, exc)
+            ])
         if os.path.lexists(current):
-            if os.path.islink(current):
+            if is_link_or_reparse(current):
                 fail([f"输出目录 {os.path.relpath(current, output_dir)} 是符号链接；拒绝经链接写出工作区"])
             if not os.path.isdir(current):
                 fail([f"输出路径 {os.path.relpath(current, output_dir)} 已存在但不是目录"])
         else:
             os.mkdir(current)
         try:
-            inside = os.path.commonpath([os.path.normcase(os.path.realpath(current)),
-                                         os.path.normcase(root_real)]) == os.path.normcase(root_real)
-        except ValueError:
-            inside = False
-        if not inside:
-            fail([f"输出目录 {os.path.relpath(current, output_dir)} 解析到工作区外，已拒绝"])
-    return os.path.join(output_dir, "references", "wiki")
+            safe_workspace_entry(root, relative)
+        except UnsafePathError as exc:
+            fail([
+                "输出目录 %s 在创建期间变成符号链接/junction/reparse point，拒绝写盘：%s"
+                % (relative, exc)
+            ])
+    return current
 
 
 def _guard_write_target(path, label):
     """Reject links and special files before atomically replacing a generated artifact."""
-    if os.path.lexists(path) and (os.path.islink(path) or not os.path.isfile(path)):
+    if os.path.lexists(path) and (is_link_or_reparse(path) or not os.path.isfile(path)):
         fail([f"{label} 目标是符号链接或特殊文件，拒绝覆盖：{path}"])
 
 
@@ -127,7 +204,7 @@ def _merge_teaching_baseline(path, current_by_chapter):
         _guard_write_target(path, "教学例题保留基线")
         try:
             with open(path, "r", encoding="utf-8") as stream:
-                payload = json.load(stream)
+                payload = strict_json.load(stream)
         except (OSError, UnicodeDecodeError, ValueError) as exc:
             fail([f"教学例题保留基线无法读取，拒绝用较小快照覆盖：{exc}"])
         if not isinstance(payload, dict) or payload.get("schema_version") != 1:
@@ -192,6 +269,7 @@ def validate(data):
         phases = []
 
     seen_files = {}
+    seen_phase_ids = {}
     for i, p in enumerate(phases):
         idx = i + 1
         if not isinstance(p, dict):
@@ -205,15 +283,50 @@ def validate(data):
         # 否则要到写盘中途的 chunk id 格式化才 TypeError，留下残缺工作区（Codex r2）。
         pn = p.get("phase_num")
         if pn is not None:
-            if isinstance(pn, bool) or not isinstance(pn, (int, str)):
+            normalized_phase = _positive_int(pn)
+            if normalized_phase is None:
                 errors.append(f"第 {idx} 个阶段的 phase_num 必须是正整数（当前 {pn!r}）。")
-            elif isinstance(pn, str):
-                if pn.strip().isdigit() and int(pn.strip()) >= 1:
-                    p["phase_num"] = int(pn.strip())
+            else:
+                p["phase_num"] = normalized_phase
+
+        # phase_num 是复习顺序，chapter 是材料的真实章号。新输入可显式给 chapter / chapter_id /
+        # phase_id；旧输入则从 chNN*.md 文件名推断真实章号，完全没有章线索时才回退 phase_num。
+        raw_chapter = p.get("chapter")
+        explicit_chapter = None
+        if raw_chapter is not None:
+            explicit_chapter = _positive_int(raw_chapter)
+            if explicit_chapter is None:
+                errors.append(f"第 {idx} 个阶段的 chapter 必须是正整数（当前 {raw_chapter!r}）。")
+
+        raw_chapter_id = p.get("chapter_id")
+        id_chapter = None
+        if raw_chapter_id is not None:
+            id_chapter = _chapter_from_id(raw_chapter_id)
+            if id_chapter is None:
+                errors.append(
+                    f"第 {idx} 个阶段的 chapter_id 必须是 chNN/chapterNN/正整数形式"
+                    f"（当前 {raw_chapter_id!r}）。"
+                )
+
+        raw_phase_id = p.get("phase_id")
+        if raw_phase_id is not None:
+            if isinstance(raw_phase_id, int) and not isinstance(raw_phase_id, bool) and raw_phase_id >= 1:
+                raw_phase_id = "phase%02d" % raw_phase_id
+            if not (isinstance(raw_phase_id, str) and raw_phase_id.strip()
+                    and SAFE_ID.fullmatch(raw_phase_id.strip())):
+                errors.append(
+                    f"第 {idx} 个阶段的 phase_id 必须是不含路径的非空标识"
+                    f"（当前 {p.get('phase_id')!r}）。"
+                )
+            else:
+                raw_phase_id = raw_phase_id.strip()
+                if raw_phase_id in seen_phase_ids:
+                    errors.append(
+                        f"phase_id「{raw_phase_id}」在第 {seen_phase_ids[raw_phase_id]} 和第 {idx} 个阶段重复。"
+                    )
                 else:
-                    errors.append(f"第 {idx} 个阶段的 phase_num 必须是正整数（当前 {pn!r}）。")
-            elif pn < 1:
-                errors.append(f"第 {idx} 个阶段的 phase_num 必须 ≥1（当前 {pn}）。")
+                    seen_phase_ids[raw_phase_id] = idx
+                    p["phase_id"] = raw_phase_id
         # 文件名安全 + 去重（防止 ../ 越界写盘或互相覆盖）
         fn = p.get("wiki_filename")
         if isinstance(fn, str) and fn.strip():
@@ -231,18 +344,55 @@ def validate(data):
             else:
                 seen_files[base] = idx
 
+        filename_chapter = _chapter_from_wiki_filename(fn)
+        chapter_hints = [value for value in (explicit_chapter, id_chapter, filename_chapter)
+                         if value is not None]
+        if chapter_hints and any(value != chapter_hints[0] for value in chapter_hints[1:]):
+            errors.append(
+                f"第 {idx} 个阶段的 chapter/chapter_id/wiki_filename 章号不一致："
+                f"chapter={raw_chapter!r}, chapter_id={raw_chapter_id!r}, wiki_filename={fn!r}。"
+            )
+        resolved_chapter = (explicit_chapter or id_chapter or filename_chapter
+                            or _positive_int(p.get("phase_num")))
+        if resolved_chapter is not None:
+            p["chapter"] = resolved_chapter
+            p["chapter_id"] = "ch%02d" % resolved_chapter
+        if "phase_id" not in p and _positive_int(p.get("phase_num")) is not None:
+            p["phase_id"] = "phase%02d" % p["phase_num"]
+
     quiz_bank = data.get("quiz_bank", [])
     if not isinstance(quiz_bank, list):
         errors.append("quiz_bank 必须是数组。")
         quiz_bank = []
 
     missing_answer_ids = []
+    seen_quiz_ids = {}
     for i, q in enumerate(quiz_bank):
         raw_id = q.get("id") if isinstance(q, dict) else None
         tag = str(raw_id) if not is_blank(raw_id) else f"#{i + 1}"
         if not isinstance(q, dict):
             errors.append(f"题目 {tag} 不是对象。")
             continue
+        if not is_blank(raw_id):
+            if (isinstance(raw_id, bool) or not isinstance(raw_id, (str, int, float))
+                    or (isinstance(raw_id, float) and not math.isfinite(raw_id))):
+                errors.append(f"题目 {tag} 的 id 必须是有限数字或非空字符串。")
+            else:
+                canonical_id = str(raw_id).strip()
+                if not canonical_id or any(char in canonical_id for char in ("\x00", "\n", "\r")):
+                    errors.append(f"题目 {tag} 的 id 必须是非空单行标识。")
+                elif canonical_id in seen_quiz_ids:
+                    errors.append(
+                        f"题目 id「{canonical_id}」在第 {seen_quiz_ids[canonical_id]} "
+                        f"和第 {i + 1} 道题重复。"
+                    )
+                else:
+                    seen_quiz_ids[canonical_id] = i + 1
+                    # Preserve a caller's finite numeric identifier in the
+                    # public quiz bank.  Canonical string identity is used only
+                    # for duplicate detection and the structured IR link.
+                    if isinstance(raw_id, str):
+                        q["id"] = canonical_id
         qtype = q.get("type")
         if qtype not in VALID_QUIZ_TYPES:
             errors.append(f"题目 {tag} 的 type 必须是 {'/'.join(sorted(VALID_QUIZ_TYPES))} 之一（当前为 {qtype!r}）。")
@@ -306,8 +456,8 @@ def validate(data):
 
 def build_phase_table(phases, lang="zh"):
     # 插入行必须跟模板同语言（单语言纯净）：en 模板里混入 阶段/未开始 会产出混语工作区；
-    # 读侧（update_progress._plan_phases / validate_workspace._plan_phase_nums /
-    # build_knowledge_index._PHASE_RE）本就同时认 「阶段N」 与 「Phase N」。
+    # 读侧（update_progress._plan_phases / validate_workspace._plan_phase_nums）
+    # 本就同时认 「阶段N」 与 「Phase N」。
     if lang == "en":
         lines = [
             "| Phase | Core task | Linked wiki chapter file | Status |",
@@ -407,7 +557,7 @@ def main():
     print(f"[+] 正在读取输入数据: {args.input} ...")
     with open(args.input, "r", encoding="utf-8") as f:
         try:
-            data = json.load(f)
+            data = strict_json.load(f)
         except Exception as e:
             fail([f"JSON 解析失败：{e}"])
 
@@ -421,7 +571,9 @@ def main():
         "false": False, "no": False, "×": False,
     }
     # 收集已有 id，避免补全时撞号
-    existing_ids = {q["id"] for q in quiz_bank if not is_blank(q.get("id"))}
+    existing_ids = {
+        str(q["id"]).strip() for q in quiz_bank if not is_blank(q.get("id"))
+    }
     next_id = 1
     for q in quiz_bank:
         # 补全 id（validate 不强制 id，但出口文件需要）
@@ -435,10 +587,15 @@ def main():
         if q.get("type") == "true_false" and isinstance(q.get("answer"), str):
             normalized = TRUE_FALSE_NORMALIZE.get(q["answer"].strip().lower(), q["answer"])
             q["answer"] = normalized
+    normalized_ids = [str(q["id"]).strip() for q in quiz_bank]
+    if len(set(normalized_ids)) != len(normalized_ids):
+        fail(["题目 id 补全/规范化后仍有重复；拒绝写出歧义题库。"])
     # ────────────────────────────────────────────────────────────────
     # 补号后重算缺答案清单——validate 阶段无 id 的题记的是「#序号」占位，
     # 持久化报告必须指向题库里真实存在的 id，后续会话的 AI 才能定位接手
-    missing_answer_ids = [q["id"] for q in quiz_bank if is_blank(q.get("answer"))]
+    missing_answer_ids = [
+        str(q["id"]).strip() for q in quiz_bank if is_blank(q.get("answer"))
+    ]
 
     print(f"[+] 识别到科目: {course_name}")
     print(f"[+] 阶段数量: {len(phases)} 个")
@@ -457,6 +614,22 @@ def main():
     real_wiki_dir = os.path.realpath(wiki_dir)
     print(f"[+] 创建 Wiki 目录: {wiki_dir}")
 
+    ingestion_payload = data.get("ingestion")
+    if ingestion_payload is not None:
+        try:
+            ingestion_build_manifest = persist_payload(output_dir, ingestion_payload)
+        except Exception as exc:
+            fail([f"结构化 ingestion envelope 校验/持久化失败：{exc}"])
+        print(
+            "[+] 已写入结构化导入状态: .ingest/（%d 来源 / %d 内容单元 / %d 接管事项）"
+            % (
+                ingestion_build_manifest["source_count"],
+                ingestion_build_manifest["unit_count"],
+                ingestion_build_manifest["review_issue_count"]
+                + ingestion_build_manifest["unbound_review_count"],
+            )
+        )
+
     # 1. 写入各阶段 Wiki 文件（文件名已在 validate 中校验，这里再做一次包含性断言）
     for p in phases:
         filename = os.path.basename(p["wiki_filename"].strip())
@@ -470,37 +643,135 @@ def main():
         _atomic_text(wiki_file_path, p["wiki_content"], "Wiki 文件")
         print(f"[+] 已写入 Wiki 文件: references/wiki/{filename}")
 
-    # 1b. v4-P3：小节级切块（仅索引粒度——章文件仍逐字写盘，现有契约零破坏）→ BM25 检索索引。
-    #     检索时 retrieve.py 返回 文件+标题+词窗摘要，弃答门限先于任何生成（spike 契约）。
+    if ingestion_payload is not None:
+        try:
+            visual_counts = compile_structured_visuals(output_dir)
+        except Exception as exc:
+            fail([f"结构化图片编译进章节 wiki 失败：{exc}"])
+        if sum(visual_counts.values()):
+            print(
+                "[+] 已挂载结构化资料原图: %d 张"
+                % sum(visual_counts.values())
+            )
+
+    # 1b. 结构化内容单元优先切块；legacy raw input 继续使用 Markdown 小节切块。
+    #     检索索引携带 wiki/source-IR 哈希，任何派生产物漂移都 fail closed。
     import hashlib
     import chunk as _chunk
     import retrieve as _retrieve
-    all_chunks, wiki_meta = [], {}
-    for p in phases:
-        filename = os.path.basename(p["wiki_filename"].strip())
-        _, chs = _chunk.chunk_text(p["wiki_content"])
-        ch_id = "ch%02d" % p["phase_num"]
-        for k, c in enumerate(chs, 1):
-            all_chunks.append({"id": "%s#s%02d" % (ch_id, k),
-                               "file": "references/wiki/" + filename,
-                               "chapter": str(p["phase_num"]),
-                               "title": c["title"], "text": c["text"]})
-        wiki_meta[filename] = {
-            "chapter": p["phase_num"], "n_chunks": len(chs),
-            "sha256": hashlib.sha256(p["wiki_content"].encode("utf-8")).hexdigest()}
+    all_chunks = []
+    wiki_by_chapter = {
+        p["chapter_id"]: "references/wiki/" + os.path.basename(p["wiki_filename"].strip())
+        for p in phases
+    }
+    structured_rows = ingestion_payload.get("content_units", []) if ingestion_payload else []
+    if structured_rows:
+        # Read the compiled store so applied review patches survive a deterministic rebuild.
+        compiled_units_path = os.path.join(output_dir, ".ingest", "content_units.jsonl")
+        try:
+            with open(compiled_units_path, "r", encoding="utf-8") as stream:
+                structured_rows = [strict_json.loads(line) for line in stream if line.strip()]
+        except (OSError, ValueError) as exc:
+            fail([f"结构化内容单元无法读取，拒绝构建检索索引：{exc}"])
+        for structured in _chunk.chunk_units(structured_rows):
+            chapter_id = structured.get("chapter_id")
+            if not chapter_id or chapter_id not in wiki_by_chapter:
+                continue
+            structured["file"] = (
+                "references/quiz_bank.json"
+                if structured.get("kind") == "question"
+                else wiki_by_chapter[chapter_id]
+            )
+            structured["chapter"] = str(_chapter_from_id(chapter_id) or "")
+            all_chunks.append(structured)
+    else:
+        for p in phases:
+            filename = os.path.basename(p["wiki_filename"].strip())
+            _, chapter_chunks = _chunk.chunk_text(p["wiki_content"])
+            for number, current in enumerate(chapter_chunks, 1):
+                all_chunks.append({
+                    "id": "%s#s%02d" % (p["chapter_id"], number),
+                    "file": "references/wiki/" + filename,
+                    "chapter": str(p["chapter"]),
+                    "chapter_id": p["chapter_id"],
+                    "phase_id": p["phase_id"],
+                    "title": current["title"],
+                    "text": current["text"],
+                })
+
+    # Deterministic concept postings improve recall without a heavyweight vector DB.
+    for item in quiz_bank:
+        points = item.get("knowledge_points")
+        if isinstance(points, str):
+            points = [points]
+        if not isinstance(points, list):
+            point = item.get("knowledge_point")
+            points = [point] if isinstance(point, str) else []
+        points = [point.strip() for point in points if isinstance(point, str) and point.strip()]
+        if not points:
+            continue
+        chapter = _positive_int(item.get("chapter"))
+        chapter_id = "ch%02d" % chapter if chapter else None
+        file_name = wiki_by_chapter.get(chapter_id, "references/quiz_bank.json")
+        all_chunks.append({
+            "id": "concept:%s" % item["id"],
+            "file": file_name,
+            "chapter": str(chapter) if chapter else None,
+            "chapter_id": chapter_id,
+            "title": "Knowledge points",
+            "text": "\n".join(points + [str(item.get("question") or "")]),
+            "kind": "concept",
+            "source_file": item.get("source_file"),
+            "pages": item.get("source_pages") or [],
+        })
+
+    integrity = {
+        "wiki": [
+            {
+                "file": "references/wiki/" + os.path.basename(p["wiki_filename"].strip()),
+                "sha256": _file_sha256(os.path.join(
+                    output_dir,
+                    "references",
+                    "wiki",
+                    os.path.basename(p["wiki_filename"].strip()),
+                )),
+            }
+            for p in phases
+        ],
+        "phases": [
+            {
+                "chapter": p["chapter"], "chapter_id": p["chapter_id"],
+                "phase_num": p["phase_num"], "phase_id": p["phase_id"],
+                "wiki_file": "references/wiki/" + os.path.basename(p["wiki_filename"].strip()),
+            }
+            for p in phases
+        ],
+        "quiz_bank": {
+            "file": "references/quiz_bank.json",
+            "sha256": hashlib.sha256(
+                (json.dumps(quiz_bank, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+            ).hexdigest(),
+        },
+    }
+    for key, relative in (
+        ("source_manifest", ".ingest/source_manifest.json"),
+        ("content_units", ".ingest/content_units.jsonl"),
+    ):
+        absolute = os.path.join(output_dir, relative.replace("/", os.sep))
+        if os.path.isfile(absolute) and not is_link_or_reparse(absolute):
+            with open(absolute, "rb") as stream:
+                integrity[key] = {
+                    "file": relative,
+                    "sha256": hashlib.sha256(stream.read()).hexdigest(),
+                }
     if all_chunks:
-        index = _retrieve.build_index(all_chunks)
+        index = _retrieve.build_index(all_chunks, integrity=integrity)
         _atomic_json(
             os.path.join(output_dir, "references", "retrieval_index.json"),
             index,
             "检索索引",
         )
         print(f"[+] 已建检索索引: references/retrieval_index.json（{len(all_chunks)} 块 / {len(phases)} 章）")
-    _atomic_json(
-        os.path.join(output_dir, "references", "wiki_meta.json"),
-        wiki_meta,
-        "Wiki 元数据",
-    )
     # 术语对照（跨语言检索桥）：raw_input.json 可带顶层 "terms"（AI 建库时产出、可人工校对）
     terms = data.get("terms")
     if isinstance(terms, dict) and terms:
@@ -520,7 +791,7 @@ def main():
     # legacy compatibility signal: do not create or overwrite a manifest that the caller did not
     # explicitly provide.  The official material builder always emits the field (including []).
     teaching_path = os.path.join(output_dir, "references", "teaching_examples.json")
-    if os.path.lexists(teaching_path) and (os.path.islink(teaching_path)
+    if os.path.lexists(teaching_path) and (is_link_or_reparse(teaching_path)
                                           or not os.path.isfile(teaching_path)):
         fail([f"教学例题索引目标是符号链接或特殊文件，拒绝读取/覆盖：{teaching_path}"])
     if teaching_examples is not None:
@@ -530,13 +801,14 @@ def main():
     # 导入报告持久化——缺答案清单只留在控制台会随会话丢失，后续会话的 AI 无从接手
     _teaching_list = teaching_examples or []
     _teaching_manifest_preserved = False
-    if teaching_examples is None and os.path.isfile(teaching_path) and not os.path.islink(teaching_path):
+    if (teaching_examples is None and os.path.isfile(teaching_path)
+            and not is_link_or_reparse(teaching_path)):
         # Legacy rerun: preserve not only the file but also its retention baseline.  Replacing the
         # report IDs with [] would make validate_workspace unable to notice a later deletion from
         # both quiz_bank and the teaching layer.
         try:
             with open(teaching_path, "r", encoding="utf-8") as tf:
-                _existing_teaching = json.load(tf)
+                _existing_teaching = strict_json.load(tf)
             if (isinstance(_existing_teaching, list)
                     and all(isinstance(ex, dict) and isinstance(ex.get("id"), str)
                             and ex["id"].strip() for ex in _existing_teaching)):
@@ -582,6 +854,41 @@ def main():
         "导入报告",
     )
     print("[+] 已写入导入报告: ingest_report.json")
+
+    if ingestion_payload is not None:
+        derived = {
+            "quiz_bank": "references/quiz_bank.json",
+            "teaching_examples": "references/teaching_examples.json",
+            "teaching_baseline": "references/teaching_baseline.json",
+            "retrieval_index": "references/retrieval_index.json",
+            "ingest_report": "ingest_report.json",
+        }
+        for phase in phases:
+            derived["wiki:%s" % phase["chapter_id"]] = (
+                "references/wiki/" + os.path.basename(phase["wiki_filename"].strip())
+            )
+        try:
+            refresh_build_manifest(output_dir, derived)
+        except Exception as exc:
+            fail([f".ingest/build_manifest.json 派生产物完整性刷新失败：{exc}"])
+
+        # Rebuilding the deterministic base files above must not erase terminal,
+        # evidence-validated review work.  Recompile the append-only ledger before
+        # validation so issue status and student-facing artifacts cannot diverge.
+        ledger_path = os.path.join(output_dir, ".ingest", "review_patches.jsonl")
+        if os.path.isfile(ledger_path) and os.path.getsize(ledger_path) > 0:
+            try:
+                compiled = compile_review_outputs(output_dir)
+            except Exception as exc:
+                fail([f"已应用 ingestion review patch 重新编译失败：{exc}"])
+            print(
+                "[+] 已重放审核补丁: wiki %d 条 / 题库 %d 项 / 检索 %d 块"
+                % (
+                    sum(compiled["recovered_units_by_chapter"].values()),
+                    compiled["quiz_updates"],
+                    compiled["retrieval_chunks"],
+                )
+            )
 
     # 3. 生成 study_plan.md（可重复生成，无用户状态）
     plan_content = render_template(
@@ -635,8 +942,8 @@ def main():
         _atomic_text(progress_out_path, prog_content, "复习进度")
         print("[+] 已生成: study_progress.md")
 
-    print(f"\n[+] 恭喜! 《{course_name}》的 LLM Wiki 备考环境初始化成功！")
-    print("你可以直接开始复习了。")
+    print(f"\n[+] 《{course_name}》工作区工程编译完成。")
+    print("[!] 编译成功不等于教学就绪；请运行 validate_workspace.py，或使用 ingest_course.py 的 readiness 结果。")
 
 
 if __name__ == "__main__":

@@ -11,6 +11,22 @@
   study_state.json         # 结构化进度唯一事实源（存在时）
   study_progress.md        # state 的生成视图；无 Python 时才手工维护
   ingest_report.json       # 导入告警、当前快照统计与兼容基线
+  .ingest/                 # 结构化导入事实源（新工作区；不得手改）
+    source_raw_input.json  # 编译器输入快照（诊断/重放，不是学生教材）
+    parse_report.json      # 稳定解析报告
+    source_manifest.json   # 原材料路径、版本哈希、解析状态
+    base_content_units.jsonl # 确定性解析器基线
+    content_units.jsonl    # 基线 + 已应用 review patch 的编译视图
+    base_chapter_phase_mappings.jsonl
+    chapter_phase_mappings.jsonl
+    review_queue.jsonl     # 带严重级别、证据、状态的 AI/人工接管队列
+    review_patches.jsonl   # append-only、可回放的已应用 patch ledger
+    pending_patch.json     # 仅事务中存在；残留表示上次补丁应用中断并阻断 readiness
+    unbound_review.json    # 尚不能安全绑定到单一来源的告警
+    ai_review_manifest.json # 旧消费者兼容视图；不是审查事实源
+    evidence/              # 按来源/哈希保存的不可变接管证据快照
+    build_manifest.json    # 输入/派生产物哈希与逐页质量路由
+    mutation.lock          # 审查写操作互斥锁；运行时临时文件
   references/
     wiki/
       ch1_concepts.md      # 分章节知识库（唯一知识源，按需 lazy-load）
@@ -20,6 +36,8 @@
     teaching_baseline.json # append-only 教学例题保留事实源；不得手改或缩减
     figure_page_index.json # 材料视觉页 + wiki 视觉覆盖
     image_question_index.json # 题面/答案侧视觉覆盖
+    retrieval_index.json   # freshness-bound BM25/知识点检索索引
+    terms.json             # 可选课程术语桥
     assets/                # 本地题面、答案与 wiki 页面图
   notebook/                # 持久化讲解/反馈（条目锚点可作阶段证据）
   study_guide/             # 派生的人类阅读版：chNN.html；可选 chNN.pdf
@@ -30,6 +48,50 @@
 - `references/wiki/` 下每个文件名须为安全相对名 `^[\w.\-]+\.md$`（不得含 `..`、绝对路径、子目录穿越）。
 - `study_progress.md` 的「当前阶段」应能对应到 `study_plan.md` 列出的某个阶段。
 - `study_progress.md` 应含「💡 概念疑难点记录」区（由 confusion-tracker 维护）。
+- `.ingest/` 存在时，`source_manifest.json`、`content_units.jsonl`、`review_queue.jsonl`
+  和 `build_manifest.json` 是同一构建的事实源；只用 `scripts/ingest_review.py` 改变接管状态或应用 patch。
+  原材料、wiki、题库或检索索引哈希漂移时，validator/retriever 必须拒绝旧派生产物。
+- 正常静止状态不应存在 `pending_patch.json`；它若残留，表示补丁事务在 ledger/compiled view/issue 状态全部一致前中断，validator 必须阻断并要求恢复或重建。`mutation.lock` 只负责并发互斥，不是内容事实。
+
+### 结构化 ingestion 事实源
+
+常规建库入口是：
+
+```text
+python scripts/ingest_course.py --materials <dir> --workspace <ws> --json
+```
+
+它依次做依赖预检、材料解析、结构化编译、进度状态初始化、视觉索引/回挂和最终校验。`--artifact-mode`
+只在学生明确给出长期 `chat|visual` 选择时传入；省略表示保留已有选择或默认 `chat`。
+
+退出码与内容就绪状态分离：
+
+| 退出码 | `process_success` | 含义 | 下一步 |
+| --- | --- | --- | --- |
+| `0` | `true` | 工程流程完成；JSON readiness 为 `ready` 或 `usable_with_gaps` | 后者先逐项报告 warning |
+| `10` | `true` | 工程流程完成，但 readiness 为 `blocked` | 进入 typed review，禁止授课/测验 |
+| 其他非零 | `false` | 依赖、输入、路径或操作失败 | 修复失败原因后重跑同一命令 |
+
+`source_manifest.json` 为每个来源保存稳定 source ID、材料根目录相对路径、SHA-256、字节数、媒体类型和
+解析状态。绝对材料根路径与逐页 accounting 位于 `build_manifest.json`（`source_root` / `page_quality`），
+不属于 SourceRecord schema。移动材料或工作区后必须重新建库/重绑，不能把 source drift 当成普通 warning；
+分享工作区前也应注意 `source_root` 可能暴露本机路径。
+
+每行 `ContentUnit` 至少包含稳定 `unit_id`、`source_id`/source hash、来源相对路径、元素类型、页码与
+页锚、顺序、提取方法/置信度和 provenance；可选保存 bbox、父单元、section path、chapter/phase ID、
+公式/HTML、asset path/role 及题答配对。元素类型包括 title/heading/text/list/table/formula/figure/
+diagram/caption/code/speaker_notes/question/answer/page_anchor/other。每个已知页面都必须有
+`page_anchor`，空白或扫描页也不例外。
+
+`base_*` 文件只保存确定性解析基线；`content_units.jsonl` 与映射文件是基线加已应用 patch 的编译视图。
+两者都不能手改。`ReviewIssue` 保存稳定 issue ID、source hash、reason codes、页码、证据引用、目标单元、
+severity、说明、建议动作和状态。生命周期状态为 pending/claimed/validated/applied/blocked/resolved/
+unrecoverable/superseded；blocking issue 在未进入终态前令 readiness=`blocked`。
+
+接管命令为 `scripts/ingest_review.py --workspace <ws> --json <command>`：用 `list`/`show` 查看，`claim`
+原子认领，`validate-patch`/`apply` 校验并应用证据绑定补丁，`mark-unrecoverable --reason ...` 明确关闭
+无法恢复项，`rebuild` 从基线 + ledger 重编译 wiki/题库/检索索引。`review_patches.jsonl` 是 append-only
+事实源；`.ingest/ai_review_manifest.json` 只是 legacy 兼容视图。
 
 ## 2. 题库项 schema (`quiz_bank.json`)
 
@@ -72,7 +134,7 @@
 **强制规则（校验器据此报错/告警）：**
 
 1. **不得把 AI 生成的答案伪装成老师提供**：若一道题带 AI 生成标志（`source: ai_generated` 或布尔字段 `ai_generated: true`），其 `source` **必须**是 `ai_generated` 或 `mixed`，**不得**标成 `teacher`/`material`。违反 → **错误**。
-2. **缺答案如实标注（告警）**：一道题缺 `answer` 时报**告警**（建议补 `answer`，或标 `answer_status: "unknown"` / `source: "ai_generated"`）。这与 `ingest.py` 对「无答案题」**告警但不失败**的行为一致——由 `ingest.py` 正常产出的工作区不会被 Tier 1 判为无效。
+2. **缺答案如实标注**：legacy/手写工作区缺 `answer` 时仍报**告警**；带 `.ingest/` 的新工作区会同时产生 blocking review issue，在补入有证据的官方答案、明确标注 AI 答案，或显式标记不可恢复前，readiness 为 `blocked`。导入进程成功不等于内容已可用于测验。
 3. **缺 `source`**：有答案但未标 `source` → **告警**（建议补全来源）。
 
 > `chapter`（或 `phase`）用于章节复习过滤抽题，强烈建议每题都带；但 `ingest.py` 不强制，故缺失只报**告警**（不判工作区无效）。
@@ -82,9 +144,9 @@
 
 ## 4. 资源依赖与原页引用 (asset-aware fields)
 
-讲义里很多 **Quiz / Example** 题依赖一张图：文氏图（Venn）、页内插图、表格等。题面文字本身不足以独立成题——**不显示那张图，学生根本无法作答**。为此题库项新增一组**可选、向后兼容**字段（老题库不带这些字段仍然有效）。配套的官方入口 **[`scripts/build_raw_input_from_workspace.py`](../scripts/build_raw_input_from_workspace.py) 从 PDF 材料产出这些字段**（整页渲染成 asset、保留原页出处、抽取 Example/Quiz 题—解对）；校验器与出题在缺图时**fail-closed**。
+讲义里很多 **Quiz / Example** 题依赖一张图：文氏图（Venn）、页内插图、表格等。题面文字本身不足以独立成题——**不显示那张图，学生根本无法作答**。为此题库项新增一组**可选、向后兼容**字段（老题库不带这些字段仍然有效）。常规入口 `ingest_course.py` 会从 PDF、DOCX、PPTX、txt/Markdown 建立来源与结构化单元；PDF 页面和 OOXML 嵌入图片在能力可用时写成 asset 并保留原页/幻灯片出处。无法确定的图片归属进入 typed review，校验器与出题在缺图时 **fail-closed**。
 
-> 官方流程（脚本随 `python` 调用，无需可执行位）：`python scripts/build_raw_input_from_workspace.py --materials <dir> --out raw_input.json --asset-root <ws>/references/assets` → `python scripts/ingest.py -i raw_input.json -o <ws>` → `python scripts/build_visual_index.py --workspace <ws> --materials <dir> --apply --apply-wiki` → `python scripts/validate_workspace.py <ws>`。PDF 文本/渲染为**可选依赖**——文本 `pip install pypdf`；渲染 `pip install pymupdf`（自带 PNG）或 `pypdfium2 Pillow`（缺 Pillow 时 pypdfium2 不算渲染后端）。缺依赖会清晰报错；纯 `.txt/.md` 无需依赖。渲染须用 `--asset-root` 指向 `<ws>/references/assets`，否则 auto 跳过渲染并告警、required 报错。
+> `build_raw_input_from_workspace.py` → `ingest.py` → `build_visual_index.py` → `validate_workspace.py` 是维护者定位单步缺陷的低层诊断链，不是学生常规入口。PDF 文本可用 pypdf 或 PyMuPDF；页面渲染可用 PyMuPDF，或 pypdfium2 + Pillow。具体缺项只以 `check_deps.py`/orchestrator 的当前路线报告为准，不在文档中硬编码“唯一安装命令”。纯 DOCX/PPTX/txt/Markdown 的基础解析使用标准库；复杂布局、加密/损坏 OOXML、扫描页和不受支持格式会进入接管队列。
 
 ### 题项新增可选字段
 
@@ -167,7 +229,7 @@ For any item with `requires_assets=true` or `maybe_requires_assets=true`:
 
 默认**只报告不改**。`--apply` 会先备份 `quiz_bank.json.bak`，再分别修复两侧：题面疑漏挂 `question_context` 并标 `maybe_requires_assets=true`；答案疑漏只挂 `answer_context`，绝不改变题面门禁或提前展示顺序。`--apply-wiki` 把检测页按 `<!-- source.pdf p.N -->` 页锚幂等回挂到 wiki；默认每章最多 30 页，超出上限或渲染失败的页仍完整保留在 `missing` 清单并带原因。回写后必须重新读取三侧结果，而不是沿用回写前计数。
 
-题面/答案页角色是全局顺序门禁：只被答案出处引用的视觉页进入 `deferred_answer_pages`，不进入 concepts/wiki gallery，也不计作 wiki `missing`；`--apply` 只会把它放进对应 item 的 `answer_context`。旧版自动生成的答案页 wiki block 可由 `--apply-wiki` 幂等移除；无法证明归属的手工/旧式嵌图会保留原文但写入 `manual_answer_exposure_pages`，索引命令非零退出并阻断阶段完成。若同一整页同时含题面与解答，不能把整页自动当作安全题面图或 wiki 概念图；它进入 `shared_prompt_answer_pages`，尚无经审核题面裁图时还必须进入 `shared_prompt_answer_blocker_pages`。相应 `*_count` 必须与数组长度一致；完整 v4.1 manifest 缺任一安全数组不会默认成空，而是要求重建索引，防止旧/手写空字段绕过泄题门禁。真正没有 v4.1 manifest trio 的 legacy 工作区仍走下文的兼容路径。打印路径或忽略一次非零退出均不算修复。
+题面/答案页角色是全局顺序门禁：只被答案出处引用的视觉页进入 `deferred_answer_pages`，不进入 concepts/wiki gallery，也不计作 wiki `missing`；`--apply` 只会把它放进对应 item 的 `answer_context`。较早生成的答案页 wiki block 可由 `--apply-wiki` 幂等移除；无法证明归属的手工/兼容式嵌图会保留原文但写入 `manual_answer_exposure_pages`，索引命令非零退出并阻断阶段完成。若同一整页同时含题面与解答，不能把整页自动当作安全题面图或 wiki 概念图；它进入 `shared_prompt_answer_pages`，尚无经审核题面裁图时还必须进入 `shared_prompt_answer_blocker_pages`。相应 `*_count` 必须与数组长度一致；完整视觉证据 manifest 缺任一安全数组不会默认成空，而是要求重建索引，防止兼容/手写空字段绕过泄题门禁。真正没有视觉/教学 manifest trio 的 legacy 工作区仍走下文的兼容路径。打印路径或忽略一次非零退出均不算修复。
 
 配套官方工具：`list_image_questions.py`（按章 总数×requires×maybe×题面疑漏）、`list_figure_pages.py`（视觉页清单，可按类型过滤）、`show_question_assets.py`（输出某题应先展示的题面图 Markdown，POSIX 相对路径，违约即 exit 1）。PDF 页文本含 NUL/控制字节会进入视觉索引/validator 告警，因为“文本后端返回字符串”不等于空间图表已经被语义保留。
 
@@ -184,8 +246,8 @@ For any item with `requires_assets=true` or `maybe_requires_assets=true`:
 
 **范围过滤契约**：默认混合题池；学生限定范围（如 homework-only）后即为记录在进度状态里的 scope 过滤器——
 越范围出题前必须先输出「⚠️ 临时覆盖你的 <范围> 范围偏好」；未标 `source_type` 的题在限定范围内一律排除并报告数量。
-官方工具：`scripts/select_questions.py`（组合筛选 + 可选 `--export-sqlite` 生成查询缓存，缓存是生成物不进仓库）、
-`scripts/build_knowledge_index.py`（知识点 ↔ 章节/wiki/题目 索引，页码级引用留待 A5）。
+官方工具：`scripts/select_questions.py`（组合筛选 + 可选 `--export-sqlite` 生成查询缓存，缓存是生成物不进仓库）。
+知识点 postings 已由 `ingest.py` 直接并入 `references/retrieval_index.json`，不再另造会与主检索漂移的 `knowledge_index.json`。
 
 **生产者**：`scripts/build_raw_input_from_workspace.py` 自 A3 起自动产出 `source_type="homework"` 的作业题（题答分离 PDF 配对 / inline Solution / 中英标记），页码出处齐全；其余 source_type 值可手工标注或由后续 ingest 增强补齐。
 
@@ -230,7 +292,7 @@ python scripts/update_progress.py --workspace <ws> complete-phase --status verif
 `build_visual_index.py`。当前章声明 `requires_assets` / `maybe_requires_assets` 的题还会独立重查可读的
 题面侧 asset，不能只靠旧快照或手写空 suspects 绕过。
 
-只有完整 v4.1 manifest trio（含 `wiki_visual_coverage` 的 figure 索引、含 `prompt_suspects`/`answer_suspects` 的 image 索引、教学 manifest）才启用硬门禁。真正的旧 schema 继续兼容并告警；partial/broken 新 manifest 必须 fail-loud，不能伪装成 legacy 以绕过门禁。阶段完成只能作用于 `current_phase`，推进只能去 `study_plan.md` 中紧接的下一阶段。
+只有完整视觉/教学 manifest trio（含 `wiki_visual_coverage` 的 figure 索引、含 `prompt_suspects`/`answer_suspects` 的 image 索引、教学 manifest）才启用硬门禁。真正的旧 schema 继续兼容并告警；partial/broken 新 manifest 必须 fail-loud，不能伪装成 legacy 以绕过门禁。阶段完成只能作用于 `current_phase`，推进只能去 `study_plan.md` 中紧接的下一阶段。
 
 ## 8. Validator 结论语义
 

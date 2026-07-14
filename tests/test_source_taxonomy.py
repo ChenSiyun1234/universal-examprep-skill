@@ -251,66 +251,47 @@ class Selector(unittest.TestCase):
         con.close()
         self.assertEqual(v, 0)                                    # 空白-only 答案不算官方答案
 
-class KnowledgeIndex(unittest.TestCase):
-    def test_index_resolves_phase_and_wiki_basename_chapters(self):
-        ws = _mk_ws(tempfile.mkdtemp(), [
-            {"id": "dualk", "chapter": 3, "phase": 1, "type": "subjective", "question": "双标题？",
-             "answer": "E", "source": "material", "ai_generated": False, "knowledge_points": ["双标"]},
-            {"id": "wname", "chapter": "ch2", "type": "subjective", "question": "wiki 名章节？",
-             "answer": "F", "source": "material", "ai_generated": False, "knowledge_points": ["名章"]}])
-        subprocess.run([sys.executable, os.path.join(SCRIPTS, "build_knowledge_index.py"),
-                        "--workspace", ws], capture_output=True, text=True, encoding="utf-8")
-        idx = json.load(open(os.path.join(ws, "references", "knowledge_index.json"), encoding="utf-8"))
-        kp = idx["knowledge_points"]
-        self.assertIn("ch1.md", kp["双标"]["wiki_files"])          # 经 phase:1 解析到 plan 的 wiki
-        self.assertEqual(sorted(kp["双标"]["chapters"]), ["1", "3"])
-        self.assertIn("ch2.md", kp["名章"]["wiki_files"])          # chapter 为 wiki 基名 → 反查命中
-
-    def test_index_chapter_label_prefix_matches_wiki(self):
-        tmp = tempfile.mkdtemp()
-        ws = _mk_ws(tmp, [{"id": "pfx1", "chapter": "ch1", "type": "subjective", "question": "前缀？",
-                           "answer": "H", "source": "material", "ai_generated": False,
-                           "knowledge_points": ["前缀"]}])
-        open(os.path.join(ws, "references", "wiki", "ch1_stack_queue.md"), "w", encoding="utf-8").write("# x")
-        open(os.path.join(ws, "study_plan.md"), "w", encoding="utf-8").write(
-            "# 计划\n## 阶段1：栈\n- references/wiki/ch1_stack_queue.md\n")
-        subprocess.run([sys.executable, os.path.join(SCRIPTS, "build_knowledge_index.py"),
-                        "--workspace", ws], capture_output=True, text=True, encoding="utf-8")
-        idx = json.load(open(os.path.join(ws, "references", "knowledge_index.json"), encoding="utf-8"))
-        self.assertIn("ch1_stack_queue.md", idx["knowledge_points"]["前缀"]["wiki_files"])
-
-    def test_index_checklist_phase_context(self):
-        # checklist 计划（- [ ] 阶段 1 后跟缩进 wiki 行）也能建立阶段→wiki 映射
-        tmp = tempfile.mkdtemp()
-        ws = _mk_ws(tmp)
-        open(os.path.join(ws, "study_plan.md"), "w", encoding="utf-8").write(
-            "# 计划\n- [ ] 阶段 1：栈\n  - references/wiki/ch1.md\n"
-            "- [ ] 阶段 2：树\n  - references/wiki/ch2.md\n")
-        subprocess.run([sys.executable, os.path.join(SCRIPTS, "build_knowledge_index.py"),
-                        "--workspace", ws], capture_output=True, text=True, encoding="utf-8")
-        idx = json.load(open(os.path.join(ws, "references", "knowledge_index.json"), encoding="utf-8"))
-        self.assertIn("ch1.md", idx["knowledge_points"]["栈"]["wiki_files"])
-
-    def test_index_dedupes_repeated_tags(self):
-        ws = _mk_ws(tempfile.mkdtemp(), [{"id": "dup1", "chapter": 1, "type": "subjective",
-                                          "question": "重复标签？", "answer": "G", "source": "material",
-                                          "ai_generated": False, "knowledge_points": ["重", "重"]}])
-        subprocess.run([sys.executable, os.path.join(SCRIPTS, "build_knowledge_index.py"),
-                        "--workspace", ws], capture_output=True, text=True, encoding="utf-8")
-        idx = json.load(open(os.path.join(ws, "references", "knowledge_index.json"), encoding="utf-8"))
-        self.assertEqual(idx["knowledge_points"]["重"]["question_ids"], ["dup1"])   # 只记一次
-
-    def test_index_maps_kp_to_chapter_wiki_questions(self):
-        ws = _mk_ws(tempfile.mkdtemp())
-        r = subprocess.run([sys.executable, os.path.join(SCRIPTS, "build_knowledge_index.py"),
-                            "--workspace", ws], capture_output=True, text=True, encoding="utf-8")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        idx = json.load(open(os.path.join(ws, "references", "knowledge_index.json"), encoding="utf-8"))
-        kp = idx["knowledge_points"]
-        self.assertEqual(sorted(kp["栈"]["question_ids"]), ["hw1", "lq1"])
-        self.assertIn("1", kp["栈"]["chapters"])
-        self.assertIn("ch1.md", kp["栈"]["wiki_files"])           # study_plan 映射生效
-        self.assertEqual(idx["untagged_questions"], 1)
+class KnowledgePostings(unittest.TestCase):
+    def test_ingest_folds_knowledge_points_into_retrieval_index(self):
+        temp = tempfile.mkdtemp()
+        raw = {
+            "course_name": "Knowledge postings",
+            "phases": [{
+                "phase_num": 1,
+                "phase_name": "Stack",
+                "wiki_filename": "ch1.md",
+                "wiki_content": "# Stack\n\nLIFO structure.",
+            }],
+            "quiz_bank": [{
+                "id": "lq1",
+                "chapter": 1,
+                "type": "subjective",
+                "question": "Explain stack order.",
+                "answer": "LIFO",
+                "source": "material",
+                "knowledge_points": ["栈", "LIFO"],
+            }],
+        }
+        raw_path = os.path.join(temp, "raw.json")
+        with open(raw_path, "w", encoding="utf-8") as stream:
+            json.dump(raw, stream, ensure_ascii=False)
+        workspace = os.path.join(temp, "workspace")
+        result = subprocess.run(
+            [sys.executable, os.path.join(SCRIPTS, "ingest.py"),
+             "--input", raw_path, "--output-dir", workspace],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        with open(os.path.join(workspace, "references", "retrieval_index.json"),
+                  encoding="utf-8") as stream:
+            index = json.load(stream)
+        concept = next(doc for doc in index["docs"] if doc["id"] == "concept:lq1")
+        self.assertEqual("1", concept["chapter"])
+        self.assertEqual("ch01", concept["chapter_id"])
+        self.assertIn("栈", concept["text"])
+        self.assertFalse(os.path.exists(
+            os.path.join(workspace, "references", "knowledge_index.json")
+        ))
 
 
 class ScopeContract(unittest.TestCase):
@@ -350,7 +331,7 @@ class ScopeContract(unittest.TestCase):
         self.assertFalse(B.scope_override_declared(late))         # 声明必须在第一道题之前
 
     def test_no_new_deps_in_scripts(self):
-        for p in ("select_questions.py", "build_knowledge_index.py"):
+        for p in ("select_questions.py", "ingest.py", "retrieve.py", "ingest_review.py"):
             src = open(os.path.join(SCRIPTS, p), encoding="utf-8").read()
             for banned in ("import requests", "import anthropic", "urllib.request", "import socket"):
                 self.assertNotIn(banned, src)

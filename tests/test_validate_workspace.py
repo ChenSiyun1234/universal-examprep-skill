@@ -8,6 +8,7 @@ import io
 import os
 import sys
 import json
+import base64
 import hashlib
 import shutil
 import tempfile
@@ -20,6 +21,14 @@ sys.path.insert(0, os.path.join(ROOT, "scripts"))
 import validate_workspace as V  # noqa: E402
 
 FX = os.path.join(ROOT, "tests", "fixtures")
+
+# A real 1x1 RGBA PNG.  Keep visual fixtures structurally valid so tests that
+# exercise asset roles/path safety do not accidentally fail at the earlier
+# signature gate.
+MINIMAL_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+    "AAAADUlEQVR4nGNgYGBgAAAABQABpfZFQAAAAABJRU5ErkJggg=="
+)
 
 
 def run(name):
@@ -514,7 +523,7 @@ class TestValidateWorkspace(unittest.TestCase):
         if create:
             ap = os.path.join(d, "references", "assets", "a.png")
             os.makedirs(os.path.dirname(ap), exist_ok=True)
-            open(ap, "wb").write(b"\x89PNG\r\n")   # validator checks existence, not image validity
+            open(ap, "wb").write(MINIMAL_PNG)
         return d
 
     def test_p0a_old_quizbank_without_asset_fields_still_valid(self):
@@ -556,10 +565,12 @@ class TestValidateWorkspace(unittest.TestCase):
     def test_p0a_asset_symlink_escape_fails(self):
         d = self._ws_asset(self._asset_item())
         link = os.path.join(d, "references", "assets", "a.png")
-        with mock.patch.object(V, "_is_symlink", side_effect=lambda p: p == link):
+        # Asset safety walks every path component through the shared
+        # link/junction/reparse detector rather than checking only the leaf.
+        with mock.patch.object(V, "is_link_or_reparse", side_effect=lambda p: p == link):
             errors, _, _ = V.validate(d)
         self.assertEqual(V._exit_code(errors), 1)
-        self.assertTrue(any("符号链接" in e["msg"] for e in errors))
+        self.assertTrue(any("reparse point" in e["msg"] for e in errors))
 
     def test_p0a_invalid_asset_role_fails(self):
         item = self._asset_item(assets=[{"path": "references/assets/a.png", "role": "bogus",

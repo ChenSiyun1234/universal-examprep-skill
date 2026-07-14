@@ -11,7 +11,9 @@ import os
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS = os.path.join(ROOT, "scripts")
@@ -87,6 +89,7 @@ class CoreExtraction(unittest.TestCase):
         self.assertEqual(len(items), 1)
         it = items[0]
         self.assertEqual(it["id"], "lecture_example_1_1")
+        self.assertEqual(it["source_type"], "example")
         self.assertEqual(it["source_pages"], [1])
         self.assertEqual(it["answer_source_pages"], [2])
 
@@ -94,6 +97,7 @@ class CoreExtraction(unittest.TestCase):
         pages = _pages("ch01.pdf", "Quiz 1.1  State the theorem.", "Quiz 1.1 Solution  It says ...")
         items = B.extract_lecture_items(pages)
         self.assertEqual([it["id"] for it in items], ["lecture_quiz_1_1"])
+        self.assertEqual(items[0]["source_type"], "lecture_quiz")
         self.assertEqual(items[0]["answer_source_pages"], [2])
 
     def test_teaching_examples_are_parallel_snapshots_not_a_quiz_bank_filter(self):
@@ -575,6 +579,26 @@ class CoreExtraction(unittest.TestCase):
         pages = _pages("ch03_notes.pdf", "no markers here, just prose")
         self.assertEqual(B.group_sections(pages)[0]["chapter"], 3)
 
+    def test_raw_phase_order_is_separate_from_only_chapter_five(self):
+        sections = B.group_sections(_pages("ch05_notes.pdf", "chapter five prose"))
+        phase = B.build_raw_input("C", sections, [])["phases"][0]
+        self.assertEqual(phase["phase_num"], 1)
+        self.assertEqual(phase["phase_id"], "phase01")
+        self.assertEqual(phase["chapter"], 5)
+        self.assertEqual(phase["chapter_id"], "ch05")
+        self.assertEqual(phase["wiki_filename"], "ch05.md")
+
+    def test_raw_noncontiguous_chapters_keep_true_identity(self):
+        sections = B.group_sections(
+            _pages("ch02_notes.pdf", "chapter two prose")
+            + _pages("ch07_notes.pdf", "chapter seven prose")
+        )
+        phases = B.build_raw_input("C", sections, [])["phases"]
+        self.assertEqual([p["phase_num"] for p in phases], [1, 2])
+        self.assertEqual([p["phase_id"] for p in phases], ["phase01", "phase02"])
+        self.assertEqual([p["chapter"] for p in phases], [2, 7])
+        self.assertEqual([p["chapter_id"] for p in phases], ["ch02", "ch07"])
+
     def test_homework_items_not_dropped(self):
         hw = [{"id": "hw_1", "type": "subjective", "question": "q", "answer": "a", "source": "material"}]
         lec = [{"id": "lecture_quiz_1_1", "type": "diagram", "question": "q", "source": "material"}]
@@ -629,9 +653,60 @@ class CoreExtraction(unittest.TestCase):
         self.assertNotIn("_answer_pages", item)
 
     def test_pypdfium2_render_requires_pillow(self):
-        with open(os.path.join(SCRIPTS, "build_raw_input_from_workspace.py"), encoding="utf-8") as f:
-            src = f.read()
-        self.assertIn("import PIL", src)   # detect_backend must verify Pillow before claiming pypdfium2
+        from pdf_capabilities import PDF_RENDER_CANDIDATES
+        pdfium = next(row for row in PDF_RENDER_CANDIDATES if row[0] == "pypdfium2")
+        self.assertEqual(pdfium[1], ("pypdfium2", "PIL"))
+
+    def test_pymupdf_backend_extracts_text_pages(self):
+        closed = []
+
+        class Page(object):
+            def __init__(self, text):
+                self.text = text
+
+            def get_text(self, mode):
+                self.assert_mode = mode
+                return self.text
+
+        class Document(list):
+            def close(self):
+                closed.append(True)
+
+        fake_fitz = types.ModuleType("fitz")
+        fake_fitz.open = lambda _path: Document([Page("page one"), Page("page two")])
+        with mock.patch.dict(sys.modules, {"fitz": fake_fitz}):
+            texts = B.RealBackend(text_lib="pymupdf").page_texts("fake.pdf")
+        self.assertEqual(texts, ["page one", "page two"])
+        self.assertEqual(closed, [True])
+
+    def test_pdf_text_backend_falls_back_per_document(self):
+        fake_pypdf = types.ModuleType("pypdf")
+        fake_pypdf.PdfReader = mock.Mock(side_effect=ValueError("pypdf cannot parse this file"))
+
+        class Page(object):
+            def get_text(self, _mode):
+                return "Recovered by PyMuPDF"
+
+        class Document(list):
+            def close(self):
+                pass
+
+        fake_fitz = types.ModuleType("fitz")
+        fake_fitz.open = lambda _path: Document([Page()])
+        with mock.patch.dict(sys.modules, {"pypdf": fake_pypdf, "fitz": fake_fitz}):
+            backend = B.RealBackend(text_lib=["pypdf", "pymupdf"])
+            texts = backend.page_texts("mixed.pdf")
+        self.assertEqual(["Recovered by PyMuPDF"], texts)
+        self.assertEqual(["pymupdf"], backend.last_text_methods)
+
+    def test_detect_backend_uses_fitz_for_text_when_pypdf_is_missing(self):
+        fake_fitz = types.ModuleType("fitz")
+        with mock.patch.dict(sys.modules, {"pypdf": None, "fitz": fake_fitz}):
+            backend = B.detect_backend()
+        self.assertEqual(backend.text_lib, "pymupdf")
+        self.assertEqual(backend.render_lib, "pymupdf")
+        self.assertTrue(backend.can_text())
+        self.assertTrue(backend.can_render())
 
 
 # --------------------------------------------------------------------------- CLI / run() tests
@@ -733,16 +808,25 @@ class CliAndRun(unittest.TestCase):
         d = tempfile.mkdtemp(prefix="mat-")                  # no parseable files at all
         code, payload, report = B.run(_args(d), backend=B.NoBackend())
         self.assertEqual(code, 4)
-        self.assertIn("no_text_extracted", report["warnings"])
+        self.assertIn("no_material_files", report["warnings"])
 
-    def test_scanned_pdf_blank_pages_fail(self):
-        # an image-only PDF: pypdf returns "" per page → must NOT pass as a valid (empty) workspace
+    def test_scanned_pdf_blank_pages_build_blocked_review_payload(self):
+        # Process success is separate from readiness: image-only pages remain accounted for,
+        # rendered as review evidence when possible, and carry blocking typed review work.
         d = _materials_with_pdf()
         be = FakeBackend({"ch01.pdf": ["", "", ""]})         # 3 blank pages
         code, payload, report = B.run(_args(d), backend=be)
-        self.assertEqual(code, 4)
+        self.assertEqual(code, 0)
         self.assertIn("no_text_extracted", report["warnings"])
         self.assertTrue(any("pdf_no_text" in w for w in report["warnings"]))
+        anchors = [row for row in payload["ingestion"]["content_units"]
+                   if row["kind"] == "page_anchor"]
+        self.assertEqual([1, 2, 3], sorted(row["page"] for row in anchors))
+        source_assets = [row for row in payload["ingestion"]["content_units"]
+                         if row["asset_role"] == "source_page"]
+        self.assertEqual(3, len(source_assets))
+        self.assertTrue(any(row["severity"] == "blocking"
+                            for row in payload["ingestion"]["review_candidates"]))
 
     def test_render_required_fails_for_marker_only_image_prompt(self):
         # round-11: a marker-only image prompt (heading + no text) whose page can't render also fails

@@ -89,6 +89,48 @@ class Chunking(unittest.TestCase):
         self.assertEqual((text, chunks), ("", []))
 
 
+class StructuredChunking(unittest.TestCase):
+    @staticmethod
+    def unit(unit_id, kind, text, ordinal, section=("Topic",), page=1):
+        return {
+            "unit_id": unit_id,
+            "source_id": "src_x",
+            "source_sha256": "0" * 64,
+            "source_file": "lecture/ch01.pdf",
+            "kind": kind,
+            "text": text,
+            "page": page,
+            "ordinal": ordinal,
+            "chapter_id": "ch01",
+            "phase_id": "phase01",
+            "section_path": list(section),
+            "parent_unit_id": "unit_parent",
+        }
+
+    def test_tables_formulas_and_questions_are_atomic(self):
+        units = [
+            self.unit("unit_text", "text", "intro", 1),
+            self.unit("unit_table", "table", "A\tB\n" * 2000, 2),
+            self.unit("unit_formula", "formula", r"E = mc^2", 3),
+            self.unit("unit_question", "question", "Compute the value.", 4),
+        ]
+        chunks = chunk.chunk_units(units, target=100, hard_max=200)
+        table = next(row for row in chunks if row["kind"] == "table")
+        self.assertEqual(["unit_table"], table["unit_ids"])
+        self.assertTrue(table["oversize_atomic"])
+        self.assertEqual(["formula", "question"], [
+            row["kind"] for row in chunks if row["kind"] in ("formula", "question")
+        ])
+
+    def test_answer_units_never_enter_teaching_retrieval(self):
+        chunks = chunk.chunk_units([
+            self.unit("unit_question", "question", "Prompt", 1),
+            self.unit("unit_answer", "answer", "Secret answer", 2),
+        ])
+        self.assertTrue(any("Prompt" in row["text"] for row in chunks))
+        self.assertFalse(any("Secret answer" in row["text"] for row in chunks))
+
+
 class RealPsycAcceptance(unittest.TestCase):
     """Plan acceptance on the real (gitignored, local-only) PSYC wiki — skips elsewhere/CI."""
     WIKI = os.path.join(ROOT, "benchmark", "skill_workspace", "psyc110_full", "references", "wiki")

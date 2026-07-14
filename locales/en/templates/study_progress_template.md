@@ -3,7 +3,7 @@
 ## ⏱️ Current review checkpoint
 * **Current phase**: {CURRENT_PHASE}
 * **Language preference**: <!-- LANGUAGE -->
-* **Last updated**: 2026-06-25
+* **Last updated**: pending the first progress write
 
 ---
 
@@ -14,7 +14,7 @@
 ---
 
 ## ❌ Mistake archive (the core of pre-exam minesweeping)
-*Whenever the student answers a quiz question incorrectly, the AI automatically appends the mistake here for targeted re-testing in Phase 6.*
+*Whenever the student answers a quiz question incorrectly, the AI automatically appends the mistake here for targeted re-testing during final review.*
 
 | Mistake ID | Chapter | Question summary | Error analysis | Status |
 | :--- | :--- | :--- | :--- | :--- |

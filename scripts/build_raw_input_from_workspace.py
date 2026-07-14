@@ -11,7 +11,7 @@ This is NOT an OCR project. It is a deterministic, honest, first official entryp
   - fails / warns clearly when the OPTIONAL PDF backends are unavailable.
 
 stdlib-only core + tests. PDF *text extraction* and *page rendering* are OPTIONAL backends:
-  - text:   pypdf
+  - text:   pypdf OR PyMuPDF (`fitz`)
   - render: PyMuPDF (`fitz`, native PNG, no extra deps) OR pypdfium2 + Pillow (its to_pil adapter)
 Install only if you need them, e.g.:  pip install pypdf pymupdf   (or: pip install pypdf pypdfium2 Pillow)
 Rendering also needs --asset-root <workspace>/references/assets (where the page PNGs are written).
@@ -25,11 +25,28 @@ Usage:
   python scripts/validate_workspace.py skill_workspace
 """
 import argparse
+import hashlib
+import importlib
 import zlib
 import json
 import os
 import re
 import sys
+import tempfile
+
+try:
+    from ingestion import is_link_or_reparse
+    from ingestion.ooxml import OOXMLExtractionError, extract_ooxml
+    from ingestion.pipeline import build_payload as build_ingestion_payload
+except ImportError:  # imported as scripts.build_raw_input_from_workspace in unit tests
+    from scripts.ingestion import is_link_or_reparse
+    from scripts.ingestion.ooxml import OOXMLExtractionError, extract_ooxml
+    from scripts.ingestion.pipeline import build_payload as build_ingestion_payload
+
+try:
+    from pdf_capabilities import PDF_RENDER_CANDIDATES, PDF_TEXT_CANDIDATES
+except ImportError:
+    from scripts.pdf_capabilities import PDF_RENDER_CANDIDATES, PDF_TEXT_CANDIDATES
 
 # ---------------------------------------------------------------------------
 # Heading detection / lecture extraction — PURE, stdlib, unit-tested on synthetic page text.
@@ -474,6 +491,7 @@ def extract_lecture_items(pages):
         item = {
             "id": item_id,
             "chapter": key[1],
+            "source_type": "example" if kind == "example" else "lecture_quiz",
             "type": "diagram" if needs else _qt,
             "question": question,
             "source": "material",
@@ -503,8 +521,9 @@ def extract_lecture_items(pages):
             item["_teaching_title"] = "%s %d.%d" % (label, key[1], key[2])
         if not needs and _qt == "choice" and _opts:
             item["options"] = _opts
-        if not needs:
-            item["keywords"] = []  # subjective recommended field; left for the tutor/teacher to fill
+        # ``keywords`` is optional for subjective items.  Do not emit an empty
+        # placeholder: the structured ingestion envelope deliberately treats a
+        # present-but-empty keyword list as malformed review metadata.
         if ans_idx:
             ans = sorted({(pages[j]["file"], pages[j]["page"]) for j in ans_idx}, key=lambda fp: (fp[1], fp[0]))
             first_file = ans[0][0]
@@ -1461,18 +1480,49 @@ def group_sections(pages, notes=None):
     return [by_ch[c] for c in sorted(order)]
 
 
-def _safe_asset_name(file, page, item_id, suffix=""):
+def _safe_asset_name(file, page, item_id, suffix="", source_sha256=None):
     # keep subdirs (sanitized) so lecture/ch01.pdf and solutions/ch01.pdf don't collide on the same page
     stem = re.sub(r"[^\w.\-]", "_", os.path.splitext(file or "src")[0])
     if re.fullmatch(r"[.\-_]*", stem):         # all-dots/dashes/underscores (e.g. a ".." name) → a token
         stem = "src"
     sid = re.sub(r"[^\w.\-]", "_", str(item_id))
-    return "%s_p%03d_%s%s.png" % (stem, int(page), sid, suffix)
+    revision = "_%s" % source_sha256[:12] if source_sha256 else ""
+    return "%s%s_p%03d_%s%s.png" % (stem, revision, int(page), sid, suffix)
+
+
+def _sha256_path(path, cache):
+    key = os.path.abspath(path)
+    if key not in cache:
+        digest = hashlib.sha256()
+        with open(key, "rb") as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+        cache[key] = digest.hexdigest()
+    return cache[key]
+
+
+def _write_png_atomic(asset_root, name, payload):
+    if not isinstance(payload, (bytes, bytearray)) or not payload.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ValueError("render backend returned bytes without a PNG signature")
+    os.makedirs(asset_root, exist_ok=True)
+    destination = os.path.join(asset_root, name)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=".%s." % name, suffix=".tmp", dir=asset_root
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, destination)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    return hashlib.sha256(bytes(payload)).hexdigest()
 
 
 def build_raw_input(course_name, sections, lecture_items, homework_items=None):
     """Assemble a raw_input.json compatible with scripts/ingest.py.
-    `quiz_items` mirrors the bank for downstream tools; ingest reads `quiz_bank`.
 
     `teaching_examples` is a PARALLEL snapshot of every detected lecture Example.  It may
     deliberately overlap the canonical bank: later review may remove a non-assessable worked
@@ -1483,6 +1533,9 @@ def build_raw_input(course_name, sections, lecture_items, homework_items=None):
         body = "\n\n".join(sec["text_blocks"]) or "（本章未提取到文本，请结合原始页/asset 复习）"
         phases.append({
             "phase_num": n,
+            "phase_id": "phase%02d" % n,
+            "chapter": sec["chapter"],
+            "chapter_id": "ch%02d" % sec["chapter"],
             "phase_name": "第 %d 章" % sec["chapter"],
             "wiki_filename": "ch%02d.md" % sec["chapter"],
             "wiki_content": "# 第 %d 章\n\n来源文件：%s\n\n%s" % (
@@ -1490,7 +1543,8 @@ def build_raw_input(course_name, sections, lecture_items, homework_items=None):
             "source_pages": sorted(set(p for p in sec["pages"] if p)),
         })
     if not phases:
-        phases = [{"phase_num": 1, "phase_name": "第 1 章", "wiki_filename": "ch01.md",
+        phases = [{"phase_num": 1, "phase_id": "phase01", "chapter": 1,
+                   "chapter_id": "ch01", "phase_name": "第 1 章", "wiki_filename": "ch01.md",
                    "wiki_content": "# 第 1 章\n\n（未提取到内容）"}]
     # strip internal render-only keys (e.g. _answer_pages) so they don't leak into the bank
     def _clean(it):
@@ -1505,7 +1559,6 @@ def build_raw_input(course_name, sections, lecture_items, homework_items=None):
         snap["title"] = it.get("_teaching_title") or str(it.get("id"))
         teaching_examples.append(snap)
     return {"course_name": course_name, "phases": phases, "quiz_bank": bank,
-            "quiz_items": bank,
             "teaching_examples": teaching_examples}   # optional parallel teaching layer
 
 
@@ -1524,8 +1577,9 @@ class NoBackend(object):
 
     def page_texts(self, pdf_path):
         raise RuntimeError(
-            "没有可用的 PDF 文本后端。请安装可选依赖 `pypdf`（pip install pypdf）后重试——"
-            "PDF 文本提取需要它（.txt/.md 材料无需任何后端）。")
+            "没有可用的 PDF 文本后端。请安装可选依赖 `pypdf`（pip install pypdf）或 "
+            "PyMuPDF（pip install pymupdf）后重试——PDF 文本提取需要其中之一"
+            "（.txt/.md 材料无需任何后端）。")
 
     def render_page_png(self, pdf_path, page_index):
         return None
@@ -1533,58 +1587,122 @@ class NoBackend(object):
 
 class RealBackend(object):
     def __init__(self, text_lib=None, render_lib=None):
-        self.text_lib, self.render_lib = text_lib, render_lib
-        self.name = "+".join(x for x in (text_lib, render_lib) if x) or "none"
+        if isinstance(text_lib, (list, tuple)):
+            self.text_libs = tuple(dict.fromkeys(value for value in text_lib if value))
+        else:
+            self.text_libs = (text_lib,) if text_lib else ()
+        self.text_lib = self.text_libs[0] if self.text_libs else None
+        self.render_lib = render_lib
+        self.last_text_methods = []
+        self.name = "+".join(self.text_libs + ((render_lib,) if render_lib else ())) or "none"
 
     def can_text(self):
-        return bool(self.text_lib)
+        return bool(self.text_libs)
 
     def can_render(self):
         return bool(self.render_lib)
 
     def page_texts(self, pdf_path):
-        if self.text_lib != "pypdf":
+        candidates = []
+        failures = []
+        for library in self.text_libs:
+            try:
+                if library == "pypdf":
+                    import pypdf
+                    reader = pypdf.PdfReader(pdf_path)
+                    texts = [(page.extract_text() or "") for page in reader.pages]
+                elif library == "pymupdf":
+                    import fitz
+                    doc = fitz.open(pdf_path)
+                    try:
+                        texts = [(page.get_text("text") or "") for page in doc]
+                    finally:
+                        doc.close()
+                else:
+                    continue
+                candidates.append((library, texts))
+            except Exception as exc:
+                failures.append("%s: %s" % (library, exc))
+        if not candidates:
+            if failures:
+                raise RuntimeError("all PDF text backends failed (%s)" % "; ".join(failures))
             return NoBackend().page_texts(pdf_path)
-        import pypdf
-        reader = pypdf.PdfReader(pdf_path)
-        return [(pg.extract_text() or "") for pg in reader.pages]
+
+        # Prefer the page inventory with the strongest usable-text coverage, then
+        # improve individual pages from another backend when page counts agree.
+        def quality(item):
+            _library, values = item
+            return (
+                sum(1 for value in values if _page_has_content(value)),
+                sum(len(value.strip()) for value in values),
+                len(values),
+            )
+
+        primary_library, primary = max(candidates, key=quality)
+        result = list(primary)
+        methods = [primary_library] * len(result)
+        for library, values in candidates:
+            if library == primary_library or len(values) != len(result):
+                continue
+            for index, value in enumerate(values):
+                current_score = (_page_has_content(result[index]), len(result[index].strip()))
+                alternate_score = (_page_has_content(value), len(value.strip()))
+                if alternate_score > current_score:
+                    result[index] = value
+                    methods[index] = library
+        self.last_text_methods = methods
+        return result
 
     def render_page_png(self, pdf_path, page_index):
         if self.render_lib == "pypdfium2":
             import io
             import pypdfium2 as pdfium
             doc = pdfium.PdfDocument(pdf_path)
-            bitmap = doc[page_index].render(scale=1.5)
-            buf = io.BytesIO()
-            bitmap.to_pil().save(buf, format="PNG")   # PIL adapter — Pillow verified at detect time
-            return buf.getvalue()
+            page = bitmap = image = None
+            try:
+                page = doc[page_index]
+                bitmap = page.render(scale=2.0)
+                image = bitmap.to_pil()
+                buf = io.BytesIO()
+                image.save(buf, format="PNG")   # PIL adapter — Pillow verified at detect time
+                return buf.getvalue()
+            finally:
+                for value in (image, bitmap, page, doc):
+                    close = getattr(value, "close", None)
+                    if callable(close):
+                        close()
         if self.render_lib == "pymupdf":
             import fitz
             doc = fitz.open(pdf_path)
-            return doc[page_index].get_pixmap().tobytes("png")   # native PNG, no Pillow needed
+            try:
+                return doc[page_index].get_pixmap(
+                    matrix=fitz.Matrix(2.0, 2.0), alpha=False
+                ).tobytes("png")   # ~144 dpi native PNG, no Pillow needed
+            finally:
+                doc.close()
         return None
 
 
 def detect_backend():
-    text_lib = render_lib = None
-    try:
-        import pypdf  # noqa: F401
-        text_lib = "pypdf"
-    except Exception:
-        pass
-    # PyMuPDF renders to PNG natively; pypdfium2 needs Pillow for its .to_pil() adapter, so only
-    # claim pypdfium2 as a render backend when Pillow is ALSO importable (else can_render() lies).
-    try:
-        import fitz  # noqa: F401  (PyMuPDF) — preferred: no extra deps
-        render_lib = "pymupdf"
-    except Exception:
+    def available(imports):
         try:
-            import pypdfium2  # noqa: F401
-            import PIL  # noqa: F401  (Pillow — required by pypdfium2's to_pil adapter)
-            render_lib = "pypdfium2"
+            for module_name in imports:
+                importlib.import_module(module_name)
+            return True
         except Exception:
-            pass
-    return RealBackend(text_lib, render_lib) if (text_lib or render_lib) else NoBackend()
+            return False
+
+    text_libs = [
+        adapter_id for adapter_id, imports, unused in PDF_TEXT_CANDIDATES
+        if available(imports)
+    ]
+    # Order is policy: native PyMuPDF first, PDFium + Pillow second.  The latter
+    # is a compound capability and cannot be claimed when Pillow is absent.
+    render_lib = next((
+        adapter_id for adapter_id, imports, unused in PDF_RENDER_CANDIDATES
+        if available(imports)
+    ), None)
+    return RealBackend(text_libs, render_lib) if (text_libs or render_lib) else NoBackend()
 
 
 # ---------------------------------------------------------------------------
@@ -1595,6 +1713,17 @@ def _under(root, child):
     root_r = os.path.normcase(os.path.realpath(root))
     child_r = os.path.normcase(os.path.realpath(child))
     return child_r == root_r or child_r.startswith(root_r + os.sep)
+
+
+def _path_has_link_or_reparse(path):
+    current = os.path.abspath(path)
+    while True:
+        if os.path.lexists(current) and is_link_or_reparse(current):
+            return True
+        parent = os.path.dirname(current)
+        if parent == current:
+            return False
+        current = parent
 
 
 # Tooling/VCS dirs that NEVER hold course material → always pruned from the materials scan.
@@ -1628,17 +1757,20 @@ def _is_workspace_root(path):
 
 
 def _scan_materials(materials_dir):
-    """Return sorted (pdf_paths, text_paths, pruned_dirs). Prunes tooling/VCS dirs unconditionally, and
+    """Return sorted (pdf_paths, document_paths, pruned_dirs, other_paths).
+
+    ``document_paths`` contains text/Markdown plus safe local DOCX/PPTX OOXML sources.  Prunes tooling/VCS dirs unconditionally, and
     a `references/`+`scratch/` dir ONLY when it carries a generated-workspace signature — so a prior
     workspace inside the course folder isn't re-ingested, but a real course `references/` of PDFs is kept.
     (Real case: D:\\EEC 160 held a previous ad-hoc workspace → without pruning every lecture marker was
     triplicated across the pdf + extracted .txt + wiki .md, blowing up the bank with broken items.)"""
-    pdfs, texts, pruned, others = [], [], [], []
+    pdfs, documents, pruned, others = [], [], [], []
     for dirpath, dirs, files in os.walk(materials_dir):
         keep = []
         for d in dirs:
             full = os.path.join(dirpath, d)
-            if d.lower() in ALWAYS_PRUNE or _is_leftover_workspace(full, d) or _is_workspace_root(full):
+            if (is_link_or_reparse(full) or d.lower() in ALWAYS_PRUNE
+                    or _is_leftover_workspace(full, d) or _is_workspace_root(full)):
                 pruned.append(os.path.relpath(full, materials_dir).replace(os.sep, "/"))
             else:
                 keep.append(d)
@@ -1646,17 +1778,25 @@ def _scan_materials(materials_dir):
         at_root = os.path.realpath(dirpath) == os.path.realpath(materials_dir)
         for fn in sorted(files):
             low = fn.lower()
-            if at_root and low in SKIP_FILES:   # generated workspace file at the ROOT (study_plan/progress/…)
-                continue                          # a same-named file in a subfolder is kept (could be real)
+            # These are generated workspace/control artifacts when they appear
+            # at the selected materials root.  Requiring an already-complete
+            # workspace signature here lets partial/failed prior runs leak back
+            # into the next build as course notes.
+            if at_root and low in SKIP_FILES:
+                pruned.append(os.path.relpath(os.path.join(dirpath, fn), materials_dir).replace(os.sep, "/"))
+                continue
             full = os.path.join(dirpath, fn)
+            if is_link_or_reparse(full):
+                others.append(full)
+                continue
             if low.endswith(".pdf"):
                 pdfs.append(full)
-            elif low.endswith((".txt", ".md")):
-                texts.append(full)
+            elif low.endswith((".txt", ".md", ".docx", ".pptx")):
+                documents.append(full)
             elif not fn.startswith((".", "~$")) and low not in ("thumbs.db", "desktop.ini"):
                 others.append(full)                    # 不支持的格式也要留痕，绝不零痕迹丢弃
                                                        #（只豁免已知 OS 垃圾名，不按扩展名类猜）
-    return sorted(pdfs), sorted(texts), sorted(pruned), sorted(others)
+    return sorted(pdfs), sorted(documents), sorted(pruned), sorted(others)
 
 
 # 页码/页眉残渣行（纯数字、Page N of M、第N页）——扫描件每页常只残留这一行，
@@ -1759,7 +1899,7 @@ def _apply_typed_answer(item):
         else:
             item["type"] = "subjective"
             item.pop("options", None)
-            item.setdefault("keywords", [])
+            item.pop("keywords", None)
     elif item.get("type") == "fill_blank":
         stripped = _strip_answer_prefix(item["answer"])
         if stripped:
@@ -1949,9 +2089,10 @@ def _read_text_file_pages(path, rel, report=None):
 def build_arg_parser():
     p = argparse.ArgumentParser(
         description="Official course materials -> raw_input.json (+ optional page-image assets + parse report), consumed by ingest.py.",
-        epilog="Optional deps: text extraction pip install pypdf; rendering pip install pymupdf (bundles PNG) or pypdfium2 Pillow. "
+        epilog="Optional deps: text extraction pip install pypdf or pymupdf; rendering pip install pymupdf (bundles PNG) or pypdfium2 Pillow. "
                "(.txt/.md materials need none.)")
-    p.add_argument("--materials", required=True, help="course materials folder (PDF / txt / md)")
+    p.add_argument("--materials", required=True,
+                   help="course materials folder (PDF / DOCX / PPTX / txt / md)")
     p.add_argument("--out", default="raw_input.json", help="output raw_input.json path")
     p.add_argument("--report", default="parse_report.json", help="parse report JSON path")
     p.add_argument("--asset-root", default=None,
@@ -1981,25 +2122,62 @@ def run(args, backend=None):
     if not os.path.isdir(materials):
         return 2, {"error": "materials 目录不存在: %s" % materials}, None
 
-    pdfs, texts, pruned, others = _scan_materials(materials)
+    pdfs, documents, pruned, others = _scan_materials(materials)
+    unsafe_sources = [
+        path for path in (pdfs + documents + others)
+        if _path_has_link_or_reparse(path)
+    ]
+    if unsafe_sources:
+        unsafe_set = set(unsafe_sources)
+        pdfs = [path for path in pdfs if path not in unsafe_set]
+        documents = [path for path in documents if path not in unsafe_set]
+        others = [path for path in others if path not in unsafe_set]
+        for path in sorted(unsafe_sources):
+            relative = _rel(path, materials)
+            report["skipped"].append({
+                "file": relative,
+                "why": "源文件路径经过符号链接/junction/reparse point，拒绝读取",
+            })
+            report["ai_review"].append({
+                "kind": "unsafe_source_link",
+                "file": relative,
+                "action": "请把材料复制为 materials 目录内的常规文件后重新构建。",
+            })
+    texts = [path for path in documents if path.lower().endswith((".txt", ".md"))]
+    ooxmls = [path for path in documents if path.lower().endswith((".docx", ".pptx"))]
     for op in others:
         rel_o = _rel(op, materials)
-        report["skipped"].append({"file": rel_o, "why": "不支持的格式（仅解析 PDF/.txt/.md）"})
+        report["skipped"].append({
+            "file": rel_o,
+            "why": "不支持的格式（当前解析 PDF/DOCX/PPTX/.txt/.md）",
+        })
         report["warnings"].append("unsupported_format: %s（内容不会进 wiki/题库——请 AI 接管）" % rel_o)
         report["ai_review"].append({
             "kind": "unsupported_format", "file": rel_o,
-            "action": "该文件格式本工具不解析、内容未导入。请 AI 直接读取该文件（多模态可读 docx/pptx/图片），"
-                      "把知识点/题目手工补进工作区，或转成 PDF/.txt 后重新运行构建。"})
-    report["files_scanned"] = [os.path.relpath(p, materials) for p in (texts + pdfs)]
+            "action": "该文件格式本工具不解析、内容未导入。请 AI 直接读取该文件，把知识点/题目"
+                      "以带证据的 review patch 补进工作区，或转换为受支持格式后重新构建。"})
+    all_source_paths = texts + ooxmls + pdfs + others
+    report["files_scanned"] = [_rel(p, materials) for p in all_source_paths]
     report["pruned_dirs"] = pruned
     if pruned:   # fail-loud: a prior workspace/tooling dir was skipped, so the user knows why it's ignored
         report["warnings"].append("pruned_non_material_dirs: %s（不当作课程材料扫描）" % "、".join(pruned[:8]))
+    if not all_source_paths:
+        report["warnings"].append("no_material_files")
+        return 4, {"error": "--materials 中没有发现任何课程材料文件。"}, report
+
+    source_snapshot_hashes = {}
+    try:
+        for source_path in all_source_paths:
+            _sha256_path(source_path, source_snapshot_hashes)
+    except OSError as exc:
+        report["warnings"].append("source_snapshot_failed: %s" % exc)
+        return 5, {"error": "提取前无法建立材料哈希快照：%s" % exc}, report
 
     # Honest dependency failure: PDFs present but no text backend → stop with a clear, actionable error.
     if pdfs and not backend.can_text():
         report["warnings"].append("no_pdf_text_backend")
         return 3, {"error": "发现 %d 个 PDF，但没有可用的 PDF 文本后端。请安装可选依赖："
-                            "`pip install pypdf`（PDF 文本提取需要它；把页面渲染成图还需 "
+                            "`pip install pypdf` 或 `pip install pymupdf`（PDF 文本提取需要其一；把页面渲染成图还需 "
                             "`pip install pymupdf` 或 `pypdfium2 Pillow`——只装 pypdfium2 而无 Pillow 不会启用渲染）。"
                             "纯 .txt/.md 材料无需任何依赖。" % len(pdfs)}, report
 
@@ -2009,19 +2187,73 @@ def run(args, backend=None):
     page_pdf_all_raw = {}
     for tp in texts:
         pages.extend(_read_text_file_pages(tp, _rel(tp, materials), report))
+    for package_path in ooxmls:
+        rel = _rel(package_path, materials)
+        try:
+            extracted = extract_ooxml(package_path, rel, asset_root=args.asset_root)
+            for record in extracted:
+                # OOXML assets are filenames relative to --asset-root.  The ingestion
+                # envelope later canonicalizes them as references/assets/<filename>.
+                pages.append(record)
+                for signal in record.get("review_signals") or ():
+                    reason = signal.get("reason_code") or "ooxml_review_required"
+                    detail = signal.get("detail") or "OOXML content needs visual review"
+                    report["warnings"].append(
+                        "%s: %s p.%d（%s）" % (reason, rel, record["page"], detail)
+                    )
+                    report["ai_review"].append({
+                        "kind": reason,
+                        "file": rel,
+                        "pages": [record["page"]],
+                        "action": (
+                            "%s。请直接视觉阅读原始 DOCX/PPTX 的该页/幻灯片，"
+                            "用带来源证据的 review patch 补录遗漏内容。" % detail
+                        ),
+                    })
+        except OOXMLExtractionError as exc:
+            report["skipped"].append({"file": rel, "why": "OOXML 提取失败: %s" % exc})
+            report["warnings"].append("ooxml_extract_failed: %s（%s——整份内容未导入）" % (rel, exc))
+            report["ai_review"].append({
+                "kind": "ooxml_extract_failed",
+                "file": rel,
+                "action": "DOCX/PPTX 安全解析失败。请核对文件是否损坏、加密或含外部关系；"
+                          "修复后重建，或直接视觉阅读并提交带证据的 review patch。",
+            })
     for pdf in pdfs:
         rel = _rel(pdf, materials)   # subdir-qualified identifier, not bare basename (avoids collisions)
         try:
             nonblank, no_content, total = 0, [], 0
-            for i, txt in enumerate(backend.page_texts(pdf)):
-                pages.append({"file": rel, "page": i + 1, "text": txt, "_pdf": pdf})
-                page_pdf_all_raw[(rel, i + 1)] = pdf
+            extracted_pages = []
+            pdf_texts = list(backend.page_texts(pdf))
+            text_methods = list(getattr(backend, "last_text_methods", ()) or ())
+            default_text_method = getattr(
+                backend, "name", backend.__class__.__name__.lower()
+            )
+            for i, txt in enumerate(pdf_texts):
+                extracted_pages.append({
+                    "file": rel,
+                    "page": i + 1,
+                    "text": txt,
+                    "_pdf": pdf,
+                    "_text_method": (
+                        text_methods[i] if i < len(text_methods) else default_text_method
+                    ),
+                })
                 total += 1
                 # 残渣感知判定：每页只剩页码「12」的扫描件不能算有文本（审计实测骗过精确空判定）
                 if _page_has_content(txt):
                     nonblank += 1
                 else:
                     no_content.append(i + 1)
+            if text_methods:
+                report.setdefault("pdf_text_methods", {})[rel] = text_methods
+            # Commit per source only after the backend reaches EOF.  A generator
+            # that yields p.1 then raises on p.2 must not masquerade as a complete
+            # one-page document.
+            pages.extend(extracted_pages)
+            page_pdf_all_raw.update(
+                ((rel, record["page"]), pdf) for record in extracted_pages
+            )
             if nonblank == 0:   # image-only/scanned PDF: pypdf returns "" per page → no usable text
                 # 先记账不立刻丢——整册可能是配对管线认领的裸答案册（整本就一个「4」）；
                 # 分类后未被认领的才从管线剔除并移交 AI
@@ -2044,6 +2276,9 @@ def run(args, backend=None):
                           "或检查文件是否损坏/加密。"})
 
     report["pages_extracted"] = len(pages)
+    # Preserve the loss-resistant page inventory before legacy quiz/wiki filters
+    # discard answer books, residue pages, or fully scanned sources.
+    ingestion_pages = [dict(page) for page in pages]
 
     def _flush_residue(claimed):
         # 整本无有效文本的 PDF：被作业/试卷管线认领的（裸答案册，整本就一个「4」）内容有效使用；
@@ -2059,12 +2294,17 @@ def run(args, backend=None):
                           "阅读该 PDF，把知识点/题目手工补进工作区。"})
         residue_files.clear()
 
-    # require some ACTUAL text, not just blank pages from a scanned PDF (else we'd emit an empty wiki and exit 0)
+    # Process success and study readiness are separate: a fully scanned/unsupported
+    # collection still produces an inspectable blocked workspace and typed review queue.
     if not any(_page_has_content(p.get("text")) for p in pages):
         _flush_residue(set())
         report["warnings"].append("no_text_extracted")
-        return 4, {"error": "未从 --materials 提取到任何文本内容（页面为空或全是扫描件/图片）。请确认有可解析的 "
-                            "PDF/.txt/.md（PDF 文本需 pypdf；图片/扫描件需 OCR，本工具不做）。"}, report
+        report["ai_review"].append({
+            "kind": "no_text_extracted",
+            "file": "(all)",
+            "action": "没有自动提取到可教学文本。工作区会以 blocked 状态生成；请逐页视觉/OCR 接管，"
+                      "形成带页码证据的内容单元后再解除阻塞。",
+        })
 
     _mat_root_name = os.path.basename(os.path.normpath(os.path.abspath(materials)))
     # 作业/解答文件在【抽取前】就按文件名剔出讲义管线——lecture 的题/答配对跨页进行，
@@ -2170,12 +2410,13 @@ def run(args, backend=None):
     page_pdf_all.update(page_pdf)
 
     want_render = args.render_pages in ("auto", "required")
-    if want_render and not backend.can_render():
+    render_materials_present = bool(pdfs)
+    if want_render and render_materials_present and not backend.can_render():
         if args.render_pages == "required":
             return 3, {"error": "render-pages=required 但没有渲染后端。请安装 PyMuPDF（pip install pymupdf）"
                                 "或 pypdfium2+Pillow（pip install pypdfium2 Pillow）。"}, report
         report["warnings"].append("render_unavailable")
-    if want_render and not asset_root:
+    if want_render and render_materials_present and not asset_root:
         if args.render_pages == "required":
             return 2, {"error": "--render-pages required 但未指定 --asset-root（应指向 "
                                 "<workspace>/references/assets）。"}, report
@@ -2186,9 +2427,82 @@ def run(args, backend=None):
     if asset_root and not os.path.normpath(asset_root).replace("\\", "/").lower().endswith("references/assets"):
         report["warnings"].append("asset_root_not_standard: JSON 里 asset 路径按 references/assets/ 记，"
                                   "请把 --asset-root 指向 <workspace>/references/assets，否则文件与路径会对不上")
+    unsafe_asset_root = bool(asset_root) and _path_has_link_or_reparse(asset_root)
+    if unsafe_asset_root:
+        if args.render_pages == "required":
+            return 2, {"error": "--asset-root 或其父目录包含符号链接/junction/reparse point，拒绝写入。"}, report
+        report["warnings"].append(
+            "unsafe_asset_root: 路径含符号链接/junction/reparse point，已跳过所有页图写入"
+        )
+    elif asset_root:
+        # Keep the explicit output contract stable even when this particular
+        # material set has no pages that need rendering.  Tests and downstream
+        # tools may safely enumerate an empty, caller-requested asset directory.
+        try:
+            os.makedirs(asset_root, exist_ok=True)
+            if _path_has_link_or_reparse(asset_root):
+                raise OSError("asset root became a link/reparse point while being created")
+        except OSError as exc:
+            return 2, {"error": "无法安全创建 --asset-root：%s" % exc}, report
 
-    can_write = bool(asset_root) and want_render and backend.can_render()
+    can_write = bool(asset_root) and want_render and backend.can_render() and not unsafe_asset_root
     rendered, missing_required = 0, []
+    source_hash_cache = dict(source_snapshot_hashes)
+    # Low-text PDF pages are first-class evidence, not silent holes.  When the
+    # caller enabled the existing render route, materialize every such page and
+    # attach it to the ingestion IR as a source_page asset for AI/OCR takeover.
+    for pg in ingestion_pages:
+        if not pg.get("_pdf") or _page_has_content(pg.get("text")):
+            continue
+        file, page = pg["file"], pg["page"]
+        wrote = False
+        try:
+            source_sha256 = _sha256_path(pg["_pdf"], source_hash_cache)
+        except OSError as exc:
+            source_sha256 = None
+            report["skipped"].append({
+                "file": file,
+                "why": "AI 接管证据源读取失败 p.%d: %s" % (page, exc),
+            })
+        asset_name = _safe_asset_name(
+            file, page,
+            "review%08x" % (zlib.crc32(file.encode("utf-8")) & 0xffffffff),
+            "_source", source_sha256=source_sha256,
+        )
+        if can_write and source_sha256:
+            try:
+                png = backend.render_page_png(pg["_pdf"], page - 1)
+            except Exception as exc:
+                png = None
+                report["skipped"].append({
+                    "file": file,
+                    "why": "AI 接管证据页渲染失败 p.%d: %s" % (page, exc),
+                })
+            if png:
+                full = os.path.join(asset_root, asset_name)
+                if _under(asset_root, full):
+                    try:
+                        _write_png_atomic(asset_root, asset_name, png)
+                        wrote = True
+                        rendered += 1
+                    except (OSError, ValueError) as exc:
+                        report["skipped"].append({
+                            "file": file,
+                            "why": "AI 接管证据 PNG 写入失败 p.%d: %s" % (page, exc),
+                        })
+        if wrote:
+            pg.setdefault("embedded_assets", []).append(asset_name)
+            pg.setdefault("elements", []).append({
+                "kind": "figure",
+                "text": "Source page %d for visual review" % page,
+                "asset": asset_name,
+                "asset_role": "source_page",
+                "ordinal": len(pg.get("elements") or []),
+                "bbox": None,
+            })
+        elif args.render_pages == "required":
+            missing_required.append("%s p.%d (AI 接管证据页不可用)" % (file, page))
+
     for it in list(lecture_items) + list(homework_items):
         ans_files = {f for (f, _p) in it.get("_answer_pages", [])}
         if len(ans_files) > 1:   # answer pages span >1 source file → page numbers are ambiguous
@@ -2229,11 +2543,21 @@ def run(args, backend=None):
                 + [("question_context", f, p, "_adj") for (f, p) in _adj]
                 + [("answer_context", f, p, "_sol") for (f, p) in it.get("_answer_pages", [])])
         for role, file, page, suffix in plan:
-            name = _safe_asset_name(file, page, it["id"], suffix)
-            rel_path = "references/assets/" + name
             wrote = False
+            asset_sha256 = None
             pdf = page_pdf_all.get((file, page))
-            if can_write and pdf is not None:
+            try:
+                source_sha256 = _sha256_path(pdf, source_hash_cache) if pdf else None
+            except OSError as exc:
+                source_sha256 = None
+                report["skipped"].append({
+                    "file": file, "why": "页图源读取失败 p.%d: %s" % (page, exc)
+                })
+            name = _safe_asset_name(
+                file, page, it["id"], suffix, source_sha256=source_sha256
+            )
+            rel_path = "references/assets/" + name
+            if can_write and pdf is not None and source_sha256:
                 try:
                     png = backend.render_page_png(pdf, page - 1)
                 except Exception as e:   # a single malformed/encrypted page must not crash the whole run
@@ -2244,18 +2568,20 @@ def run(args, backend=None):
                     if not _under(asset_root, full):   # name is sanitized; defensive belt-and-braces
                         report["warnings"].append("unsafe_asset_target_skipped")
                     else:
-                        os.makedirs(asset_root, exist_ok=True)
-                        with open(full, "wb") as f:
-                            f.write(png)
-                        wrote = True
-                        rendered += 1
+                        try:
+                            asset_sha256 = _write_png_atomic(asset_root, name, png)
+                            wrote = True
+                            rendered += 1
+                        except (OSError, ValueError) as exc:
+                            report["skipped"].append({
+                                "file": file,
+                                "why": "PNG 写入/格式校验失败 p.%d: %s" % (page, exc),
+                            })
             if not wrote and role == "answer_context":
                 # don't DECLARE a missing answer-side asset — it would fail-close an otherwise-valid
                 # question whose own figure rendered fine (the text `answer` already covers it).
                 report["warnings"].append("answer_image_unavailable: %s (p.%d)" % (it["id"], page))
                 continue
-            assets.append({"path": rel_path, "role": role, "type": "page_image",
-                           "caption": "%s p.%d (%s)" % (file, page, role)})
             if not wrote:
                 why = ("无渲染后端" if not (want_render and backend.can_render())
                        else "未指定 --asset-root" if not asset_root
@@ -2268,6 +2594,18 @@ def run(args, backend=None):
                 # always question_context, since answer-side misses were already `continue`d above).
                 if it.get("_render"):
                     missing_required.append("%s (%s, %s)" % (it["id"], role, why))
+                # Fail closed: never declare a path that was not produced in this
+                # run.  A same-named file left by an older workspace build cannot
+                # silently satisfy the new question.
+                continue
+            assets.append({
+                "path": rel_path,
+                "role": role,
+                "type": "page_image",
+                "caption": "%s p.%d (%s)" % (file, page, role),
+                "sha256": asset_sha256,
+                "source_sha256": source_sha256,
+            })
         it["assets"] = assets
     report["pages_rendered"] = rendered
 
@@ -2314,55 +2652,8 @@ def run(args, backend=None):
                           "实为判断/编程/选择题（选项在图里）等，改写 type（合法值 choice/subjective/"
                           "diagram/fill_blank/true_false/code）并补 options；同时抽查已判为 "
                           "choice/fill_blank 的题是否属实。" % _typed["subjective"]})
-    # D5: wiki 配图——含图/表标题（Figure N / Table N / 图N / 表N）的讲义页渲染成 PNG，
-    # 注入章节末尾「本章图示页」区；渲染不可用时警告降级（纯文字 wiki 照常完整）
-    _WIKI_CAP_RE = re.compile(
-        r"(?m)^\s*(?:(?:Figure|Fig\.?|Table)\s*\d+|[图表]\s*[\d一二三四五六七八九十]+)")
-    wiki_fig_assets = {}
-    _cap_pages = [(pg["file"], pg["page"]) for pg in wiki_pages
-                  if pg.get("_pdf") and _WIKI_CAP_RE.search(pg.get("text") or "")]   # cap 只数可渲染页
-    if _cap_pages and can_write:
-        if len(_cap_pages) > 30:
-            report["warnings"].append("wiki_figures_capped: 图示页 %d 张只渲染前 30 张（控制体积）——"
-                                      "未渲染页仍在原 PDF，可让 AI 用多模态直接查看对应页，"
-                                      "或按章节拆分材料分次重建" % len(_cap_pages))
-            _cap_pages = _cap_pages[:30]
-        for _f, _p in _cap_pages:
-            _pdf = page_pdf.get((_f, _p))
-            if _pdf is None:
-                continue
-            try:
-                _png = backend.render_page_png(_pdf, _p - 1)
-            except Exception as e:
-                report["skipped"].append({"file": _f, "why": "wiki 图示页渲染失败 p.%d: %s" % (_p, e)})
-                continue
-            if not _png:
-                continue
-            _name = _safe_asset_name(_f, _p, "wiki%08x" % (zlib.crc32(_f.encode("utf-8")) & 0xffffffff),
-                                      "_fig")   # 源路径 CRC 防 a/b.pdf 与 a_b.pdf 同名互撞
-            _full = os.path.join(asset_root, _name)
-            if not _under(asset_root, _full):
-                report["warnings"].append("unsafe_asset_target_skipped")
-                continue
-            os.makedirs(asset_root, exist_ok=True)
-            with open(_full, "wb") as _fh:
-                _fh.write(_png)
-            rendered += 1
-            wiki_fig_assets[(_f, _p)] = "../assets/" + _name
-        report["pages_rendered"] = rendered
-    elif _cap_pages and want_render:
-        report["warnings"].append(
-            "wiki_figures_skipped: 检测到 %d 个图/表标题页但渲染不可用（缺后端或 --asset-root）——"
-            "wiki 纯文字仍完整；需要配图请补齐后重建" % len(_cap_pages))
-
     _ch_notes = []
     sections = group_sections(wiki_pages, _ch_notes)
-    if wiki_fig_assets:
-        for sec in sections:
-            gal = ["![%s 第 %d 页图示](%s)" % (f0, p0, wiki_fig_assets[(f0, p0)])
-                   for (f0, p0) in sec.get("page_keys", []) if (f0, p0) in wiki_fig_assets]
-            if gal:
-                sec["text_blocks"].append("### 本章图示页（构建时自动渲染）\n\n" + "\n\n".join(gal))
     for _f in _ch_notes:
         report["warnings"].append(
             "chapter_unassigned: %s（无任何章节线索，按上文/第 1 章并入——正确分章请重命名加 chNN "
@@ -2380,7 +2671,38 @@ def run(args, backend=None):
             "kind": "wiki_empty", "file": "(all)",
             "action": "没有任何讲义内容进入 wiki。请确认材料里是否本应有讲义；若有，检查它们是否被"
                       "列入 skipped/接管清单并逐条处理；若确实只有题目材料，请告知学生 wiki 为空。"})
+    try:
+        final_hashes = {}
+        changed_sources = [
+            _rel(path, materials) for path in all_source_paths
+            if _sha256_path(path, final_hashes) != source_snapshot_hashes[path]
+        ]
+    except OSError as exc:
+        report["warnings"].append("source_snapshot_drift: %s" % exc)
+        return 6, {"error": "提取期间材料消失或不可读：%s" % exc}, report
+    if changed_sources:
+        report["warnings"].append(
+            "source_snapshot_drift: %s" % "、".join(changed_sources)
+        )
+        return 6, {
+            "error": "提取期间材料字节发生变化，已拒绝把旧文本与新版本哈希绑定：%s"
+                     % "、".join(changed_sources)
+        }, report
     raw_input = build_raw_input(course, sections, lecture_items, homework_items)
+    try:
+        raw_input["ingestion"] = build_ingestion_payload(
+            materials,
+            all_source_paths,
+            ingestion_pages,
+            sections=sections,
+            quiz_items=raw_input["quiz_bank"],
+            report=report,
+        )
+    except Exception as exc:
+        # The compatibility output must never claim success when its durable
+        # provenance/review envelope could not be constructed.
+        report["warnings"].append("ingestion_envelope_failed: %s" % exc)
+        return 5, {"error": "结构化 ingestion envelope 构建失败：%s" % exc}, report
     return 0, raw_input, report
 
 

@@ -1,6 +1,6 @@
 # 📚 Rapid exam-cram battle plan for 《科目名称》
 
-Suggested review time: 6 hours (shorten it based on how long is left before the exam)
+Suggested review time: derived from the confirmed time budget
 Wiki knowledge-base path: `references/wiki/`
 Quiz bank path: `references/quiz_bank.json`
 
