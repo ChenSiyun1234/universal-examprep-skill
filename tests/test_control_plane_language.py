@@ -36,7 +36,7 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-SKILLS = ["exam-cram", "exam-ingest", "exam-tutor", "exam-quiz",
+SKILLS = ["exam-cram", "exam-ingest", "exam-tutor", "exam-study-guide", "exam-quiz",
           "exam-review", "exam-cheatsheet", "exam-audit", "exam-help",
           "confusion-tracker"]
 

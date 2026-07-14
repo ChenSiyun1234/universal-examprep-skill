@@ -43,7 +43,7 @@ RUNTIME_DIRS = (
     ("locales", (".md", ".json")),
     ("scripts", (".py",)),
     ("prompts", (".md",)),
-    ("docs", (".md",)),
+    ("docs", (".md", ".json")),
 )
 # dev-only scripts that live in scripts/ but must NOT ship (nothing today; listed for the test seam)
 SCRIPT_EXCLUDES = ("build_dist.py",)   # the builder itself is a dev tool

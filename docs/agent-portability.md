@@ -23,6 +23,12 @@
 | ChatGPT / Claude Web | `prompts/web_prompt.md`（English: `prompts/web_prompt.en.md`） | 无本地写盘；该提示词已含来源标注/防编题规则。用文本「进度 Summary」做断点，手动挂载题库后只从中出题 |
 | Generic agents | `AGENTS.md` | 一屏浓缩兜底契约 |
 
+PDF/教材产物先经过资源偏好门禁，再做能力级路由：缺少 `artifact_mode` 的旧工作区与未知值都按 `chat`
+处理，不自动探测 PDF 能力、不自动生成 HTML/PDF，也不猜用户的订阅套餐。只有用户显式持久化
+`visual`，或本次明确要求 HTML/PDF/打印版时，才进入 host-specific 路由；单次请求不改持久状态。
+不同 host 不共享同一安装入口，详见 [`pdf-capability-adapters.md`](pdf-capability-adapters.md) 与机器可读的
+[`pdf-capability-adapters.json`](pdf-capability-adapters.json)。任何模式都不授权静默下载安装外部 skill 或依赖。
+
 > 兼容性：根目录 `SKILL.md` 仍是默认/兼容触发入口（现为语言中性路由器，按 `study_state.json` 的 `language`
 > 分发到全量入口文案包 `locales/zh/SKILL.md` / `locales/en/SKILL.md`，完整防编题与来源标注规则承载在语言包与
 > `skills/` 控制层）。支持技能集合的 host 可改用 `skills/exam-cram/SKILL.md` 作主入口；二者描述同一行为。

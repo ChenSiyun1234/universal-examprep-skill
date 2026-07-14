@@ -96,6 +96,46 @@ class CoreExtraction(unittest.TestCase):
         self.assertEqual([it["id"] for it in items], ["lecture_quiz_1_1"])
         self.assertEqual(items[0]["answer_source_pages"], [2])
 
+    def test_teaching_examples_are_parallel_snapshots_not_a_quiz_bank_filter(self):
+        pages = _pages(
+            "ch01.pdf",
+            "Example 1.1 Problem  Compute the value.",
+            "Example 1.1 Solution  The value is 4.",
+            "Example 1.2  A completed worked demonstration with result 7.",
+            "Quiz 1.1  State the theorem.",
+        )
+        lecture = B.extract_lecture_items(pages)
+        sections = B.group_sections(pages)
+        raw = B.build_raw_input("C", sections, lecture)
+
+        # Compatibility: every extracted lecture item still lands in the canonical bank.
+        self.assertEqual(
+            [q["id"] for q in raw["quiz_bank"]],
+            ["lecture_example_1_1", "lecture_example_1_2", "lecture_quiz_1_1"],
+        )
+        # Teaching reachability is an independent snapshot of every Example, including overlap.
+        teaching = {e["id"]: e for e in raw["teaching_examples"]}
+        self.assertEqual(set(teaching), {"lecture_example_1_1", "lecture_example_1_2"})
+        self.assertEqual(teaching["lecture_example_1_1"]["teaching_role"], "paired_problem")
+        self.assertEqual(teaching["lecture_example_1_2"]["teaching_role"], "worked_example")
+        self.assertEqual(teaching["lecture_example_1_1"]["answer_source_pages"], [2])
+        self.assertEqual(teaching["lecture_example_1_2"]["source_pages"], [3])
+        self.assertNotIn("lecture_quiz_1_1", teaching)
+
+    def test_empty_text_pdf_page_keeps_wiki_anchor_for_visual_repair(self):
+        pages = _pages("ch01.pdf", "Chapter 1 prose", "")
+        raw = B.build_raw_input("C", B.group_sections(pages), [])
+        wiki = raw["phases"][0]["wiki_content"]
+        self.assertIn("<!-- ch01.pdf p.2 -->", wiki)
+        self.assertIn("保留原页锚点供视觉覆盖核对", wiki)
+
+    def test_explicit_unpaired_example_problem_is_still_a_paired_problem_teaching_role(self):
+        pages = _pages("ch01.pdf", "Example 1.9 Problem  Compute x, but the solution page is missing.")
+        lecture = B.extract_lecture_items(pages)
+        raw = B.build_raw_input("C", B.group_sections(pages), lecture)
+        self.assertEqual(raw["teaching_examples"][0]["teaching_role"], "paired_problem")
+        self.assertEqual(raw["quiz_bank"][0]["answer_status"], "unknown")
+
     def test_merges_continued_solution_pages(self):
         pages = _pages("ch01.pdf",
                        "Quiz 1.4  Long one.",
@@ -661,6 +701,25 @@ class CliAndRun(unittest.TestCase):
         png = os.path.join(args.asset_root, os.path.basename(qside[0]["path"]))
         self.assertTrue(os.path.isfile(png))
         self.assertGreaterEqual(report["pages_rendered"], 1)
+
+    def test_teaching_snapshot_keeps_rendered_assets_and_report_metrics(self):
+        d = _materials_with_pdf()
+        be = FakeBackend({"ch01.pdf": [
+            "Example 1.1 Problem  Shade the Venn diagram at right.",
+            "Example 1.1 Solution  Shade region A.",
+            "Example 1.2  This table demonstrates the completed calculation.",
+        ]})
+        args = _args(d)
+        code, raw, report = B.run(args, backend=be)
+        self.assertEqual(code, 0)
+        bank = {q["id"]: q for q in raw["quiz_bank"]}
+        teaching = {e["id"]: e for e in raw["teaching_examples"]}
+        self.assertEqual(set(teaching), {"lecture_example_1_1", "lecture_example_1_2"})
+        self.assertEqual(teaching["lecture_example_1_1"]["assets"],
+                         bank["lecture_example_1_1"]["assets"])
+        self.assertEqual(report["teaching_examples_detected"], 2)
+        self.assertEqual(report["teaching_example_roles"],
+                         {"paired_problem": 1, "worked_example": 1})
 
     def test_warns_when_asset_required_but_no_render(self):
         d = _materials_with_pdf()

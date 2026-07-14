@@ -2,6 +2,17 @@
 
 > 运行时技能文本（`SKILL.md` / `AGENTS.md` / `skills/**` / `prompts/` / `docs/`）直接描述当前行为、**不再提版本号**；版本历史集中记录在本文件，便于追溯。
 
+## Unreleased
+
+- **真实课程完整性加固**：视觉覆盖拆为 wiki / 题面 / 答案三侧；空白/纯图 PDF 页也进入分母，回挂只认可带原页 provenance 的图片，索引同时绑定工作区输入、原始 PDF 内容/路径清单和派生结果哈希并在阶段完成时检查 freshness。答案专属页延后到解答区；手工提前暴露和题答共享整页 fail-closed。
+- **教学例题不再随题库清理消失**：新增 `references/teaching_examples.json`、append-only `references/teaching_baseline.json` 与按章列举工具；较小 raw input/重写报告不能缩减基线，可判分题库仍是唯一答案源，教学层只保证 worked examples 可达。
+- **阶段完成改为证据门禁**：wiki、视觉、教学例题、notebook 与 checkpoint 写入 `phase_evidence`；`verified` 和 `covered_unverified` 分离，旧工作区兼容但不冒充完整。
+- **人类可读章节教材**：标准 `$...$` / `$$...$$` 数学事实源、raw/伪分隔 LaTeX lint、固定审计版 `latex2mathml==3.60.0`、离线 MathML、自包含图片、结构化双语 UI、按章 HTML 与可选 PDF；题面图固定早于答案图，超时/残留产物 fail-loud 清理。
+- **写盘与供应链加固**：ingest 的 wiki/题库/索引/计划/进度/报告全部使用受保护原子替换，符号链接拒绝、硬链接安全断开；依赖预检和运行时都校验精确 MathML 版本，不因“任意版本已安装”误放行。
+- **跨 Agent PDF 适配**：Codex、Claude Code 与通用 Agent Skills 使用独立能力路由，记录官方来源/审查 commit/许可证；不静默下载第三方 skill，受限许可证实现只链接不复制。
+- **额度友好的产物模式**：新增持久化 `artifact_mode=chat|visual`。旧工作区默认 `chat`，保留对话 + notebook/state 而不自动生成章节 HTML/PDF 或小抄 PDF；只有用户显式选择 `visual` 才持续生成视觉教材，单次 HTML/PDF/打印请求可临时覆盖且不改状态。智能体不探测或猜测订阅套餐。
+- **结论语义收紧**：validator 明确输出 `ready` / `usable_with_gaps` / `blocked`；`ok=true` 只代表结构可运行。根 skill metadata 与发布版本对齐。
+
 ## V3.0
 
 > 把 V2.1 的地基（分章知识库 + 固定题库 + 来源标注 + 模块化 `skills/`）建成完整备考引擎：会处理真实试卷、按剩余时间调整教法、说你的语言，并第一次用可复现实测给「绝不瞎编」背书。以下全部为 V2.1 之后新增。发布通告见 `RELEASE-v3.md`。

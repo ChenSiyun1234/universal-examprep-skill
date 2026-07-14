@@ -2,6 +2,7 @@
 """A4 tests — structured progress state: migration, mutations, generated md, fail-loud IO,
 validator schema, T4 JSON snapshots, entry-point contract."""
 import json
+import hashlib
 import os
 import subprocess
 import sys
@@ -11,6 +12,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS = os.path.join(ROOT, "scripts")
 sys.path.insert(0, SCRIPTS)
+import i18n
 
 LEGACY_MD = ("# 🎯 复习进度\n\n## ⏱️ 当前复习断点\n* **当前进行阶段**：阶段 3：树\n\n"
              "## ❌ 错题档案记录\n| 错题ID | 关联章节 | 题目内容简述 | 错误原因分析 | 状态 |\n"
@@ -34,6 +36,119 @@ def _up(ws, args):
 
 def _state(ws):
     return json.load(open(os.path.join(ws, "study_state.json"), encoding="utf-8"))
+
+
+def _refresh_visual_integrity(ws):
+    rels = ["references/quiz_bank.json", "references/teaching_examples.json"]
+    for optional in ("references/teaching_baseline.json", "ingest_report.json"):
+        if os.path.isfile(os.path.join(ws, *optional.split("/"))):
+            rels.append(optional)
+    wiki_dir = os.path.join(ws, "references", "wiki")
+    rels.extend("references/wiki/" + name for name in sorted(os.listdir(wiki_dir))
+                if name.endswith(".md"))
+    for manifest in ("references/quiz_bank.json", "references/teaching_examples.json"):
+        for item in json.load(open(os.path.join(ws, *manifest.split("/")), encoding="utf-8")):
+            for asset in item.get("assets") or []:
+                if isinstance(asset, dict) and isinstance(asset.get("path"), str):
+                    rels.append(asset["path"].replace("\\", "/"))
+    inputs = {}
+    for rel in rels:
+        payload = open(os.path.join(ws, *rel.split("/")), "rb").read()
+        inputs[rel] = {"sha256": hashlib.sha256(payload).hexdigest()}
+    materials_root = os.path.join(os.path.dirname(ws), "materials")
+    os.makedirs(materials_root, exist_ok=True)
+    source_pdf = os.path.join(materials_root, "course.pdf")
+    if not os.path.exists(source_pdf):
+        with open(source_pdf, "wb") as stream:
+            stream.write(b"%PDF-phase-evidence-source")
+    material_digest = hashlib.sha256(open(source_pdf, "rb").read()).hexdigest()
+    material_inventory = hashlib.sha256(
+        json.dumps(["course.pdf"], ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    integrity = {
+        "schema_version": 2,
+        "generated_at": "2026-07-13T00:00:00Z",
+        "mode": {"materials_scan": True, "apply_questions": False,
+                 "apply_wiki": False, "backend": "fake",
+                 "materials_root": os.path.abspath(materials_root)},
+        "inputs": inputs,
+        "materials": {"course.pdf": {"sha256": material_digest}},
+        "material_inventory_sha256": material_inventory,
+    }
+    manifests = {}
+    for name in ("figure_page_index.json", "image_question_index.json"):
+        path = os.path.join(ws, "references", name)
+        value = json.load(open(path, encoding="utf-8"))
+        value.pop("integrity", None)
+        manifests[name] = value
+    integrity["outputs"] = {}
+    for name, value in manifests.items():
+        raw = json.dumps(value, ensure_ascii=False, sort_keys=True,
+                         separators=(",", ":"), allow_nan=False).encode("utf-8")
+        integrity["outputs"][name] = {"sha256": hashlib.sha256(raw).hexdigest()}
+    for name, value in manifests.items():
+        path = os.path.join(ws, "references", name)
+        value["integrity"] = integrity
+        with open(path, "w", encoding="utf-8") as stream:
+            json.dump(value, stream)
+
+
+def _phase_evidence_ws():
+    """Minimal new-manifest workspace for the v4.1 phase-evidence gate."""
+    md = ("# 复习进度\n\n## ⏱️ 当前复习断点\n* **当前进行阶段**：阶段 1\n\n"
+          "## 📊 知识点打卡状态\n- [ ] **阶段 1**：基础\n")
+    ws = _mk_ws(tempfile.mkdtemp(), md=md)
+    os.makedirs(os.path.join(ws, "references", "wiki"))
+    os.makedirs(os.path.join(ws, "notebook"))
+    with open(os.path.join(ws, "study_plan.md"), "w", encoding="utf-8", newline="\n") as f:
+        f.write("## 阶段 1：基础 `references/wiki/ch1.md`\n"
+                "## 阶段 2：进阶 `references/wiki/ch2.md`\n## 阶段 3：综合\n")
+    with open(os.path.join(ws, "references", "wiki", "ch1.md"), "w", encoding="utf-8") as f:
+        f.write("# 第一章\n")
+    with open(os.path.join(ws, "references", "wiki", "ch2.md"), "w", encoding="utf-8") as f:
+        f.write("# 第二章\n")
+    with open(os.path.join(ws, "references", "figure_page_index.json"), "w", encoding="utf-8") as f:
+        json.dump({"wiki_visual_coverage": {
+            "detected": 1, "embedded": 1, "missing": 0,
+            "deferred_answer_count": 0, "deferred_answer_pages": [],
+            "manual_answer_exposure_count": 0, "manual_answer_exposure_pages": [],
+            "shared_prompt_answer_count": 0, "shared_prompt_answer_pages": [],
+            "shared_prompt_answer_blocker_count": 0,
+            "shared_prompt_answer_blocker_pages": [],
+            "per_chapter": {"ch1.md": {"detected": 1, "embedded": 1, "missing": 0}},
+            "pages": [{"wiki_file": "ch1.md", "status": "embedded"}]}}, f)
+    with open(os.path.join(ws, "references", "image_question_index.json"), "w", encoding="utf-8") as f:
+        json.dump({"prompt_suspects": [], "answer_suspects": []}, f)
+    with open(os.path.join(ws, "references", "teaching_examples.json"), "w", encoding="utf-8") as f:
+        json.dump([{"id": "ex1", "chapter": 1}, {"id": "ex2", "chapter": 2}], f)
+    with open(os.path.join(ws, "references", "quiz_bank.json"), "w", encoding="utf-8") as f:
+        json.dump([{"id": "q1", "chapter": 1, "type": "choice", "question": "1+1?",
+                    "options": ["A. 2"], "answer": "A", "source": "teacher"},
+                   {"id": "q2", "chapter": 1, "type": "true_false", "question": "2>1?",
+                    "answer": True, "source": "teacher"},
+                   {"id": "q3", "chapter": 2, "type": "true_false", "question": "3>2?",
+                    "answer": True, "source": "teacher"},
+                    {"id": "q4", "chapter": 2, "type": "true_false", "question": "4>3?",
+                     "answer": True, "source": "teacher"}], f)
+    with open(os.path.join(ws, "ingest_report.json"), "w", encoding="utf-8") as f:
+        json.dump({"teaching_example_ids": ["ex1", "ex2"],
+                   "teaching_examples_by_chapter": {"1": 1, "2": 1},
+                   "teaching_example_ids_by_chapter": {"1": ["ex1"], "2": ["ex2"]}}, f)
+    with open(os.path.join(ws, "references", "teaching_baseline.json"),
+              "w", encoding="utf-8") as f:
+        json.dump({"schema_version": 1, "policy": "append_only",
+                   "teaching_example_ids": ["ex1", "ex2"],
+                   "teaching_example_ids_by_chapter": {
+                       "1": ["ex1"], "2": ["ex2"]}}, f)
+    with open(os.path.join(ws, "notebook", "ch01.md"), "w", encoding="utf-8") as f:
+        f.write("# 第一章笔记\n\n## [#ex1] 例题一\n\n完整讲解。\n")
+    with open(os.path.join(ws, "notebook", "ch02.md"), "w", encoding="utf-8") as f:
+        f.write("# 第二章笔记\n\n## [#ex2] 例题二\n\n完整讲解。\n")
+    _refresh_visual_integrity(ws)
+    r = _up(ws, ["init"])
+    if r.returncode != 0:
+        raise AssertionError(r.stderr)
+    return ws
 
 
 class Migration(unittest.TestCase):
@@ -224,6 +339,43 @@ class Migration(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertFalse(_state(ws)["phase_checklist"][0]["done"])
 
+    def test_legacy_set_check_warns_but_stays_compatible(self):
+        md = LEGACY_MD + "\n## 📊 知识点打卡状态\n- [ ] **阶段 1**：栈与队列\n"
+        ws = _mk_ws(tempfile.mkdtemp(), md=md)
+        _up(ws, ["init"])
+        r = _up(ws, ["set-check", "--match", "阶段 1"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("旧工作区", r.stderr)
+        self.assertTrue(_state(ws)["phase_checklist"][0]["done"])
+
+    def test_v40_visual_indexes_alone_do_not_enable_v41_hard_gate(self):
+        md = LEGACY_MD + "\n## 📊 知识点打卡状态\n- [ ] **阶段 1**：栈与队列\n"
+        ws = _mk_ws(tempfile.mkdtemp(), md=md)
+        os.makedirs(os.path.join(ws, "references"))
+        json.dump({"files": {}}, open(os.path.join(ws, "references", "figure_page_index.json"),
+                                     "w", encoding="utf-8"))
+        json.dump({"suspects": []}, open(os.path.join(ws, "references", "image_question_index.json"),
+                                         "w", encoding="utf-8"))
+        self.assertEqual(_up(ws, ["init"]).returncode, 0)
+        r = _up(ws, ["set-check", "--match", "阶段 1"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("旧工作区", r.stderr)
+
+    def test_partial_or_broken_v41_manifest_never_fails_open_as_legacy(self):
+        for teaching_text in ("[]", "{broken"):
+            md = LEGACY_MD + "\n## 📊 知识点打卡状态\n- [ ] **阶段 1**：栈与队列\n"
+            ws = _mk_ws(tempfile.mkdtemp(), md=md)
+            os.makedirs(os.path.join(ws, "references"))
+            with open(os.path.join(ws, "references", "teaching_examples.json"),
+                      "w", encoding="utf-8") as f:
+                f.write(teaching_text)
+            self.assertEqual(_up(ws, ["init"]).returncode, 0)
+            before = open(os.path.join(ws, "study_state.json"), "rb").read()
+            r = _up(ws, ["set-check", "--match", "阶段 1"])
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("partial/broken", r.stderr)
+            self.assertEqual(open(os.path.join(ws, "study_state.json"), "rb").read(), before)
+
     def test_init_idempotent_without_force(self):
         ws = _mk_ws(tempfile.mkdtemp())
         _up(ws, ["init"])
@@ -239,6 +391,427 @@ class Migration(unittest.TestCase):
         self.assertEqual(r.returncode, 1)                         # fail-loud，不猜编码静默迁移
         self.assertIn("UTF-8", r.stderr)
         self.assertFalse(os.path.isfile(os.path.join(ws, "study_state.json")))
+
+
+class PhaseEvidence(unittest.TestCase):
+    CORE = (("wiki", "references/wiki/ch1.md"),
+            ("visual", "references/figure_page_index.json"),
+            ("teaching-example", "ex1"),
+            ("notebook", "notebook/ch01.md#ex1-例题一"))
+
+    def _record_core(self, ws):
+        for kind, ref in self.CORE:
+            r = _up(ws, ["record-phase-evidence", "--phase", "1", "--kind", kind, "--ref", ref])
+            self.assertEqual(r.returncode, 0, "%s: %s" % (kind, r.stderr))
+
+    def test_new_manifest_set_check_without_evidence_fails_without_pollution(self):
+        ws = _phase_evidence_ws()
+        before = open(os.path.join(ws, "study_state.json"), "rb").read()
+        r = _up(ws, ["set-check", "--match", "阶段 1"])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("phase_evidence", r.stderr)
+        self.assertEqual(open(os.path.join(ws, "study_state.json"), "rb").read(), before)
+        self.assertFalse(_state(ws)["phase_checklist"][0]["done"])
+
+    def test_le1d_can_complete_covered_unverified_with_core_evidence(self):
+        ws = _phase_evidence_ws()
+        self.assertEqual(_up(ws, ["set", "--time-budget", "le1d"]).returncode, 0)
+        self._record_core(ws)
+        r = _up(ws, ["complete-phase", "--phase", "1", "--status", "covered_unverified"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        st = _state(ws)
+        self.assertTrue(st["phase_checklist"][0]["done"])
+        self.assertEqual(st["phase_evidence"]["1"]["status"], "covered_unverified")
+        self.assertEqual(st["phase_evidence"]["1"].get("checkpoint", []), [])
+        rendered = open(os.path.join(ws, "study_progress.md"), encoding="utf-8").read()
+        self.assertIn("已覆盖但未验证", rendered)
+
+    def test_phase_completion_rejects_stale_bank_teaching_and_wiki_digests(self):
+        for rel in ("references/quiz_bank.json", "references/teaching_examples.json",
+                    "references/wiki/ch1.md"):
+            ws = _phase_evidence_ws()
+            self._record_core(ws)
+            path = os.path.join(ws, *rel.split("/"))
+            with open(path, "a", encoding="utf-8") as stream:
+                stream.write("\n")
+            result = _up(ws, ["complete-phase", "--status", "covered_unverified"])
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("stale", result.stderr)
+            self.assertIn(rel, result.stderr)
+
+    def test_phase_completion_rejects_tampered_derived_visual_result(self):
+        ws = _phase_evidence_ws()
+        self._record_core(ws)
+        image_path = os.path.join(ws, "references", "image_question_index.json")
+        image = json.load(open(image_path, encoding="utf-8"))
+        image["prompt_suspects"] = [{"id": "q1", "chapter": 1}]
+        with open(image_path, "w", encoding="utf-8") as stream:
+            json.dump(image, stream)
+        result = _up(ws, ["complete-phase", "--status", "covered_unverified"])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("派生结果", result.stderr)
+        self.assertIn("image_question_index.json", result.stderr)
+
+    def test_phase_completion_rejects_source_pdf_changed_after_index(self):
+        ws = _phase_evidence_ws()
+        self._record_core(ws)
+        source_pdf = os.path.join(os.path.dirname(ws), "materials", "course.pdf")
+        with open(source_pdf, "ab") as stream:
+            stream.write(b"changed")
+        result = _up(ws, ["complete-phase", "--status", "covered_unverified"])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("原始 PDF", result.stderr)
+        self.assertIn("stale", result.stderr)
+
+    def test_phase_completion_rejects_source_pdf_added_after_index(self):
+        ws = _phase_evidence_ws()
+        self._record_core(ws)
+        with open(os.path.join(os.path.dirname(ws), "materials", "new-chapter.pdf"), "wb") as stream:
+            stream.write(b"%PDF-new")
+        result = _up(ws, ["complete-phase", "--status", "covered_unverified"])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("PDF 路径清单", result.stderr)
+        self.assertIn("stale", result.stderr)
+
+    def test_phase_completion_rechecks_declared_prompt_asset_after_index(self):
+        ws = _phase_evidence_ws()
+        asset_rel = "references/assets/phase-figure.png"
+        asset = os.path.join(ws, *asset_rel.split("/"))
+        os.makedirs(os.path.dirname(asset), exist_ok=True)
+        with open(asset, "wb") as stream:
+            stream.write(b"png")
+        bank_path = os.path.join(ws, "references", "quiz_bank.json")
+        bank = json.load(open(bank_path, encoding="utf-8"))
+        bank.append({"id": "q_visual", "chapter": 1, "requires_assets": True,
+                     "assets": [{"path": asset_rel, "role": "question_context"}]})
+        with open(bank_path, "w", encoding="utf-8") as stream:
+            json.dump(bank, stream)
+        _refresh_visual_integrity(ws)
+        self._record_core(ws)
+        os.remove(asset)
+        result = _up(ws, ["complete-phase", "--status", "covered_unverified"])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("不可读题面 asset", result.stderr)
+        self.assertIn("phase-figure.png", result.stderr)
+
+    def test_verified_requires_checkpoint_then_succeeds(self):
+        ws = _phase_evidence_ws()
+        self._record_core(ws)
+        before = open(os.path.join(ws, "study_state.json"), "rb").read()
+        r = _up(ws, ["complete-phase", "--phase", "1", "--status", "verified"])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("checkpoint", r.stderr)
+        self.assertEqual(open(os.path.join(ws, "study_state.json"), "rb").read(), before)
+        r = _up(ws, ["record-phase-evidence", "--phase", "1", "--kind", "checkpoint",
+                     "--ref", "q1", "--outcome", "passed"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = _up(ws, ["complete-phase", "--phase", "1", "--status", "verified"])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("2 个不同题目", r.stderr)
+        r = _up(ws, ["record-phase-evidence", "--phase", "1", "--kind", "checkpoint",
+                     "--ref", "q2", "--outcome", "wrong"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = _up(ws, ["complete-phase", "--phase", "1", "--status", "verified"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(_state(ws)["phase_evidence"]["1"]["status"], "verified")
+
+    def test_checkpoint_id_without_outcome_is_rejected(self):
+        ws = _phase_evidence_ws()
+        before = open(os.path.join(ws, "study_state.json"), "rb").read()
+        r = _up(ws, ["record-phase-evidence", "--kind", "checkpoint", "--ref", "q1"])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("--outcome", r.stderr)
+        self.assertEqual(open(os.path.join(ws, "study_state.json"), "rb").read(), before)
+
+    def test_verified_rejects_two_checkpoints_when_none_passed(self):
+        ws = _phase_evidence_ws()
+        self._record_core(ws)
+        for qid, outcome in (("q1", "wrong"), ("q2", "skipped")):
+            r = _up(ws, ["record-phase-evidence", "--phase", "1", "--kind", "checkpoint",
+                         "--ref", qid, "--outcome", outcome])
+            self.assertEqual(r.returncode, 0, r.stderr)
+        r = _up(ws, ["complete-phase", "--phase", "1", "--status", "verified"])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("passed", r.stderr)
+
+    def test_manifest_content_gaps_block_completion(self):
+        ws = _phase_evidence_ws()
+        self._record_core(ws)
+        figure_path = os.path.join(ws, "references", "figure_page_index.json")
+        figure = json.load(open(figure_path, encoding="utf-8"))
+        figure["wiki_visual_coverage"]["per_chapter"]["ch1.md"]["missing"] = 1
+        figure["wiki_visual_coverage"]["pages"] = [{"wiki_file": "ch1.md", "status": "missing"}]
+        json.dump(figure, open(figure_path, "w", encoding="utf-8"), ensure_ascii=False)
+        r = _up(ws, ["complete-phase", "--status", "covered_unverified"])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("missing", r.stderr)
+
+        # Repair wiki coverage, but leave an answer-side suspect in this chapter: still blocked.
+        figure["wiki_visual_coverage"]["per_chapter"]["ch1.md"]["missing"] = 0
+        figure["wiki_visual_coverage"]["pages"] = [{"wiki_file": "ch1.md", "status": "embedded"}]
+        json.dump(figure, open(figure_path, "w", encoding="utf-8"), ensure_ascii=False)
+        image_path = os.path.join(ws, "references", "image_question_index.json")
+        json.dump({"prompt_suspects": [], "answer_suspects": [{"id": "q1", "chapter": 1}]},
+                  open(image_path, "w", encoding="utf-8"), ensure_ascii=False)
+        r = _up(ws, ["complete-phase", "--status", "covered_unverified"])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("answer_suspects", r.stderr)
+
+    def test_visual_recall_disabled_warning_blocks_false_zero_completion(self):
+        ws = _phase_evidence_ws()
+        self._record_core(ws)
+        figure_path = os.path.join(ws, "references", "figure_page_index.json")
+        figure = json.load(open(figure_path, encoding="utf-8"))
+        figure["wiki_visual_coverage"] = {
+            "detected": 0, "embedded": 0, "missing": 0,
+            "per_chapter": {}, "pages": []}
+        figure["warnings"] = ["no_materials: recall net disabled"]
+        json.dump(figure, open(figure_path, "w", encoding="utf-8"), ensure_ascii=False)
+        before = open(os.path.join(ws, "study_state.json"), "rb").read()
+        r = _up(ws, ["complete-phase", "--status", "covered_unverified"])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("视觉召回网", r.stderr)
+        self.assertEqual(open(os.path.join(ws, "study_state.json"), "rb").read(), before)
+
+    def test_nested_metadata_ids_cannot_be_used_as_checkpoint_evidence(self):
+        ws = _phase_evidence_ws()
+        bank_path = os.path.join(ws, "references", "quiz_bank.json")
+        bank = json.load(open(bank_path, encoding="utf-8"))
+        bank[0]["metadata"] = {"decoys": [{"id": "fake1", "chapter": 1},
+                                            {"id": "fake2", "chapter": 1}]}
+        json.dump(bank, open(bank_path, "w", encoding="utf-8"), ensure_ascii=False)
+        before = open(os.path.join(ws, "study_state.json"), "rb").read()
+        r = _up(ws, ["record-phase-evidence", "--kind", "checkpoint", "--ref", "fake1",
+                     "--outcome", "passed"])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("quiz_bank.json", r.stderr)
+        self.assertEqual(open(os.path.join(ws, "study_state.json"), "rb").read(), before)
+
+    def test_scope_normalization_and_unscoped_suspects_are_fail_closed(self):
+        ws = _phase_evidence_ws()
+        self._record_core(ws)
+        image_path = os.path.join(ws, "references", "image_question_index.json")
+        for suspect in ({"id": "q1", "chapter": "01"}, {"id": "unknown"}):
+            json.dump({"prompt_suspects": [suspect], "answer_suspects": []},
+                      open(image_path, "w", encoding="utf-8"), ensure_ascii=False)
+            r = _up(ws, ["complete-phase", "--status", "covered_unverified"])
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("prompt_suspects", r.stderr)
+
+        teaching_path = os.path.join(ws, "references", "teaching_examples.json")
+        json.dump([{"id": "ex1", "chapter": 1}, {"id": "ex2", "chapter": "01"}],
+                  open(teaching_path, "w", encoding="utf-8"), ensure_ascii=False)
+        json.dump({"prompt_suspects": [], "answer_suspects": []},
+                  open(image_path, "w", encoding="utf-8"), ensure_ascii=False)
+        r = _up(ws, ["complete-phase", "--status", "covered_unverified"])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("ex2", r.stderr)
+
+    def test_teaching_manifest_requires_full_phase_coverage_but_empty_phase_is_na(self):
+        ws = _phase_evidence_ws()
+        self._record_core(ws)
+        teaching_path = os.path.join(ws, "references", "teaching_examples.json")
+        json.dump([{"id": "ex1", "chapter": 1}, {"id": "ex2", "chapter": 1}],
+                  open(teaching_path, "w", encoding="utf-8"), ensure_ascii=False)
+        r = _up(ws, ["complete-phase", "--status", "covered_unverified"])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("ex2", r.stderr)
+
+        # A course/phase with no teaching examples is explicit N/A, not an impossible gate.
+        ws2 = _phase_evidence_ws()
+        json.dump([], open(os.path.join(ws2, "references", "teaching_examples.json"),
+                           "w", encoding="utf-8"))
+        json.dump({"teaching_example_ids": [], "teaching_examples_by_chapter": {},
+                   "teaching_example_ids_by_chapter": {}},
+                  open(os.path.join(ws2, "ingest_report.json"), "w", encoding="utf-8"))
+        json.dump({"schema_version": 1, "policy": "append_only",
+                   "teaching_example_ids": [], "teaching_example_ids_by_chapter": {}},
+                  open(os.path.join(ws2, "references", "teaching_baseline.json"),
+                       "w", encoding="utf-8"))
+        _refresh_visual_integrity(ws2)  # represents rebuilding both indices after an intentional edit
+        for kind, ref in (self.CORE[0], self.CORE[1], self.CORE[3]):
+            rr = _up(ws2, ["record-phase-evidence", "--kind", kind, "--ref", ref])
+            self.assertEqual(rr.returncode, 0, rr.stderr)
+        r = _up(ws2, ["complete-phase", "--status", "covered_unverified"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_deleted_ingest_baseline_example_cannot_turn_phase_into_teaching_na(self):
+        ws = _phase_evidence_ws()
+        teaching_path = os.path.join(ws, "references", "teaching_examples.json")
+        teaching = json.load(open(teaching_path, encoding="utf-8"))
+        with open(teaching_path, "w", encoding="utf-8") as stream:
+            json.dump([item for item in teaching if item["id"] != "ex1"], stream)
+        _refresh_visual_integrity(ws)
+        # Recreate the concrete fail-open bundle: wiki + visual + notebook, but no teaching evidence.
+        for kind, ref in (self.CORE[0], self.CORE[1], self.CORE[3]):
+            result = _up(ws, ["record-phase-evidence", "--phase", "1",
+                              "--kind", kind, "--ref", ref])
+            self.assertEqual(result.returncode, 0, result.stderr)
+        before = open(os.path.join(ws, "study_state.json"), "rb").read()
+        result = _up(ws, ["complete-phase", "--phase", "1",
+                          "--status", "covered_unverified"])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("保留基线", result.stderr)
+        self.assertIn("ex1", result.stderr)
+        self.assertEqual(open(os.path.join(ws, "study_state.json"), "rb").read(), before)
+
+    def test_legacy_flat_baseline_missing_id_fails_closed_for_every_phase(self):
+        ws = _phase_evidence_ws()
+        os.remove(os.path.join(ws, "references", "teaching_baseline.json"))
+        with open(os.path.join(ws, "ingest_report.json"), "w", encoding="utf-8") as stream:
+            json.dump({"teaching_example_ids": ["lost-legacy-id"]}, stream)
+        _refresh_visual_integrity(ws)
+        for kind, ref in (self.CORE[0], self.CORE[1], self.CORE[3]):
+            self.assertEqual(_up(ws, ["record-phase-evidence", "--kind", kind,
+                                      "--ref", ref]).returncode, 0)
+        result = _up(ws, ["complete-phase", "--status", "covered_unverified"])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("旧报告没有逐章映射", result.stderr)
+
+    def test_rewritten_ingest_report_cannot_shrink_append_only_teaching_baseline(self):
+        ws = _phase_evidence_ws()
+        teaching_path = os.path.join(ws, "references", "teaching_examples.json")
+        with open(teaching_path, "w", encoding="utf-8") as stream:
+            json.dump([{"id": "ex2", "chapter": 2}], stream)
+        # Reproduce a later, smaller ingest report.  The independent append-only manifest must
+        # retain ex1/ch1 even after both visual indices are deliberately rebuilt.
+        with open(os.path.join(ws, "ingest_report.json"), "w", encoding="utf-8") as stream:
+            json.dump({"teaching_example_ids": ["ex2"],
+                       "teaching_example_ids_by_chapter": {"2": ["ex2"]}}, stream)
+        _refresh_visual_integrity(ws)
+        for kind, ref in (self.CORE[0], self.CORE[1], self.CORE[3]):
+            result = _up(ws, ["record-phase-evidence", "--phase", "1",
+                              "--kind", kind, "--ref", ref])
+            self.assertEqual(result.returncode, 0, result.stderr)
+        before = open(os.path.join(ws, "study_state.json"), "rb").read()
+        result = _up(ws, ["complete-phase", "--phase", "1",
+                          "--status", "covered_unverified"])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ex1", result.stderr)
+        self.assertEqual(open(os.path.join(ws, "study_state.json"), "rb").read(), before)
+
+    def test_manual_answer_only_wiki_exposure_blocks_phase_completion(self):
+        ws = _phase_evidence_ws()
+        figure_path = os.path.join(ws, "references", "figure_page_index.json")
+        with open(figure_path, encoding="utf-8") as stream:
+            figure = json.load(stream)
+        row = {"wiki_file": "ch1.md", "source_file": "course.pdf", "page": 9,
+               "status": "deferred_answer", "coverage_issue": "manual_answer_exposure",
+               "manual_assets": ["../assets/manual-answer.png"]}
+        coverage = figure["wiki_visual_coverage"]
+        coverage["deferred_answer_count"] = 1
+        coverage["deferred_answer_pages"] = [row]
+        coverage["manual_answer_exposure_count"] = 1
+        coverage["manual_answer_exposure_pages"] = [row]
+        coverage["pages"].append(row)
+        with open(figure_path, "w", encoding="utf-8") as stream:
+            json.dump(figure, stream)
+        _refresh_visual_integrity(ws)
+        self._record_core(ws)
+        before = open(os.path.join(ws, "study_state.json"), "rb").read()
+        result = _up(ws, ["complete-phase", "--status", "covered_unverified"])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("提前暴露", result.stderr)
+        self.assertEqual(open(os.path.join(ws, "study_state.json"), "rb").read(), before)
+
+    def test_shared_prompt_answer_page_without_audited_crop_blocks_phase_completion(self):
+        ws = _phase_evidence_ws()
+        figure_path = os.path.join(ws, "references", "figure_page_index.json")
+        with open(figure_path, encoding="utf-8") as stream:
+            figure = json.load(stream)
+        row = {"wiki_file": "ch1.md", "source_file": "course.pdf", "page": 6,
+               "status": "shared_prompt_answer",
+               "blocker": "audited_question_side_crop_required"}
+        coverage = figure["wiki_visual_coverage"]
+        coverage["shared_prompt_answer_count"] = 1
+        coverage["shared_prompt_answer_pages"] = [row]
+        coverage["shared_prompt_answer_blocker_count"] = 1
+        coverage["shared_prompt_answer_blocker_pages"] = [row]
+        coverage["pages"].append(row)
+        with open(figure_path, "w", encoding="utf-8") as stream:
+            json.dump(figure, stream)
+        _refresh_visual_integrity(ws)
+        self._record_core(ws)
+        before = open(os.path.join(ws, "study_state.json"), "rb").read()
+        result = _up(ws, ["complete-phase", "--status", "covered_unverified"])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("共享整页", result.stderr)
+        self.assertEqual(open(os.path.join(ws, "study_state.json"), "rb").read(), before)
+
+    def test_complete_phase_only_current_and_next_phase_must_be_immediate(self):
+        ws = _phase_evidence_ws()
+        r = _up(ws, ["complete-phase", "--phase", "2", "--status", "covered_unverified"])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("current_phase", r.stderr)
+        self._record_core(ws)
+        before = open(os.path.join(ws, "study_state.json"), "rb").read()
+        r = _up(ws, ["complete-phase", "--phase", "1", "--status", "covered_unverified",
+                     "--next-phase", "3"])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("紧接", r.stderr)
+        self.assertEqual(open(os.path.join(ws, "study_state.json"), "rb").read(), before)
+        r = _up(ws, ["complete-phase", "--phase", "1", "--status", "covered_unverified",
+                     "--next-phase", "2"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(_state(ws)["current_phase"], 2)
+
+    def test_phase_one_cannot_complete_with_phase_two_evidence_bundle(self):
+        ws = _phase_evidence_ws()
+        st_path = os.path.join(ws, "study_state.json")
+        st = _state(ws)
+        st["phase_evidence"] = {"1": {
+            "wiki": ["references/wiki/ch2.md"],
+            "visual": ["references/figure_page_index.json"],
+            "teaching_examples": ["ex2"],
+            "notebook": ["notebook/ch02.md#ex2-例题二"],
+            "checkpoint": [{"id": "q3", "outcome": "passed"},
+                           {"id": "q4", "outcome": "wrong"}]}}
+        with open(st_path, "w", encoding="utf-8") as f:
+            json.dump(st, f, ensure_ascii=False)
+        before = open(st_path, "rb").read()
+        r = _up(ws, ["complete-phase", "--phase", "1", "--status", "verified"])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("study_plan.md", r.stderr)
+        self.assertEqual(open(st_path, "rb").read(), before)
+
+    def test_explicit_no_questions_preference_caps_phase_at_covered_unverified(self):
+        ws = _phase_evidence_ws()
+        self.assertEqual(_up(ws, ["set", "--pref", "no_questions=true"]).returncode, 0)
+        self._record_core(ws)
+        for qid, outcome in (("q1", "passed"), ("q2", "wrong")):
+            r = _up(ws, ["record-phase-evidence", "--phase", "1", "--kind", "checkpoint",
+                         "--ref", qid, "--outcome", outcome])
+            self.assertEqual(r.returncode, 0, r.stderr)
+        before = open(os.path.join(ws, "study_state.json"), "rb").read()
+        r = _up(ws, ["complete-phase", "--phase", "1", "--status", "verified"])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("no_questions", r.stderr)
+        self.assertEqual(open(os.path.join(ws, "study_state.json"), "rb").read(), before)
+        r = _up(ws, ["complete-phase", "--phase", "1", "--status", "covered_unverified"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_record_evidence_rejects_workspace_escape_without_write(self):
+        ws = _phase_evidence_ws()
+        outside = os.path.join(os.path.dirname(ws), "outside.md")
+        with open(outside, "w", encoding="utf-8") as f:
+            f.write("outside")
+        before = open(os.path.join(ws, "study_state.json"), "rb").read()
+        r = _up(ws, ["record-phase-evidence", "--phase", "1", "--kind", "wiki",
+                     "--ref", "../outside.md"])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("路径", r.stderr)
+        self.assertEqual(open(os.path.join(ws, "study_state.json"), "rb").read(), before)
+
+    def test_old_state_without_phase_evidence_remains_readable(self):
+        ws = _mk_ws(tempfile.mkdtemp())
+        self.assertEqual(_up(ws, ["init"]).returncode, 0)
+        st = _state(ws)
+        st.pop("phase_evidence", None)
+        json.dump(st, open(os.path.join(ws, "study_state.json"), "w", encoding="utf-8"),
+                  ensure_ascii=False)
+        r = _up(ws, ["show"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["phase_evidence"], {})
 
 
 class Mutations(unittest.TestCase):
@@ -292,6 +865,84 @@ class Mutations(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("非标准", r.stderr)
         self.assertEqual(_state(ws)["mode"], "随便讲讲")
+
+    # ---- output-resource mode: v3-compatible chat default vs opt-in visual artifacts ----
+    def test_artifact_mode_defaults_to_chat_for_new_and_legacy_state(self):
+        ws = self._ready()
+        st = _state(ws)
+        self.assertEqual(st["artifact_mode"], "chat")
+        self.assertEqual(i18n.workspace_artifact_mode(st), "chat")
+        md = open(os.path.join(ws, "study_progress.md"), encoding="utf-8").read()
+        self.assertIn("**输出资源模式**：对话省额", md)
+
+        st.pop("artifact_mode")                         # simulate a v3/early-v4 state
+        json.dump(st, open(os.path.join(ws, "study_state.json"), "w", encoding="utf-8"),
+                  ensure_ascii=False)
+        shown = _up(ws, ["show"])
+        self.assertEqual(shown.returncode, 0, shown.stderr)
+        self.assertEqual(json.loads(shown.stdout)["artifact_mode"], "chat")
+
+    def test_artifact_mode_aliases_normalize_without_subscription_inference(self):
+        ws = self._ready()
+        for alias, canon in (("视觉教材", "visual"), ("PDF", "visual"),
+                             ("visual study guide", "visual"), ("不在乎 token", "visual"),
+                             ("token-insensitive", "visual"), ("对话省额", "chat"),
+                             ("CHAT-ONLY", "chat"), ("省token", "chat")):
+            r = _up(ws, ["set", "--artifact-mode", alias])
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(_state(ws)["artifact_mode"], canon, alias)
+        # The state model has no subscription field and never derives the choice from one.
+        self.assertNotIn("subscription", _state(ws))
+
+    def test_artifact_mode_unknown_is_preserved_but_effective_mode_fails_safe(self):
+        ws = self._ready()
+        r = _up(ws, ["set", "--artifact-mode", "ultra-render"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("非标准输出资源模式", r.stderr)
+        st = _state(ws)
+        self.assertEqual(st["artifact_mode"], "ultra-render")
+        self.assertEqual(i18n.workspace_artifact_mode(st), "chat")
+        self.assertEqual(i18n.workspace_artifact_mode(None), "chat")
+
+    def test_artifact_mode_visual_roundtrips_through_generated_md(self):
+        ws = self._ready()
+        r = _up(ws, ["set", "--artifact-mode", "visual"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        md = open(os.path.join(ws, "study_progress.md"), encoding="utf-8").read()
+        self.assertIn("**输出资源模式**：视觉教材", md)
+        rebuilt = _up(ws, ["init", "--force"])
+        self.assertEqual(rebuilt.returncode, 0, rebuilt.stderr)
+        self.assertEqual(_state(ws)["artifact_mode"], "visual")
+
+    def test_artifact_mode_legacy_display_value_migrates_on_official_save(self):
+        ws = self._ready()
+        st = _state(ws)
+        st["artifact_mode"] = "视觉教材"                # pre-canonical/manual early state
+        json.dump(st, open(os.path.join(ws, "study_state.json"), "w", encoding="utf-8"),
+                  ensure_ascii=False)
+        r = _up(ws, ["render"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(_state(ws)["artifact_mode"], "visual")
+        self.assertEqual(i18n.display("artifact", "chat", "en"), "chat-only")
+        self.assertEqual(i18n.display("artifact", "visual", "en"), "visual study guide")
+
+    def test_artifact_mode_empty_explicitly_restores_safe_chat_default(self):
+        ws = self._ready()
+        self.assertEqual(_up(ws, ["set", "--artifact-mode", "visual"]).returncode, 0)
+        r = _up(ws, ["set", "--artifact-mode", ""])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(_state(ws)["artifact_mode"], "chat")
+
+    def test_artifact_mode_bad_state_type_fails_loud(self):
+        ws = self._ready()
+        st = _state(ws)
+        st["artifact_mode"] = ["visual"]
+        json.dump(st, open(os.path.join(ws, "study_state.json"), "w", encoding="utf-8"),
+                  ensure_ascii=False)
+        r = _up(ws, ["render"])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("artifact_mode 必须是字符串", r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
 
     def test_a6_knowledge_window_add_and_status(self):
         ws = self._ready()
@@ -1314,6 +1965,18 @@ class Contract(unittest.TestCase):
         txt = open(os.path.join(ROOT, "locales", "zh", "SKILL.md"), encoding="utf-8").read()
         self.assertIn("断点状态锁定 (`study_state.json`", txt)     # zh 全量入口的状态锁对齐事实源
         self.assertIn("set-check", txt)
+
+    def test_le1d_question_semantics_and_unverified_cap_are_explicit(self):
+        cadence_phrase = {
+            "AGENTS.md": "题库练习/阶段测验",
+            "skills/exam-cram/SKILL.md": "bank-backed drills or checkpoints",
+            "skills/exam-tutor/SKILL.md": "bank-backed drills or checkpoints",
+        }
+        for rel, phrase in cadence_phrase.items():
+            txt = open(os.path.join(ROOT, rel), encoding="utf-8").read()
+            self.assertIn(phrase, txt, rel)
+            self.assertIn("no_questions=true", txt, rel)
+            self.assertIn("covered_unverified", txt, rel)
 
     def test_web_prompt_never_claims_local_writes(self):
         txt = open(os.path.join(ROOT, "prompts", "web_prompt.md"), encoding="utf-8").read()

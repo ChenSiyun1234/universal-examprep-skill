@@ -263,6 +263,21 @@ def _role_of_tail(tail):
     return "problem"   # bare "Quiz 1.1" with no keyword → a problem
 
 
+def _heading_form_of_tail(tail):
+    """Preserve whether a problem marker explicitly said ``Problem``.
+
+    ``role`` intentionally keeps the legacy two-value contract (a bare marker is still a
+    problem), while the teaching-example snapshot needs to distinguish an explicitly posed
+    problem from a bare worked Example whose result may be completed on the same slide.
+    """
+    tail_role = re.sub(r"^\s*\(?\s*continued\b\s*\d*\s*\)?[\s:.\-]*", "", tail, flags=re.I)
+    if _ROLE_PROBLEM_RE.match(tail) or _ROLE_PROBLEM_RE.match(tail_role):
+        return "explicit_problem"
+    if _ROLE_SOLUTION_RE.match(tail) or _ROLE_SOLUTION_RE.match(tail_role):
+        return "explicit_solution"
+    return "bare"
+
+
 def _iter_markers(text):
     """Every NON-TOC lecture marker in TEXT-POSITION order — the single source of truth shared by
     detect_lecture_markers AND the text-slicers, so TOC-skip / role / plural never diverge between
@@ -277,7 +292,8 @@ def _iter_markers(text):
                 continue
             tail = text[m.end():m.end() + 48]
             out.append({"start": m.start(), "kind": kind, "chapter": int(m.group(1)), "num": int(m.group(2)),
-                        "role": _role_of_tail(tail), "continued": bool(re.search(r"\bContinued\b", tail, re.I))})
+                        "role": _role_of_tail(tail), "heading_form": _heading_form_of_tail(tail),
+                        "continued": bool(re.search(r"\bContinued\b", tail, re.I))})
     out.sort(key=lambda d: d["start"])
     return out
 
@@ -300,7 +316,11 @@ def orphan_solution_keys(pages):
 def _markers_with_pages(pages):
     marked = []
     for i, pg in enumerate(pages):
-        for mk in detect_lecture_markers(pg.get("text", "")):
+        # Internal consumers retain heading_form for the parallel teaching snapshot; the public
+        # detect_lecture_markers() result keeps its legacy field set for callers/tests.
+        for raw in _iter_markers(pg.get("text", "")):
+            mk = {k: raw[k] for k in
+                  ("kind", "chapter", "num", "role", "continued", "heading_form")}
             marked.append((i, mk))
     return marked
 
@@ -465,6 +485,22 @@ def extract_lecture_items(pages):
             "requires_assets": bool(needs),
             "question_text_status": qts,
         }
+        if kind == "example":
+            # Parallel teaching index metadata.  This does NOT change quiz-bank routing: every
+            # extracted item remains in the canonical bank exactly as before.  A bare Example with
+            # no independent Solution is a worked demonstration; an explicit Problem or any
+            # problem/solution pair is a paired teaching problem.
+            item["_teaching_role"] = (
+                "paired_problem"
+                if bool(ans_idx) or any(
+                    _key(mk2) == key and mk2.get("role") == "problem"
+                    and mk2.get("heading_form") == "explicit_problem"
+                    and pages[pj2]["file"] == pf
+                    for pj2, mk2 in marked
+                )
+                else "worked_example"
+            )
+            item["_teaching_title"] = "%s %d.%d" % (label, key[1], key[2])
         if not needs and _qt == "choice" and _opts:
             item["options"] = _opts
         if not needs:
@@ -1411,9 +1447,15 @@ def group_sections(pages, notes=None):
             sec["files"].append(pg.get("file"))
         sec["pages"].append(pg.get("page"))
         sec.setdefault("page_keys", []).append((f, pg.get("page")))
-        if (pg.get("text") or "").strip():
-            sec["text_blocks"].append("<!-- %s p.%d -->\n%s" % (pg.get("file"), pg.get("page"),
-                                                                 pg.get("text", "").strip()))
+        # Keep a page anchor even when the text backend returns nothing.  A blank/image-only PDF
+        # page can still be a semantically essential visual page; dropping its anchor made the
+        # downstream wiki coverage denominator silently shrink to zero and left --apply-wiki with
+        # nowhere to attach the rendered page.
+        page_text = (pg.get("text") or "").strip()
+        if not page_text:
+            page_text = "（本页未提取到文本；保留原页锚点供视觉覆盖核对）"
+        sec["text_blocks"].append("<!-- %s p.%d -->\n%s" %
+                                  (pg.get("file"), pg.get("page"), page_text))
     if notes is not None:
         notes.extend(f for f in all_files if f not in clue_files)
     return [by_ch[c] for c in sorted(order)]
@@ -1430,7 +1472,12 @@ def _safe_asset_name(file, page, item_id, suffix=""):
 
 def build_raw_input(course_name, sections, lecture_items, homework_items=None):
     """Assemble a raw_input.json compatible with scripts/ingest.py.
-    `quiz_items` mirrors the bank for downstream tools; ingest reads `quiz_bank`."""
+    `quiz_items` mirrors the bank for downstream tools; ingest reads `quiz_bank`.
+
+    `teaching_examples` is a PARALLEL snapshot of every detected lecture Example.  It may
+    deliberately overlap the canonical bank: later review may remove a non-assessable worked
+    example from quiz_bank without making the material unreachable to the tutor.
+    """
     phases = []
     for n, sec in enumerate(sections, 1):
         body = "\n\n".join(sec["text_blocks"]) or "（本章未提取到文本，请结合原始页/asset 复习）"
@@ -1449,8 +1496,17 @@ def build_raw_input(course_name, sections, lecture_items, homework_items=None):
     def _clean(it):
         return {k: v for (k, v) in it.items() if not k.startswith("_")}
     bank = [_clean(it) for it in (list(lecture_items) + list(homework_items or []))]
+    teaching_examples = []
+    for it in lecture_items:
+        if not str(it.get("id", "")).startswith("lecture_example_"):
+            continue
+        snap = _clean(it)
+        snap["teaching_role"] = it.get("_teaching_role", "worked_example")
+        snap["title"] = it.get("_teaching_title") or str(it.get("id"))
+        teaching_examples.append(snap)
     return {"course_name": course_name, "phases": phases, "quiz_bank": bank,
-            "quiz_items": bank}   # optional mirror field (documented); ingest ignores unknown keys
+            "quiz_items": bank,
+            "teaching_examples": teaching_examples}   # optional parallel teaching layer
 
 
 # ---------------------------------------------------------------------------
@@ -1917,6 +1973,8 @@ def run(args, backend=None):
     report = {"materials": args.materials, "backend": getattr(backend, "name", "none"),
               "files_scanned": [], "pages_extracted": 0, "pages_rendered": 0,
               "examples_detected": 0, "quizzes_detected": 0, "pairs_detected": 0,
+              "teaching_examples_detected": 0,
+              "teaching_example_roles": {"paired_problem": 0, "worked_example": 0},
               "skipped": [], "warnings": [], "ai_review": []}
 
     materials = args.materials
@@ -2083,6 +2141,12 @@ def run(args, backend=None):
         report["examples_detected"] = sum(1 for it in lecture_items if it["id"].startswith("lecture_example"))
         report["quizzes_detected"] = sum(1 for it in lecture_items if it["id"].startswith("lecture_quiz"))
         report["pairs_detected"] = sum(1 for it in lecture_items if it.get("answer_source_pages"))
+        _teaching = [it for it in lecture_items if it["id"].startswith("lecture_example")]
+        report["teaching_examples_detected"] = len(_teaching)
+        report["teaching_example_roles"] = {
+            role: sum(1 for it in _teaching if it.get("_teaching_role") == role)
+            for role in ("paired_problem", "worked_example")
+        }
         # fail-loud: a solution detected with no matching problem (mis-detected pair) → surface it
         for k in orphan_solution_keys(lecture_pages):
             report["warnings"].append("solution_without_problem: %s %d.%d" % k)

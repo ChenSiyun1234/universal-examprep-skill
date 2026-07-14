@@ -52,7 +52,11 @@ def run(argv=None):
     if os.path.isfile(idx_path):
         try:
             idx = json.load(open(idx_path, encoding="utf-8"))
-            suspects_by_id = {s["id"]: s for s in idx.get("suspects", []) if isinstance(s, dict) and "id" in s}
+            # v4.1 indices also carry teaching-layer suspects.  This command is deliberately a
+            # quiz-bank inventory, so only bank (or legacy unlabelled) suspects affect its counts.
+            suspects_by_id = {s["id"]: s for s in idx.get("suspects", [])
+                              if isinstance(s, dict) and "id" in s
+                              and s.get("source_layer") in (None, "quiz_bank")}
             idx_warnings = [str(w) for w in (idx.get("warnings") or [])]
             # an index built WITHOUT --materials never cross-checked anything: suspects=0 is NOT evidence;
             # a PDF that failed to scan AT ALL leaves that file's suspects invisible — also untrustworthy
