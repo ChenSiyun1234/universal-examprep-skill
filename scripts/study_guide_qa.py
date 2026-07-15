@@ -189,7 +189,10 @@ def _guard_workspace(raw):
         raise QAError("cannot stat workspace directory: %s" % exc, 2)
     if os.path.islink(absolute) or _is_reparse_stat(workspace_stat):
         raise QAError("workspace must not be a symlink/junction/reparse point")
-    return absolute
+    # From this point onward containment checks compare real child paths.  Canonicalize the
+    # accepted trust root too, otherwise a host-owned ancestor junction puts root and children
+    # in different path namespaces and every legitimate child appears to escape.
+    return os.path.realpath(absolute)
 
 
 def _guard_existing(root, path, label):
