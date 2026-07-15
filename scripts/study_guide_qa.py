@@ -178,12 +178,18 @@ def _guard_workspace(raw):
     absolute = os.path.abspath(raw)
     if not os.path.isdir(absolute):
         raise QAError("workspace directory does not exist: %s" % absolute, 2)
-    if os.path.islink(absolute):
-        raise QAError("workspace must not be a symlink")
-    real = os.path.realpath(absolute)
-    if os.path.normcase(real) != os.path.normcase(absolute):
-        raise QAError("workspace path traverses a symlink/junction")
-    return real
+    # The workspace itself is the trust root.  Reject it when that final directory entry is a
+    # link/reparse point, then guard every path below it independently.  Comparing its absolute
+    # path with ``realpath`` also inspects host-owned ancestors outside this trust root; Windows
+    # CI runners (and legitimate mounted volumes) commonly use a junction there, which must not
+    # make an otherwise real workspace unusable.
+    try:
+        workspace_stat = os.lstat(absolute)
+    except OSError as exc:
+        raise QAError("cannot stat workspace directory: %s" % exc, 2)
+    if os.path.islink(absolute) or _is_reparse_stat(workspace_stat):
+        raise QAError("workspace must not be a symlink/junction/reparse point")
+    return absolute
 
 
 def _guard_existing(root, path, label):

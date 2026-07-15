@@ -200,8 +200,17 @@ def _material_page_href(materials_root, source_file, page):
     lexical_root = os.path.abspath(materials_root)
     if not os.path.isdir(lexical_root) or _is_link_or_reparse(lexical_root):
         raise GuideError("confirmed materials root is missing or is a symlink/reparse point", 1)
-    root = os.path.realpath(lexical_root)
     target = os.path.abspath(os.path.join(lexical_root, *source_file.split("/")))
+    # Classify a hostile component before resolving it.  A link that escapes the materials root
+    # is still primarily a symlink/junction/reparse violation; checking containment first hides
+    # that evidence behind a generic "escapes" result and makes platform behavior inconsistent.
+    cursor = lexical_root
+    for part in source_file.split("/"):
+        cursor = os.path.join(cursor, part)
+        if os.path.lexists(cursor) and _is_link_or_reparse(cursor):
+            raise GuideError("material source path crosses a symlink/junction/reparse point: %s"
+                             % source_file, 1)
+    root = os.path.realpath(lexical_root)
     target_real = os.path.realpath(target)
     try:
         contained = (os.path.commonpath((lexical_root, target)) == lexical_root
@@ -211,12 +220,6 @@ def _material_page_href(materials_root, source_file, page):
     if not contained:
         raise GuideError("material source path escapes the confirmed materials root: %s"
                          % source_file, 1)
-    cursor = lexical_root
-    for part in source_file.split("/"):
-        cursor = os.path.join(cursor, part)
-        if os.path.lexists(cursor) and _is_link_or_reparse(cursor):
-            raise GuideError("material source path crosses a symlink/junction/reparse point: %s"
-                             % source_file, 1)
     if not os.path.isfile(target) or not os.path.isfile(target_real):
         raise GuideError("material source file is missing or not a regular file: %s"
                          % source_file, 1)
