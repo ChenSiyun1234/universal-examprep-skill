@@ -42,6 +42,13 @@ def _sha256(path):
 
 
 class IngestionGoldSetTest(unittest.TestCase):
+    def test_text_fixtures_use_canonical_lf_bytes(self):
+        for filename in ("source.json", "manifest.json", "LICENSE", "generate.py"):
+            with self.subTest(filename=filename), open(
+                os.path.join(GOLD, filename), "rb"
+            ) as stream:
+                self.assertNotIn(b"\r", stream.read())
+
     def test_manifest_hashes_sizes_source_and_license(self):
         source = _load_json("source.json")
         manifest = _load_json("manifest.json")

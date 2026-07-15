@@ -158,6 +158,27 @@ def _expected_digest(value):
     return value
 
 
+class _SeekableSpooledTemporaryFile(tempfile.SpooledTemporaryFile):
+    """Expose the complete seekable binary-file protocol on Python 3.8.
+
+    ``SpooledTemporaryFile`` did not provide ``seekable()``, ``readable()``,
+    or ``writable()`` until newer Python releases.  Python 3.8's
+    ``zipfile._SharedFile`` accesses ``seekable`` directly, so an otherwise
+    valid bounded snapshot fails as soon as a member is read.  This adapter
+    preserves the in-memory threshold and automatic disk rollover while
+    making the protocol explicit on every supported Python version.
+    """
+
+    def seekable(self):
+        return True
+
+    def readable(self):
+        return True
+
+    def writable(self):
+        return True
+
+
 def _copy_stable_source(path, expected_sha256=None):
     """Copy one bounded regular source to an immutable seekable snapshot."""
 
@@ -174,7 +195,9 @@ def _copy_stable_source(path, expected_sha256=None):
             % (before.st_size, MAX_ARCHIVE_BYTES)
         )
 
-    snapshot = tempfile.SpooledTemporaryFile(max_size=_SNAPSHOT_MEMORY_BYTES, mode="w+b")
+    snapshot = _SeekableSpooledTemporaryFile(
+        max_size=_SNAPSHOT_MEMORY_BYTES, mode="w+b"
+    )
     digest = hashlib.sha256()
     copied = 0
     try:

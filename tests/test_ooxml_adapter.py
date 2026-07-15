@@ -142,6 +142,15 @@ def _pptx_parts():
 
 
 class OOXMLAdapter(unittest.TestCase):
+    def test_stable_snapshot_exposes_py38_zipfile_protocol(self):
+        with O._SeekableSpooledTemporaryFile(max_size=1, mode="w+b") as snapshot:
+            snapshot.write(b"abc")
+            snapshot.seek(0)
+            self.assertTrue(snapshot.seekable())
+            self.assertTrue(snapshot.readable())
+            self.assertTrue(snapshot.writable())
+            self.assertEqual(snapshot.read(), b"abc")
+
     def test_docx_extracts_heading_paragraph_table_pages_and_image_atomically(self):
         with tempfile.TemporaryDirectory() as temp:
             path = os.path.join(temp, "course.docx")

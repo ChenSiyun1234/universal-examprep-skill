@@ -28,3 +28,9 @@ docs/releases/** export-ignore
 *.pdf binary
 *.png binary
 *.xlsx binary
+
+# Gold Set manifests participate in byte-for-byte and SHA-256 regression
+# checks, so Windows checkouts must retain the generator's canonical LF form.
+tests/fixtures/ingestion_gold/*.json text eol=lf
+tests/fixtures/ingestion_gold/LICENSE text eol=lf
+tests/fixtures/ingestion_gold/*.py text eol=lf
