@@ -2188,9 +2188,15 @@ def cmd_workspace_register(args):
     if confirmed and (_path_has_link_or_reparse(path_lexical)
                       or _path_has_link_or_reparse(materials_lexical)):
         _die("--confirmed paths must not contain a symlink/junction/reparse component")
-    path = str(Path(path_lexical).resolve(strict=False))
-    materials = (str(Path(materials_lexical).resolve(strict=False))
-                 if materials_lexical is not None else None)
+    # Discovery-only rows retain the long-standing ``abspath`` display contract.  Exact
+    # confirmations use the resolved long spelling because that value is also embedded in
+    # runtime/artifact receipts.  Identity checks use ``_canonical_path`` for both forms.
+    path = (str(Path(path_lexical).resolve(strict=False)) if confirmed else path_lexical)
+    materials = (
+        (str(Path(materials_lexical).resolve(strict=False))
+         if confirmed else materials_lexical)
+        if materials_lexical is not None else None
+    )
     reg = load_registry()
     rows = reg["workspaces"]
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
