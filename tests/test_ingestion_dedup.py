@@ -270,6 +270,85 @@ class IngestionDedupTest(unittest.TestCase):
         self.assertEqual("unrecoverable", terminal.status)
         self.assertEqual(unrecoverable_patch.patch_id, terminal.resolution.patch_id)
 
+    def test_distinct_image_backed_homework_problem_locators_are_not_near_duplicates(self):
+        answer_a = unit("Official answer for the first assigned problem.", 10, kind="answer")
+        answer_b = unit(
+            "Official answer for the second assigned problem.",
+            11,
+            SOURCE_B,
+            "materials/b.txt",
+            kind="answer",
+        )
+        common_metadata = {
+            "quiz_type": "subjective",
+            "source_type": "homework",
+            "source": "material",
+            "source_language": "en",
+            "requires_assets": True,
+            "question_text_status": "page_reference",
+        }
+        question_a = ContentUnit.create(
+            SOURCE_A["source_id"], SHA_A, "materials/a.txt", "question",
+            "Problem 4.2.4 - see the attached prompt-only crop from hw5 (2)(1).pdf p.6.",
+            6, ordinal=20, external_id="hw_hw5__4_2_4", chapter_id="ch04",
+            asset_path="assets/problem-4.2.4.png", asset_role="question_context",
+            paired_unit_id=answer_a.unit_id, metadata=common_metadata,
+        )
+        question_b = ContentUnit.create(
+            SOURCE_B["source_id"], SHA_B, "materials/b.txt", "question",
+            "Problem 4.3.4 - see the attached prompt-only crop from hw5 (2)(1).pdf p.11.",
+            11, ordinal=21, external_id="hw_hw5__4_3_4", chapter_id="ch04",
+            asset_path="assets/problem-4.3.4.png", asset_role="question_context",
+            paired_unit_id=answer_b.unit_id, metadata=common_metadata,
+        )
+        candidates, stats = build_duplicate_candidates_with_stats(
+            (question_a, answer_a, question_b, answer_b)
+        )
+        question_pair = {question_a.unit_id, question_b.unit_id}
+        self.assertFalse(any(
+            {row.left.unit_id, row.right.unit_id} == question_pair
+            for row in candidates
+        ))
+        self.assertEqual(1, stats["near_identity_rejected_pair_count"])
+
+    def test_same_image_backed_homework_problem_locator_remains_comparable(self):
+        answer_a = unit("Official answer version A.", 10, kind="answer")
+        answer_b = unit(
+            "Official answer version B.", 11, SOURCE_B, "materials/b.txt", kind="answer"
+        )
+        metadata = {
+            "quiz_type": "subjective",
+            "source_type": "homework",
+            "source": "material",
+            "source_language": "en",
+            "requires_assets": True,
+            "question_text_status": "page_reference",
+        }
+        prompt = "Problem 4.2.4 - see the attached prompt-only crop from the assigned homework."
+        question_a = ContentUnit.create(
+            SOURCE_A["source_id"], SHA_A, "materials/a.txt", "question", prompt, 6,
+            ordinal=20, external_id="source_a__4_2_4", chapter_id="ch04",
+            asset_path="assets/source-a.png", asset_role="question_context",
+            paired_unit_id=answer_a.unit_id, metadata=metadata,
+        )
+        question_b = ContentUnit.create(
+            SOURCE_B["source_id"], SHA_B, "materials/b.txt", "question", prompt, 7,
+            ordinal=21, external_id="source_b__4_2_4", chapter_id="ch04",
+            asset_path="assets/source-b.png", asset_role="question_context",
+            paired_unit_id=answer_b.unit_id, metadata=metadata,
+        )
+        candidates, stats = build_duplicate_candidates_with_stats(
+            (question_a, answer_a, question_b, answer_b)
+        )
+        question_pair = {question_a.unit_id, question_b.unit_id}
+        candidate = next(
+            row for row in candidates
+            if {row.left.unit_id, row.right.unit_id} == question_pair
+        )
+        self.assertEqual("near", candidate.match_kind)
+        self.assertIn("answer_mismatch", candidate.conflict_signals)
+        self.assertEqual(0, stats["near_identity_rejected_pair_count"])
+
     def test_warning_conflict_mark_resolved_replays_as_keep_both(self):
         left = unit(
             "See figure.", 1, kind="question",
