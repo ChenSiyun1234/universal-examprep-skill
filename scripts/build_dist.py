@@ -17,6 +17,7 @@ Layout inside the zip mirrors the repo root, so the `${CLAUDE_SKILL_DIR}` resolu
 Exit: 0 ok · 1 build failure · 2 manifest drift (missing file on disk)
 """
 import argparse
+import ast
 import io
 import os
 import re
@@ -108,17 +109,26 @@ def manifest():
 
 
 def _strip_python_comments(data):
-    """Remove ordinary Python comments without touching strings or source files.
+    """Remove ordinary comments and shrink docstrings without touching source files.
 
     The first-line shebang and a PEP 263 encoding cookie on line one or two are
-    runtime metadata, so they remain byte-equivalent after decoding/re-encoding.
-    Token coordinates are applied to decoded physical lines; line endings and all
-    non-comment tokens stay otherwise unchanged.
+    runtime metadata and remain byte-equivalent.  Docstrings become empty string
+    literals, which keeps future-import placement, statement structure, and line
+    numbers valid without shipping their non-runtime prose.
     """
     encoding, _ = tokenize.detect_encoding(io.BytesIO(data).readline)
     text = data.decode(encoding)
     lines = text.splitlines(True)
-    comments = []
+    offsets = []
+    position = 0
+    for line in lines:
+        offsets.append(position)
+        position += len(line)
+
+    def absolute(row, column):
+        return offsets[row - 1] + column
+
+    replacements = []
     for token in tokenize.tokenize(io.BytesIO(data).readline):
         if token.type != tokenize.COMMENT:
             continue
@@ -128,11 +138,52 @@ def _strip_python_comments(data):
             or (row <= 2 and _CODING_COOKIE.match(token.string))
         )
         if not keep:
-            comments.append((row, token.start[1], token.end[1]))
-    for row, start, end in reversed(comments):
-        line = lines[row - 1]
-        lines[row - 1] = line[:start].rstrip(" \t\f") + line[end:]
-    return "".join(lines).encode(encoding)
+            prefix = lines[row - 1][:token.start[1]]
+            start_column = len(prefix.rstrip(" \t\f"))
+            replacements.append((
+                absolute(row, start_column),
+                absolute(token.end[0], token.end[1]),
+                "",
+            ))
+
+    tree = ast.parse(text)
+    for node in ast.walk(tree):
+        if not isinstance(
+                node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        body = getattr(node, "body", None)
+        if not body:
+            continue
+        statement = body[0]
+        if (not isinstance(statement, ast.Expr)
+                or not isinstance(statement.value, ast.Constant)
+                or not isinstance(statement.value.value, str)):
+            continue
+        start_line = lines[statement.lineno - 1]
+        end_line = lines[statement.end_lineno - 1]
+        start_column = len(
+            start_line.encode("utf-8")[:statement.col_offset].decode("utf-8")
+        )
+        end_column = len(
+            end_line.encode("utf-8")[:statement.end_col_offset].decode("utf-8")
+        )
+        start = absolute(statement.lineno, start_column)
+        end = absolute(statement.end_lineno, end_column)
+        line_breaks = "".join(
+            char for char in text[start:end] if char in "\r\n"
+        )
+        replacement = "''"
+        if statement.end_lineno > statement.lineno:
+            # Keep the replacement as one logical statement that starts on the
+            # original line and closes on the original final line.  Appending
+            # newlines after ``''`` would move a legal closing-line suffix such
+            # as ``; return value`` to the beginning of a new logical line.
+            replacement = "(''" + line_breaks + ")"
+        replacements.append((start, end, replacement))
+
+    for start, end, replacement in sorted(replacements, reverse=True):
+        text = text[:start] + replacement + text[end:]
+    return text.encode(encoding)
 
 
 def _runtime_bytes(rel):

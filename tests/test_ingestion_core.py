@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import scripts.ingestion.storage as storage_module
 from scripts.ingestion import (
     ChapterPhaseMapping,
     ConflictError,
@@ -599,6 +600,176 @@ class IngestionCoreTest(unittest.TestCase):
         self.assertEqual("pending", self.store.review_queue.get(second_issue.issue_id).status)
         self.assertEqual(1, len(read_jsonl(self.store.ledger_path)))
         self.assertFalse(self.store.pending_patch_path.exists())
+
+    def test_batch_snapshot_bounds_queue_parsing_and_asset_hashes(self):
+        asset_path = self.workspace / "references" / "assets" / "shared.png"
+        asset_path.parent.mkdir(parents=True, exist_ok=True)
+        asset_path.write_bytes(b"shared immutable asset")
+        asset_sha = hashlib.sha256(asset_path.read_bytes()).hexdigest()
+        asset_unit = ContentUnit.create(
+            self.source.source_id,
+            self.source.sha256,
+            self.source.path,
+            "question",
+            "Prompt with a shared asset",
+            1,
+            ordinal=50,
+            external_id="asset-q",
+            metadata={
+                "assets": [{
+                    "path": "references/assets/shared.png",
+                    "role": "question_context",
+                    "sha256": asset_sha,
+                    "source_sha256": self.source.sha256,
+                }],
+            },
+        )
+        self.store.append_unit(asset_unit)
+
+        originals = [
+            self.unit("text", "Batch old one", 1, 51),
+            self.unit("text", "Batch old two", 1, 52),
+        ]
+        patches = []
+        for index, unit in enumerate(originals, 1):
+            self.store.append_unit(unit)
+            issue = self.issue("garbled_text", [unit.unit_id])
+            replacement = ContentUnit.create(
+                self.source.source_id,
+                self.source.sha256,
+                self.source.path,
+                "text",
+                "Batch recovered %d" % index,
+                1,
+                ordinal=unit.ordinal,
+                bbox=unit.bbox,
+            )
+            patches.append(ReviewPatch.create(
+                issue.issue_id,
+                self.source.source_id,
+                self.source.sha256,
+                [{
+                    "op": "replace_unit",
+                    "unit_id": unit.unit_id,
+                    "unit": replacement.to_dict(),
+                }],
+                [self.evidence],
+                status="validated",
+            ))
+
+        def assert_bounded(operation):
+            with mock.patch.object(
+                    storage_module, "stable_file_sha256",
+                    wraps=storage_module.stable_file_sha256) as digest, mock.patch.object(
+                    storage_module.ReviewQueue, "_issues_from_rows",
+                    wraps=storage_module.ReviewQueue._issues_from_rows) as parse_queue:
+                operation(patches)
+            asset_calls = [
+                call for call in digest.call_args_list
+                if Path(call.args[0]).resolve() == asset_path.resolve()
+            ]
+            self.assertEqual(2, len(asset_calls))
+            self.assertEqual(1, parse_queue.call_count)
+
+        assert_bounded(self.store.validate_patches)
+        assert_bounded(self.store.apply_patches)
+
+    def test_batch_apply_revalidation_catches_source_evidence_and_asset_drift_without_writes(self):
+        asset_path = self.workspace / "references" / "assets" / "drift.png"
+        asset_path.parent.mkdir(parents=True, exist_ok=True)
+        asset_bytes = b"stable asset bytes"
+        asset_path.write_bytes(asset_bytes)
+        asset_sha = hashlib.sha256(asset_bytes).hexdigest()
+        original = ContentUnit.create(
+            self.source.source_id,
+            self.source.sha256,
+            self.source.path,
+            "question",
+            "Old prompt",
+            1,
+            ordinal=53,
+            external_id="drift-q",
+            metadata={
+                "assets": [{
+                    "path": "references/assets/drift.png",
+                    "role": "question_context",
+                    "sha256": asset_sha,
+                    "source_sha256": self.source.sha256,
+                }],
+            },
+        )
+        self.store.append_unit(original)
+        issue = self.issue("garbled_text", [original.unit_id])
+        replacement = ContentUnit.create(
+            self.source.source_id,
+            self.source.sha256,
+            self.source.path,
+            "question",
+            "Recovered prompt",
+            1,
+            ordinal=original.ordinal,
+            external_id=original.external_id,
+            metadata=original.metadata,
+        )
+        patch = ReviewPatch.create(
+            issue.issue_id,
+            self.source.source_id,
+            self.source.sha256,
+            [{
+                "op": "replace_unit",
+                "unit_id": original.unit_id,
+                "unit": replacement.to_dict(),
+            }],
+            [self.evidence],
+            status="validated",
+        )
+        original_bytes = {
+            self.source_path: self.source_path.read_bytes(),
+            self.evidence_path: self.evidence_path.read_bytes(),
+            asset_path: asset_bytes,
+        }
+        truth_paths = (
+            self.store.units_path,
+            self.store.mappings_path,
+            self.store.ledger_path,
+            self.store.review_queue.path,
+            self.store.manifest.path,
+        )
+
+        for drift_path in (self.source_path, self.evidence_path, asset_path):
+            with self.subTest(path=str(drift_path)):
+                for path, payload in original_bytes.items():
+                    path.write_bytes(payload)
+                before = {
+                    path: path.read_bytes() if path.exists() else None
+                    for path in truth_paths
+                }
+                original_apply = self.store._apply_operations_to_state
+                mutated = [False]
+
+                def mutate_after_validation(*args, **kwargs):
+                    result = original_apply(*args, **kwargs)
+                    if not mutated[0]:
+                        drift_path.write_bytes(original_bytes[drift_path] + b" drift")
+                        mutated[0] = True
+                    return result
+
+                with mock.patch.object(
+                        self.store, "_apply_operations_to_state",
+                        side_effect=mutate_after_validation):
+                    with self.assertRaises(SourceDriftError):
+                        self.store.apply_patches([patch])
+
+                self.assertTrue(mutated[0])
+                self.assertEqual(before, {
+                    path: path.read_bytes() if path.exists() else None
+                    for path in truth_paths
+                })
+                self.assertFalse(self.store.pending_patch_path.exists())
+                self.assertEqual("pending", self.store.review_queue.get(issue.issue_id).status)
+
+        for path, payload in original_bytes.items():
+            path.write_bytes(payload)
 
     def test_batch_validation_detects_combined_identity_conflict_without_writes(self):
         questions = [
