@@ -120,6 +120,21 @@ class Manifest(unittest.TestCase):
 
 
 class Build(unittest.TestCase):
+    def test_python_comment_stripping_preserves_runtime_syntax_metadata_and_strings(self):
+        source = (
+            b"#!/usr/bin/env python\n"
+            b"# -*- coding: utf-8 -*-\n"
+            b'VALUE = "# string data"  # ordinary comment\n'
+            b"# another ordinary comment\n"
+            b"print(VALUE)\n"
+        )
+        compact = build_dist._strip_python_comments(source)
+        self.assertTrue(compact.startswith(
+            b"#!/usr/bin/env python\n# -*- coding: utf-8 -*-\n"))
+        self.assertIn(b'"# string data"', compact)
+        self.assertNotIn(b"ordinary comment", compact)
+        compile(compact, "fixture.py", "exec")
+
     def test_zip_builds_and_preserves_layout(self):
         with tempfile.TemporaryDirectory(prefix="dist-") as d:
             out = os.path.join(d, "pkg.zip")
@@ -128,8 +143,8 @@ class Build(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertTrue(os.path.isfile(out))
             self.assertLessEqual(
-                os.path.getsize(out), 610_000,
-                "运行时包必须 ≤610,000 B，并保持低于 600 KiB hard ceiling",
+                os.path.getsize(out), 570_000,
+                "运行时包必须 ≤570,000 B，为跨平台 ZIP 差异保留余量",
             )
             with zipfile.ZipFile(out) as z:
                 names = set(z.namelist())
@@ -138,8 +153,32 @@ class Build(unittest.TestCase):
                 self.assertIn("skills/exam-tutor/SKILL.md", names)
                 self.assertIn("scripts/update_progress.py", names)
                 self.assertIn("locales/zh/skills/exam-tutor.md", names)
+                for name in sorted(n for n in names if n.endswith(".py")):
+                    compile(z.read(name), name, "exec")
                 bad = z.testzip()
                 self.assertIsNone(bad, f"zip 损坏成员: {bad}")
+                z.extractall(d)
+            for script in ("update_progress.py", "validate_workspace.py"):
+                run = subprocess.run(
+                    [PY, os.path.join(d, "scripts", script), "--help"],
+                    cwd=d, capture_output=True, text=True, encoding="utf-8",
+                )
+                self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+
+    def test_build_is_byte_deterministic_with_fixed_metadata(self):
+        with tempfile.TemporaryDirectory(prefix="dist-deterministic-") as d:
+            first = os.path.join(d, "first.zip")
+            second = os.path.join(d, "second.zip")
+            self.assertEqual(0, build_dist.build(first))
+            self.assertEqual(0, build_dist.build(second))
+            with open(first, "rb") as stream:
+                first_bytes = stream.read()
+            with open(second, "rb") as stream:
+                self.assertEqual(first_bytes, stream.read())
+            with zipfile.ZipFile(first) as archive:
+                for info in archive.infolist():
+                    self.assertEqual(build_dist._ZIP_TIMESTAMP, info.date_time)
+                    self.assertEqual(0o644, (info.external_attr >> 16) & 0o777)
 
     def test_print_manifest_mode(self):
         r = subprocess.run([PY, os.path.join(ROOT, "scripts", "build_dist.py"), "--print-manifest"],

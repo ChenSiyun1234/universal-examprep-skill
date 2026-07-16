@@ -79,7 +79,7 @@ def _args(materials, **over):
 # --------------------------------------------------------------------------- pure-core tests
 
 class CoreExtraction(unittest.TestCase):
-    def test_ingestion_language_annotation_keeps_mixed_and_formula_only_unknown(self):
+    def test_ingestion_language_annotation_keeps_zxx_unit_only(self):
         pages = [{
             "file": "mixed.txt", "page": 1,
             "text": "Explain the result，并说明中文条件。",
@@ -92,18 +92,27 @@ class CoreExtraction(unittest.TestCase):
         }, {
             "file": "english.txt", "page": 1,
             "text": "The theorem is used in this example.",
-            "elements": [{"kind": "heading", "text": "Overview"}],
+            "elements": [{"kind": "text", "text": "The theorem is used here."}],
+        }, {
+            "file": "page-language.txt", "page": 1, "source_language": "en",
+            "text": "The theorem is used in this example.",
+            "elements": [{"kind": "heading", "text": "Topology"}],
         }]
         report = {}
         B._annotate_ingestion_languages(pages, report)
         self.assertNotIn("source_language", pages[0])
         self.assertNotIn("source_language", pages[0]["elements"][0])
         self.assertNotIn("source_language", pages[1])
-        self.assertNotIn("source_language", pages[1]["elements"][0])
+        self.assertEqual("zxx", pages[1]["elements"][0]["source_language"])
         self.assertEqual("en", pages[2]["source_language"])
         self.assertEqual("en", pages[2]["elements"][0]["source_language"])
-        self.assertEqual(2, report["source_language_annotations"]["pages_unresolved"])
-        self.assertEqual(2, report["source_language_annotations"]["elements_unresolved"])
+        self.assertEqual("en", pages[3]["source_language"])
+        self.assertNotIn("source_language", pages[3]["elements"][0])
+        counters = report["source_language_annotations"]
+        self.assertEqual(1, counters["pages_unresolved"])
+        self.assertEqual(1, counters["pages_language_neutral"])
+        self.assertEqual(2, counters["elements_unresolved"])
+        self.assertEqual(1, counters["elements_language_neutral"])
 
     def test_source_location_labels_do_not_claim_every_record_is_a_page(self):
         self.assertEqual(
@@ -117,9 +126,25 @@ class CoreExtraction(unittest.TestCase):
     def test_source_language_classification_is_conservative_and_auditable(self):
         self.assertEqual("en", B._classify_source_language(
             "Determine the current using the circuit shown below."))
+        self.assertEqual("en", B._classify_source_language("Chapter 1"))
         self.assertEqual("zh", B._classify_source_language("计算电路中的电流 I。"))
-        self.assertIsNone(B._classify_source_language("V=IR"))
-        self.assertIsNone(B._classify_source_language("a=1"))
+        self.assertEqual("zh", B._classify_source_language("计算 a 的值。"))
+        self.assertEqual("zh", B._classify_source_language(
+            "（Quiz 1.1）本题依赖原始讲义中的图。"))
+        self.assertEqual("zxx", B._classify_source_language("V=IR", kind="formula"))
+        self.assertEqual("zxx", B._classify_source_language("a=1", kind="text"))
+        self.assertEqual("zxx", B._classify_source_language("4", kind="answer"))
+        self.assertEqual("zxx", B._classify_source_language(
+            r"S=\{bbb,bbn,bnb,bnn\}", kind="formula"))
+        self.assertEqual("zxx", B._classify_source_language(
+            r"B_1=\{ttth,ttht,thtt,httt\}", kind="formula"))
+        self.assertEqual("zxx", B._classify_source_language(
+            r"A=\{tttt,httt,thtt,ttht,ttth\}", kind="formula"))
+        self.assertEqual("zxx", B._classify_source_language("(ma,ea)", kind="formula"))
+        self.assertIsNone(B._classify_source_language(
+            "P=1 otherwise 0", kind="formula"))
+        self.assertIsNone(B._classify_source_language(
+            "", kind="formula", latex=r"P=1\;\text{for a valid result}"))
         self.assertIsNone(B._classify_source_language(
             "Explain the result，并说明中文条件。"))
 
@@ -134,11 +159,12 @@ class CoreExtraction(unittest.TestCase):
         B._annotate_source_languages(items, report)
         self.assertEqual("en", items[0]["source_language"])
         self.assertEqual("en", items[0]["answer_source_language"])
-        self.assertNotIn("source_language", items[1])
-        self.assertTrue(any(w.startswith("source_language_inferred: 2")
+        self.assertEqual("zxx", items[1]["source_language"])
+        self.assertEqual("zxx", items[1]["answer_source_language"])
+        self.assertTrue(any(w.startswith("source_language_inferred: 4")
                             for w in report["warnings"]))
-        self.assertTrue(any(w.startswith("source_language_review_required: 2")
-                            for w in report["warnings"]))
+        self.assertFalse(any(w.startswith("source_language_review_required:")
+                             for w in report["warnings"]))
 
     def test_requires_assets_heuristic(self):
         self.assertTrue(B.requires_assets_heuristic("Shade the Venn diagram at right."))

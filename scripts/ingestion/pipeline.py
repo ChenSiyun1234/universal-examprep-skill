@@ -19,6 +19,12 @@ from .identifiers import (
     normalize_workspace_path,
     safe_workspace_entry,
 )
+from .language import (
+    MATERIAL_TEXT_LANGUAGE_CODES,
+    SOURCE_UNIT_LANGUAGE_CODES,
+    is_language_neutral_formula,
+    source_language_evidence,
+)
 from .models import (
     ASSET_ROLES,
     ChapterPhaseMapping,
@@ -511,8 +517,15 @@ def _quiz_metadata(item, answer_record=None, answer_value_marker=False):
 
     language_key = "answer_source_language" if answer_value_marker else "source_language"
     source_language = item.get(language_key)
-    if source_language in ("zh", "en"):
+    payload = (
+        render_answer_value(item.get("answer"))
+        if answer_value_marker else str(item.get("question") or "").strip()
+    )
+    unit_kind = "answer" if answer_value_marker else "question"
+    if source_language in SOURCE_UNIT_LANGUAGE_CODES:
         metadata["source_language"] = source_language
+    elif is_language_neutral_formula(payload, kind=unit_kind):
+        metadata["source_language"] = "zxx"
 
     source_pages = [
         page for page in item.get("source_pages") or ()
@@ -693,7 +706,7 @@ def build_payload(
         )
         text = page.get("text") if isinstance(page.get("text"), str) else ""
         page_language = page.get("source_language")
-        if page_language not in ("zh", "en"):
+        if page_language not in MATERIAL_TEXT_LANGUAGE_CODES:
             page_language = None
         table_hint = any(isinstance(e, dict) and e.get("kind") == "table" for e in elements)
         formula_hint = any(isinstance(e, dict) and e.get("kind") == "formula" for e in elements)
@@ -762,8 +775,6 @@ def build_payload(
         anchor_metadata = {}
         if isinstance(page.get("metadata"), dict):
             anchor_metadata["parser_metadata"] = page["metadata"]
-        if page_language:
-            anchor_metadata["source_language"] = page_language
         anchor = ContentUnit.create(
             record.source_id, record.sha256, record.path, "page_anchor", "", page_number,
             ordinal=0, chapter_id=chapter_id, phase_id=phase_id,
@@ -785,7 +796,7 @@ def build_payload(
         elif text.strip():
             iterable = [{
                 "kind": "text", "text": text, "ordinal": 0, "bbox": None,
-                "asset": None, "source_language": page_language,
+                "asset": None,
             }]
         else:
             iterable = []
@@ -813,8 +824,13 @@ def build_payload(
             if isinstance(element.get("metadata"), dict):
                 element_metadata["parser_metadata"] = element["metadata"]
             source_language = element.get("source_language")
-            if source_language in ("zh", "en"):
+            if source_language in SOURCE_UNIT_LANGUAGE_CODES:
                 element_metadata["source_language"] = source_language
+            else:
+                inferred_language = source_language_evidence(
+                    element_text, kind=kind, latex=element.get("latex"))
+                if inferred_language in SOURCE_UNIT_LANGUAGE_CODES:
+                    element_metadata["source_language"] = inferred_language
             unit_section = tuple(section_path)
             unit_parent = parent_id
             unit = ContentUnit.create(
@@ -844,14 +860,10 @@ def build_payload(
                     "source_file": record.path,
                     "pages": [page_number],
                     "severity": "blocking",
-                    "description": (
-                        "Semantic source content is mixed, formula-only, or otherwise lacks "
-                        "evidence for a zh/en language classification."
-                    ),
+                    "description": "Semantic unit lacks a payload-backed zh/en/zxx classification.",
                     "suggested_action": (
-                        "Inspect the cited source location and replace the unit with "
-                        "metadata.source_language set to zh or en only when the evidence "
-                        "supports that classification."
+                        "Inspect the unit; set zh/en from its prose, or zxx only when it is "
+                        "formula/symbol-only."
                     ),
                     "target_unit_ids": [unit.unit_id],
                 })
@@ -951,12 +963,10 @@ def build_payload(
                 "source_file": question_record.path,
                 "pages": [page_number],
                 "severity": "blocking",
-                "description": (
-                    "Question source language is not explicitly classified as zh or en."
-                ),
+                "description": "Question lacks a payload-backed zh/en/zxx classification.",
                 "suggested_action": (
-                    "Inspect the cited question evidence and replace the unit with "
-                    "metadata.source_language set to zh or en."
+                    "Inspect the question; set zh/en from its prose, or zxx only when it is "
+                    "formula/symbol-only."
                 ),
                 "target_unit_ids": [question.unit_id],
             })
@@ -992,13 +1002,10 @@ def build_payload(
                     "source_file": answer_record.path,
                     "pages": [answer_page],
                     "severity": "warning",
-                    "description": (
-                        "Answer source language is not explicitly classified as zh or en."
-                    ),
+                    "description": "Answer lacks a payload-backed zh/en/zxx classification.",
                     "suggested_action": (
-                        "Inspect the cited answer evidence and replace the unit with "
-                        "metadata.source_language set to zh or en before claiming a "
-                        "material answer in that language."
+                        "Set zh/en from answer prose before claiming material provenance; "
+                        "zxx is formula-only and supplies no answer language."
                     ),
                     "target_unit_ids": [answer.unit_id],
                 })

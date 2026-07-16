@@ -19,6 +19,12 @@ from .identifiers import (
     safe_workspace_entry,
     safe_workspace_path,
 )
+from .language import (
+    MATERIAL_TEXT_LANGUAGE_CODES,
+    SOURCE_UNIT_LANGUAGE_CODES,
+    is_language_neutral_formula,
+    source_language_evidence,
+)
 from .models import (
     ASSET_ROLES,
     ISSUE_STATUSES,
@@ -56,9 +62,11 @@ from .storage import (
 __all__ = [
     "ASSET_ROLES",
     "ISSUE_STATUSES",
+    "MATERIAL_TEXT_LANGUAGE_CODES",
     "PATCH_OPERATIONS",
     "PATCH_STATUSES",
     "SOURCE_STATUSES",
+    "SOURCE_UNIT_LANGUAGE_CODES",
     "UNIT_KINDS",
     "ApplyResult",
     "ChapterPhaseMapping",
@@ -81,6 +89,7 @@ __all__ = [
     "canonical_json",
     "file_sha256",
     "is_link_or_reparse",
+    "is_language_neutral_formula",
     "make_issue_id",
     "make_patch_id",
     "make_source_id",
@@ -92,6 +101,7 @@ __all__ = [
     "safe_workspace_entry",
     "safe_workspace_path",
     "stable_read_bytes",
+    "source_language_evidence",
     "workspace_publication_lock",
     "workspace_state_lock",
 ]

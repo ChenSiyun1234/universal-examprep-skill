@@ -901,7 +901,9 @@ class ClaimVerificationTest(unittest.TestCase):
             )
 
     def test_v2_material_coverage_includes_formula_prompt_and_official_answer(self):
-        def make_unit(kind, text, ordinal, *, latex=None, external_id=None):
+        def make_unit(
+            kind, text, ordinal, *, latex=None, external_id=None, source_language="en",
+        ):
             return ContentUnit.create(
                 self.source.source_id,
                 self.source.sha256,
@@ -913,12 +915,14 @@ class ClaimVerificationTest(unittest.TestCase):
                 latex=latex,
                 external_id=external_id,
                 chapter_id="ch01",
-                metadata={"source_language": "en"},
+                metadata={"source_language": source_language},
             )
 
         concept = make_unit("text", "A conditional probability uses known evidence.", 10)
-        formula = make_unit("formula", "Conditional probability formula", 11,
-                            latex=r"P(A\mid B)=P(A\cap B)/P(B)")
+        formula = make_unit(
+            "formula", "", 11, latex=r"P(A\mid B)=P(A\cap B)/P(B)",
+            source_language="zxx",
+        )
         question = make_unit("question", "Compute P(A|B).", 12, external_id="q1")
         answer = make_unit("answer", "0.5", 13, external_id="q1")
 
@@ -1000,6 +1004,48 @@ class ClaimVerificationTest(unittest.TestCase):
         )
         self.assertEqual(4, len(covered))
 
+        neutral_answer = make_unit(
+            "answer", "0.5", 14, external_id="q1", source_language="zxx",
+        )
+        neutral_answer_claim = record(
+            ClaimSubject("ch01", "walkthrough", "q1", "answer", "en", 0),
+            neutral_answer.text, neutral_answer, "text", "answer_evidence",
+            neutral_answer.text,
+        )
+        neutral_manifest = copy.deepcopy(manifest)
+        neutral_manifest["walkthroughs"][0]["source_trace"][1] = ref(
+            neutral_answer, "answer", neutral_answer_claim)
+        neutral_units = tuple(
+            unit.to_dict() for unit in (concept, formula, question, neutral_answer)
+        )
+        with self.assertRaisesRegex(
+                ClaimValidationError, "field=answer language=en"):
+            validate_guide_claim_coverage(
+                (concept_claim, formula_claim, prompt_claim, neutral_answer_claim),
+                neutral_manifest, "ch01", neutral_units,
+            )
+
+        neutral_question = make_unit(
+            "question", "P(A|B)=?", 15, external_id="q1", source_language="zxx",
+        )
+        neutral_prompt_claim = record(
+            ClaimSubject("ch01", "walkthrough", "q1", "prompt_text", "source", 0),
+            neutral_question.text, neutral_question, "text", "question_evidence",
+            neutral_question.text,
+        )
+        neutral_prompt_manifest = copy.deepcopy(manifest)
+        neutral_prompt_manifest["walkthroughs"][0]["prompt_text"] = neutral_question.text
+        neutral_prompt_manifest["walkthroughs"][0]["source_trace"][0] = ref(
+            neutral_question, "question", neutral_prompt_claim)
+        with self.assertRaisesRegex(ClaimValidationError, "field=prompt_text"):
+            validate_guide_claim_coverage(
+                (concept_claim, formula_claim, neutral_prompt_claim, answer_claim),
+                neutral_prompt_manifest, "ch01",
+                tuple(unit.to_dict() for unit in (
+                    concept, formula, neutral_question, answer,
+                )),
+            )
+
         wrong_unit = copy.deepcopy(manifest)
         wrong_unit["walkthroughs"][0]["source_trace"][1]["source_unit_id"] = question.unit_id
         with self.assertRaisesRegex(ClaimValidationError, "source unit disagrees"):
@@ -1048,6 +1094,11 @@ class ClaimVerificationTest(unittest.TestCase):
             "figure", "", 1, ordinal=31, chapter_id="ch01",
             asset_path="references/assets/figure.png",
         )
+        neutral = ContentUnit.create(
+            self.source.source_id, self.source.sha256, self.source.path,
+            "text", "V=IR", 1, ordinal=32, chapter_id="ch01",
+            metadata={"source_language": "zxx"},
+        )
         claim = ClaimRecord.create(
             ClaimSubject("ch01", "knowledge_point", "kp_text", "explanation", "en", 0),
             concept.text,
@@ -1067,7 +1118,10 @@ class ClaimVerificationTest(unittest.TestCase):
                 {
                     "id": "kp_visual", "explanation": {"en": "Unsupported prose."},
                     "formulas": [],
-                    "source_refs": [{"source_unit_id": figure.unit_id, "role": "concept"}],
+                    "source_refs": [
+                        {"source_unit_id": figure.unit_id, "role": "concept"},
+                        {"source_unit_id": neutral.unit_id, "role": "concept"},
+                    ],
                 },
                 {
                     "id": "kp_text", "explanation": {"en": concept.text},
@@ -1076,7 +1130,7 @@ class ClaimVerificationTest(unittest.TestCase):
             ],
             "walkthroughs": [], "omissions": [], "semantic_exclusions": [],
         }
-        units = (figure.to_dict(), concept.to_dict())
+        units = (figure.to_dict(), neutral.to_dict(), concept.to_dict())
         with self.assertRaisesRegex(ClaimValidationError, "kp_visual.*language=en"):
             validate_guide_claim_coverage((claim,), manifest, "ch01", units)
         manifest["knowledge_points"][0]["explanation_provenance"] = {

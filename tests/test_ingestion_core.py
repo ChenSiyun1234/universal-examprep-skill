@@ -159,6 +159,69 @@ class IngestionCoreTest(unittest.TestCase):
         self.assertEqual(patch_a.patch_id, patch_b.patch_id)
         self.assertEqual(patch_a, ReviewPatch.from_dict(patch_a.to_dict()))
 
+    def test_zxx_is_valid_only_for_formula_symbol_units(self):
+        formula = ContentUnit.create(
+            self.source.source_id, self.source.sha256, self.source.path,
+            "formula", "", 1, ordinal=20, latex="V=IR",
+            metadata={"source_language": "zxx"},
+        )
+        compact_text = ContentUnit.create(
+            self.source.source_id, self.source.sha256, self.source.path,
+            "text", "V=IR", 1, ordinal=21,
+            metadata={"source_language": "zxx"},
+        )
+        numeric_answer = ContentUnit.create(
+            self.source.source_id, self.source.sha256, self.source.path,
+            "answer", "4", 1, ordinal=22, external_id="q1",
+            metadata={"source_language": "zxx"},
+        )
+        result_set = ContentUnit.create(
+            self.source.source_id, self.source.sha256, self.source.path,
+            "formula", r"S=\{bbb,bbn,bnb,bnn\}", 1, ordinal=25,
+            metadata={"source_language": "zxx"},
+        )
+        state_pair = ContentUnit.create(
+            self.source.source_id, self.source.sha256, self.source.path,
+            "formula", "(ma,ea)", 1, ordinal=26,
+            metadata={"source_language": "zxx"},
+        )
+        four_symbol_outcomes = ContentUnit.create(
+            self.source.source_id, self.source.sha256, self.source.path,
+            "formula", r"B_1=\{ttth,ttht,thtt,httt\}", 1, ordinal=28,
+            metadata={"source_language": "zxx"},
+        )
+        for unit in (
+                formula, compact_text, numeric_answer, result_set, state_pair,
+                four_symbol_outcomes):
+            self.assertEqual("zxx", ContentUnit.from_dict(
+                unit.to_dict()).metadata["source_language"])
+
+        with self.assertRaisesRegex(SchemaValidationError, "formula/symbol-only"):
+            ContentUnit.create(
+                self.source.source_id, self.source.sha256, self.source.path,
+                "question", "Use V=IR to calculate current.", 1, ordinal=23,
+                external_id="q2", metadata={"source_language": "zxx"},
+            )
+        with self.assertRaisesRegex(SchemaValidationError, "formula/symbol-only"):
+            ContentUnit.create(
+                self.source.source_id, self.source.sha256, self.source.path,
+                "code", "x=1", 1, ordinal=24,
+                metadata={"source_language": "zxx"},
+            )
+        for text, latex in (
+            ("P=1 otherwise 0", None),
+            ("", r"P=1\;\text{for a valid result}"),
+            ("use x=1", None),
+        ):
+            with self.subTest(text=text, latex=latex):
+                with self.assertRaisesRegex(
+                        SchemaValidationError, "formula/symbol-only"):
+                    ContentUnit.create(
+                        self.source.source_id, self.source.sha256, self.source.path,
+                        "formula", text, 1, ordinal=27, latex=latex,
+                        metadata={"source_language": "zxx"},
+                    )
+
     def test_workspace_paths_reject_traversal_absolute_drive_and_unc(self):
         invalid = (
             "../secret.pdf",

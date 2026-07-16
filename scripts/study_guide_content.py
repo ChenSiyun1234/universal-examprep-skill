@@ -1127,6 +1127,12 @@ def _explicit_source_language(unit, path, required=False):
             raise ContentError("%s.metadata.source_language must explicitly be zh or en" % path)
         return None
     declared = metadata["source_language"]
+    if declared == "zxx":
+        if required:
+            raise ContentError(
+                "%s.metadata.source_language=zxx has no natural language; "
+                "a question/prompt requires explicit zh or en" % path)
+        return None
     if declared not in ("zh", "en"):
         raise ContentError("%s.metadata.source_language must be zh or en" % path)
     return declared

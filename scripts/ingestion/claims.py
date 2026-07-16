@@ -14,6 +14,7 @@ from pathlib import Path
 
 from .facts import FactValidationError, UnitRevisionRef, stable_fact_id
 from .identifiers import canonical_json, safe_workspace_entry, validate_sha256
+from .language import MATERIAL_TEXT_LANGUAGE_CODES
 from .storage import atomic_write_jsonl
 
 
@@ -937,7 +938,9 @@ def validate_guide_claim_coverage(records, manifest, chapter_id, units):
                 continue
             metadata = unit.get("metadata") if isinstance(unit.get("metadata"), dict) else {}
             source_language = metadata.get("source_language")
-            if source_language not in ("zh", "en"):
+            if source_language == "zxx":
+                continue
+            if source_language not in MATERIAL_TEXT_LANGUAGE_CODES:
                 _fail(
                     "ingestion-v2 textual concept unit %s needs explicit metadata.source_language"
                     % unit.get("unit_id")
@@ -1002,7 +1005,10 @@ def validate_guide_claim_coverage(records, manifest, chapter_id, units):
                 "language": frozenset(allowed_languages),
                 "source_role": "question_evidence",
                 "ref_roles": frozenset(("question",)),
-                "source_language": None,
+                "source_language": (
+                    original_language if original_language in MATERIAL_TEXT_LANGUAGE_CODES
+                    else None
+                ),
                 "label": "walkthrough=%s field=prompt_text" % item_id,
             })
         provenance = walkthrough.get("answer_provenance")
@@ -1018,7 +1024,7 @@ def validate_guide_claim_coverage(records, manifest, chapter_id, units):
                 "language": answer_language,
                 "source_role": "answer_evidence",
                 "ref_roles": frozenset(("answer", "solution")),
-                "source_language": None,
+                "source_language": answer_language,
                 "label": "walkthrough=%s field=answer language=%s"
                          % (item_id, answer_language),
             })

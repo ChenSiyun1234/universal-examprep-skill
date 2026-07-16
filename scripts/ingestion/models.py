@@ -7,6 +7,8 @@ import re
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 
+from .language import SOURCE_UNIT_LANGUAGE_CODES, is_language_neutral_formula
+
 from .identifiers import (
     file_sha256,
     make_issue_id,
@@ -578,9 +580,15 @@ class ContentUnit:
             if source_language is not None:
                 _enum(
                     source_language,
-                    frozenset(("zh", "en")),
+                    SOURCE_UNIT_LANGUAGE_CODES,
                     "ContentUnit.metadata.source_language",
                 )
+                if source_language == "zxx" and not is_language_neutral_formula(
+                        self.text, self.latex, self.kind):
+                    _fail(
+                        "ContentUnit.metadata.source_language=zxx requires a genuinely "
+                        "formula/symbol-only unit"
+                    )
             for field in ("requires_assets", "maybe_requires_assets"):
                 value = metadata.get(field)
                 if value is not None and type(value) is not bool:

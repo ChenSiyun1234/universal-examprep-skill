@@ -19,7 +19,9 @@ Exit: 0 ok · 1 build failure · 2 manifest drift (missing file on disk)
 import argparse
 import io
 import os
+import re
 import sys
+import tokenize
 import zipfile
 
 for _s in ("stdout", "stderr"):
@@ -69,6 +71,11 @@ PATH_EXCLUDES = (
     "docs/localization.md",
 )
 
+_ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
+_CODING_COOKIE = re.compile(
+    r"^[ \t\f]*#.*?coding[:=][ \t]*[-_.A-Za-z0-9]+"
+)
+
 
 def is_runtime_path(rel):
     """Whether a normalized repo-relative path belongs in the student runtime bundle."""
@@ -97,6 +104,48 @@ def manifest():
     return sorted(set(out))
 
 
+def _strip_python_comments(data):
+    """Remove ordinary Python comments without touching strings or source files.
+
+    The first-line shebang and a PEP 263 encoding cookie on line one or two are
+    runtime metadata, so they remain byte-equivalent after decoding/re-encoding.
+    Token coordinates are applied to decoded physical lines; line endings and all
+    non-comment tokens stay otherwise unchanged.
+    """
+    encoding, _ = tokenize.detect_encoding(io.BytesIO(data).readline)
+    text = data.decode(encoding)
+    lines = text.splitlines(True)
+    comments = []
+    for token in tokenize.tokenize(io.BytesIO(data).readline):
+        if token.type != tokenize.COMMENT:
+            continue
+        row = token.start[0]
+        keep = (
+            (row == 1 and token.string.startswith("#!"))
+            or (row <= 2 and _CODING_COOKIE.match(token.string))
+        )
+        if not keep:
+            comments.append((row, token.start[1], token.end[1]))
+    for row, start, end in reversed(comments):
+        line = lines[row - 1]
+        lines[row - 1] = line[:start].rstrip(" \t\f") + line[end:]
+    return "".join(lines).encode(encoding)
+
+
+def _runtime_bytes(rel):
+    with open(os.path.join(ROOT, *rel.split("/")), "rb") as stream:
+        data = stream.read()
+    return _strip_python_comments(data) if rel.endswith(".py") else data
+
+
+def _zip_info(rel):
+    info = zipfile.ZipInfo(rel, date_time=_ZIP_TIMESTAMP)
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.create_system = 3
+    info.external_attr = 0o100644 << 16
+    return info
+
+
 def build(out_path):
     files = manifest()
     missing = [f for f in files if not os.path.isfile(os.path.join(ROOT, *f.split("/")))]
@@ -108,8 +157,13 @@ def build(out_path):
     try:
         with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
             for f in files:
-                z.write(os.path.join(ROOT, *f.split("/")), f)
-    except OSError as e:
+                z.writestr(
+                    _zip_info(f),
+                    _runtime_bytes(f),
+                    compress_type=zipfile.ZIP_DEFLATED,
+                    compresslevel=9,
+                )
+    except (OSError, UnicodeError, SyntaxError, tokenize.TokenError) as e:
         sys.stderr.write("build_dist: 写包失败: %s\n" % e)
         return 1
     kb = os.path.getsize(out_path) / 1024.0

@@ -43,8 +43,12 @@ try:
     from ingestion import (
         ConflictError,
         IngestionStore,
+        MATERIAL_TEXT_LANGUAGE_CODES,
+        SOURCE_UNIT_LANGUAGE_CODES,
         atomic_write_json,
+        is_language_neutral_formula,
         is_link_or_reparse,
+        source_language_evidence,
         workspace_publication_lock,
     )
     from ingestion.ooxml import OOXMLExtractionError, extract_ooxml
@@ -58,8 +62,12 @@ except ImportError:  # imported as scripts.build_raw_input_from_workspace in uni
     from scripts.ingestion import (
         ConflictError,
         IngestionStore,
+        MATERIAL_TEXT_LANGUAGE_CODES,
+        SOURCE_UNIT_LANGUAGE_CODES,
         atomic_write_json,
+        is_language_neutral_formula,
         is_link_or_reparse,
+        source_language_evidence,
         workspace_publication_lock,
     )
     from scripts.ingestion.ooxml import OOXMLExtractionError, extract_ooxml
@@ -2659,16 +2667,12 @@ def _apply_typed_answer(item):
                 item.pop("keywords", None)
 
 
-_CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
-_ENGLISH_SIGNAL_RE = re.compile(
-    r"(?i)\b(?:the|a|an|and|or|of|to|in|for|with|from|by|is|are|was|were|"
-    r"what|which|why|how|find|calculate|compute|determine|derive|explain|show|"
-    r"prove|given|assume|using|answer|solution|true|false)\b"
-)
+def _source_language_evidence(value, kind=None, latex=None):
+    """Return an auditable unit-level language classification.
 
-
-def _source_language_evidence(value):
-    """Return ``zh``, ``en``, ``mixed``, or ``unknown`` from textual evidence."""
+    ``zxx`` is intentionally returned only for genuinely formula/symbol-only
+    payloads. It is not suitable for a page/document language.
+    """
 
     if value in (None, "", [], {}):
         return "unknown"
@@ -2677,91 +2681,83 @@ def _source_language_evidence(value):
             value = json.dumps(value, ensure_ascii=False, sort_keys=True)
         except (TypeError, ValueError):
             value = str(value)
-    cjk = len(_CJK_RE.findall(value))
-    latin = len(re.findall(r"[A-Za-z]", value))
-    if cjk:
-        # Latin variables and domain terms are normal in Chinese materials, but
-        # an English function-word/question phrase is evidence of mixed prose.
-        if latin >= 3 and _ENGLISH_SIGNAL_RE.search(value):
-            return "mixed"
-        return "zh"
-    if (re.search(r"[=+*/^<>≤≥∑∫√±]", value)
-            and not re.search(r"\b[A-Za-z]{3,}\b", value)):
-        return "unknown"
-    if latin and _ENGLISH_SIGNAL_RE.search(value):
-        return "en"
-    return "unknown"
+    return source_language_evidence(value, kind=kind, latex=latex)
 
 
-def _classify_source_language(value):
+def _classify_source_language(value, kind=None, latex=None):
     """Conservatively classify only Chinese-script or clearly English prose.
 
     Latin script alone is not enough because it could be another language.  An
-    ambiguous/mixed/formula-only payload deliberately returns ``None`` and is
-    routed to typed review by the ingestion layer.
+    ambiguous or mixed payload deliberately returns ``None`` and is routed to
+    typed review by the ingestion layer. A formula/symbol-only semantic unit
+    returns ``zxx``; this never supplies Chinese or English prose evidence.
     """
 
-    value = _source_language_evidence(value)
-    return value if value in ("zh", "en") else None
+    value = _source_language_evidence(value, kind=kind, latex=latex)
+    return value if value in SOURCE_UNIT_LANGUAGE_CODES else None
 
 
 def _formula_only_language_value(element):
-    if element.get("kind") == "formula" or element.get("latex"):
-        return True
-    text = element.get("text") if isinstance(element.get("text"), str) else ""
-    if not text.strip() or _CJK_RE.search(text):
-        return False
-    return bool(
-        re.search(r"[=+*/^<>≤≥∑∫√±]", text)
-        and not re.search(r"\b[A-Za-z]{3,}\b", text)
+    return is_language_neutral_formula(
+        element.get("text"),
+        latex=element.get("latex"),
+        kind=element.get("kind"),
     )
 
 
 def _annotate_ingestion_languages(pages, report):
     """Attach only evidence-backed page/element language labels.
 
-    Mixed prose and formula-only records deliberately remain unlabeled.  A
-    short/ambiguous element may inherit a proven page language, but a mixed or
-    formula-only element may not.
+    Mixed prose deliberately remains unlabeled. A formula/symbol-only element
+    gets unit-level ``zxx`` but a page never does. A short/ambiguous element
+    is classified only from its own payload; page/document language is never
+    copied into a semantic element.
     """
 
     counters = {
         "pages_inferred": 0,
+        "pages_language_neutral": 0,
         "pages_unresolved": 0,
         "elements_inferred": 0,
-        "elements_inherited": 0,
+        "elements_language_neutral": 0,
         "elements_unresolved": 0,
     }
     for page in pages:
         if not isinstance(page, dict):
             continue
         page_language = page.get("source_language")
-        if page_language not in ("zh", "en"):
+        if page_language not in MATERIAL_TEXT_LANGUAGE_CODES:
             page.pop("source_language", None)
             page_evidence = _source_language_evidence(page.get("text"))
-            if page_evidence in ("zh", "en"):
+            if page_evidence in MATERIAL_TEXT_LANGUAGE_CODES:
                 page_language = page_evidence
                 page["source_language"] = page_language
                 counters["pages_inferred"] += 1
             else:
                 page_language = None
                 if str(page.get("text") or "").strip():
-                    counters["pages_unresolved"] += 1
+                    if page_evidence == "zxx":
+                        counters["pages_language_neutral"] += 1
+                    else:
+                        counters["pages_unresolved"] += 1
         for element in page.get("elements") or ():
             if not isinstance(element, dict):
                 continue
             explicit = element.get("source_language")
-            if explicit in ("zh", "en"):
+            if explicit in MATERIAL_TEXT_LANGUAGE_CODES:
+                continue
+            if explicit == "zxx" and _formula_only_language_value(element):
+                counters["elements_language_neutral"] += 1
                 continue
             element.pop("source_language", None)
-            evidence = _source_language_evidence(element.get("text"))
-            if evidence in ("zh", "en"):
+            evidence = _source_language_evidence(
+                element.get("text"), kind=element.get("kind"), latex=element.get("latex"))
+            if evidence in MATERIAL_TEXT_LANGUAGE_CODES:
                 element["source_language"] = evidence
                 counters["elements_inferred"] += 1
-            elif (evidence == "unknown" and page_language
-                  and not _formula_only_language_value(element)):
-                element["source_language"] = page_language
-                counters["elements_inherited"] += 1
+            elif evidence == "zxx":
+                element["source_language"] = "zxx"
+                counters["elements_language_neutral"] += 1
             elif (str(element.get("text") or "").strip()
                   or str(element.get("latex") or "").strip()):
                 counters["elements_unresolved"] += 1
@@ -2774,16 +2770,24 @@ def _annotate_source_languages(items, report):
     for item in items:
         if not isinstance(item, dict):
             continue
-        if item.get("source_language") not in ("zh", "en"):
-            detected = _classify_source_language(item.get("question"))
+        explicit_question = item.get("source_language")
+        if (explicit_question not in SOURCE_UNIT_LANGUAGE_CODES
+                or (explicit_question == "zxx" and not is_language_neutral_formula(
+                    item.get("question"), kind="question"))):
+            item.pop("source_language", None)
+            detected = _classify_source_language(item.get("question"), kind="question")
             if detected:
                 item["source_language"] = detected
                 inferred += 1
             else:
                 unresolved += 1
         if item.get("answer") not in (None, "", [], {}):
-            if item.get("answer_source_language") not in ("zh", "en"):
-                detected = _classify_source_language(item.get("answer"))
+            explicit_answer = item.get("answer_source_language")
+            if (explicit_answer not in SOURCE_UNIT_LANGUAGE_CODES
+                    or (explicit_answer == "zxx" and not is_language_neutral_formula(
+                        item.get("answer"), kind="answer"))):
+                item.pop("answer_source_language", None)
+                detected = _classify_source_language(item.get("answer"), kind="answer")
                 if detected:
                     item["answer_source_language"] = detected
                     inferred += 1
@@ -2792,7 +2796,7 @@ def _annotate_source_languages(items, report):
     if inferred:
         report["warnings"].append(
             "source_language_inferred: %d question/answer payloads were classified by "
-            "conservative Unicode/English-signal rules" % inferred
+            "conservative Unicode/English-signal/formula-only rules" % inferred
         )
     if unresolved:
         report["warnings"].append(
