@@ -15,6 +15,11 @@ import os
 from dataclasses import dataclass
 
 from .identifiers import is_link_or_reparse, normalize_workspace_path
+from .language import (
+    MATERIAL_TEXT_LANGUAGE_CODES,
+    SOURCE_UNIT_LANGUAGE_CODES,
+    is_language_neutral_formula,
+)
 
 
 SCHEMA_VERSION = 1
@@ -438,9 +443,9 @@ def validate_page_records(records, request=None):
         if not isinstance(page["text"], str):
             raise AdapterContractError("%s text must be a string" % page_context)
         if ("source_language" in page
-                and page["source_language"] not in ("zh", "en")):
+                and page["source_language"] not in MATERIAL_TEXT_LANGUAGE_CODES):
             raise AdapterContractError(
-                "%s source_language must be zh or en" % page_context)
+                "%s source_language must be zh or en; zxx is unit-only" % page_context)
         if not isinstance(page["elements"], list):
             raise AdapterContractError("%s elements must be a list" % page_context)
         for ordinal, element in enumerate(page["elements"]):
@@ -457,10 +462,17 @@ def validate_page_records(records, request=None):
                 raise AdapterContractError("%s kind is not a normalized content kind" % context)
             if not isinstance(element["text"], str):
                 raise AdapterContractError("%s text must be a string" % context)
-            if ("source_language" in element
-                    and element["source_language"] not in ("zh", "en")):
-                raise AdapterContractError(
-                    "%s source_language must be zh or en" % context)
+            if "source_language" in element:
+                source_language = element["source_language"]
+                if source_language not in SOURCE_UNIT_LANGUAGE_CODES:
+                    raise AdapterContractError(
+                        "%s source_language must be zh, en, or zxx" % context)
+                if source_language == "zxx" and not is_language_neutral_formula(
+                        element.get("text"), element.get("latex"), element.get("kind")):
+                    raise AdapterContractError(
+                        "%s source_language=zxx requires formula/symbol-only content"
+                        % context
+                    )
             if element["ordinal"] != ordinal:
                 raise AdapterContractError("%s ordinal must match list order" % context)
             _validate_bbox(element["bbox"], context)

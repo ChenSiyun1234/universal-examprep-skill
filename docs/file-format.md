@@ -91,8 +91,8 @@ receipt 字段必须**恰好**为 `schema_version=1`、`adapter`、可空的 `ad
 不得产出页。未知/重复 source 或任一 schema/revision/config/page/policy 漂移都阻断 v2。
 
 可选 runner 返回对象必须**恰好**为 `{pages, discovered_page_count, warnings?}`；完整抽取与请求子集按上段覆盖规则校验。
-normalized page/element 的可选 `source_language` 只接受显式 `zh|en`；mixed、formula-only 或未知值不得猜测，留空并
-产生 typed review。core 也出 receipt；receipt 只证明 exact route/revision/config/accounting。Docling/MinerU 需 host
+normalized page 的 `source_language` 仅 `zh|en`；unit 仅按自身 payload 分类，纯公式/符号可用 `zxx`，不继承
+page language 或支撑 zh/en Guide；其余进 typed review。core 也出 receipt；receipt 只证明 exact route/revision/config/accounting。Docling/MinerU 需 host
 显式选择并提供 callable runner；适配器自身不安装、联网或上传。policy 是受校验的配置声明，不是 runner sandbox/
 attestation；host 负责约束 runner 内部行为。
 
@@ -356,7 +356,7 @@ TeX 只用 `$...$`/`$$...$$`；普通括号/方括号或裸命令不是分隔符
 
 v2 须先为 workspace-local draft 生成 exact-location claim receipt；import 在 ingestion mutation lock 内从 live facts 复验到发布，并先失效旧 HTML/PDF/render/QA 再发布签名 manifest。v1 不伪造 receipt。
 
-`notebook/chNN.guide.json` 是 renderer/完成门禁输入。`full` 必须覆盖当前章 teaching examples、全部 bank 项（`gradable=false` 仅作教学例题）和 typed question units 的去重 IDs；`abridged` 要完整 omission ledger 且不能完成阶段。`source_unit_ids` 与带理由 `semantic_exclusions` 必须精确分割 material/AI-recovered 语义单元，公式不可排除；这只证明显式分母。每题记录 source/answer provenance、题面语言、公式/变量/代入/步骤/答案/自检/来源；material 答案需 answer/solution 证据，AI 答案显示标签。直接绑定题答 unit 必须有 `metadata.source_language=zh|en` 并精确绑定 normalized payload；页码/关键词不足。`notebook_anchor` 必须已持久化。`full_prompt` 图片替代重复原/OCR 文，仅补翻译；`figure_only` 不替代题干。
+`notebook/chNN.guide.json` 是 renderer/完成门禁输入。`full` 必须覆盖当前章 teaching examples、全部 bank 项（`gradable=false` 仅作教学例题）和 typed question units 的去重 IDs；`abridged` 要完整 omission ledger 且不能完成阶段。`source_unit_ids` 与带理由 `semantic_exclusions` 必须精确分割 material/AI-recovered 语义单元，公式不可排除；这只证明显式分母。每题记录 source/answer provenance、题面语言、公式/变量/代入/步骤/答案/自检/来源；material 答案需 answer/solution 证据，AI 答案显示标签。直接绑定题面 unit 必须有 `metadata.source_language=zh|en`；答案 unit 的 `zxx` 只表示纯公式/符号答案，不能支持任何 `answer_provenance.<zh|en>=material`。题答都须精确绑定 normalized payload；页码/关键词不足。`notebook_anchor` 必须已持久化。`full_prompt` 图片替代重复原/OCR 文，仅补翻译；`figure_only` 不替代题干。
 
 语言改变使旧 manifest/artifacts/receipts/QA stale。v2 用 `relocalize --language <zh|en|bilingual> --output <workspace-relative-draft>` 生成不覆盖 canonical 的 staging，补 claims 后 `verify_claims.py verify`，再 import；缺 `--output` 失败。v1 可一键 relocalize。视觉模式随后重渲染并全页验收。
 

@@ -325,6 +325,24 @@ class IngestionAdapterContractTest(unittest.TestCase):
         self.assertEqual(
             "en", A.validate_page_records([labeled])[0]["source_language"])
 
+        neutral = _page(text="V=IR")
+        neutral["elements"][0].update({
+            "kind": "formula", "latex": "V=IR", "source_language": "zxx",
+        })
+        validated = A.validate_page_records([neutral])[0]
+        self.assertNotIn("source_language", validated)
+        self.assertEqual("zxx", validated["elements"][0]["source_language"])
+
+        invalid_page_neutral = _page(text="V=IR")
+        invalid_page_neutral["source_language"] = "zxx"
+        with self.assertRaisesRegex(A.AdapterContractError, "zxx is unit-only"):
+            A.validate_page_records([invalid_page_neutral])
+
+        invalid_prose_neutral = _page(text="Use V=IR to calculate current.")
+        invalid_prose_neutral["elements"][0]["source_language"] = "zxx"
+        with self.assertRaisesRegex(A.AdapterContractError, "formula/symbol-only"):
+            A.validate_page_records([invalid_prose_neutral])
+
         invalid_language = _page()
         invalid_language["source_language"] = "fr"
         with self.assertRaisesRegex(A.AdapterContractError, "source_language"):

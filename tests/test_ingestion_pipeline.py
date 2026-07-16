@@ -1577,23 +1577,54 @@ class IngestionPipelineTest(unittest.TestCase):
         explicit = build_payload(
             str(self.materials),
             [str(self.source)],
-            [{"file": "ch01.txt", "page": 1, "text": "Chapter 1\nCore concept",
-              "source_language": "en"}],
+            [{
+                "file": "ch01.txt", "page": 1, "text": "Chapter 1\nCore concept",
+                "source_language": "en", "elements": [{
+                    "kind": "text", "text": "Chapter 1\nCore concept", "ordinal": 0,
+                    "bbox": None, "source_language": "en",
+                }],
+            }, {
+                "file": "ch01.txt", "page": 2, "text": "V=IR",
+                "source_language": "en",
+            }],
             sections=[{"chapter": 1, "page_keys": [("ch01.txt", 1)]}],
             quiz_items=[{
                 "id": "language-q1", "chapter": 1, "type": "subjective",
                 "question": "Explain the core concept.", "answer": "Official answer",
                 "source": "material", "source_file": "ch01.txt", "source_pages": [1],
                 "source_language": "en", "answer_source_language": "en",
+            }, {
+                "id": "language-neutral-q2", "chapter": 1, "type": "subjective",
+                "question": "P(A)=1/2", "answer": "1/2",
+                "source": "material", "source_file": "ch01.txt", "source_pages": [1],
             }],
             report={"warnings": [], "skipped": [], "ai_review": []},
         )
         question = next(row for row in explicit["content_units"]
-                        if row["kind"] == "question")
+                        if row["kind"] == "question"
+                        and row["external_id"] == "language-q1")
         answer = next(row for row in explicit["content_units"]
-                      if row["kind"] == "answer")
+                      if row["kind"] == "answer"
+                      and row["external_id"] == "language-q1")
         self.assertEqual("en", question["metadata"]["source_language"])
         self.assertEqual("en", answer["metadata"]["source_language"])
+        neutral_question = next(row for row in explicit["content_units"]
+                                if row["kind"] == "question"
+                                and row["external_id"] == "language-neutral-q2")
+        neutral_answer = next(row for row in explicit["content_units"]
+                              if row["kind"] == "answer"
+                              and row["external_id"] == "language-neutral-q2")
+        self.assertEqual("zxx", neutral_question["metadata"]["source_language"])
+        self.assertEqual("zxx", neutral_answer["metadata"]["source_language"])
+        fallback_formula = next(
+            row for row in explicit["content_units"]
+            if row["kind"] == "text" and row["page"] == 2
+        )
+        self.assertEqual("zxx", fallback_formula["metadata"]["source_language"])
+        self.assertTrue(all(
+            "source_language" not in row["metadata"]
+            for row in explicit["content_units"] if row["kind"] == "page_anchor"
+        ))
         self.assertFalse(any(
             "source_language_unknown" in row["reason_codes"]
             for row in explicit["review_candidates"]
@@ -1606,12 +1637,12 @@ class IngestionPipelineTest(unittest.TestCase):
                 "source_language_unknown", "answer_source_language_unknown"
             }
         ]
-        self.assertEqual(3, len(language_issues))
+        self.assertEqual(2, len(language_issues))
         self.assertEqual({"blocking", "warning"}, {
             row["severity"] for row in language_issues
         })
 
-    def test_mixed_and_formula_only_semantic_units_enter_typed_language_review(self):
+    def test_mixed_semantic_unit_is_reviewed_but_formula_only_is_zxx(self):
         payload = build_payload(
             str(self.materials),
             [str(self.source)],
@@ -1620,22 +1651,35 @@ class IngestionPipelineTest(unittest.TestCase):
                 "text": "Explain the result，并说明中文条件。",
             }, {
                 "file": "ch01.txt", "page": 2, "text": "V=IR",
+                "source_language": "en",
                 "elements": [{
                     "kind": "formula", "text": "V=IR", "latex": "V=IR",
+                    "ordinal": 0, "bbox": None,
+                }],
+            }, {
+                "file": "ch01.txt", "page": 3,
+                "text": r"B_1=\{ttth,ttht,thtt,httt\}",
+                "elements": [{
+                    "kind": "formula", "text": r"B_1=\{ttth,ttht,thtt,httt\}",
                     "ordinal": 0, "bbox": None,
                 }],
             }],
             sections=[{
                 "chapter": 1,
-                "page_keys": [("ch01.txt", 1), ("ch01.txt", 2)],
+                "page_keys": [
+                    ("ch01.txt", 1), ("ch01.txt", 2), ("ch01.txt", 3),
+                ],
             }],
             report={"warnings": [], "skipped": [], "ai_review": []},
         )
         semantic = [row for row in payload["content_units"]
                     if row["kind"] in ("text", "formula")]
-        self.assertEqual(2, len(semantic))
+        self.assertEqual(3, len(semantic))
+        mixed = next(row for row in semantic if row["kind"] == "text")
+        formulas = [row for row in semantic if row["kind"] == "formula"]
+        self.assertNotIn("source_language", mixed["metadata"])
         self.assertTrue(all(
-            "source_language" not in row["metadata"] for row in semantic
+            row["metadata"].get("source_language") == "zxx" for row in formulas
         ))
         reviewed = {
             target
@@ -1643,7 +1687,8 @@ class IngestionPipelineTest(unittest.TestCase):
             if "source_language_unknown" in row["reason_codes"]
             for target in row["target_unit_ids"]
         }
-        self.assertEqual({row["unit_id"] for row in semantic}, reviewed)
+        self.assertEqual({mixed["unit_id"]}, reviewed)
+        self.assertFalse({row["unit_id"] for row in formulas} & reviewed)
         self.assertTrue(all(
             row["severity"] == "blocking"
             for row in payload["review_candidates"]

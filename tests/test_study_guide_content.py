@@ -815,6 +815,22 @@ class StudyGuideContentTest(unittest.TestCase):
         self._write_jsonl(".ingest/content_units.jsonl", units)
         self.assertTrue(sgc.validate_manifest(self.ws, 1, manifest)["ok"])
 
+        neutral_answer = self._structured_manifest()
+        units = self._structured_units()
+        answer = next(row for row in units if row["unit_id"] == "a-ex1")
+        answer["text"] = "0.4"
+        answer["metadata"]["source_language"] = "zxx"
+        self._write_jsonl(".ingest/content_units.jsonl", units)
+        self.assertInvalid(neutral_answer, "unsupported=['en']")
+
+        neutral_question = self._structured_manifest()
+        units = self._structured_units()
+        question = next(row for row in units if row["unit_id"] == "q-ex1")
+        question["text"] = "P(A|B)=?"
+        question["metadata"]["source_language"] = "zxx"
+        self._write_jsonl(".ingest/content_units.jsonl", units)
+        self.assertInvalid(neutral_question, "zxx has no natural language")
+
         invalid = self._structured_manifest()
         units = self._structured_units()
         next(row for row in units if row["unit_id"] == "a-ex1")["metadata"][
