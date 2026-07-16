@@ -135,6 +135,42 @@ class Build(unittest.TestCase):
         self.assertNotIn(b"ordinary comment", compact)
         compile(compact, "fixture.py", "exec")
 
+    def test_python_compaction_shrinks_docstrings_without_changing_runtime_structure(self):
+        source = (
+            b'"""module documentation"""\n'
+            b"from __future__ import annotations\n"
+            b'class Example:\n'
+            b'    """class documentation\n    second line"""\n'
+            b'    def method(self):\n'
+            b'        """method documentation"""; return "runtime string"\n'
+        )
+        compact = build_dist._strip_python_comments(source)
+        self.assertEqual(source.count(b"\n"), compact.count(b"\n"))
+        self.assertNotIn(b"module documentation", compact)
+        self.assertNotIn(b"class documentation", compact)
+        self.assertNotIn(b"method documentation", compact)
+        self.assertIn(b"runtime string", compact)
+        namespace = {}
+        exec(compile(compact, "fixture.py", "exec"), namespace)
+        self.assertEqual("", namespace["__doc__"])
+        self.assertEqual("", namespace["Example"].__doc__)
+        self.assertEqual("", namespace["Example"].method.__doc__)
+
+    def test_python_compaction_preserves_multiline_docstring_closing_line_suffix(self):
+        source = (
+            b"def value():\n"
+            b'    """documentation first line\n'
+            b'    documentation second line"""; return 7\n'
+        )
+        compile(source, "fixture.py", "exec")
+        compact = build_dist._strip_python_comments(source)
+        self.assertEqual(source.count(b"\n"), compact.count(b"\n"))
+        self.assertNotIn(b"documentation", compact)
+        namespace = {}
+        exec(compile(compact, "fixture.py", "exec"), namespace)
+        self.assertEqual("", namespace["value"].__doc__)
+        self.assertEqual(7, namespace["value"]())
+
     def test_zip_builds_and_preserves_layout(self):
         with tempfile.TemporaryDirectory(prefix="dist-") as d:
             out = os.path.join(d, "pkg.zip")

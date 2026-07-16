@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import stat
+import sys
 import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -434,8 +435,8 @@ class SourceManifest:
         self.source_root = _workspace_root(source_root or workspace)
         self.path = safe_workspace_entry(self.workspace, relative_path)
 
-    def records(self):
-        payload = read_json(self.path, default={"schema_version": 1, "sources": []})
+    @staticmethod
+    def _records_from_payload(payload):
         if not isinstance(payload, dict) or set(payload) != {"schema_version", "sources"}:
             raise SchemaValidationError("source manifest has an invalid top-level schema")
         if type(payload["schema_version"]) is not int or payload["schema_version"] != 1:
@@ -453,6 +454,10 @@ class SourceManifest:
             seen_paths.add(record.path)
             result.append(record)
         return tuple(sorted(result, key=lambda item: item.path))
+
+    def records(self):
+        payload = read_json(self.path, default={"schema_version": 1, "sources": []})
+        return self._records_from_payload(payload)
 
     def _write(self, records):
         ordered = sorted(records, key=lambda item: item.path)
@@ -542,16 +547,20 @@ class ReviewQueue:
         self.workspace = _workspace_root(workspace)
         self.path = safe_workspace_entry(self.workspace, relative_path)
 
-    def issues(self):
+    @staticmethod
+    def _issues_from_rows(rows):
         result = []
         seen = set()
-        for raw in read_jsonl(self.path, default=[]):
+        for raw in rows:
             issue = ReviewIssue.from_dict(raw)
             if issue.issue_id in seen:
                 raise SchemaValidationError("review queue contains duplicate issue_id %s" % issue.issue_id)
             seen.add(issue.issue_id)
             result.append(issue)
         return tuple(sorted(result, key=lambda item: item.issue_id))
+
+    def issues(self):
+        return self._issues_from_rows(read_jsonl(self.path, default=[]))
 
     def _write(self, issues):
         atomic_write_jsonl(self.path, [issue.to_dict() for issue in sorted(issues, key=lambda x: x.issue_id)])
@@ -667,6 +676,195 @@ class ApplyResult:
 
     def __bool__(self):
         return self.applied
+
+
+class _BatchValidationSnapshot:
+    """One lock-scoped, revalidated view of batch validation inputs.
+
+    Control-plane JSON/JSONL is parsed once.  Source, evidence, and asset bytes
+    are hashed at most once per distinct path while semantic checks run.  Every
+    captured path is hashed again before a read-only result is returned or a
+    staged mutation prefix is committed, so the cache never turns drift into a
+    trusted result.
+    """
+
+    def __init__(self, store):
+        self.store = store
+        self._files = {}
+
+        manifest_payload = self._read_json(
+            store.manifest.path,
+            {"schema_version": 1, "sources": []},
+            "source manifest",
+        )
+        self.manifest_records = SourceManifest._records_from_payload(manifest_payload)
+        self.manifest_by_id = {
+            record.source_id: record for record in self.manifest_records
+        }
+        self.current_source_hashes = frozenset(
+            record.sha256 for record in self.manifest_records
+        )
+
+        queue_rows = self._read_jsonl(store.review_queue.path, (), "review queue")
+        issue_rows = ReviewQueue._issues_from_rows(queue_rows)
+        self.issues = {issue.issue_id: issue for issue in issue_rows}
+
+        self.base_units = store._units_from_rows(
+            self._read_jsonl(store.base_units_path, (), "base content units"),
+            "base unit store",
+        )
+        self.base_mappings = store._mappings_from_rows(
+            self._read_jsonl(store.base_mappings_path, (), "base chapter mappings"),
+            "base mapping store",
+        )
+        self.units = store._units_from_rows(
+            self._read_jsonl(store.units_path, (), "compiled content units"),
+            "content store",
+        )
+        self.mappings = store._mappings_from_rows(
+            self._read_jsonl(store.mappings_path, (), "compiled chapter mappings"),
+            "mapping store",
+        )
+        self.ledger = store._ledger_from_rows(
+            self._read_jsonl(store.ledger_path, (), "review patch ledger")
+        )
+        self.pending_patch = self._read_json(
+            store.pending_patch_path, None, "pending patch intent"
+        )
+        self.pending_ingest = self._read_json(
+            store.pending_ingest_path, None, "pending ingest intent"
+        )
+
+    @staticmethod
+    def _path_key(path):
+        return os.path.normcase(os.path.abspath(str(path)))
+
+    def _remember(self, path, exists, sha256=None, size_bytes=None, role="file"):
+        source = Path(path)
+        key = self._path_key(source)
+        current = self._files.get(key)
+        if current is not None:
+            if (current["exists"] != exists
+                    or current["sha256"] != sha256
+                    or current["size_bytes"] != size_bytes):
+                raise SourceDriftError(
+                    "batch validation captured conflicting file facts: %s" % source
+                )
+            current["roles"].add(role)
+            return current
+        fact = {
+            "path": source,
+            "exists": exists,
+            "sha256": sha256,
+            "size_bytes": size_bytes,
+            "roles": {role},
+        }
+        self._files[key] = fact
+        return fact
+
+    def _read_json(self, path, default, role):
+        source = Path(path)
+        if not os.path.lexists(str(source)):
+            self._remember(source, False, role=role)
+            return default
+        value, fact = stable_read_json(source)
+        self._remember(
+            source, True, fact["sha256"], fact["size_bytes"], role=role
+        )
+        return value
+
+    def _read_jsonl(self, path, default, role):
+        source = Path(path)
+        if not os.path.lexists(str(source)):
+            self._remember(source, False, role=role)
+            return default
+        rows, fact = stable_read_jsonl(source)
+        self._remember(
+            source, True, fact["sha256"], fact["size_bytes"], role=role
+        )
+        return rows
+
+    def _capture_digest(self, path, role):
+        source = Path(path)
+        key = self._path_key(source)
+        current = self._files.get(key)
+        if current is not None:
+            current["roles"].add(role)
+            if not current["exists"]:
+                raise SourceDriftError("batch validation file is absent: %s" % source)
+            return current["sha256"], current["size_bytes"]
+        try:
+            digest, size_bytes = stable_file_sha256(source)
+        except (OSError, SchemaValidationError) as exc:
+            raise SourceDriftError(
+                "cannot capture stable %s: %s" % (role, source)
+            ) from exc
+        self._remember(source, True, digest, size_bytes, role=role)
+        return digest, size_bytes
+
+    def get_issue(self, issue_id):
+        return self.issues.get(issue_id)
+
+    def get_record(self, source_id):
+        return self.manifest_by_id.get(source_id)
+
+    def verify_source(self, source_id, expected_sha256):
+        record = self.get_record(source_id)
+        if record is None:
+            raise SourceDriftError("source is absent from manifest: %s" % source_id)
+        if record.sha256 != expected_sha256:
+            raise SourceDriftError("source manifest hash changed for %s" % record.path)
+        absolute = safe_workspace_entry(self.store.source_root, record.path)
+        if not absolute.is_file() or absolute.is_symlink():
+            raise SourceDriftError(
+                "source is missing or no longer a regular file: %s" % record.path
+            )
+        actual_sha, actual_size = self._capture_digest(absolute, "source bytes")
+        if actual_sha != record.sha256 or actual_size != record.size_bytes:
+            raise SourceDriftError("source bytes drifted after review: %s" % record.path)
+        return record
+
+    def verify_evidence(self, path, expected_sha256):
+        absolute = safe_workspace_entry(self.store.workspace, path)
+        if not absolute.is_file() or absolute.is_symlink():
+            raise SourceDriftError("review evidence is missing: %s" % path)
+        actual_sha, _unused = self._capture_digest(absolute, "review evidence")
+        if actual_sha != expected_sha256:
+            raise SourceDriftError("review evidence drifted: %s" % path)
+
+    def verify_asset(self, path, expected_sha256=None):
+        absolute = safe_workspace_entry(self.store.workspace, path)
+        if not absolute.is_file() or absolute.is_symlink():
+            raise PatchApplicationError("quiz metadata asset is missing: %s" % path)
+        actual_sha, _unused = self._capture_digest(absolute, "quiz metadata asset")
+        if expected_sha256 is not None and actual_sha != expected_sha256:
+            raise SourceDriftError("quiz metadata asset hash drifted: %s" % path)
+
+    def revalidate(self):
+        """Fail closed if any captured path changed before result/commit."""
+
+        for key in sorted(self._files):
+            fact = self._files[key]
+            path = fact["path"]
+            roles = ", ".join(sorted(fact["roles"]))
+            if not fact["exists"]:
+                if os.path.lexists(str(path)):
+                    raise SourceDriftError(
+                        "batch validation snapshot drifted (%s appeared): %s"
+                        % (roles, path)
+                    )
+                continue
+            try:
+                digest, size_bytes = stable_file_sha256(path)
+            except (OSError, SchemaValidationError) as exc:
+                raise SourceDriftError(
+                    "batch validation snapshot cannot revalidate %s: %s"
+                    % (roles, path)
+                ) from exc
+            if digest != fact["sha256"] or size_bytes != fact["size_bytes"]:
+                raise SourceDriftError(
+                    "batch validation snapshot drifted (%s): %s" % (roles, path)
+                )
 
 
 class IngestionStore:
@@ -819,42 +1017,50 @@ class IngestionStore:
                 shutil.rmtree(transaction_dir, ignore_errors=True)
             raise
 
-    def units(self):
+    @staticmethod
+    def _units_from_rows(rows, store_name):
         result = {}
-        for raw in read_jsonl(self.units_path, default=[]):
+        for raw in rows:
             unit = ContentUnit.from_dict(raw)
             current = result.get(unit.unit_id)
             if current is not None:
-                raise SchemaValidationError("duplicate unit_id in content store: %s" % unit.unit_id)
+                raise SchemaValidationError(
+                    "duplicate unit_id in %s: %s" % (store_name, unit.unit_id)
+                )
             result[unit.unit_id] = unit
         return result
+
+    @staticmethod
+    def _mappings_from_rows(rows, store_name):
+        result = {}
+        for raw in rows:
+            mapping = ChapterPhaseMapping.from_dict(raw)
+            if mapping.unit_id in result:
+                raise SchemaValidationError(
+                    "duplicate mapping in %s: %s" % (store_name, mapping.unit_id)
+                )
+            result[mapping.unit_id] = mapping
+        return result
+
+    def units(self):
+        return self._units_from_rows(
+            read_jsonl(self.units_path, default=[]), "content store"
+        )
 
     def mappings(self):
-        result = {}
-        for raw in read_jsonl(self.mappings_path, default=[]):
-            mapping = ChapterPhaseMapping.from_dict(raw)
-            if mapping.unit_id in result:
-                raise SchemaValidationError("duplicate mapping for unit_id %s" % mapping.unit_id)
-            result[mapping.unit_id] = mapping
-        return result
+        return self._mappings_from_rows(
+            read_jsonl(self.mappings_path, default=[]), "mapping store"
+        )
 
     def base_units(self):
-        result = {}
-        for raw in read_jsonl(self.base_units_path, default=[]):
-            unit = ContentUnit.from_dict(raw)
-            if unit.unit_id in result:
-                raise SchemaValidationError("duplicate unit_id in base content store: %s" % unit.unit_id)
-            result[unit.unit_id] = unit
-        return result
+        return self._units_from_rows(
+            read_jsonl(self.base_units_path, default=[]), "base content store"
+        )
 
     def base_mappings(self):
-        result = {}
-        for raw in read_jsonl(self.base_mappings_path, default=[]):
-            mapping = ChapterPhaseMapping.from_dict(raw)
-            if mapping.unit_id in result:
-                raise SchemaValidationError("duplicate mapping in base mapping store: %s" % mapping.unit_id)
-            result[mapping.unit_id] = mapping
-        return result
+        return self._mappings_from_rows(
+            read_jsonl(self.base_mappings_path, default=[]), "base mapping store"
+        )
 
     def _write_units(self, units):
         atomic_write_jsonl(
@@ -934,9 +1140,9 @@ class IngestionStore:
             self.rebuild_compiled_from_ledger()
             return True
 
-    def _ledger(self):
+    def _ledger_from_rows(self, rows):
         result = {}
-        for raw in read_jsonl(self.ledger_path, default=[]):
+        for raw in rows:
             legacy = {
                 "patch_id", "fingerprint", "issue_id", "source_id",
                 "source_sha256", "patch",
@@ -961,6 +1167,9 @@ class IngestionStore:
                 raise SchemaValidationError("patch ledger contains duplicate patch_id")
             result[raw["patch_id"]] = raw
         return result
+
+    def _ledger(self):
+        return self._ledger_from_rows(read_jsonl(self.ledger_path, default=[]))
 
     @staticmethod
     def _patch_fingerprint(patch):
@@ -994,12 +1203,35 @@ class IngestionStore:
     def ledger_entries(self):
         return list(self._ledger().values())
 
-    def _verify_evidence(self, issue, patch):
+    def _manifest_record(self, source_id, snapshot=None):
+        if snapshot is not None:
+            return snapshot.get_record(source_id)
+        return self.manifest.get(source_id)
+
+    def _manifest_records(self, snapshot=None):
+        if snapshot is not None:
+            return snapshot.manifest_records
+        return self.manifest.records()
+
+    def _verify_source(self, source_id, expected_sha256, snapshot=None):
+        if snapshot is not None:
+            return snapshot.verify_source(source_id, expected_sha256)
+        return self.manifest.verify_current(source_id, expected_sha256)
+
+    def _review_issue(self, issue_id, snapshot=None):
+        if snapshot is not None:
+            return snapshot.get_issue(issue_id)
+        return self.review_queue.get(issue_id)
+
+    def _verify_evidence(self, issue, patch, snapshot=None):
         issue_evidence = {(item.path, item.sha256) for item in issue.evidence}
         for evidence in patch.evidence:
             identity = (evidence.path, evidence.sha256)
             if identity not in issue_evidence:
                 raise PatchApplicationError("patch evidence was not declared by its review issue")
+            if snapshot is not None:
+                snapshot.verify_evidence(evidence.path, evidence.sha256)
+                continue
             absolute = safe_workspace_entry(self.workspace, evidence.path)
             if not absolute.is_file() or absolute.is_symlink():
                 raise SourceDriftError("review evidence is missing: %s" % evidence.path)
@@ -1017,8 +1249,10 @@ class IngestionStore:
 
     def _validate_patch_context(
             self, patch, issue, allow_terminal=False, units=None,
-            allow_legacy_cross_source=False):
-        record = self.manifest.verify_current(patch.source_id, patch.source_sha256)
+            allow_legacy_cross_source=False, snapshot=None):
+        record = self._verify_source(
+            patch.source_id, patch.source_sha256, snapshot=snapshot
+        )
         if issue is None:
             raise PatchApplicationError("patch issue is absent from the review queue")
         if issue.source_id != patch.source_id or issue.source_sha256 != patch.source_sha256:
@@ -1028,7 +1262,7 @@ class IngestionStore:
             allowed = allowed + ("applied", "resolved", "unrecoverable")
         if issue.status not in allowed:
             raise PatchApplicationError("issue status does not permit patch application: %s" % issue.status)
-        self._verify_evidence(issue, patch)
+        self._verify_evidence(issue, patch, snapshot=snapshot)
 
         declared_targets = set(issue.target_unit_ids)
         actual_targets = set()
@@ -1232,14 +1466,16 @@ class IngestionStore:
                     "speaker-note answer must be paired to a question or marked unrecoverable"
                 )
 
-    def _validate_unit_metadata_context(self, units):
+    def _validate_unit_metadata_context(self, units, snapshot=None):
         anchors = {
             (unit.source_id, unit.page)
             for unit in units.values() if unit.kind == "page_anchor"
         }
-        current_source_hashes = {
-            record.sha256 for record in self.manifest.records()
-        }
+        current_source_hashes = (
+            snapshot.current_source_hashes
+            if snapshot is not None
+            else {record.sha256 for record in self.manifest.records()}
+        )
         for unit in units.values():
             metadata = unit.metadata
             if not metadata:
@@ -1281,15 +1517,20 @@ class IngestionStore:
                 if not absolute.is_file():
                     raise PatchApplicationError("quiz metadata asset is missing: %s" % path)
                 expected_hash = asset.get("sha256")
-                if expected_hash is not None and file_sha256(absolute) != expected_hash:
-                    raise SourceDriftError("quiz metadata asset hash drifted: %s" % path)
+                if snapshot is not None:
+                    snapshot.verify_asset(path, expected_sha256=expected_hash)
+                elif expected_hash is not None and file_sha256(absolute) != expected_hash:
+                    raise SourceDriftError(
+                        "quiz metadata asset hash drifted: %s" % path
+                    )
                 source_hash = asset.get("source_sha256")
                 if source_hash is not None and source_hash not in current_source_hashes:
                     raise SourceDriftError(
                         "quiz metadata asset source hash is not in the current manifest"
                     )
 
-    def _apply_operations_to_state(self, patch, units, mappings, record):
+    def _apply_operations_to_state(
+            self, patch, units, mappings, record, snapshot=None):
         changed = 0
         final_status = "applied"
         chapter_assignments = {}
@@ -1367,8 +1608,8 @@ class IngestionStore:
                         "pair_qa requires the same non-empty external_id on both units"
                     )
                 for unit in (question, answer):
-                    unit_record = self.manifest.verify_current(
-                        unit.source_id, unit.source_sha256
+                    unit_record = self._verify_source(
+                        unit.source_id, unit.source_sha256, snapshot=snapshot
                     )
                     if unit.source_file != unit_record.path:
                         raise SourceDriftError(
@@ -1437,8 +1678,8 @@ class IngestionStore:
                 raise PatchApplicationError(
                     "assigned question/answer pairing must be reciprocal with the same external_id"
                 )
-            answer_record = self.manifest.verify_current(
-                answer.source_id, answer.source_sha256
+            answer_record = self._verify_source(
+                answer.source_id, answer.source_sha256, snapshot=snapshot
             )
             if answer.source_file != answer_record.path:
                 raise SourceDriftError(
@@ -1480,7 +1721,7 @@ class IngestionStore:
                 inherited_changed = True
             if inherited_changed:
                 changed += 1
-        self._validate_unit_metadata_context(units)
+        self._validate_unit_metadata_context(units, snapshot=snapshot)
         self._validate_question_identities(units)
         return changed, final_status
 
@@ -1540,10 +1781,16 @@ class IngestionStore:
                 return True, False
         return has_cross_source_pair, True
 
-    def _expected_compiled_state(self, reopen_stale=False):
-        units = dict(self.base_units())
-        mappings = dict(self.base_mappings())
-        compiled_before = dict(self.units())
+    def _expected_compiled_state(self, reopen_stale=False, snapshot=None):
+        if snapshot is not None and reopen_stale:
+            raise PatchApplicationError(
+                "a read-only batch snapshot cannot reopen stale review issues"
+            )
+        units = dict(snapshot.base_units if snapshot is not None else self.base_units())
+        mappings = dict(
+            snapshot.base_mappings if snapshot is not None else self.base_mappings()
+        )
+        compiled_before = dict(snapshot.units if snapshot is not None else self.units())
         stale_issue_ids = set()
         replayed_issue_ids = set()
         for mapping in mappings.values():
@@ -1556,9 +1803,10 @@ class IngestionStore:
                     or mapping.phase_id != unit.phase_id):
                 raise SourceDriftError("base mapping disagrees with its content unit")
 
-        for entry in self._ledger().values():
+        ledger = snapshot.ledger if snapshot is not None else self._ledger()
+        for entry in ledger.values():
             patch = ReviewPatch.from_dict(entry["patch"])
-            record = self.manifest.get(patch.source_id)
+            record = self._manifest_record(patch.source_id, snapshot=snapshot)
             # A source revision change keeps the append-only historical entry but
             # never replays it onto the new bytes.
             if record is None or record.sha256 != patch.source_sha256:
@@ -1569,8 +1817,9 @@ class IngestionStore:
                 stale_revision = False
                 for revision in revisions:
                     try:
-                        self.manifest.verify_current(
-                            revision["source_id"], revision["source_sha256"]
+                        self._verify_source(
+                            revision["source_id"], revision["source_sha256"],
+                            snapshot=snapshot,
                         )
                     except SourceDriftError:
                         stale_revision = True
@@ -1586,13 +1835,14 @@ class IngestionStore:
                     stale_issue_ids.add(patch.issue_id)
                     continue
                 allow_legacy_cross_source = has_cross_source and legacy_safe
-            issue = self.review_queue.get(patch.issue_id)
+            issue = self._review_issue(patch.issue_id, snapshot=snapshot)
             record = self._validate_patch_context(
                 patch, issue, allow_terminal=True, units=units,
                 allow_legacy_cross_source=allow_legacy_cross_source,
+                snapshot=snapshot,
             )
             _changed, expected_status = self._apply_operations_to_state(
-                patch, units, mappings, record
+                patch, units, mappings, record, snapshot=snapshot
             )
             self._validate_issue_postcondition(
                 issue, patch, units, mappings, _changed, expected_status,
@@ -1610,7 +1860,7 @@ class IngestionStore:
                     self.review_queue.replace(issue.with_status("pending"))
             if stale_issue_ids - replayed_issue_ids:
                 self.refresh_source_statuses()
-        self._validate_unit_metadata_context(units)
+        self._validate_unit_metadata_context(units, snapshot=snapshot)
         self._validate_question_identities(units)
         return units, mappings
 
@@ -1671,17 +1921,16 @@ class IngestionStore:
                 issue_id, "claimed", expected_status="pending"
             )
 
-    def refresh_source_statuses(self):
-        """Derive source review status from the typed queue without changing identity."""
-
+    @staticmethod
+    def _source_status_records(issues, source_records):
         open_statuses = frozenset(("pending", "claimed", "validated", "blocked"))
         open_source_ids = {
-            issue.source_id for issue in self.review_queue.issues()
+            issue.source_id for issue in issues
             if issue.status in open_statuses
         }
         records = []
         changed = False
-        for record in self.manifest.records():
+        for record in source_records:
             if record.status in ("failed", "unsupported", "unrecoverable", "superseded"):
                 records.append(record)
                 continue
@@ -1691,6 +1940,14 @@ class IngestionStore:
             )
             records.append(current)
             changed = changed or current.to_dict() != record.to_dict()
+        return tuple(records), changed
+
+    def refresh_source_statuses(self):
+        """Derive source review status from the typed queue without changing identity."""
+
+        records, changed = self._source_status_records(
+            self.review_queue.issues(), self.manifest.records()
+        )
         if changed:
             self.manifest.replace_all(records)
         return changed
@@ -1736,14 +1993,29 @@ class IngestionStore:
             raise PatchApplicationError("patch batch must not be empty")
         return rows
 
-    def _checked_batch_state(self):
-        if read_json(self.pending_patch_path, default=None) is not None:
+    def _checked_batch_state(self, snapshot=None):
+        pending_patch = (
+            snapshot.pending_patch
+            if snapshot is not None
+            else read_json(self.pending_patch_path, default=None)
+        )
+        if pending_patch is not None:
             raise ConflictError("recover the interrupted patch before processing a batch")
-        ledger = self._ledger()
-        units, mappings = self._expected_compiled_state()
-        current_units = {key: value.to_dict() for key, value in self.units().items()}
+        if snapshot is not None and snapshot.pending_ingest is not None:
+            raise ConflictError(
+                "an interrupted ingest transaction requires recovery before validation"
+            )
+        ledger = snapshot.ledger if snapshot is not None else self._ledger()
+        units, mappings = self._expected_compiled_state(snapshot=snapshot)
+        current = snapshot.units if snapshot is not None else self.units()
+        current_units = {key: value.to_dict() for key, value in current.items()}
         expected_units = {key: value.to_dict() for key, value in units.items()}
-        current_mappings = {key: value.to_dict() for key, value in self.mappings().items()}
+        current_mapping_rows = (
+            snapshot.mappings if snapshot is not None else self.mappings()
+        )
+        current_mappings = {
+            key: value.to_dict() for key, value in current_mapping_rows.items()
+        }
         expected_mappings = {key: value.to_dict() for key, value in mappings.items()}
         if current_units != expected_units or current_mappings != expected_mappings:
             raise PatchApplicationError("compiled state was modified outside the ledger; run rebuild")
@@ -1754,36 +2026,47 @@ class IngestionStore:
 
         rows = self._validated_batch_rows(patches)
         with self.validation_lock():
-            ledger, units, mappings = self._checked_batch_state()
-            for patch in rows:
-                fingerprint = self._patch_fingerprint(patch)
-                prior = ledger.get(patch.patch_id)
-                if prior is not None:
-                    if prior["fingerprint"] != fingerprint:
-                        raise ConflictError(
-                            "patch ID is already recorded with a different fingerprint"
-                        )
-                    continue
-                issue = self.review_queue.get(patch.issue_id)
-                record = self._validate_patch_context(
-                    patch, issue, allow_terminal=False, units=units
-                )
-                candidate_units = dict(units)
-                candidate_mappings = dict(mappings)
-                changed, final_status = self._apply_operations_to_state(
-                    patch, candidate_units, candidate_mappings, record
-                )
-                self._validate_issue_postcondition(
-                    issue,
-                    patch,
-                    candidate_units,
-                    candidate_mappings,
-                    changed,
-                    final_status,
-                    require_change=True,
-                )
-                units = candidate_units
-                mappings = candidate_mappings
+            snapshot = _BatchValidationSnapshot(self)
+            ledger, units, mappings = self._checked_batch_state(snapshot=snapshot)
+            try:
+                for patch in rows:
+                    fingerprint = self._patch_fingerprint(patch)
+                    prior = ledger.get(patch.patch_id)
+                    if prior is not None:
+                        if prior["fingerprint"] != fingerprint:
+                            raise ConflictError(
+                                "patch ID is already recorded with a different fingerprint"
+                            )
+                        continue
+                    issue = self._review_issue(patch.issue_id, snapshot=snapshot)
+                    record = self._validate_patch_context(
+                        patch, issue, allow_terminal=False, units=units,
+                        snapshot=snapshot,
+                    )
+                    candidate_units = dict(units)
+                    candidate_mappings = dict(mappings)
+                    changed, final_status = self._apply_operations_to_state(
+                        patch,
+                        candidate_units,
+                        candidate_mappings,
+                        record,
+                        snapshot=snapshot,
+                    )
+                    self._validate_issue_postcondition(
+                        issue,
+                        patch,
+                        candidate_units,
+                        candidate_mappings,
+                        changed,
+                        final_status,
+                        require_change=True,
+                    )
+                    units = candidate_units
+                    mappings = candidate_mappings
+            except Exception:
+                snapshot.revalidate()
+                raise
+            snapshot.revalidate()
         return tuple(rows)
 
     def apply_patch(self, patch):
@@ -1877,56 +2160,103 @@ class IngestionStore:
             return ApplyResult(True, False, changed, final_status)
 
     def apply_patches(self, patches):
-        """Apply distinct validated patches with one ledger replay and one lock.
+        """Apply distinct validated patches from one revalidated input snapshot.
 
-        Every new patch still uses the existing single-patch write-ahead intent and
-        is committed to the queue and append-only ledger before the next patch is
-        considered.  The optimization is deliberately narrow: the expensive
-        base-plus-ledger reconstruction and compiled-state comparison happen once
-        for the batch instead of once per patch.  A pre-existing interrupted intent
-        must be recovered explicitly before starting a batch so resume semantics
-        remain unambiguous.
+        Semantic checks still run in order and build an independently committable
+        valid prefix.  If a later patch is invalid, the prefix is committed before
+        that error is re-raised, preserving the historical partial-commit contract.
+        Immutable inputs are revalidated before the first write.  Every committed
+        patch still gets its own write-ahead intent, queue transition, and ledger
+        append, so crash recovery and single-patch durability semantics remain the
+        same.
         """
 
         rows = self._validated_batch_rows(patches)
         with self.mutation_lock():
-            ledger, units, mappings = self._checked_batch_state()
+            snapshot = _BatchValidationSnapshot(self)
+            ledger, units, mappings = self._checked_batch_state(snapshot=snapshot)
+            staged = []
+            failure = None
+            try:
+                for patch in rows:
+                    fingerprint = self._patch_fingerprint(patch)
+                    prior = ledger.get(patch.patch_id)
+                    if prior is not None:
+                        if prior["fingerprint"] != fingerprint:
+                            raise ConflictError(
+                                "patch ID is already recorded with a different fingerprint"
+                            )
+                        issue = self._review_issue(patch.issue_id, snapshot=snapshot)
+                        staged.append({
+                            "kind": "replay",
+                            "result": ApplyResult(
+                                False,
+                                True,
+                                0,
+                                issue.status if issue is not None else "applied",
+                            ),
+                        })
+                        continue
+
+                    issue = self._review_issue(patch.issue_id, snapshot=snapshot)
+                    record = self._validate_patch_context(
+                        patch, issue, allow_terminal=False, units=units,
+                        snapshot=snapshot,
+                    )
+                    candidate_units = dict(units)
+                    candidate_mappings = dict(mappings)
+                    changed, final_status = self._apply_operations_to_state(
+                        patch,
+                        candidate_units,
+                        candidate_mappings,
+                        record,
+                        snapshot=snapshot,
+                    )
+                    self._validate_issue_postcondition(
+                        issue,
+                        patch,
+                        candidate_units,
+                        candidate_mappings,
+                        changed,
+                        final_status,
+                    )
+                    staged.append({
+                        "kind": "apply",
+                        "patch": patch,
+                        "fingerprint": fingerprint,
+                        "issue": issue,
+                        "units": candidate_units,
+                        "mappings": candidate_mappings,
+                        "changed": changed,
+                        "final_status": final_status,
+                    })
+                    units = candidate_units
+                    mappings = candidate_mappings
+            except Exception:
+                failure = sys.exc_info()
+
+            # A drift failure here publishes nothing, including a semantically
+            # valid prefix.  Only immutable, twice-verified facts may cross the
+            # validation/commit boundary.
+            snapshot.revalidate()
+
             results = []
-            for patch in rows:
-                fingerprint = self._patch_fingerprint(patch)
-                prior = ledger.get(patch.patch_id)
-                if prior is not None:
-                    if prior["fingerprint"] != fingerprint:
-                        raise ConflictError(
-                            "patch ID is already recorded with a different fingerprint"
-                        )
-                    issue = self.review_queue.get(patch.issue_id)
-                    results.append(ApplyResult(
-                        False,
-                        True,
-                        0,
-                        issue.status if issue is not None else "applied",
-                    ))
+            committed_units = dict(snapshot.units)
+            committed_mappings = dict(snapshot.mappings)
+            queue_state = dict(snapshot.issues)
+            manifest_state = tuple(snapshot.manifest_records)
+            for row in staged:
+                if row["kind"] == "replay":
+                    results.append(row["result"])
                     continue
 
-                issue = self.review_queue.get(patch.issue_id)
-                record = self._validate_patch_context(
-                    patch, issue, allow_terminal=False, units=units
-                )
-                candidate_units = dict(units)
-                candidate_mappings = dict(mappings)
-                changed, final_status = self._apply_operations_to_state(
-                    patch, candidate_units, candidate_mappings, record
-                )
-                self._validate_issue_postcondition(
-                    issue,
-                    patch,
-                    candidate_units,
-                    candidate_mappings,
-                    changed,
-                    final_status,
-                )
-
+                patch = row["patch"]
+                fingerprint = row["fingerprint"]
+                issue = row["issue"]
+                candidate_units = row["units"]
+                candidate_mappings = row["mappings"]
+                changed = row["changed"]
+                final_status = row["final_status"]
                 intent = {
                     "schema_version": 1,
                     "patch_id": patch.patch_id,
@@ -1934,12 +2264,18 @@ class IngestionStore:
                     "patch": patch.to_dict(),
                 }
                 atomic_write_json(self.pending_patch_path, intent)
-                if candidate_units != units:
+                if candidate_units != committed_units:
                     self._write_units(candidate_units)
-                if candidate_mappings != mappings:
+                if candidate_mappings != committed_mappings:
                     self._write_mappings(candidate_mappings)
-                self.review_queue.replace(issue.with_status(final_status))
-                self.refresh_source_statuses()
+
+                queue_state[issue.issue_id] = issue.with_status(final_status)
+                self.review_queue._write(queue_state.values())
+                manifest_state, manifest_changed = self._source_status_records(
+                    queue_state.values(), manifest_state
+                )
+                if manifest_changed:
+                    self.manifest._write(manifest_state)
 
                 entry = {
                     "patch_id": patch.patch_id,
@@ -1953,7 +2289,11 @@ class IngestionStore:
                 ledger[patch.patch_id] = entry
                 atomic_write_jsonl(self.ledger_path, list(ledger.values()))
                 self.pending_patch_path.unlink()
-                units = candidate_units
-                mappings = candidate_mappings
+                committed_units = candidate_units
+                committed_mappings = candidate_mappings
                 results.append(ApplyResult(True, False, changed, final_status))
+
+            if failure is not None:
+                _exception_type, exception, traceback = failure
+                raise exception.with_traceback(traceback)
             return tuple(results)
