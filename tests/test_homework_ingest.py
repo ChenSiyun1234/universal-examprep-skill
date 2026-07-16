@@ -2670,9 +2670,16 @@ class HomeworkIngest(unittest.TestCase):
         tmp = tempfile.mkdtemp()
         mat, be = _mk(tmp, {"hw99.pdf": ["Problem 1\n普通主观题面。"]})
         code, payload, report = _run(mat, be)
+        hw = [q for q in payload["quiz_bank"] if q.get("source_type") == "homework"]
         self.assertTrue(any(w.startswith("type_heuristic") for w in report["warnings"]))
-        self.assertTrue(any(e["kind"] == "type_defaulted"
-                            for e in report.get("ai_review", [])))  # 默认定型必须交 AI 复核
+        reviews = [
+            entry for entry in report.get("ai_review", [])
+            if entry["kind"] == "type_defaulted"
+        ]
+        self.assertEqual(1, len(reviews))                          # 一题一条 review，避免跨章误关闭
+        self.assertEqual([hw[0]["id"]], reviews[0]["external_ids"])
+        self.assertEqual("homework/hw99.pdf", reviews[0]["file"])
+        self.assertEqual([1], reviews[0]["pages"])
 
     def test_choice_with_unnormalizable_answer_downgrades(self):
         tmp = tempfile.mkdtemp()

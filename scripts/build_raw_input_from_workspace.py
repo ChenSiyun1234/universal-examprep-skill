@@ -3893,12 +3893,40 @@ def _run_unlocked(args, backend=None, adapter_runner=None):
             "判断/编程等其他题型会落在主观题里，请 AI 复核 quiz_bank 的 type 字段"
             % "、".join("%s %d" % (k, v) for k, v in sorted(_typed.items())))
         if _typed.get("subjective"):
-            report["ai_review"].append({
-                "kind": "type_defaulted", "file": "references/quiz_bank.json",
-                "action": "有 %d 道题按主观题默认定型（启发式判不准绝不硬猜）。请 AI 抽查这些题：若"
-                          "实为判断/编程/选择题（选项在图里）等，改写 type（合法值 choice/subjective/"
-                          "diagram/fill_blank/true_false/code）并补 options；同时抽查已判为 "
-                          "choice/fill_blank 的题是否属实。" % _typed["subjective"]})
+            # Type review is an item decision. Keep each hand-off scoped to one
+            # external question identity so applying it cannot silently close
+            # unrelated questions from another chapter in the same source file.
+            unscoped = 0
+            for review_item in lecture_items + homework_items:
+                if (review_item.get("type") or "subjective") != "subjective":
+                    continue
+                external_id = review_item.get("id")
+                if external_id in (None, ""):
+                    unscoped += 1
+                    continue
+                report["ai_review"].append({
+                    "kind": "type_defaulted",
+                    "file": review_item.get("source_file") or "references/quiz_bank.json",
+                    "pages": review_item.get("source_pages") or [],
+                    "external_ids": [str(external_id)],
+                    "action": (
+                        "Review this one question's prompt and confirm or replace its type "
+                        "with choice/subjective/diagram/fill_blank/true_false/code; add "
+                        "options only when the prompt evidence contains them."
+                    ),
+                })
+            if unscoped:
+                # Compatibility fallback for malformed/legacy raw items without
+                # an external ID. The structured pipeline deliberately keeps this
+                # as an unscoped legacy candidate instead of inventing an ID.
+                report["ai_review"].append({
+                    "kind": "type_defaulted",
+                    "file": "references/quiz_bank.json",
+                    "action": (
+                        "%d subjective questions have no external ID; review their types "
+                        "after restoring stable question identities."
+                    ) % unscoped,
+                })
     _ch_notes = []
     sections = group_sections(wiki_pages, _ch_notes)
     for _f in _ch_notes:

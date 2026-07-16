@@ -1009,6 +1009,32 @@ def build_payload(
                     ),
                     "target_unit_ids": [answer.unit_id],
                 })
+            if ((item.get("type") or "subjective") == "subjective"
+                    and item.get("gradable") is not False
+                    and not item.get("keywords")
+                    and answer.provenance in ("material", "ai_recovered")):
+                quality_candidates.append({
+                    "reason_codes": ["subjective_keywords_missing"],
+                    "source_file": answer_record.path,
+                    "pages": [
+                        page for page in answer_pages
+                        if type(page) is int and page >= 1
+                    ] or [answer_page],
+                    "severity": "warning",
+                    "description": (
+                        "Subjective question %s has an official paired answer but no "
+                        "grading keywords."
+                    ) % (item.get("id") or question.unit_id),
+                    "suggested_action": (
+                        "Inspect the cited official answer pages and replace this answer "
+                        "unit with metadata.keywords containing narrow, source-backed "
+                        "grading points. Do not infer the question type from the answer."
+                    ),
+                    # Keywords are authored on the answer unit so the issue,
+                    # evidence page, patch, and source revision all share one
+                    # immutable official-solution identity.
+                    "target_unit_ids": [answer.unit_id],
+                })
             question = question.with_pair(answer.unit_id)
             answer = answer.with_pair(question.unit_id)
         units.append(question)
@@ -1029,13 +1055,23 @@ def build_payload(
         is_page_quality_candidate = id(raw_candidate) in page_quality_candidate_ids
         candidate = dict(raw_candidate)
         external_ids = candidate.pop("external_ids", [])
-        resolved_targets = set(candidate.get("target_unit_ids") or ())
+        declared_targets = set(candidate.get("target_unit_ids") or ())
+        resolved_targets = set(declared_targets)
         resolved_targets.update(
             questions_by_external_id[external_id].unit_id
             for external_id in external_ids if external_id in questions_by_external_id
         )
-        if any(reason in ("type_defaulted", "type_heuristic")
-               for reason in candidate.get("reason_codes") or ()):
+        # New type-review candidates name one external ID/target. Expanding such
+        # a review to every question made a single apply close unrelated chapters.
+        # Preserve the old whole-bank behavior only for genuinely unscoped legacy
+        # candidates that declared neither identity mechanism.
+        legacy_unscoped_type_review = (
+            not external_ids
+            and not declared_targets
+            and any(reason in ("type_defaulted", "type_heuristic")
+                    for reason in candidate.get("reason_codes") or ())
+        )
+        if legacy_unscoped_type_review:
             resolved_targets.update(
                 unit.unit_id for unit in units if unit.kind == "question"
             )
@@ -1942,6 +1978,16 @@ def _metadata_answer(answer):
     return answer.text if answer is not None else ""
 
 
+def _effective_quiz_keywords(question, answer):
+    """Prefer prompt-authored keywords, then an evidence-bound official answer."""
+
+    if "keywords" in question.metadata:
+        return list(question.metadata["keywords"])
+    if answer is not None and "keywords" in answer.metadata:
+        return list(answer.metadata["keywords"])
+    return None
+
+
 def _metadata_assets(*units):
     by_path = {}
     for unit in units:
@@ -1995,6 +2041,9 @@ def _new_quiz_item(question, answer):
     ):
         if key in metadata:
             item[key] = metadata[key]
+    effective_keywords = _effective_quiz_keywords(question, answer)
+    if effective_keywords is not None:
+        item["keywords"] = effective_keywords
     if "source_language" in metadata:
         item["source_language"] = metadata["source_language"]
     assets = _metadata_assets(question, answer)
@@ -2103,6 +2152,14 @@ def _update_quiz_item_from_units(item, question, answer, patched_unit_ids):
             item["source"] = "ai_generated"
             updates += 1
     if question_touched or answer_touched:
+        effective_keywords = _effective_quiz_keywords(question, answer)
+        if effective_keywords is not None:
+            if item.get("keywords") != effective_keywords:
+                item["keywords"] = effective_keywords
+                updates += 1
+        elif "keywords" in item:
+            item.pop("keywords")
+            updates += 1
         assets = _metadata_assets(question, answer)
         if assets:
             if item.get("assets") != assets:
