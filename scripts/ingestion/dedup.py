@@ -88,6 +88,10 @@ _STRUCTURAL_LABEL_RE = re.compile(
     r"figure|fig\.?|table|equation)\s+\d+(?:\s*\.\s*\d+)*(?:\s*[:.\-])?\s*",
     re.IGNORECASE,
 )
+_HOMEWORK_PROBLEM_LOCATOR_RE = re.compile(
+    r"^\s*problem\s+([0-9]+(?:\s*\.\s*[0-9]+)+)\b",
+    re.IGNORECASE,
+)
 
 
 def _sha_text(value):
@@ -328,6 +332,40 @@ def _paired_answer(unit, unit_index):
     return candidate
 
 
+def _homework_page_reference_locator(unit):
+    """Return an explicit problem identity for opaque, image-backed prompts.
+
+    Page-reference homework text is only a transport label; the actual prompt
+    lives in its asset.  Two labels can be lexically near-identical while
+    naming different textbook problems, so their explicit problem numbers are
+    semantic identities that must be honored before fuzzy comparison.
+    """
+
+    if unit.get("kind") != "question":
+        return None
+    metadata = unit.get("metadata") or {}
+    if (metadata.get("source_type") != "homework"
+            or metadata.get("question_text_status") != "page_reference"
+            or metadata.get("requires_assets") is not True
+            or not unit.get("external_id")):
+        return None
+    match = _HOMEWORK_PROBLEM_LOCATOR_RE.match(unit.get("text") or "")
+    if match is None:
+        return None
+    return tuple(int(part.strip()) for part in match.group(1).split("."))
+
+
+def _has_distinct_page_reference_identity(left, right):
+    left_locator = _homework_page_reference_locator(left)
+    right_locator = _homework_page_reference_locator(right)
+    return (
+        left_locator is not None
+        and right_locator is not None
+        and left_locator != right_locator
+        and left.get("external_id") != right.get("external_id")
+    )
+
+
 def _numeric_tokens(value):
     return tuple(_NUMBER_RE.findall(normalize_near(value)))
 
@@ -422,6 +460,7 @@ def build_duplicate_candidates_with_stats(units, config=None):
         "exact_candidate_count": 0,
         "near_representative_count": 0,
         "near_identical_text_variant_count": 0,
+        "near_identity_rejected_pair_count": 0,
         "near_eligible_pair_count": 0,
         "near_compared_pair_count": 0,
         "near_skipped_pair_count": 0,
@@ -488,6 +527,9 @@ def build_duplicate_candidates_with_stats(units, config=None):
             # explicit near/conflict evidence even below min_near_chars.
             left_measure, _left_id, left, left_fp = variants[0]
             for _right_measure, _right_id, right, right_fp in variants[1:]:
+                if _has_distinct_page_reference_identity(left, right):
+                    stats["near_identity_rejected_pair_count"] += 1
+                    continue
                 candidates.append(
                     DuplicateCandidate.create(
                         algorithm=config.algorithm,
@@ -523,6 +565,9 @@ def build_duplicate_candidates_with_stats(units, config=None):
             for right_index in range(left_index + 1, compare_until):
                 _right_measure, _right_id, right, right_fp = near_rows[right_index]
                 stats["near_compared_pair_count"] += 1
+                if _has_distinct_page_reference_identity(left, right):
+                    stats["near_identity_rejected_pair_count"] += 1
+                    continue
                 score = similarity_ppm(
                     _content_payload(left), _content_payload(right), config.min_near_chars
                 )
