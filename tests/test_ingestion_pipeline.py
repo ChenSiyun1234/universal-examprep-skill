@@ -1127,6 +1127,215 @@ class IngestionPipelineTest(unittest.TestCase):
         self.assertEqual(review["source_file"], "ch01.txt")
         self.assertEqual(review["pages"], [1])
 
+    def test_scoped_type_review_does_not_expand_to_unrelated_questions(self):
+        payload = build_payload(
+            str(self.materials),
+            [str(self.source)],
+            [
+                {"file": "ch01.txt", "page": 1, "text": "Question one"},
+                {"file": "ch01.txt", "page": 2, "text": "Question two"},
+            ],
+            sections=[{
+                "chapter": 1,
+                "page_keys": [("ch01.txt", 1), ("ch01.txt", 2)],
+            }],
+            quiz_items=[
+                {
+                    "id": "type-q1", "chapter": 1, "type": "subjective",
+                    "question": "Explain one.", "answer": "One.",
+                    "source": "material", "source_file": "ch01.txt",
+                    "source_pages": [1], "answer_source_pages": [1],
+                    "source_language": "en", "answer_source_language": "en",
+                },
+                {
+                    "id": "type-q2", "chapter": 2, "type": "subjective",
+                    "question": "Explain two.", "answer": "Two.",
+                    "source": "material", "source_file": "ch01.txt",
+                    "source_pages": [2], "answer_source_pages": [2],
+                    "source_language": "en", "answer_source_language": "en",
+                },
+            ],
+            report={
+                "warnings": [], "skipped": [],
+                "ai_review": [{
+                    "kind": "type_defaulted", "file": "ch01.txt", "pages": [1],
+                    "external_ids": ["type-q1"],
+                    "action": "Confirm this question type.",
+                }],
+            },
+        )
+        questions = {
+            row["external_id"]: row for row in payload["content_units"]
+            if row["kind"] == "question"
+        }
+        reviews = [
+            row for row in payload["review_candidates"]
+            if row["reason_codes"] == ["type_defaulted"]
+        ]
+        self.assertEqual(1, len(reviews))
+        self.assertEqual([questions["type-q1"]["unit_id"]], reviews[0]["target_unit_ids"])
+        self.assertNotIn(questions["type-q2"]["unit_id"], reviews[0]["target_unit_ids"])
+
+        legacy = build_payload(
+            str(self.materials),
+            [str(self.source)],
+            [
+                {"file": "ch01.txt", "page": 1, "text": "Question one"},
+                {"file": "ch01.txt", "page": 2, "text": "Question two"},
+            ],
+            sections=[{
+                "chapter": 1,
+                "page_keys": [("ch01.txt", 1), ("ch01.txt", 2)],
+            }],
+            quiz_items=[
+                {
+                    "id": "type-q1", "chapter": 1, "type": "subjective",
+                    "question": "Explain one.", "answer": "One.",
+                    "source": "material", "source_file": "ch01.txt",
+                    "source_pages": [1], "answer_source_pages": [1],
+                    "source_language": "en", "answer_source_language": "en",
+                },
+                {
+                    "id": "type-q2", "chapter": 2, "type": "subjective",
+                    "question": "Explain two.", "answer": "Two.",
+                    "source": "material", "source_file": "ch01.txt",
+                    "source_pages": [2], "answer_source_pages": [2],
+                    "source_language": "en", "answer_source_language": "en",
+                },
+            ],
+            report={
+                "warnings": [], "skipped": [],
+                "ai_review": [{
+                    "kind": "type_defaulted", "file": "references/quiz_bank.json",
+                    "action": "Legacy whole-bank type review.",
+                }],
+            },
+        )
+        legacy_review = next(
+            row for row in legacy["review_candidates"]
+            if row["reason_codes"] == ["type_defaulted"]
+        )
+        self.assertEqual(
+            {row["unit_id"] for row in legacy["content_units"] if row["kind"] == "question"},
+            set(legacy_review["target_unit_ids"]),
+        )
+
+    def test_missing_subjective_keywords_bind_official_answer_and_compile(self):
+        solutions = self.materials / "solutions.txt"
+        solutions.write_text("Official solution on page three", encoding="utf-8")
+        payload = build_payload(
+            str(self.materials),
+            [str(self.source), str(solutions)],
+            [
+                {"file": "ch01.txt", "page": 1, "text": "Explain the result."},
+                {"file": "solutions.txt", "page": 3,
+                 "text": "Official solution on page three"},
+            ],
+            sections=[{"chapter": 1, "page_keys": [("ch01.txt", 1)]}],
+            quiz_items=[{
+                "id": "keyword-q1", "chapter": 1, "type": "subjective",
+                "question": "Explain the result.",
+                "answer": "Use the invariant and report 42.",
+                "source": "material", "source_type": "homework",
+                "source_file": "ch01.txt", "source_pages": [1],
+                "answer_source_file": "solutions.txt", "answer_source_pages": [3],
+                "source_language": "en", "answer_source_language": "en",
+            }],
+            report={"warnings": [], "skipped": [], "ai_review": []},
+        )
+        question = ContentUnit.from_dict(next(
+            row for row in payload["content_units"] if row["kind"] == "question"
+        ))
+        answer = ContentUnit.from_dict(next(
+            row for row in payload["content_units"] if row["kind"] == "answer"
+        ))
+        candidate = next(
+            row for row in payload["review_candidates"]
+            if row["reason_codes"] == ["subjective_keywords_missing"]
+        )
+        self.assertEqual("solutions.txt", candidate["source_file"])
+        self.assertEqual([3], candidate["pages"])
+        self.assertEqual([answer.unit_id], candidate["target_unit_ids"])
+        self.assertNotEqual(question.source_id, answer.source_id)
+
+        persist_payload(self.workspace, payload)
+        store = IngestionStore(self.workspace, source_root=self.materials)
+        issue = next(
+            issue for issue in store.review_queue.issues()
+            if issue.reason_codes == ("subjective_keywords_missing",)
+        )
+        self.assertEqual(answer.source_id, issue.source_id)
+        self.assertEqual(answer.source_sha256, issue.source_sha256)
+
+        invalid = answer.to_dict()
+        invalid["method"] = "manual"
+        invalid["confidence"] = 1.0
+        invalid_patch = ReviewPatch.create(
+            issue.issue_id, issue.source_id, issue.source_sha256,
+            [{"op": "replace_unit", "unit_id": answer.unit_id, "unit": invalid}],
+            list(issue.evidence), reviewer="test",
+            created_at="2026-07-15T12:00:00Z", status="validated",
+        )
+        with self.assertRaisesRegex(
+                PatchApplicationError, "subjective_keywords_missing postcondition"):
+            store.validate_patch(invalid_patch)
+
+        curated = answer.to_dict()
+        curated["method"] = "manual"
+        curated["confidence"] = 1.0
+        curated["metadata"] = dict(curated["metadata"])
+        curated["metadata"]["keywords"] = ["invariant", "final value 42"]
+        patch = ReviewPatch.create(
+            issue.issue_id, issue.source_id, issue.source_sha256,
+            [{"op": "replace_unit", "unit_id": answer.unit_id, "unit": curated}],
+            list(issue.evidence), reviewer="test",
+            created_at="2026-07-15T12:01:00Z", status="validated",
+        )
+        store.apply_patch(patch)
+        compiled_units = store.units()
+        curated_answer = compiled_units[answer.unit_id]
+        self.assertEqual(["invariant", "final value 42"], curated_answer.metadata["keywords"])
+
+        new_item = _new_quiz_item(compiled_units[question.unit_id], curated_answer)
+        self.assertEqual(["invariant", "final value 42"], new_item["keywords"])
+        existing = {
+            "id": "keyword-q1", "chapter": 1, "type": "subjective",
+            "question": question.text, "answer": answer.text,
+            "source": "material", "keywords": ["stale"],
+        }
+        updates = _update_quiz_item_from_units(
+            existing, compiled_units[question.unit_id], curated_answer,
+            {curated_answer.unit_id},
+        )
+        self.assertGreater(updates, 0)
+        self.assertEqual(["invariant", "final value 42"], existing["keywords"])
+
+    def test_missing_quiz_type_defaults_to_subjective_for_keyword_review(self):
+        payload = build_payload(
+            str(self.materials),
+            [str(self.source)],
+            [{"file": "ch01.txt", "page": 1,
+              "text": "Explain the result. Official answer: use the invariant."}],
+            sections=[{"chapter": 1, "page_keys": [("ch01.txt", 1)]}],
+            quiz_items=[{
+                "id": "legacy-no-type", "chapter": 1,
+                "question": "Explain the result.",
+                "answer": "Use the invariant.",
+                "source": "material", "source_type": "homework",
+                "source_file": "ch01.txt", "source_pages": [1],
+                "source_language": "en", "answer_source_language": "en",
+            }],
+            report={"warnings": [], "skipped": [], "ai_review": []},
+        )
+        answer = next(
+            row for row in payload["content_units"] if row["kind"] == "answer"
+        )
+        candidate = next(
+            row for row in payload["review_candidates"]
+            if row["reason_codes"] == ["subjective_keywords_missing"]
+        )
+        self.assertEqual([answer["unit_id"]], candidate["target_unit_ids"])
+
     def test_non_gradable_legacy_item_creates_no_missing_answer_review(self):
         payload = build_payload(
             str(self.materials),

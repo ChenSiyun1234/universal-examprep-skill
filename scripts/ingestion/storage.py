@@ -1152,6 +1152,30 @@ class IngestionStore:
                 raise PatchApplicationError(
                     "missing_answer postcondition failed for %s" % ", ".join(unresolved)
                 )
+        if "subjective_keywords_missing" in reasons:
+            answers = [
+                unit for unit in targets
+                if unit is not None and unit.kind == "answer"
+            ]
+            if not answers or len(answers) != len(targets):
+                raise PatchApplicationError(
+                    "subjective_keywords_missing issue must target answer units"
+                )
+            unresolved = []
+            for answer in answers:
+                keywords = answer.metadata.get("keywords")
+                question = units.get(answer.paired_unit_id)
+                if (not isinstance(keywords, list)
+                        or not keywords
+                        or question is None
+                        or question.kind != "question"
+                        or question.metadata.get("quiz_type") != "subjective"):
+                    unresolved.append(answer.unit_id)
+            if unresolved:
+                raise PatchApplicationError(
+                    "subjective_keywords_missing postcondition failed for %s"
+                    % ", ".join(unresolved)
+                )
         if "speaker_note_answer_candidate" in reasons:
             answers = [unit for unit in targets if unit is not None and unit.kind == "answer"]
             if answers and any(
