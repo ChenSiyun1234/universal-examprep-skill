@@ -28,8 +28,19 @@ Use when `exam-cram` routes the current phase to teaching, or the student asks t
 
 2. **Teach reproducibly.** Give each concept one concrete metaphor. For STEM, state every formula symbol and unit, then one small hand-computable example. Persist math as `$...$` or `$$...$$`; never leave raw `\frac`, `\sum`, or other TeX as the final reading view.
 
-3. **Use every walkthrough block in order** for every stored/teacher-flagged question and every linked question in zero-basic mode:
+3. **Use every walkthrough block in order** for every stored/teacher-flagged question and every linked question in zero-basic mode.
+   
+   **Pacing & Interaction Style Control**:
+   - Detect the preference `互动风格` or `interaction_style` from `study_state.json` (via `preferences`).
+   - If set to `渐进式` or `step_by_step`:
+     - Identify all key questions/examples for the current chapter (from `teaching_examples.json` or `references/wiki`).
+     - Compare with already written entries in `notebook/chN.md` or `notebook/index.md` to find the first un-walkthrough'd question.
+     - **Explain only this single question** in the current turn. Do not dump the remaining questions or concepts.
+     - Append the standardized check question (from the language pack) asking if the student understands and prompting them to reply with 「继续」 (or `Continue`) when ready for the next one.
+     - **Block Completion**: Do not call `complete-phase` or build the final study guide until all questions in this chapter have been individually explained and confirmed.
+   - If unset or set to `一次性` / `batch`, proceed to explain all remaining chapter questions/examples in one go.
 
+   For each active question to be explained:
    - **① 题面图**: satisfy the visual gate in step 4 first; without a figure say 「本题无图，直接看题干条件」.
    - **② 这题在问什么**: explain the ask and `考点` in plain language. Never jump from the prompt to ④.
    - **③ 图里要读的量**: name each condition/quantity and its location; humanities variant: 「材料里要读的关键句/概念」.

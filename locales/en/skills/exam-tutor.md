@@ -23,3 +23,15 @@ The full trailing label is one of: 🟢 From your materials; 🟡 AI-supplemente
 Default output stops at the source block. Add Common pitfalls / 3-minute mnemonic / Your turn only when requested or stored. In the liberal-arts variant, block ③ names source concepts, ④ the framework, and ⑤ the scoring points; numbering stays fixed. Without a material answer, put the full AI-generated-answer warning in block ⑤ and the source line.
 
 Persist to `notebook/chNN.md` first, update the same item in place, then return a short digest ending `Full walkthrough: notebook/chNN.md#<anchor> | Index: notebook/index.md`. If writing fails, say so and provide the complete walkthrough.
+
+## Interactive Pause Prompt
+
+When `interaction_style` is set to `step_by_step` (or `step-by-step`), append the following interactive query at the end of each question explanation:
+
+```text
+Current progress: X / Y key questions in this chapter completed.
+
+Did you fully understand the [seven-step walkthrough] and the derivation above?
+- If you have any questions about specific steps (e.g. formula derivation, substituting quantities), please ask and I will explain in detail.
+- If you are ready for the next question, please reply "Continue".
+```
