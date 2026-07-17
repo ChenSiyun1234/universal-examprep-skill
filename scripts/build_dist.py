@@ -186,6 +186,30 @@ def _strip_python_comments(data):
     return text.encode(encoding)
 
 
+def _compact_python_layout(data):
+    """Remove only tokenizer-declared non-significant physical newlines.
+
+    ``tokenize.NL`` marks layout inside implicit continuations and otherwise
+    blank physical lines; unlike ``NEWLINE`` it never terminates a Python
+    statement.  Re-emitting the remaining token type/string pairs through the
+    stdlib untokenizer therefore preserves the executable token stream while
+    avoiding source-only indentation and wrapping in the release archive.
+
+    The one exception is an ``NL`` immediately following a retained shebang or
+    PEP 263 comment: that physical newline must remain so the comment cannot
+    consume the next token.
+    """
+    compact = []
+    previous_type = None
+    for token in tokenize.tokenize(io.BytesIO(data).readline):
+        if token.type == tokenize.NL and previous_type != tokenize.COMMENT:
+            continue
+        compact.append((token.type, token.string))
+        previous_type = token.type
+    rendered = tokenize.untokenize(compact)
+    return rendered if isinstance(rendered, bytes) else rendered.encode("utf-8")
+
+
 def _runtime_bytes(rel):
     with open(os.path.join(ROOT, *rel.split("/")), "rb") as stream:
         data = stream.read()
@@ -193,7 +217,9 @@ def _runtime_bytes(rel):
     # edit.  Ship one canonical byte form so the package budget and release
     # digest do not depend on the maintainer's host or core.autocrlf setting.
     data = data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
-    return _strip_python_comments(data) if rel.endswith(".py") else data
+    if rel.endswith(".py"):
+        return _compact_python_layout(_strip_python_comments(data))
+    return data
 
 
 def _zip_info(rel):

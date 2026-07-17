@@ -17,6 +17,7 @@ import tempfile
 import types
 import unittest
 import zipfile
+from pathlib import Path
 from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -2463,6 +2464,136 @@ class PublicationLocking(unittest.TestCase):
                     self.assertEqual([], leftovers)
                 finally:
                     shutil.rmtree(root, ignore_errors=True)
+
+    def test_fail_closed_blocker_is_public_before_assets_and_source_json(self):
+        with tempfile.TemporaryDirectory() as temp:
+            pending = os.path.join(temp, "material_build_pending.json")
+            raw = os.path.join(temp, "source_raw_input.json")
+            report = os.path.join(temp, "parse_report.json")
+            old = {
+                pending: b"OLD-PENDING",
+                raw: b"OLD-RAW",
+                report: b"OLD-REPORT",
+            }
+            for path, payload in old.items():
+                with open(path, "wb") as stream:
+                    stream.write(payload)
+            new_pending = {"status": "pending"}
+            new_raw = {"raw": "new"}
+            new_report = {"report": "new"}
+
+            def inspect_asset_boundary(_plan, journal=None):
+                self.assertEqual(
+                    B._publication_json_bytes(new_pending),
+                    Path(pending).read_bytes(),
+                )
+                self.assertEqual(old[raw], Path(raw).read_bytes())
+                self.assertEqual(old[report], Path(report).read_bytes())
+                return journal
+
+            with mock.patch.object(
+                    B, "_publish_asset_plan",
+                    side_effect=inspect_asset_boundary):
+                B._publish_builder_transaction(
+                    ((report, new_report), (raw, new_raw),
+                     (pending, new_pending)),
+                    asset_plans=({"sentinel": True},),
+                    blocker_paths=(pending,),
+                )
+
+            self.assertEqual(
+                B._publication_json_bytes(new_raw), Path(raw).read_bytes()
+            )
+            self.assertEqual(
+                B._publication_json_bytes(new_report), Path(report).read_bytes()
+            )
+
+    def test_failed_non_blocker_rollback_retains_current_blocker(self):
+        with tempfile.TemporaryDirectory() as temp:
+            pending = os.path.join(temp, "material_build_pending.json")
+            raw = os.path.join(temp, "source_raw_input.json")
+            report = os.path.join(temp, "parse_report.json")
+            for path, payload in (
+                    (pending, b"OLD-PENDING"),
+                    (raw, b"OLD-RAW"),
+                    (report, b"OLD-REPORT")):
+                Path(path).write_bytes(payload)
+            new_pending = {"status": "pending", "generation": "new"}
+            new_raw = {"raw": "new"}
+            new_report = {"report": "new"}
+            real_replace = B._replace_publication_stage
+            replace_count = [0]
+
+            def fail_after_report(temporary, destination):
+                replace_count[0] += 1
+                if replace_count[0] == 3:
+                    raise OSError("injected forward failure")
+                return real_replace(temporary, destination)
+
+            real_restore = B._atomic_restore_publication_bytes
+
+            def fail_report_restore(path, payload):
+                if path == report:
+                    raise OSError("injected report rollback failure")
+                return real_restore(path, payload)
+
+            with mock.patch.object(
+                    B, "_replace_publication_stage",
+                    side_effect=fail_after_report), mock.patch.object(
+                    B, "_atomic_restore_publication_bytes",
+                    side_effect=fail_report_restore), self.assertRaisesRegex(
+                    OSError, "builder publication rollback failed"):
+                B._publish_builder_transaction(
+                    ((report, new_report), (raw, new_raw),
+                     (pending, new_pending)),
+                    blocker_paths=(pending,),
+                )
+
+            self.assertEqual(b"OLD-RAW", Path(raw).read_bytes())
+            self.assertEqual(
+                B._publication_json_bytes(new_report), Path(report).read_bytes()
+            )
+            self.assertEqual(
+                B._publication_json_bytes(new_pending), Path(pending).read_bytes()
+            )
+
+    def test_unknown_blocker_path_rejects_without_replacing_any_json(self):
+        with tempfile.TemporaryDirectory() as temp:
+            raw = os.path.join(temp, "source_raw_input.json")
+            missing = os.path.join(temp, "material_build_pending.json")
+            with open(raw, "wb") as stream:
+                stream.write(b"OLD-RAW")
+            with self.assertRaisesRegex(ValueError, "blocker path"):
+                B._publish_builder_transaction(
+                    ((raw, {"raw": "new"}),),
+                    blocker_paths=(missing,),
+                )
+            self.assertEqual(b"OLD-RAW", Path(raw).read_bytes())
+            self.assertFalse(os.path.lexists(missing))
+
+    def test_standalone_builder_refuses_role_migration_without_orchestrator(self):
+        with tempfile.TemporaryDirectory() as temp:
+            args = types.SimpleNamespace(
+                out=os.path.join(temp, "source_raw_input.json"),
+                report=os.path.join(temp, "parse_report.json"),
+            )
+
+            def fake_run(_args, **kwargs):
+                kwargs["_deferred_asset_plans"].append({
+                    "role_promotions": ({"path": "legacy.png"},),
+                })
+                return 0, {"phases": [], "quiz_bank": []}, {
+                    "warnings": [], "ai_review": [],
+                }
+
+            with mock.patch.object(B, "run", side_effect=fake_run), \
+                    mock.patch.object(B, "_publish_builder_transaction") as publish:
+                code = B._main_locked(args)
+
+            self.assertEqual(5, code)
+            publish.assert_not_called()
+            self.assertFalse(os.path.lexists(args.out))
+            self.assertFalse(os.path.lexists(args.report))
 
     def test_asset_publish_raise_after_replace_still_rolls_back_everything(self):
         (materials, workspace, assets, out, report,
