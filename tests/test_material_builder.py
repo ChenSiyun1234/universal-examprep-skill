@@ -5,6 +5,7 @@ All tests are stdlib-only and NEVER import pypdf/pypdfium2/PyMuPDF: the parser c
 synthetic page text, and the PDF backend is a fake object injected into run(). This mirrors CI,
 where the optional PDF dependencies are not installed.
 """
+import copy
 import importlib.util
 import hashlib
 import json
@@ -1658,6 +1659,73 @@ class PublicationLocking(unittest.TestCase):
         )
         return materials, workspace, assets, out, report, backend, name
 
+    def _attempt_promotion_fixture(
+            self, temp, *, old_role="answer_context",
+            new_role="student_attempt", old_id="hw-1", new_id="hw-1",
+            old_chapter=1, new_chapter=1, old_source="homework/hw1.pdf",
+            new_source="homework/hw1.pdf", old_source_type="homework",
+            new_source_type="homework", old_source_sha256=None,
+            new_source_sha256=None, omit_old=(), omit_new=(),
+            staged_bytes=PNG):
+        workspace = os.path.join(temp, "workspace")
+        destination = os.path.join(workspace, "references", "assets")
+        stage = os.path.join(temp, "stage")
+        ingest = os.path.join(workspace, ".ingest")
+        os.makedirs(destination)
+        os.makedirs(stage)
+        os.makedirs(ingest)
+        relative = "references/assets/legacy-answer.png"
+        with open(os.path.join(destination, "legacy-answer.png"), "wb") as stream:
+            stream.write(PNG)
+        with open(os.path.join(stage, "legacy-answer.png"), "wb") as stream:
+            stream.write(staged_bytes)
+        asset_sha256 = hashlib.sha256(PNG).hexdigest()
+        old_source_sha256 = old_source_sha256 or ("1" * 64)
+        new_source_sha256 = new_source_sha256 or old_source_sha256
+
+        def asset(role, source_file, source_sha256, omitted):
+            value = {
+                "path": relative,
+                "role": role,
+                "sha256": asset_sha256,
+                "source_file": source_file,
+                "source_sha256": source_sha256,
+            }
+            for name in omitted:
+                value.pop(name, None)
+            return value
+
+        old_item = {
+            "id": old_id, "chapter": old_chapter,
+            "source_type": old_source_type, "source_file": old_source,
+            "assets": [asset(
+                old_role, old_source, old_source_sha256, set(omit_old)
+            )],
+        }
+        new_item = {
+            "id": new_id, "chapter": new_chapter,
+            "source_type": new_source_type, "source_file": new_source,
+            "assets": [asset(
+                new_role, new_source, new_source_sha256, set(omit_new)
+            )],
+        }
+        references = os.path.dirname(destination)
+        with open(os.path.join(references, "quiz_bank.json"), "w",
+                  encoding="utf-8") as stream:
+            json.dump([old_item], stream)
+        with open(os.path.join(references, "teaching_examples.json"), "w",
+                  encoding="utf-8") as stream:
+            json.dump([], stream)
+        with open(os.path.join(ingest, "content_units.jsonl"), "w",
+                  encoding="utf-8"):
+            pass
+        candidate = {
+            "quiz_bank": [new_item],
+            "teaching_examples": [],
+            "ingestion": {"content_units": []},
+        }
+        return workspace, destination, stage, relative, candidate
+
     def test_staged_builder_never_overwrites_unowned_target_or_json(self):
         (materials, unused_workspace, assets, out, report,
          backend, name) = self._visual_publication_fixture()
@@ -1856,6 +1924,241 @@ class PublicationLocking(unittest.TestCase):
                 B._plan_staged_assets(
                     stage, destination, candidate, workspace
                 )
+
+    def test_staged_candidate_allows_exact_legacy_answer_attempt_promotion(self):
+        with tempfile.TemporaryDirectory() as temp:
+            (workspace, destination, stage,
+             relative, candidate) = self._attempt_promotion_fixture(temp)
+
+            plan = B._plan_staged_assets(
+                stage, destination, candidate, workspace
+            )
+
+            self.assertEqual(1, len(plan["publication"]))
+            self.assertFalse(plan["publication"][0][2])
+            self.assertEqual(({
+                "path": relative,
+                "from_roles": ["answer_context"],
+                "to_roles": ["student_attempt"],
+                "sha256": hashlib.sha256(PNG).hexdigest(),
+                "source_file": "homework/hw1.pdf",
+                "source_sha256": "1" * 64,
+                "item_chapter": "1",
+                "item_id": "hw-1",
+                "reason": "legacy_answer_context_to_student_attempt",
+            },), plan["role_promotions"])
+
+    def test_staged_candidate_attempt_promotion_still_requires_identical_bytes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            (workspace, destination, stage, _relative,
+             candidate) = self._attempt_promotion_fixture(
+                 temp, staged_bytes=PNG + b"different-revision"
+             )
+
+            with self.assertRaisesRegex(ValueError, "different bytes"):
+                B._plan_staged_assets(
+                    stage, destination, candidate, workspace
+                )
+
+    def test_attempt_promotion_rejects_every_other_old_role(self):
+        for old_role in ("question_context", "figure", "worked_solution"):
+            with self.subTest(old_role=old_role), tempfile.TemporaryDirectory() as temp:
+                (workspace, destination, stage, _relative,
+                 candidate) = self._attempt_promotion_fixture(
+                     temp, old_role=old_role
+                 )
+                with self.assertRaisesRegex(
+                        ValueError, "conflicts with existing workspace ownership"):
+                    B._plan_staged_assets(
+                        stage, destination, candidate, workspace
+                    )
+
+    def test_attempt_promotion_rejects_cross_item_or_chapter_owner(self):
+        cases = (
+            {"new_id": "hw-2"},
+            {"new_chapter": 2},
+        )
+        for changes in cases:
+            with self.subTest(changes=changes), tempfile.TemporaryDirectory() as temp:
+                (workspace, destination, stage, _relative,
+                 candidate) = self._attempt_promotion_fixture(temp, **changes)
+                with self.assertRaisesRegex(
+                        ValueError, "conflicts with workspace ownership"):
+                    B._plan_staged_assets(
+                        stage, destination, candidate, workspace
+                    )
+
+    def test_attempt_promotion_rejects_multiple_candidate_item_owners(self):
+        with tempfile.TemporaryDirectory() as temp:
+            (workspace, destination, stage, _relative,
+             candidate) = self._attempt_promotion_fixture(temp)
+            second = copy.deepcopy(candidate["quiz_bank"][0])
+            second["id"] = "hw-2"
+            candidate["quiz_bank"].append(second)
+
+            with self.assertRaisesRegex(
+                    ValueError, "conflicts with workspace ownership"):
+                B._plan_staged_assets(
+                    stage, destination, candidate, workspace
+                )
+
+    def test_attempt_promotion_rejects_missing_or_changed_provenance(self):
+        cases = (
+            {"omit_old": ("sha256",)},
+            {"omit_new": ("source_file",)},
+            {"omit_new": ("source_sha256",)},
+            {"new_source_sha256": "2" * 64},
+            {"new_source": "homework/hw2.pdf"},
+        )
+        for changes in cases:
+            with self.subTest(changes=changes), tempfile.TemporaryDirectory() as temp:
+                (workspace, destination, stage, _relative,
+                 candidate) = self._attempt_promotion_fixture(temp, **changes)
+                with self.assertRaises(ValueError):
+                    B._plan_staged_assets(
+                        stage, destination, candidate, workspace
+                    )
+        with tempfile.TemporaryDirectory() as temp:
+            (workspace, destination, stage, _relative,
+             candidate) = self._attempt_promotion_fixture(temp)
+            candidate["quiz_bank"][0]["assets"][0]["sha256"] = "2" * 64
+            with self.assertRaises(ValueError):
+                B._plan_staged_assets(
+                    stage, destination, candidate, workspace
+                )
+
+    def test_attempt_promotion_rejects_non_homework_or_mismatched_owner_source(self):
+        cases = (
+            {"old_source_type": "lecture_quiz"},
+            {"new_source_type": "lecture_quiz"},
+        )
+        for changes in cases:
+            with self.subTest(changes=changes), tempfile.TemporaryDirectory() as temp:
+                (workspace, destination, stage, _relative,
+                 candidate) = self._attempt_promotion_fixture(temp, **changes)
+                with self.assertRaises(ValueError):
+                    B._plan_staged_assets(
+                        stage, destination, candidate, workspace
+                    )
+        with tempfile.TemporaryDirectory() as temp:
+            (workspace, destination, stage, _relative,
+             candidate) = self._attempt_promotion_fixture(temp)
+            candidate["quiz_bank"][0]["source_file"] = "homework/other.pdf"
+            with self.assertRaisesRegex(ValueError, "same homework source"):
+                B._plan_staged_assets(
+                    stage, destination, candidate, workspace
+                )
+
+    def test_attempt_promotion_rejects_reverse_downgrade(self):
+        with tempfile.TemporaryDirectory() as temp:
+            (workspace, destination, stage, _relative,
+             candidate) = self._attempt_promotion_fixture(
+                 temp, old_role="student_attempt", new_role="answer_context"
+             )
+            with self.assertRaisesRegex(ValueError, "student_attempt"):
+                B._plan_staged_assets(
+                    stage, destination, candidate, workspace
+                )
+
+    def test_attempt_promotion_rejects_hardlink_alias_path(self):
+        with tempfile.TemporaryDirectory() as temp:
+            (workspace, destination, stage, relative,
+             candidate) = self._attempt_promotion_fixture(temp)
+            old_path = os.path.join(destination, "legacy-answer.png")
+            alias_path = os.path.join(destination, "alias.png")
+            try:
+                os.link(old_path, alias_path)
+            except (OSError, NotImplementedError):
+                self.skipTest("hard links are unavailable")
+            os.unlink(os.path.join(stage, "legacy-answer.png"))
+            with open(os.path.join(stage, "alias.png"), "wb") as stream:
+                stream.write(PNG)
+            alias_relative = "references/assets/alias.png"
+            candidate["quiz_bank"][0]["assets"][0]["path"] = alias_relative
+
+            with self.assertRaisesRegex(
+                    ValueError, "conflicts with workspace ownership"):
+                B._plan_staged_assets(
+                    stage, destination, candidate, workspace
+                )
+            self.assertTrue(os.path.samefile(
+                os.path.join(workspace, *relative.split("/")), alias_path
+            ))
+
+    @unittest.skipUnless(os.name == "nt", "Windows paths are case-insensitive")
+    def test_attempt_promotion_rejects_asset_path_case_only_change(self):
+        with tempfile.TemporaryDirectory() as temp:
+            (workspace, destination, stage, _relative,
+             candidate) = self._attempt_promotion_fixture(temp)
+            os.unlink(os.path.join(stage, "legacy-answer.png"))
+            with open(os.path.join(stage, "Legacy-answer.png"), "wb") as stream:
+                stream.write(PNG)
+            candidate["quiz_bank"][0]["assets"][0]["path"] = (
+                "references/assets/Legacy-answer.png"
+            )
+            with self.assertRaisesRegex(ValueError, "workspace ownership"):
+                B._plan_staged_assets(stage, destination, candidate, workspace)
+
+    def test_attempt_promotion_rejects_source_path_case_only_change(self):
+        with tempfile.TemporaryDirectory() as temp:
+            (workspace, destination, stage, _relative,
+             candidate) = self._attempt_promotion_fixture(
+                 temp, new_source="homework/HW1.pdf"
+             )
+            with self.assertRaisesRegex(ValueError, "provenance"):
+                B._plan_staged_assets(stage, destination, candidate, workspace)
+
+    def test_attempt_promotion_publish_rejects_same_byte_hardlink_replacement(self):
+        with tempfile.TemporaryDirectory() as temp:
+            (workspace, destination, stage, _relative,
+             candidate) = self._attempt_promotion_fixture(temp)
+            plan = B._plan_staged_assets(stage, destination, candidate, workspace)
+            target = os.path.join(destination, "legacy-answer.png")
+            replacement = os.path.join(destination, "same-bytes.png")
+            with open(replacement, "wb") as stream:
+                stream.write(PNG)
+            os.unlink(target)
+            try:
+                os.link(replacement, target)
+            except (OSError, NotImplementedError):
+                self.skipTest("hard links are unavailable")
+
+            with self.assertRaisesRegex(ValueError, "authority drifted"):
+                B._publish_asset_plan(plan)
+            self.assertTrue(os.path.samefile(target, replacement))
+
+    def test_attempt_promotion_rechecks_full_candidate_alias_policy(self):
+        with tempfile.TemporaryDirectory() as temp:
+            (workspace, destination, stage, _relative,
+             candidate) = self._attempt_promotion_fixture(temp)
+            target = os.path.join(destination, "legacy-answer.png")
+            alias = os.path.join(destination, "candidate-prompt.png")
+            with open(alias, "wb") as stream:
+                stream.write(PNG)
+            with open(os.path.join(stage, "candidate-prompt.png"), "wb") as stream:
+                stream.write(PNG)
+            prompt = copy.deepcopy(candidate["quiz_bank"][0])
+            prompt.update({
+                "id": "hw-2", "chapter": 2,
+                "source_file": "homework/hw2.pdf",
+            })
+            prompt["assets"][0].update({
+                "path": "references/assets/candidate-prompt.png",
+                "role": "question_context",
+                "source_file": "homework/hw2.pdf",
+                "source_sha256": "2" * 64,
+            })
+            candidate["quiz_bank"].append(prompt)
+            plan = B._plan_staged_assets(stage, destination, candidate, workspace)
+            os.unlink(alias)
+            try:
+                os.link(target, alias)
+            except (OSError, NotImplementedError):
+                self.skipTest("hard links are unavailable")
+
+            with self.assertRaisesRegex(ValueError, "candidate asset policy drifted"):
+                B._publish_asset_plan(plan)
+            self.assertTrue(os.path.samefile(target, alias))
 
     def test_staged_candidate_allows_idempotent_cross_item_prompt_answer_reuse(self):
         with tempfile.TemporaryDirectory() as temp:

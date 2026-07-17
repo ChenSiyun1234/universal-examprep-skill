@@ -340,6 +340,299 @@ class IngestCourseTest(unittest.TestCase):
             self.assertIs(raw_input, publications[1][1])
             self.assertEqual([plan], publish.call_args.kwargs["asset_plans"])
 
+    def test_material_build_no_publish_failure_preserves_last_good_report(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            materials = root / "materials"
+            workspace = root / "workspace"
+            ingest = workspace / ".ingest"
+            materials.mkdir()
+            ingest.mkdir(parents=True)
+            (materials / "ch01_lecture.txt").write_text(
+                "Chapter 1\nA source-backed explanation.", encoding="utf-8"
+            )
+            report_path = ingest / "parse_report.json"
+            raw_path = ingest / "source_raw_input.json"
+            manifest_path = ingest / "ai_review_manifest.json"
+            report_path.write_bytes(material_builder._publication_json_bytes({
+                "generation": "last-good",
+                "warnings": [],
+                "ai_review": [],
+            }))
+            raw_path.write_bytes(material_builder._publication_json_bytes({
+                "generation": "last-good",
+                "phases": [],
+                "quiz_bank": [],
+            }))
+            manifest_path.write_bytes(material_builder._publication_json_bytes({
+                "generation": "last-good",
+                "entries": [],
+            }))
+            original_bytes = {
+                path: path.read_bytes()
+                for path in (report_path, raw_path, manifest_path)
+            }
+            ready = self._start_gate(True)
+            failure_report = {
+                "warnings": ["asset_publication_rejected: role drift"],
+                "ai_review": [],
+                "_no_publish_on_failure": True,
+            }
+            real_publish = material_builder._publish_builder_transaction
+
+            output = io.StringIO()
+            with mock.patch.object(
+                    ingest_course.exam_start,
+                    "check_start_gate",
+                    return_value=ready), \
+                    mock.patch.object(
+                        ingest_course,
+                        "_run",
+                        return_value=SimpleNamespace(
+                            returncode=0, stdout="", stderr=""
+                        ),
+                    ), \
+                    mock.patch.object(
+                        material_builder,
+                        "run",
+                        return_value=(
+                            5,
+                            {"error": "asset publication rejected before workspace mutation"},
+                            failure_report,
+                        ),
+                    ), \
+                    mock.patch.object(
+                        material_builder,
+                        "_publish_builder_transaction",
+                        wraps=real_publish,
+                    ) as publish, \
+                    contextlib.redirect_stdout(output):
+                code = ingest_course.run([
+                    "--materials", str(materials),
+                    "--workspace", str(workspace),
+                    "--render-pages", "never",
+                    "--visual-index", "never",
+                    "--json",
+                ])
+
+            self.assertEqual(5, code)
+            publish.assert_not_called()
+            for path, expected in original_bytes.items():
+                self.assertEqual(expected, path.read_bytes(), str(path))
+            payload = json.loads(output.getvalue())
+            self.assertFalse(payload["process_success"])
+            self.assertIn("before workspace mutation", payload["error"])
+
+    def test_material_build_ordinary_failure_publishes_current_report(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            materials = root / "materials"
+            workspace = root / "workspace"
+            ingest = workspace / ".ingest"
+            materials.mkdir()
+            ingest.mkdir(parents=True)
+            (materials / "ch01_lecture.txt").write_text(
+                "Chapter 1\nA source-backed explanation.", encoding="utf-8"
+            )
+            report_path = ingest / "parse_report.json"
+            report_path.write_bytes(material_builder._publication_json_bytes({
+                "generation": "last-good",
+                "warnings": [],
+                "ai_review": [],
+            }))
+            ready = self._start_gate(True)
+            failure_report = {
+                "warnings": ["no_material_files"],
+                "ai_review": [],
+            }
+            real_publish = material_builder._publish_builder_transaction
+
+            output = io.StringIO()
+            with mock.patch.object(
+                    ingest_course.exam_start,
+                    "check_start_gate",
+                    return_value=ready), \
+                    mock.patch.object(
+                        ingest_course,
+                        "_run",
+                        return_value=SimpleNamespace(
+                            returncode=0, stdout="", stderr=""
+                        ),
+                    ), \
+                    mock.patch.object(
+                        material_builder,
+                        "run",
+                        return_value=(
+                            4,
+                            {"error": "ordinary material build failure"},
+                            failure_report,
+                        ),
+                    ), \
+                    mock.patch.object(
+                        material_builder,
+                        "_publish_builder_transaction",
+                        wraps=real_publish,
+                    ) as publish, \
+                    contextlib.redirect_stdout(output):
+                code = ingest_course.run([
+                    "--materials", str(materials),
+                    "--workspace", str(workspace),
+                    "--render-pages", "never",
+                    "--visual-index", "never",
+                    "--json",
+                ])
+
+            self.assertEqual(4, code)
+            publish.assert_called_once()
+            publications = publish.call_args.args[0]
+            self.assertEqual([(str(report_path), failure_report)], publications)
+            self.assertEqual(failure_report, json.loads(report_path.read_text(
+                encoding="utf-8"
+            )))
+            self.assertFalse((ingest / "source_raw_input.json").exists())
+            self.assertFalse((ingest / "ai_review_manifest.json").exists())
+            payload = json.loads(output.getvalue())
+            self.assertIn("ordinary material build failure", payload["error"])
+
+    def test_material_build_rejects_non_boolean_no_publish_sentinel(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            materials = root / "materials"
+            workspace = root / "workspace"
+            ingest = workspace / ".ingest"
+            materials.mkdir()
+            ingest.mkdir(parents=True)
+            (materials / "ch01_lecture.txt").write_text(
+                "Chapter 1\nA source-backed explanation.", encoding="utf-8"
+            )
+            report_path = ingest / "parse_report.json"
+            original = material_builder._publication_json_bytes({
+                "generation": "last-good",
+                "warnings": [],
+                "ai_review": [],
+            })
+            report_path.write_bytes(original)
+            ready = self._start_gate(True)
+
+            output = io.StringIO()
+            with mock.patch.object(
+                    ingest_course.exam_start,
+                    "check_start_gate",
+                    return_value=ready), \
+                    mock.patch.object(
+                        ingest_course,
+                        "_run",
+                        return_value=SimpleNamespace(
+                            returncode=0, stdout="", stderr=""
+                        ),
+                    ), \
+                    mock.patch.object(
+                        material_builder,
+                        "run",
+                        return_value=(
+                            5,
+                            {"error": "builder failure"},
+                            {
+                                "warnings": [],
+                                "ai_review": [],
+                                "_no_publish_on_failure": "true",
+                            },
+                        ),
+                    ), \
+                    mock.patch.object(
+                        material_builder,
+                        "_publish_builder_transaction",
+                        wraps=material_builder._publish_builder_transaction,
+                    ) as publish, \
+                    contextlib.redirect_stdout(output):
+                code = ingest_course.run([
+                    "--materials", str(materials),
+                    "--workspace", str(workspace),
+                    "--render-pages", "never",
+                    "--visual-index", "never",
+                    "--json",
+                ])
+
+            self.assertEqual(2, code)
+            publish.assert_not_called()
+            self.assertEqual(original, report_path.read_bytes())
+            payload = json.loads(output.getvalue())
+            self.assertEqual(
+                "publication_failed", payload["steps"][-1]["operation_error"]
+            )
+            self.assertIn("non-boolean", payload["error"])
+
+    def test_material_build_success_with_no_publish_sentinel_fails_closed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            materials = root / "materials"
+            workspace = root / "workspace"
+            ingest = workspace / ".ingest"
+            materials.mkdir()
+            ingest.mkdir(parents=True)
+            (materials / "ch01_lecture.txt").write_text(
+                "Chapter 1\nA source-backed explanation.", encoding="utf-8"
+            )
+            report_path = ingest / "parse_report.json"
+            original = material_builder._publication_json_bytes({
+                "generation": "last-good",
+                "warnings": [],
+                "ai_review": [],
+            })
+            report_path.write_bytes(original)
+            ready = self._start_gate(True)
+
+            def contradictory_builder(_args, **kwargs):
+                kwargs["_deferred_asset_plans"].append({"sentinel": "asset-plan"})
+                return (
+                    0,
+                    {"phases": [], "quiz_bank": []},
+                    {
+                        "warnings": [],
+                        "ai_review": [],
+                        "_no_publish_on_failure": True,
+                    },
+                )
+
+            output = io.StringIO()
+            with mock.patch.object(
+                    ingest_course.exam_start,
+                    "check_start_gate",
+                    return_value=ready), \
+                    mock.patch.object(
+                        ingest_course,
+                        "_run",
+                        return_value=SimpleNamespace(
+                            returncode=0, stdout="", stderr=""
+                        ),
+                    ) as subprocess_run, \
+                    mock.patch.object(
+                        material_builder,
+                        "run",
+                        side_effect=contradictory_builder,
+                    ), \
+                    mock.patch.object(
+                        material_builder,
+                        "_publish_builder_transaction",
+                        wraps=material_builder._publish_builder_transaction,
+                    ) as publish, \
+                    contextlib.redirect_stdout(output):
+                code = ingest_course.run([
+                    "--materials", str(materials),
+                    "--workspace", str(workspace),
+                    "--render-pages", "never",
+                    "--visual-index", "never",
+                    "--json",
+                ])
+
+            self.assertEqual(2, code)
+            self.assertEqual(1, subprocess_run.call_count)
+            publish.assert_not_called()
+            self.assertEqual(original, report_path.read_bytes())
+            self.assertFalse((ingest / "source_raw_input.json").exists())
+            payload = json.loads(output.getvalue())
+            self.assertIn("returned success", payload["error"])
+
     def test_interlock_raw_replacement_is_rejected_by_child_generation_pin(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

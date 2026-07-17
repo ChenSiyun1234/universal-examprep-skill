@@ -439,6 +439,7 @@ def workspace_asset_policy_snapshot(ws):
         "tainted_keys": audit["tainted_keys"],
         "tainted_identity_keys": audit["tainted_identity_keys"],
         "conflicts": audit["conflicts"],
+        "item_groups": audit["item_groups"],
         # Preserve the established consumer key while broadening it from unsafe
         # paths to every malformed/unknown asset declaration.
         "unsafe_paths": audit["invalid_declarations"],

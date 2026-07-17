@@ -31,6 +31,7 @@ Usage:
   python scripts/validate_workspace.py skill_workspace
 """
 import argparse
+import copy
 import hashlib
 import importlib
 import importlib.metadata
@@ -50,6 +51,7 @@ try:
         SOURCE_UNIT_LANGUAGE_CODES,
         is_language_neutral_formula,
         is_link_or_reparse,
+        normalize_workspace_path,
         source_language_evidence,
         workspace_publication_lock,
     )
@@ -80,6 +82,7 @@ except ImportError:  # imported as scripts.build_raw_input_from_workspace in uni
         SOURCE_UNIT_LANGUAGE_CODES,
         is_language_neutral_formula,
         is_link_or_reparse,
+        normalize_workspace_path,
         source_language_evidence,
         workspace_publication_lock,
     )
@@ -4195,12 +4198,101 @@ def _asset_role_map(*collections, workspace=None):
     return roles
 
 
+def _legacy_attempt_receipt(path, sha256, old, new, workspace):
+    """Sign the sole legacy role correction from exact live evidence."""
+
+    identity = workspace_asset_identity_key(path, workspace)
+    canonical = normalize_workspace_path(path)
+
+    def facts(policy):
+        rows = tuple(policy.get(name) or () for name in (
+            "quiz_rows", "teaching_rows", "content_units"))
+        roles, paths, groups, revisions, owners = set(), set(), set(), set(), []
+        incomplete = False
+        for collection in rows:
+            for declared, role in iter_asset_declarations(collection):
+                if workspace_asset_identity_key(declared, workspace) == identity:
+                    roles.add(role)
+                    paths.add(normalize_workspace_path(declared))
+            for row in collection:
+                if not isinstance(row, dict):
+                    continue
+                metadata = row.get("metadata")
+                for assets in (row.get("assets"), metadata.get("assets")
+                               if isinstance(metadata, dict) else None):
+                    if not isinstance(assets, (list, tuple)):
+                        continue
+                    for asset in assets:
+                        if (not isinstance(asset, dict)
+                                or workspace_asset_identity_key(
+                                    asset.get("path"), workspace) != identity):
+                            continue
+                        try:
+                            revision = (
+                                asset.get("sha256"),
+                                normalize_workspace_path(asset.get("path")),
+                                normalize_workspace_path(asset.get("source_file")),
+                                asset.get("source_sha256"),
+                            )
+                        except ValueError:
+                            revision = ()
+                        if (len(revision) != 4 or any(
+                                not isinstance(value, str) for value in revision)
+                                or not re.fullmatch(r"[0-9a-f]{64}", revision[0])
+                                or not re.fullmatch(r"[0-9a-f]{64}", revision[3])):
+                            incomplete = True
+                        else:
+                            revisions.add(revision)
+        for group, declarations in (policy.get("item_groups") or {}).items():
+            if any(workspace_asset_identity_key(declared, workspace) == identity
+                   for declared, _role, _key in declarations):
+                groups.add(group)
+        for collection in rows[:2]:
+            for row in collection:
+                if (isinstance(row, dict) and any(
+                        workspace_asset_identity_key(declared, workspace) == identity
+                        for declared, _role in iter_asset_declarations((row,)))):
+                    try:
+                        source = normalize_workspace_path(row.get("source_file"))
+                    except ValueError:
+                        source = None
+                    owners.append((row.get("source_type"), source))
+        return roles, paths, groups, revisions, incomplete, owners
+
+    before, after = facts(old), facts(new)
+    if (before[0] != {"answer_context"} or after[0] != {STUDENT_ATTEMPT}
+            or before[1] != {canonical} or after[1] != {canonical}
+            or before[2] != after[2] or len(before[2]) != 1):
+        raise ValueError("legacy role correction conflicts with workspace ownership")
+    group = next(iter(before[2]))
+    if (not isinstance(group, tuple) or len(group) != 3
+            or group[0] != "item" or not group[1] or not group[2]):
+        raise ValueError("legacy role correction lacks a stable item owner")
+    if (before[4] or after[4] or before[3] != after[3]
+            or len(before[3]) != 1):
+        raise ValueError("legacy role correction has invalid provenance")
+    asset_sha, asset_path, source_path, source_sha = next(iter(before[3]))
+    if asset_sha != sha256:
+        raise ValueError("legacy role correction provenance does not match staged bytes")
+    for item in (before, after):
+        if (not item[5] or any(kind != "homework" or source != source_path
+                               for kind, source in item[5])):
+            raise ValueError("legacy role correction owner is not the same homework source")
+    return {
+        "path": asset_path, "from_roles": ["answer_context"],
+        "to_roles": [STUDENT_ATTEMPT], "sha256": sha256,
+        "source_file": source_path, "source_sha256": source_sha,
+        "item_chapter": group[1], "item_id": group[2],
+        "reason": "legacy_answer_context_to_student_attempt",
+    }
+
+
 def _existing_workspace_asset_policy(workspace):
     """Load every durable asset layer, while permitting a genuinely new workspace."""
 
     empty = {"quiz_rows": [], "teaching_rows": [], "content_units": [],
              "tainted_keys": set(), "tainted_identity_keys": set(),
-             "conflicts": [], "unsafe_paths": []}
+             "conflicts": [], "unsafe_paths": [], "item_groups": {}}
     if not workspace:
         return empty
     quiz_path = os.path.join(workspace, "references", "quiz_bank.json")
@@ -4349,6 +4441,11 @@ def _plan_staged_assets(stage_root, destination_root, raw_input, workspace):
         existing.get("content_units"),
         workspace=identity_workspace,
     )
+    candidate_policy = {
+        "quiz_rows": quiz_rows, "teaching_rows": teaching_rows,
+        "content_units": content_units,
+        "item_groups": candidate_audit["item_groups"],
+    }
     staged_keys = {
         (workspace_asset_identity_key(record["workspace_path"], identity_workspace)
          if identity_workspace is not None else record["key"])
@@ -4371,6 +4468,8 @@ def _plan_staged_assets(stage_root, destination_root, raw_input, workspace):
     if _path_has_link_or_reparse(destination_root):
         raise ValueError("destination asset root is link/reparse-backed")
     publication = []
+    role_promotions = []
+    promotion_authorizations = []
     for record in staged:
         comparison_key = (
             workspace_asset_identity_key(
@@ -4379,11 +4478,18 @@ def _plan_staged_assets(stage_root, destination_root, raw_input, workspace):
         )
         old_roles = existing_roles.get(comparison_key, set())
         new_roles = candidate_roles.get(comparison_key, set())
+        role_changed = bool(old_roles and old_roles != new_roles)
+        promotes_to_student_attempt = (
+            role_changed
+            and old_roles == {"answer_context"}
+            and new_roles == {STUDENT_ATTEMPT}
+        )
         if old_roles:
             # The policy audits above decide whether a role combination is legal.
-            # Publication only permits an idempotent rebuild of the exact same
-            # physical asset ownership; any role-set change is rejected.
-            if old_roles != new_roles:
+            # Publication permits an idempotent rebuild or the one monotonic
+            # promotion above.  Byte identity is still checked below before a
+            # promotion becomes part of the immutable plan.
+            if role_changed and not promotes_to_student_attempt:
                 raise ValueError(
                     "staged target conflicts with existing workspace ownership: %s "
                     "(%s -> %s)" % (
@@ -4409,6 +4515,13 @@ def _plan_staged_assets(stage_root, destination_root, raw_input, workspace):
                     "refusing to overwrite an existing asset target with different bytes: %s"
                     % record["workspace_path"]
                 )
+            if promotes_to_student_attempt:
+                receipt = _legacy_attempt_receipt(
+                    record["workspace_path"],
+                    hashlib.sha256(record["payload"]).hexdigest(),
+                    existing, candidate_policy, identity_workspace)
+                role_promotions.append(receipt)
+                promotion_authorizations.append((comparison_key, receipt))
             publication.append((record, destination, False))
         else:
             if old_roles:
@@ -4421,7 +4534,51 @@ def _plan_staged_assets(stage_root, destination_root, raw_input, workspace):
     return {
         "destination_root": destination_root,
         "publication": tuple(publication),
+        "role_promotions": tuple(role_promotions),
+        "promotion_authorizations": tuple(promotion_authorizations),
+        "promotion_workspace": identity_workspace,
+        "promotion_candidate_policy": (
+            copy.deepcopy(candidate_policy) if role_promotions else None
+        ),
+        "promotion_candidate_findings": (
+            (tuple(candidate_audit["invalid_declarations"]),
+             tuple(candidate_audit["conflicts"])) if role_promotions else None
+        ),
     }
+
+
+def _recheck_role_promotions(plan):
+    authorizations = plan.get("promotion_authorizations") or ()
+    if not authorizations:
+        return
+    workspace = plan.get("promotion_workspace")
+    live = _existing_workspace_asset_policy(workspace)
+    if (live.get("unsafe_paths") or live.get("conflicts")):
+        raise ValueError("legacy asset promotion policy changed before publication")
+    frozen = plan.get("promotion_candidate_policy") or {}
+    candidate_audit = audit_asset_policy(
+        quiz_rows=frozen.get("quiz_rows"),
+        teaching_rows=frozen.get("teaching_rows"),
+        content_units=frozen.get("content_units"),
+        workspace=workspace,
+        allow_missing_workspace_assets=True,
+    )
+    findings = (
+        tuple(candidate_audit["invalid_declarations"]),
+        tuple(candidate_audit["conflicts"]),
+    )
+    if findings != plan.get("promotion_candidate_findings"):
+        raise ValueError("legacy candidate asset policy drifted before publication")
+    candidate_policy = dict(frozen)
+    candidate_policy["item_groups"] = candidate_audit["item_groups"]
+    for planned_identity, receipt in authorizations:
+        current_identity = workspace_asset_identity_key(receipt["path"], workspace)
+        if current_identity != planned_identity:
+            raise ValueError("legacy asset promotion authority drifted before publication")
+        verified = _legacy_attempt_receipt(
+            receipt["path"], receipt["sha256"], live, candidate_policy, workspace)
+        if verified != receipt:
+            raise ValueError("legacy asset promotion provenance drifted before publication")
 
 
 def _publish_asset_plan(plan, journal=None):
@@ -4439,6 +4596,7 @@ def _publish_asset_plan(plan, journal=None):
     created_files = journal["created_files"]
     created_dirs = journal["created_dirs"]
     try:
+        _recheck_role_promotions(plan)
         if _path_has_link_or_reparse(destination_root):
             raise ValueError("destination asset root changed after publication preflight")
         missing_root_dirs = []
@@ -4796,6 +4954,11 @@ def _publish_builder_transaction(json_publications, asset_plans=()):
             journal = {"created_files": [], "created_dirs": []}
             asset_journals.append(journal)
             _publish_asset_plan(plan, journal=journal)
+        # Rebind migration authority after all asset work and immediately
+        # before the first JSON replacement.  This catches a hardlink/identity
+        # change introduced inside the publication window.
+        for plan in asset_plans or ():
+            _recheck_role_promotions(plan)
         for entry in entries:
             path = entry["path"]
             _revalidate_publication_target(path, states[path])
@@ -4844,6 +5007,10 @@ def _run_unlocked(
             plan = _plan_staged_assets(
                 stage_root, original_root, raw_input, workspace
             )
+            if plan.get("role_promotions"):
+                report.setdefault("asset_role_promotions", []).extend(
+                    plan["role_promotions"]
+                )
             if deferred_asset_plans is None:
                 _publish_asset_plan(plan)
             else:

@@ -172,6 +172,19 @@ class Build(unittest.TestCase):
         self.assertEqual("", namespace["value"].__doc__)
         self.assertEqual(7, namespace["value"]())
 
+    def test_runtime_bytes_are_cross_checkout_line_ending_deterministic(self):
+        with tempfile.TemporaryDirectory(prefix="dist-eol-") as d:
+            fixture = os.path.join(d, "fixture.py")
+            with open(fixture, "wb") as stream:
+                stream.write(b"#!/usr/bin/env python\r\nvalue = 7\r\n")
+            original_root = build_dist.ROOT
+            try:
+                build_dist.ROOT = d
+                packed = build_dist._runtime_bytes("fixture.py")
+            finally:
+                build_dist.ROOT = original_root
+        self.assertEqual(b"#!/usr/bin/env python\nvalue = 7\n", packed)
+
     def test_zip_builds_and_preserves_layout(self):
         with tempfile.TemporaryDirectory(prefix="dist-") as d:
             out = os.path.join(d, "pkg.zip")

@@ -266,11 +266,33 @@ def run(argv=None, backend=None, adapter_runner=None):
                 _publication_locked=True,
                 _deferred_asset_plans=asset_plans,
             )
+            no_publish_marker = object()
+            no_publish_value = (
+                report.get("_no_publish_on_failure", no_publish_marker)
+                if isinstance(report, dict) else no_publish_marker
+            )
+            if (no_publish_value is not no_publish_marker
+                    and not isinstance(no_publish_value, bool)):
+                raise ValueError(
+                    "material builder returned a non-boolean "
+                    "_no_publish_on_failure sentinel"
+                )
+            suppress_failure_report = no_publish_value is True
+            if suppress_failure_report and code == 0:
+                raise ValueError(
+                    "material builder returned success with "
+                    "_no_publish_on_failure=true"
+                )
             publish_ready = runtime_ok("material_build_publish")
             if publish_ready:
                 publications = []
                 pending_raw_input_sha256 = None
-                if report is not None:
+                # A builder-side ownership/policy rejection promises that no
+                # workspace file changed.  Preserve that contract in the
+                # orchestrated path too; the diagnostic remains in the
+                # top-level command payload/stderr instead of replacing the
+                # last known-good parse report.
+                if report is not None and not suppress_failure_report:
                     publications.append((report_path, report))
                 if code == 0:
                     # Pin the deterministic byte generation about to be published.
@@ -301,13 +323,14 @@ def run(argv=None, backend=None, adapter_runner=None):
                         asset_plans=asset_plans if code == 0 else (),
                     )
 
-                if ingest_preexisting:
-                    publish_builder_batch()
-                else:
-                    # publication_lock owns state, but a brand-new .ingest had
-                    # no mutation lock yet.  Create and hold it before writing.
-                    with IngestionStore(workspace).mutation_lock():
+                if publications or (code == 0 and asset_plans):
+                    if ingest_preexisting:
                         publish_builder_batch()
+                    else:
+                        # publication_lock owns state, but a brand-new .ingest had
+                        # no mutation lock yet.  Create and hold it before writing.
+                        with IngestionStore(workspace).mutation_lock():
+                            publish_builder_batch()
                 raw_input_sha256 = pending_raw_input_sha256
     except ConflictError as exc:
         steps.append({

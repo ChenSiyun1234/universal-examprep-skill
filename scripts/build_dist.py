@@ -189,6 +189,10 @@ def _strip_python_comments(data):
 def _runtime_bytes(rel):
     with open(os.path.join(ROOT, *rel.split("/")), "rb") as stream:
         data = stream.read()
+    # Git checkouts may expose text as LF, CRLF, or a mixture after a partial
+    # edit.  Ship one canonical byte form so the package budget and release
+    # digest do not depend on the maintainer's host or core.autocrlf setting.
+    data = data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
     return _strip_python_comments(data) if rel.endswith(".py") else data
 
 

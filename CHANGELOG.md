@@ -4,6 +4,10 @@
 
 ## Unreleased
 
+- **旧版作业截图角色迁移**：仅在路径、章节/题目归属、作业来源、嵌套 provenance、源文件与资产 SHA-256、实时字节及物理文件身份全部唯一且一致时，允许把旧版 `answer_context` 精确升级为 `student_attempt`；候选策略会被冻结并在资产处理后、首个 JSON 替换前重新审计，任何别名、hardlink 或并发漂移都失败关闭。
+- **失败建库不再污染最后一次成功报告**：builder 明确声明 `_no_publish_on_failure=true` 时，`ingest_course.py` 只接受布尔值，并在失败路径保持既有 raw input、manifest 与 parse report 原字节不变；成功却请求抑制发布、或使用非布尔值都会拒绝执行。
+- **跨平台发行包可复现**：`build_dist.py` 在压缩前把运行时文本统一规范化为 LF，使 CRLF/LF checkout 生成同一份 ZIP，同时继续执行原有 570 KB 轻量化上限。
+
 - **完整章节 Study Guide 门禁**：`profile=full` 现在以当前章全部 teaching examples、全部 bank 记录（含 `gradable=false` 教学项）和 typed question units 为去重分母；章节/语言、题面替代、答案 provenance、notebook、逐字段 claim 与 live source revision 均在导入和渲染前失败关闭。
 - **来源与资产完整性**：统一按安全物理身份识别 hardlink/路径别名和全局 `student_attempt` 污染，绑定声明 SHA-256 与 live bytes；PNG/JPEG/WebP/GIF/BMP 使用共享严格解码校验，损坏图片不能进入建库、教学显示、Guide、QA 或小抄。
 - **整批原子发布与代际一致性**：builder、visual index、Study Guide 与 cheatsheet 的多文件/图片发布新增预检、journal、回滚及故障注入覆盖；normal ingestion 将编译输入绑定到 builder 产出的精确 raw-input generation，避免两次锁之间混入另一轮建库结果。
