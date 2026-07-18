@@ -47,7 +47,7 @@ Use when `exam-cram` routes the current phase to teaching, or the student asks t
 
 2. **Teach reproducibly.** Give each concept one concrete metaphor. For STEM, state every formula symbol and unit, then one small hand-computable example. Persist math as `$...$` or `$$...$$`; never leave raw `\frac`, `\sum`, or other TeX as the final reading view.
 
-3. **Use every walkthrough block in order** for every stored/teacher-flagged question and every linked question in zero-basic mode:
+3. **Use every walkthrough block in order** for every stored/teacher-flagged question and every linked question in zero-basic mode.
 
    **Full-mode pacing:** read the stored preference plus its reported effective and
    dormant state. `study_state.json.preferences.interaction_style` stores only
@@ -58,6 +58,10 @@ Use when `exam-cram` routes the current phase to teaching, or the student asks t
    --interaction-style <batch|step_by_step>` (or the strictly validated canonical
    `--pref interaction_style=...`). It never changes the lightweight page-batch route.
 
+   This option applies only to full-mode `teaching_examples.json` items. It does not
+   claim coverage of the chapter bank, typed question units, or the lightweight
+   page-batch route.
+
    - Effective `batch`: use the normal full-mode flow. A true
      `preferences.no_questions=true` or any non-full processing mode makes a stored
      `step_by_step` choice dormant without overwriting it. A stored `batch` choice
@@ -67,14 +71,20 @@ Use when `exam-cram` routes the current phase to teaching, or the student asks t
      `no_questions=false`, exact `current_phase`, and valid scoped manifest/state data.
      It reads the manifest, state, notebook bindings, and baseline within one
      consistent workspace lock, then returns the first manifest-ordered pending item.
+     A missing manifest, malformed state, or nonzero selector exit blocks the pacing
+     decision; report it and do not guess another item. Two bindings may not share one
+     `notebook_ref`. Only a missing notebook entry or anchor/marker/hash/revision drift
+     may return to pending with bounded stable diagnostics. Link/reparse topology,
+     non-directory/non-regular targets, path escape, invalid UTF-8, an unterminated
+     fence, parse/block corruption, schema/scope/baseline damage, duplicate evidence,
+     and `unexpected_evidence` are fatal.
      Unbound IDs already present in `phase_evidence[N].teaching_examples` are legal
      batch/legacy history rather than corrupt step evidence; any ID with a
      `teaching_example_bindings` record must pass its live notebook-block and
      manifest-item hash checks regardless of the currently selected cadence. Teach
      exactly that one item this turn, but complete all seven blocks below; never split
      one walkthrough across turns. Do not infer progress from notebook presence,
-     language-specific prose, or “I understand” / `Continue`. Report
-     `unexpected_evidence` separately. If `next=null`,
+     language-specific prose, or “I understand” / `Continue`. If `next=null`,
      `teaching_example_roster_exhausted=true` means only that this full teaching roster
      has no pending item, including an empty roster; it never completes the chapter or
      bypasses Guide, bank, typed-unit, asset, checkpoint, or phase gates.
@@ -83,8 +93,13 @@ Use when `exam-cram` routes the current phase to teaching, or the student asks t
      manifest-order re-teaching remains legal. Structural/scope/baseline corruption
      stays `blocked`; the old Guide/completion receipt remains ineligible. Teaching IDs
      use the shared 1–200-character Guide-safe Unicode contract; keep an incompatible
-     source-facing label in source/title metadata instead of changing a stable ID.
+     source-facing label in source/title metadata instead of changing a stable ID. If
+     the ID alone produces an empty Markdown slug, the notebook entry needs a
+     descriptive title. Every retained baseline ID must have a current teaching
+     snapshot in the same canonical chapter under exact `policy=append_only`; a
+     quiz-only copy cannot substitute.
 
+   For each active question to be explained:
    - **① 题面图**: satisfy the visual gate in step 4 first; without a figure say 「本题无图，直接看题干条件」.
    - **② 这题在问什么**: explain the ask and `考点` in plain language. Never jump from the prompt to ④.
    - **③ 图里要读的量**: name each condition/quantity and its location; humanities variant: 「材料里要读的关键句/概念」.
@@ -99,7 +114,7 @@ Use when `exam-cram` routes the current phase to teaching, or the student asks t
 
    Honor a stored `讲解模板` preference. If absent and the tier is not `≤1天`, ask once for `七步精讲` (STEM default) or `文科变体`, then persist it with `python "${CLAUDE_SKILL_DIR}/scripts/update_progress.py" --workspace <ws> set --pref 讲解模板=<七步精讲|文科变体>`. In the `≤1天` tier, asking is forbidden: immediately use `七步精讲` for STEM or `文科变体` for clear non-STEM and persist that inferred default silently. Neither variant may remove a block or source line. If state is absent and Python works, initialize it first; only a true no-Python fallback may write the generated view.
 
-   Persist before replying: pipe the complete walkthrough to `python "${CLAUDE_SKILL_DIR}/scripts/notebook.py" --workspace <ws> add-entry --chapter <N> --type walkthrough --id <qid> --title <gist>`. Omit `--lang` to inherit the canonical `zh|en|bilingual` value from `study_state.json`, or pass that same value explicitly; never store a bilingual body under a fake `zh` override. The same chapter/id replaces in place and rebuilds `notebook/index.md`. For effective full-mode `step_by_step`, add `--teaching-example`; after that succeeds, use only `update_progress.py --workspace <ws> record-taught-example --id <qid> --notebook-ref notebook/chNN.md#<anchor>`. The latter validates full/current phase, manifest membership and order, exact anchor, walkthrough type, matching ID, and the reserved marker, then atomically writes the ID, notebook anchor, and one `teaching_example_bindings` object containing exactly `id`, `notebook_ref`, `notebook_block_sha256`, and `manifest_item_sha256`. Never replace this with two loose `record-phase-evidence` writes. Acknowledgement/Continue is routing input only. Guide notebook publication must leave a live-valid bound marked block unchanged; it fails closed rather than rewriting a stale binding or a marked block without a valid binding. Then reply with a 3–5 line digest and the language-pack link. In effective `step_by_step`, append the active-language continuation wording outside the persisted walkthrough; bilingual renders Chinese then its pure-English `> EN:` mirror. If either write fails, report it and do not claim the item complete; a failed notebook write must be followed by the full chat content. File-less clients use chat plus a text breakpoint.
+   Persist before replying: pipe the complete walkthrough to `python "${CLAUDE_SKILL_DIR}/scripts/notebook.py" --workspace <ws> add-entry --chapter <N> --type walkthrough --id <qid> --title <gist>`. Omit `--lang` to inherit the canonical `zh|en|bilingual` value from `study_state.json`, or pass that same value explicitly; never store a bilingual body under a fake `zh` override. Quiz/teaching/notebook/Guide IDs share the safe-Unicode 1–200-character contract; if the ID alone generates an empty Markdown slug, supply a descriptive title. The same chapter/id replaces in place and rebuilds `notebook/index.md`. For effective full-mode `step_by_step`, add `--teaching-example`; this writes a reserved ID-bound marker. After that succeeds, use only `update_progress.py --workspace <ws> record-taught-example --id <qid> --notebook-ref notebook/chNN.md#<anchor>`. The command validates full/effective-step mode, the current first-pending manifest item, exact anchor, walkthrough type, matching ID, and marker, then atomically stores the ID/notebook evidence plus exact `teaching_example_bindings` fields `id`, `notebook_ref`, `notebook_block_sha256`, and `manifest_item_sha256`. Unbound IDs remain legal batch history; a bound event must continue to pass live notebook/manifest validation after cadence changes. Never replace this with two loose `record-phase-evidence` writes. Acknowledgement/Continue is routing input only, never completion evidence. Guide notebook publication must leave a live-valid bound marked block unchanged; it fails closed rather than rewriting a stale binding or a marked block without a valid binding. Then reply with a 3–5 line digest and the language-pack link. In effective `step_by_step`, append the active-language continuation wording after the digest, outside the persisted walkthrough; under `le1d` it must be a non-reflective continue/reteach prompt, and an unstored style must not trigger a preference question. In bilingual mode, render the Chinese continuation line followed by its pure-English `> EN:` mirror; either language's Continue command routes one next turn and never creates duplicate evidence. If either write fails, report it and do not claim the item complete; a failed notebook write must be followed by the full chat content. File-less clients use chat plus a text breakpoint.
 
 4. **Show question assets first.** Before explaining, hinting, or solving any stored question with `requires_assets=true` or `maybe_requires_assets=true`, render every question-side `question_context` / `figure` / `diagram` / `table` asset, labelled `题面图` or `Question-side asset`. Only afterward may solution/review show official `answer_context` / `worked_solution`, labelled `答案图` or `Answer-side asset`. Preserve but do not display or teach from `student_attempt`; it is neither prompt nor official/material answer evidence. Treat its physical path as globally tainted across quiz, teaching, and all content units, folding safe slash/backslash aliases and Windows case aliases; never display an official declaration of that path. Reject same-item prompt/answer reuse. Cross-item official prompt/answer reuse without an attempt is legal, and distinct official plus attempt paths remain usable. Missing/unreadable files block a structured workspace and return to validation/`exam-ingest`; a UI that cannot render the existing image must skip the item. A path is not an image. Prefer `python <package-root>/scripts/show_question_assets.py --workspace <ws> --id <qid> --lang <zh|en>`; exit 1 means skip. Apply the same gate to `stub` / `page_reference` prompts.
 
@@ -164,4 +179,4 @@ Display aliases are normalized to `zh`, `en`, or `bilingual`; unset language def
 - The default pool is mixed. A stored restricted scope excludes/counts items without `source_type`; announce before overriding it: 「⚠️ 临时覆盖你的 <scope> 范围偏好」 / `⚠️ Temporarily overriding your <scope> scope preference`. Use `scripts/select_questions.py`.
 - Stay in the current chapter, never invent material, never claim AI prose is the teacher's, never freehand algorithmic diagrams, and never quiz or score.
 - Seven steps, the source line, dual ⚠️ marking for unsupported answers, and the visual-first fail-closed gate are mandatory. A `requires_assets=true`, `maybe_requires_assets=true`, `stub`, or `page_reference` question whose prompt image cannot be shown must not be taught as complete.
-- `interaction_style` is a full-mode teaching-manifest cadence only. Its stored value is exactly `batch|step_by_step`; step mode is effective only in full with `no_questions=false`, otherwise the stored step choice is dormant and effective cadence is batch. Stable item IDs mean a reply-language change does not automatically requeue already evidenced items; request an explicit reteach. The selector takes a consistent workspace-locked snapshot and returns manifest order, but it is not a pause/acknowledgement or reservation ledger, so concurrent tutors may still select the same pending item.
+- `interaction_style` is a full-mode teaching-manifest cadence only. Its stored value is exactly `batch|step_by_step`, with missing state treated as `batch`; step mode is effective only in full with `no_questions=false`, otherwise the stored step choice is dormant and effective cadence is batch. Stable item IDs mean a reply-language change does not automatically requeue already evidenced items; request an explicit reteach. Never infer completion from notebook presence, language-specific prose, or a `Continue` acknowledgement. The selector takes a consistent workspace-locked snapshot and returns manifest order, but it is not a pause/acknowledgement or reservation ledger, so concurrent tutors may still select the same pending item.

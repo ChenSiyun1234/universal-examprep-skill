@@ -8,9 +8,10 @@ course manifest into context and preserves the exam coach's lazy-load contract.
 
 Exit codes: 0 success (including a legacy workspace with no manifest); 2 invalid input/manifest.
 
-``--next-pending`` is the read-only full-mode pacing selector.  It derives
-completion only from ``study_state.json.phase_evidence``; notebook presence and
-student confirmation are deliberately not progress evidence.
+``--next-pending`` is the read-only full-mode pacing selector. It derives
+candidate completion only from ``study_state.json.phase_evidence`` and then
+live-validates any bound event; bare notebook presence and student confirmation
+are deliberately not progress evidence.
 """
 import argparse
 import hashlib
@@ -135,7 +136,12 @@ def _stable_unique_strings(values, label):
 
 
 def _load_full_mode_state(workspace, chapter):
-    """Load only the state needed by the pending selector under its caller's lock."""
+    """Load only the state fields needed by the pending selector under its lock.
+
+    Missing or malformed state fails closed.  The selector is intentionally a
+    full-mode feature; lightweight teaching has a different page-batch state
+    machine and must never be inferred from this manifest.
+    """
     path = os.path.join(workspace, "study_state.json")
     if not os.path.lexists(path):
         _die("--next-pending requires study_state.json")
@@ -245,6 +251,7 @@ def _item_sha256(item):
 
 
 def _require_complete_roster(workspace, chapter, items):
+    """Require every retained ID to have a current same-chapter teaching snapshot."""
     path = os.path.join(workspace, "references", "teaching_baseline.json")
     if not os.path.lexists(path):
         return
@@ -343,7 +350,7 @@ def _binding_structure(workspace, chapter, binding):
         or any(char in notebook_ref for char in ("\x00", "\r", "\n"))
         or notebook_ref.count("#") != 1
     ):
-        _die("teaching-example binding notebook_ref must contain one anchor")
+        _die("teaching-example binding notebook_ref must contain one canonical anchor")
     relative, fragment = notebook_ref.split("#", 1)
     relative = relative.replace("\\", "/")
     fragment = unquote(fragment)
@@ -436,6 +443,11 @@ def _validated_step_completed(workspace, chapter, hits, state):
         [] if recorded_value is None else recorded_value,
         "study_state.json.phase_evidence[%s].teaching_examples" % chapter,
     )
+    if any(stable_item_id_problem(value) is not None for value in recorded):
+        _die(
+            "study_state.json.phase_evidence[%s].teaching_examples violates "
+            "the shared stable ID contract" % chapter
+        )
     notebook_refs = _stable_unique_strings(
         [] if notebook_value is None else notebook_value,
         "study_state.json.phase_evidence[%s].notebook" % chapter,
@@ -590,6 +602,9 @@ def main(argv=None):
             if payload["unexpected_evidence"]:
                 print("[unexpected evidence] %s" %
                       ", ".join(payload["unexpected_evidence"]))
+            if payload["stale_binding_ids"]:
+                print("[stale bindings -> pending] %s" %
+                      ", ".join(payload["stale_binding_ids"]))
             if payload["next"] is not None:
                 print("- next [#%s] %s" %
                       (payload["next"]["id"],

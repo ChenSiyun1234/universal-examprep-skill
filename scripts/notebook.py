@@ -102,14 +102,15 @@ def _guard_dir(ws, name, create=False):
             os.makedirs(d)
         except OSError as e:
             _die("无法创建目录 %s（%s）" % (d, e), 1)
-    real_ws = os.path.normcase(os.path.realpath(ws))
-    real_dir = os.path.normcase(os.path.realpath(d))
-    try:
-        contained = os.path.commonpath((real_ws, real_dir)) == real_ws
-    except ValueError:
-        contained = False
-    if os.path.isdir(d) and not contained:
-        _die("%s 经符号链接逃出工作区——拒绝读写" % d, 1)
+    if os.path.isdir(d):
+        ws_real = os.path.normcase(os.path.realpath(ws))
+        d_real = os.path.normcase(os.path.realpath(d))
+        try:
+            contained = os.path.commonpath((ws_real, d_real)) == ws_real
+        except ValueError:
+            contained = False
+        if not contained:
+            _die("%s 经链接或重解析点逃出工作区——拒绝读写" % d, 1)
     return d
 
 
@@ -119,12 +120,12 @@ def _save_files(plan, note):
     (worst case an index is stale; `rebuild` repairs it). Same conventions as
     update_progress.save: O_EXCL tmp creation, symlink-tmp refusal, fail-loud."""
     for path, _content in plan:
-        if is_link_or_reparse(path):
+        if os.path.lexists(path) and is_link_or_reparse(path):
             _die("%s 是 link/reparse point——可能指向工作区外，拒绝写入（请替换为真实文件）" % path, 1)
         if os.path.lexists(path) and not os.path.isfile(path):
             _die("%s 已存在但不是常规文件（目录/特殊文件）——拒绝写入，请先手动清理" % path, 1)
         tmp = path + ".tmp"
-        if is_link_or_reparse(tmp):
+        if os.path.lexists(tmp) and is_link_or_reparse(tmp):
             _die("检测到 link/reparse 临时文件 %s——可能指向工作区外，拒绝写入（请手动清理后重试）" % tmp, 1)
     tmps = []
     try:
@@ -153,8 +154,10 @@ def _save_files(plan, note):
 def _load_state(ws):
     """study_state.json（可缺省）——只为读语言偏好与错题状态；load_state 同款 fail-loud。"""
     path = os.path.join(ws, STATE_NAME)
-    if is_link_or_reparse(path):
+    if os.path.lexists(path) and is_link_or_reparse(path):
         _die("study_state.json 是 link/reparse point——事实源可能指向工作区外，拒绝读取（请替换为真实文件）", 1)
+    if os.path.lexists(path) and not os.path.isfile(path):
+        _die("study_state.json 已存在但不是普通文件——拒绝把它当作缺失状态", 1)
     if not os.path.isfile(path):
         return None
     try:

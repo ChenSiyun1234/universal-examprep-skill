@@ -16,6 +16,7 @@ import sys
 import json
 import hashlib
 import argparse
+import time
 from urllib.parse import unquote
 
 # 同包内的 notebook 引擎是锚点词汇（github_slug）的唯一定义点——按 select_hard_questions.py
@@ -134,6 +135,13 @@ def _read(path):
 
 
 _FILE_SHA256_CACHE = {}
+_WINDOWS_FILETIME_UNIX_EPOCH_100NS = 116444736000000000
+# Windows change timestamps commonly advance on a coarse system-clock tick.
+# A file changed inside the same tick as the first hash can otherwise look like
+# the same generation after its mtime is restored.  Fresh generations are
+# therefore hashed directly until they are safely outside that collision
+# window; old, unchanged files still receive the normal cache benefit.
+_WINDOWS_CHANGE_TIME_CACHE_GUARD_100NS = 1000000  # 100 ms
 
 
 def _windows_file_change_time(path):
@@ -212,7 +220,16 @@ def _file_hash_generation(path):
     stat_result = os.stat(path)
     if os.name == "nt":
         change_time = _windows_file_change_time(path)
-        cacheable = change_time is not None
+        if change_time is None or change_time <= 0:
+            cacheable = False
+        else:
+            now_filetime = (
+                time.time_ns() // 100 + _WINDOWS_FILETIME_UNIX_EPOCH_100NS
+            )
+            cacheable = (
+                now_filetime - change_time
+                >= _WINDOWS_CHANGE_TIME_CACHE_GUARD_100NS
+            )
     else:
         change_time = int(getattr(
             stat_result, "st_ctime_ns", int(stat_result.st_ctime * 1000000000)
@@ -1775,16 +1792,26 @@ def _validate_unlocked(ws):
                 valid_map = True
                 for raw_chapter, raw_ids in raw_by_chapter.items():
                     chapter = _scope_number(raw_chapter)
-                    if chapter is None or not (isinstance(raw_ids, list)
+                    if (not isinstance(raw_chapter, str)
+                            or chapter is None
+                            or raw_chapter != chapter
+                            or not (isinstance(raw_ids, list)
                                                and all(stable_item_id_problem(x) is None
-                                                       for x in raw_ids)):
+                                                       for x in raw_ids))):
                         err(f"{baseline_name} teaching_example_ids_by_chapter[{raw_chapter!r}] "
-                             "必须是可解析章节对应的字符串数组")
+                             "必须是 canonical 正整数字符串章节对应的稳定 ID 数组")
                         valid_map = False
                         continue
-                    values = {x.strip() for x in raw_ids}
+                    values = set(raw_ids)
                     if len(values) != len(raw_ids):
                         err(f"{baseline_name} teaching_example_ids_by_chapter[{raw_chapter!r}] 含重复 ID")
+                        valid_map = False
+                    overlap = mapped & values
+                    if overlap:
+                        err(
+                            f"{baseline_name} 把同一教学例题 ID 分配到多个章节: "
+                            f"{', '.join(sorted(overlap))}"
+                        )
                         valid_map = False
                     if chapter in expected_teaching_by_chapter:
                         err(
@@ -1990,14 +2017,14 @@ def _validate_unlocked(ws):
                     err("study_state.json 的 preferences.interaction_style 必须是 "
                         f"batch|step_by_step，当前 {interaction_style!r}")
             stats["interaction_style_preference"] = (
-                _i18n.workspace_interaction_style_preference(st))
+                _progress.interaction_style_preference(st))
             stats["interaction_style_effective"] = (
-                _i18n.workspace_effective_interaction_style(st))
+                _progress.effective_interaction_style(st))
             stats["interaction_style_dormant"] = (
-                _i18n.workspace_interaction_style_dormant(st))
+                _progress.interaction_style_dormant(st))
             if stats["interaction_style_dormant"]:
                 stats["interaction_style_dormant_reason"] = (
-                    "processing_mode_lightweight"
+                    "processing_mode_not_full"
                     if _i18n.workspace_processing_mode(st) != "full"
                     else "no_questions"
                 )

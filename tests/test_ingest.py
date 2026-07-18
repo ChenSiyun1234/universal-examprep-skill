@@ -1059,7 +1059,7 @@ class IngestEndToEndTest(unittest.TestCase):
         self.assertNotIn("q2", auto_ids, f"撞号: {ids}")
         self.assertEqual(len(set(ids)), 3, f"ID 重复: {ids}")
 
-    def test_auto_ids_preserve_zero_id(self):
+    def test_auto_ids_preserve_zero_id_as_stable_string(self):
         data = {
             "course_name": "测试",
             "phases": [{"phase_num": 1, "phase_name": "P", "wiki_filename": "a.md", "wiki_content": "x"}],

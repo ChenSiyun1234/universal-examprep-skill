@@ -707,25 +707,19 @@ def _load_state_status(workspace):
         if value and value not in allowed[field]
     }
     preferences = state.get("preferences")
-    if preferences is None:
-        interaction_style = "batch"
-    elif not isinstance(preferences, dict):
-        interaction_style = "batch"
-        invalid["interaction_style"] = preferences
-    else:
+    if preferences is not None and not isinstance(preferences, dict):
+        invalid["preferences"] = type(preferences).__name__
+    elif isinstance(preferences, dict):
         raw_interaction_style = preferences.get("interaction_style", "batch")
         if raw_interaction_style not in update_progress.INTERACTION_STYLES:
             invalid["interaction_style"] = raw_interaction_style
-            interaction_style = "batch"
-        else:
-            interaction_style = raw_interaction_style
     interaction_style_preference = i18n.workspace_interaction_style_preference(state)
     interaction_style_effective = i18n.workspace_effective_interaction_style(state)
     interaction_style_dormant = i18n.workspace_interaction_style_dormant(state)
     interaction_style_dormant_reason = None
     if interaction_style_dormant:
         interaction_style_dormant_reason = (
-            "processing_mode_lightweight"
+            "processing_mode_not_full"
             if i18n.workspace_processing_mode(state) != "full"
             else "no_questions"
         )

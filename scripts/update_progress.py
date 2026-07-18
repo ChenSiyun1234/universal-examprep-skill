@@ -115,7 +115,12 @@ def _die(msg, code=2):
 
 
 def _validated_interaction_style(value):
-    """Return one canonical tutoring cadence or fail before state is written."""
+    """Return one canonical tutoring cadence or fail before state is written.
+
+    Interaction cadence deliberately has no display aliases. Keeping this small
+    preference canonical prevents generic ``--pref`` writes from bypassing the
+    dedicated CLI validation.
+    """
     if not isinstance(value, str) or value not in INTERACTION_STYLES:
         _die("interaction_style must be exactly one of: %s; got %r"
              % ("|".join(INTERACTION_STYLES), value))
@@ -425,14 +430,18 @@ def _phase_evidence_shape_errors(state):
                             "或 revision-bound {id,outcome,bank_binding_id,bank_sha256,item_sha256}"
                             % key
                         )
-                    if not isinstance(item.get("id"), str) or not item["id"].strip():
-                        errors.append("phase_evidence[%s].checkpoint[].id 必须是非空字符串" % key)
-                    elif item["id"] in checkpoint_ids:
+                    ident = item.get("id")
+                    if stable_item_id_problem(ident):
                         errors.append(
-                            "phase_evidence[%s].checkpoint[] 含重复 id %s" % (key, item["id"])
+                            "phase_evidence[%s].checkpoint[].id 不符合共享稳定 ID 规范"
+                            % key
+                        )
+                    elif ident in checkpoint_ids:
+                        errors.append(
+                            "phase_evidence[%s].checkpoint[] 含重复 id %s" % (key, ident)
                         )
                     else:
-                        checkpoint_ids.add(item["id"])
+                        checkpoint_ids.add(ident)
                     if item.get("outcome") not in CHECKPOINT_OUTCOMES:
                         errors.append("phase_evidence[%s].checkpoint[].outcome 必须是 %s"
                                       % (key, "/".join(CHECKPOINT_OUTCOMES)))
@@ -537,6 +546,12 @@ def _phase_evidence_shape_errors(state):
                     errors.append(
                         "phase_evidence[%s].%s 含重复值" % (key, field)
                     )
+                elif field == "teaching_examples" and any(
+                        stable_item_id_problem(value) is not None for value in refs):
+                    errors.append(
+                        "phase_evidence[%s].teaching_examples 含不符合共享 "
+                        "notebook/Guide 稳定 ID 规范的值" % key
+                    )
         bindings = record.get("teaching_example_bindings")
         if bindings is not None:
             if not isinstance(bindings, list):
@@ -621,12 +636,19 @@ def _local_evidence_ref(ws, ref):
         return None, None, None, "路径不得为空或含 .. 路径穿越"
     rel = "/".join(segs)
     full = os.path.join(ws, *segs)
+    current = os.path.abspath(ws)
+    for segment in segs:
+        current = os.path.join(current, segment)
+        if os.path.lexists(current) and _is_link_or_reparse(current):
+            return None, None, None, "证据路径的父目录或文件不得是链接/重解析点"
     ws_real = os.path.normcase(os.path.realpath(ws))
     full_real = os.path.normcase(os.path.realpath(full))
-    if full_real != ws_real and not full_real.startswith(ws_real + os.sep):
+    try:
+        contained = os.path.commonpath((ws_real, full_real)) == ws_real
+    except ValueError:
+        contained = False
+    if not contained:
         return None, None, None, "路径经符号链接逃出工作区"
-    if os.path.islink(full):
-        return None, None, None, "证据文件不得是符号链接"
     if not os.path.isfile(full):
         return None, None, None, "证据文件不存在: %s" % rel
     return rel, unquote(fragment) if sep else "", full, None
@@ -961,15 +983,13 @@ def _teaching_baseline_for_phase(ws, chapter_keys, teaching, quiz):
         return set(), ["教学例题保留基线无法读取：%s" % error]
     if not isinstance(report, dict):
         return set(), ["%s 顶层必须是对象，无法核对教学例题保留基线" % source_name]
-    if source_name.endswith("teaching_baseline.json") and report.get("schema_version") != 1:
-        return set(), ["references/teaching_baseline.json schema_version 必须为 1"]
-    if (
-        source_name.endswith("teaching_baseline.json")
-        and report.get("policy") != "append_only"
-    ):
-        return set(), [
-            "references/teaching_baseline.json policy 必须精确为 append_only"
-        ]
+    if source_name.endswith("teaching_baseline.json"):
+        if report.get("schema_version") != 1:
+            return set(), ["references/teaching_baseline.json schema_version 必须为 1"]
+        if report.get("policy") != "append_only":
+            return set(), [
+                "references/teaching_baseline.json policy 必须精确为 append_only"
+            ]
     raw_ids = report.get("teaching_example_ids")
     if raw_ids is None and source_name.endswith("teaching_baseline.json"):
         return set(), ["references/teaching_baseline.json 缺少 teaching_example_ids"]
@@ -978,8 +998,11 @@ def _teaching_baseline_for_phase(ws, chapter_keys, teaching, quiz):
     if not (isinstance(raw_ids, list)
             and all(stable_item_id_problem(x) is None for x in raw_ids)
             and len(set(raw_ids)) == len(raw_ids)):
-        return set(), ["%s.teaching_example_ids 必须是无重复的非空字符串数组" % source_name]
-    baseline = {x.strip() for x in raw_ids}
+        return set(), [
+            "%s.teaching_example_ids 必须遵循共享稳定 ID 契约且不得重复"
+            % source_name
+        ]
+    baseline = set(raw_ids)
     expected = set()
     problems = []
     mapped_ids = set()
@@ -996,7 +1019,7 @@ def _teaching_baseline_for_phase(ws, chapter_keys, teaching, quiz):
                     problems.append("teaching_example_ids_by_chapter[%r] 必须是可解析章节对应的字符串数组"
                                     % raw_scope)
                     continue
-                values = {x.strip() for x in raw_values}
+                values = set(raw_values)
                 if len(values) != len(raw_values):
                     problems.append("teaching_example_ids_by_chapter[%r] 含重复 ID" % raw_scope)
                 mapped_ids.update(values)
@@ -1129,8 +1152,15 @@ def _phase_manifest_content(ws, state, record, phase):
         "integrity_input_unreadable", "integrity_material_unreadable",
     )
     blocked_warnings = []
-    for manifest in (figure, image):
-        for warning in manifest.get("warnings") or []:
+    for name, manifest in (("figure_page_index", figure),
+                           ("image_question_index", image)):
+        warnings = manifest.get("warnings")
+        if warnings is None:
+            warnings = []
+        if not isinstance(warnings, list):
+            problems.append("%s.warnings 必须是数组" % name)
+            continue
+        for warning in warnings:
             text = str(warning)
             if text.startswith(recall_blockers) and text not in blocked_warnings:
                 blocked_warnings.append(text)
@@ -1142,7 +1172,10 @@ def _phase_manifest_content(ws, state, record, phase):
     problems.extend(_declared_prompt_asset_problems(
         ws, (("quiz_bank", quiz), ("teaching_examples", teaching)), chapter_keys))
 
-    coverage = figure.get("wiki_visual_coverage") or {}
+    coverage = figure.get("wiki_visual_coverage")
+    if not isinstance(coverage, dict):
+        problems.append("figure_page_index.wiki_visual_coverage 必须是对象")
+        coverage = {}
     per_chapter = coverage.get("per_chapter")
     pages = coverage.get("pages")
     manual_answer_rows = coverage.get("manual_answer_exposure_pages")
@@ -1187,7 +1220,9 @@ def _phase_manifest_content(ws, state, record, phase):
             elif counts["missing"] != 0:
                 problems.append("%s 仍有 %d 个 wiki 视觉页 missing（必须为 0）"
                                 % (wiki_name, counts["missing"]))
-    if isinstance(pages, list):
+    if not isinstance(pages, list):
+        problems.append("wiki_visual_coverage.pages 不是数组")
+    else:
         missing_rows = [p for p in pages if isinstance(p, dict)
                         and p.get("wiki_file") in wiki_names and p.get("status") == "missing"]
         if missing_rows and not any("wiki 视觉页 missing" in p for p in problems):
@@ -1247,6 +1282,7 @@ def _phase_manifest_content(ws, state, record, phase):
         )
     expected.update(baseline_expected)
     problems.extend(baseline_problems)
+    problems.extend(_step_roster_baseline_problems(ws, phase, teaching))
     # Bound step-by-step evidence keeps its stronger live notebook/manifest
     # contract even after the learner changes cadence.  Unbound IDs remain
     # legitimate batch evidence; both channels share one validator.
@@ -1538,6 +1574,30 @@ def phase_evidence_ref_error(ws, field, ref, asset_policy=_COMPLETION_ASSET_POLI
 
 def _no_questions_preference(state):
     return i18n.workspace_no_questions(state)
+
+
+def interaction_style_preference(state):
+    """Return the persisted canonical cadence; legacy/invalid state is batch."""
+
+    return i18n.workspace_interaction_style_preference(state)
+
+
+def interaction_style_full_route(state):
+    """Return whether the explicit, fail-closed material route is full."""
+
+    return i18n.workspace_processing_mode(state) == "full"
+
+
+def effective_interaction_style(state):
+    """Return the cadence after full-route and no-questions dormancy gates."""
+
+    return i18n.workspace_effective_interaction_style(state)
+
+
+def interaction_style_dormant(state):
+    """Return whether a saved step preference is currently dormant."""
+
+    return i18n.workspace_interaction_style_dormant(state)
 
 
 def _phase_completion_problems(record, status, teaching_required=True,
@@ -2315,10 +2375,17 @@ def _plan_phase_wikis(ws):
 
 def cmd_set(ws, args):
     # 提供 --phase 时豁免陈旧断点检查（这是修复路径；新值下面自行对照计划校验）
+    pref_repairs_style = any(
+        "=" in value
+        and value.split("=", 1)[0].strip() == "interaction_style"
+        for value in (args.pref or [])
+    )
     st = _require_state(
         ws,
         repairing_phase=args.phase is not None,
-        repairing_interaction_style=args.interaction_style is not None,
+        repairing_interaction_style=(
+            args.interaction_style is not None or pref_repairs_style
+        ),
     )
     changed = []
     if args.phase is not None:
@@ -2919,42 +2986,77 @@ def _step_teaching_binding_status(ws, state, phase, items):
 
 def _step_roster_baseline_problems(ws, phase, items):
     """Require every retained baseline ID to have a current teaching snapshot."""
-
     manifest_problems = (
         _teaching_examples.pending_manifest_structure_problems(items)
     )
     if manifest_problems:
         return manifest_problems
-
     path = os.path.join(ws, "references", "teaching_baseline.json")
     if not os.path.lexists(path):
         return []
+    if _is_link_or_reparse(path) or not os.path.isfile(path):
+        return ["references/teaching_baseline.json 必须是安全的普通文件"]
     payload, error = _read_json_value(path)
     if error:
-        return ["step_by_step 无法读取 teaching baseline：%s" % error]
-    mapping = payload.get("teaching_example_ids_by_chapter") \
-        if isinstance(payload, dict) else None
-    if not isinstance(mapping, dict):
-        return ["step_by_step 要求 teaching_baseline 有逐章 ID 映射；请重建完整教学 roster"]
-    expected = mapping.get(str(phase), [])
-    if (
-        not isinstance(expected, list)
-        or any(stable_item_id_problem(value) is not None for value in expected)
-        or len(expected) != len(set(expected))
-    ):
-        return ["teaching_baseline 当前章 ID 映射无效；请重建完整教学 roster"]
-    manifest_ids = {
-        item["id"] for item in items
-        if str(phase) in _teaching_examples._chapter_keys(item)
-    }
-    missing = sorted(set(expected) - manifest_ids)
+        return ["无法读取 teaching baseline：%s" % error]
+    if (not isinstance(payload, dict)
+            or payload.get("schema_version") != 1
+            or payload.get("policy") != "append_only"):
+        return ["teaching_baseline 必须是 schema_version=1 的 append_only 基线"]
+    mapping = payload.get("teaching_example_ids_by_chapter")
+    flat = payload.get("teaching_example_ids")
+    if not isinstance(mapping, dict) or not isinstance(flat, list):
+        return ["teaching_baseline 必须包含逐章映射与 ID 全集"]
+    mapped = set()
+    baseline_scope_by_id = {}
+    problems = []
+    for raw_scope, values in mapping.items():
+        scope = _scope_number(raw_scope)
+        if (not isinstance(raw_scope, str) or scope is None or raw_scope != scope
+                or not isinstance(values, list)
+                or any(stable_item_id_problem(value) is not None
+                       for value in values)
+                or len(values) != len(set(values))):
+            problems.append("teaching_baseline 章节 %r 的 ID 映射无效" % raw_scope)
+            continue
+        overlap = mapped & set(values)
+        if overlap:
+            problems.append("teaching_baseline ID 被分配到多个章节：%s" %
+                            ", ".join(sorted(overlap)))
+        mapped.update(values)
+        for value in values:
+            baseline_scope_by_id[value] = scope
+    if (any(stable_item_id_problem(value) is not None for value in flat)
+            or len(flat) != len(set(flat))
+            or mapped != set(flat)):
+        problems.append("teaching_baseline 的逐章映射与 ID 全集不一致")
+    manifest_scope_by_id = {}
+    for item in items:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+            continue
+        chapter_scope = _scope_number(item.get("chapter"))
+        phase_scope = _scope_number(item.get("phase"))
+        if chapter_scope and phase_scope and chapter_scope != phase_scope:
+            problems.append("teaching_examples[%s] chapter/phase 冲突" % item["id"])
+            continue
+        actual_scope = chapter_scope or phase_scope
+        if actual_scope is not None:
+            manifest_scope_by_id[item["id"]] = actual_scope
+    missing = sorted(set(flat) - set(manifest_scope_by_id)) if not problems else []
     if missing:
-        return [
-            "step_by_step teaching roster 缺保留基线题目 %s；quiz-only 条目不能替代 "
-            "teaching_examples.json，请先用 full builder/review 恢复 roster"
-            % ", ".join(missing)
-        ]
-    return []
+        problems.append(
+            "teaching roster 缺保留基线题目 %s；quiz-only 条目不能替代 "
+            "teaching_examples.json，请先恢复完整 roster" % ", ".join(missing))
+    drifted = sorted(
+        ident for ident, baseline_scope in baseline_scope_by_id.items()
+        if ident in manifest_scope_by_id
+        and manifest_scope_by_id[ident] != baseline_scope
+    ) if not problems else []
+    if drifted:
+        problems.append(
+            "teaching roster 章节漂移：基线题目在当前 teaching_examples.json 中不再属于"
+            "同一 canonical chapter：%s" % ", ".join(drifted))
+    return problems
 
 
 def _taught_example_notebook_binding(ws, phase, example_id, notebook_ref, item):
@@ -3014,20 +3116,12 @@ def cmd_record_taught_example(ws, args):
     ]
     if blocking_problems:
         _die("现有 step_by_step 教学证据无效：%s" % "；".join(blocking_problems))
-    already_complete = example_id in status["completed_id_set"]
-    if already_complete and status["binding_problems"]:
-        next_item = status["next"]
+    next_item = status["next"]
+    if next_item is None or next_item.get("id") != example_id:
         _die(
-            "必须先按 manifest 顺序修复下一条 stale/pending 教学证据 %r，"
-            "不能先重讲已完成题 %r"
+            "教学证据必须绑定 manifest 顺序中的当前第一道 pending %r，不能记录 %r"
             % (next_item.get("id") if next_item else None, example_id)
         )
-    if not already_complete:
-        next_item = status["next"]
-        if next_item is None or next_item.get("id") != example_id:
-            _die(
-                "新教学证据必须按 manifest 顺序记录下一题 %r，不能跳到 %r"
-                % (next_item.get("id") if next_item else None, example_id))
     notebook_binding = _taught_example_notebook_binding(
         ws, phase, example_id, (args.notebook_ref or "").strip(), matches[0])
     notebook_ref = notebook_binding["notebook_ref"]
