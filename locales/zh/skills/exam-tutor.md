@@ -24,7 +24,7 @@
 
 先写 `notebook/chNN.md`，同题原位更新，再回复短摘要和 `完整解答：notebook/chNN.md#<anchor>｜目录：notebook/index.md`。写入失败要说明并给完整精讲。
 
-## 单题推进提示
+## One-question continuation prompt
 
 ```text
 当前进度：本章 Y 道重点题已讲 X 道。

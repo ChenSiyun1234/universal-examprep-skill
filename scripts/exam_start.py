@@ -100,6 +100,7 @@ RUNTIME_FILE_EXCLUDES = frozenset((
     "docs/formula-audit-importer.md",
     "docs/localization.md",
     "docs/retrieval-evaluation.md",
+    "docs/runtime-file-contract.md",
     "docs/skill-architecture.md",
 ))
 RUNTIME_DIFF_LIMIT = 20
