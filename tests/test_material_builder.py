@@ -134,8 +134,10 @@ def _confirmed_builder_main(argv=None, backend=None):
         return _B_MAIN(argv, backend=backend)
 
 
-B.run = _confirmed_builder_run
-B.main = _confirmed_builder_main
+def setUpModule():
+    """Install builder fixture wrappers only while this module is running."""
+    B.run = _confirmed_builder_run
+    B.main = _confirmed_builder_main
 
 
 def tearDownModule():

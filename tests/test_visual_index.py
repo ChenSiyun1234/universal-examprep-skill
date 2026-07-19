@@ -80,18 +80,23 @@ _BVI_RUN = BVI.run
 _LIQ_RUN = LIQ.run
 _LFP_RUN = LFP.run
 _SQA_RUN = SQA.run
-BVI.run = lambda argv, *args, **kwargs: _confirmed_tool_run(
-    _BVI_RUN, argv, *args, **kwargs
-)
-LIQ.run = lambda argv, *args, **kwargs: _confirmed_tool_run(
-    _LIQ_RUN, argv, *args, **kwargs
-)
-LFP.run = lambda argv, *args, **kwargs: _confirmed_tool_run(
-    _LFP_RUN, argv, *args, **kwargs
-)
-SQA.run = lambda argv, *args, **kwargs: _confirmed_tool_run(
-    _SQA_RUN, argv, *args, **kwargs
-)
+
+
+def setUpModule():
+    """Scope full-workspace confirmation wrappers to this test module."""
+
+    BVI.run = lambda argv, *args, **kwargs: _confirmed_tool_run(
+        _BVI_RUN, argv, *args, **kwargs
+    )
+    LIQ.run = lambda argv, *args, **kwargs: _confirmed_tool_run(
+        _LIQ_RUN, argv, *args, **kwargs
+    )
+    LFP.run = lambda argv, *args, **kwargs: _confirmed_tool_run(
+        _LFP_RUN, argv, *args, **kwargs
+    )
+    SQA.run = lambda argv, *args, **kwargs: _confirmed_tool_run(
+        _SQA_RUN, argv, *args, **kwargs
+    )
 
 
 def tearDownModule():
@@ -2495,8 +2500,12 @@ class OfficialTools(unittest.TestCase):
         self.assertTrue(any(p.endswith("_p2.png") for p in paths))
         qidx = _load(ws, "image_question_index.json")
         self.assertTrue(any(w.startswith("apply_pruned_stale_asset") for w in qidx["warnings"]))
+        home = os.path.join(
+            os.path.dirname(ws), ".%s-examprep-home" % os.path.basename(ws)
+        )
         r = subprocess.run([sys.executable, os.path.join(SCRIPTS, "validate_workspace.py"), ws],
-                           capture_output=True, text=True, encoding="utf-8")
+                           capture_output=True, text=True, encoding="utf-8",
+                           env=dict(os.environ, EXAMPREP_HOME=home))
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)       # applied workspace still validates
 
     def test_figure_pages_surfaces_scan_failures(self):
