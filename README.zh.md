@@ -4,7 +4,7 @@
 
 # 期末极速备考教练 · Flash 版
 
-*把课程文件夹交给编程智能体：它按你的课件讲课、把图放到你面前、用你自己的作业考你、记得你学到哪。*
+*给 Claude Code、Codex、Cursor、Windsurf、Antigravity、Gemini CLI 用的 AI 备考家教：把课件、笔记、作业、往年题交给它，它按章讲课并标出处、把图放到你面前、用你自己的题考你、记错题、排复习计划、做小抄。*
 
 中文 · [English](README.md)
 
@@ -326,6 +326,10 @@ python release.py                                 # 打包 dist/exam-cram-coach-
 ```
 
 结构：`SKILL.md`（智能体遵循的说明）、`coach.py` + `coach/`（`extract` → `chapters` → `questions` → `figures` → `index` → `state` → `cli`）、`tests/`、`samples/`、`eval/`（智能体冒烟测试与打分）、`docs/`（[重构记录](docs/v5-refactor.md)、[功能核查](docs/feature-audit.md)、[弱模型实测](docs/weak-model-test.md)）。版本历史见 [CHANGELOG.md](CHANGELOG.md)，贡献说明见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+## 关键词
+
+方便中英文搜索的人和智能体找到本页：期末复习 · 考前突击 · 期中复习 · 考研复习 · 考证备考 · 课件 PDF / PPT 讲解 · AI 家教 · 引用出处不编造 · 用作业和真题刷题 · 错题本 · 考前小抄 · 复习计划 · 讲义配图 · 划重点 · Claude Code / Codex / Cursor / Windsurf / Antigravity / Gemini CLI 智能体技能 · 小模型可用 · 本地运行 · 无服务器 · Python · 开源 MIT。exam prep · final exam cram · midterm revision · study from lecture slides · AI tutor that cites sources · quiz from homework and past papers · mistake notebook · cheat sheet generator · study plan · agent skill.
 
 ## 协议
 
