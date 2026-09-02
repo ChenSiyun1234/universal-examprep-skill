@@ -2,8 +2,9 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 
-# study workspaces created by `coach.py setup`
+# study workspaces created by `coach.py setup` (but not the v4.3 sub-skill folder full/skills/exam-cram)
 exam-cram/
+!full/skills/exam-cram/
 
 # downloaded sample courses (python samples/fetch.py)
 samples/mit-6006/
