@@ -32,14 +32,23 @@ Exam Cram Coach is an [Agent Skill](SKILL.md) plus one small Python tool. You gi
 | 🟡 **AI supplement** | background the agent added; may differ from what your teacher taught |
 | ⚠️ **AI-generated answer** | the materials contain no answer; this one is the agent's own |
 
-**Flash** is the name of this edition: setup takes seconds even for a whole course, the whole skill is about 1,100 words, the study loop is seven commands, and it works with small models (tested with Gemini flash-lite and Claude Haiku). The earlier “full” edition (v4.3, with HTML/PDF study guides and a heavyweight verification pipeline) is still available from the [v4.3 release](https://github.com/ZeKaiNie/universal-examprep-skill/releases/tag/v4.3); see [Flash vs. the old full edition](#flash-vs-the-old-full-edition).
+## Two editions, pick one
+
+| | **Flash** (this folder, recommended) | **Full** (v4.3, in [`full/`](full/)) |
+|---|---|---|
+| For | anyone with an exam coming up; small or local models | readers who want the complete knowledge-base build, printable HTML/PDF study guides and the verification pipeline |
+| Setup | one command, seconds | several confirmation steps, the agent renders pages itself |
+| README | this page · [中文](README.zh.md) | [full/README.md](full/README.md) · [full/README.zh.md](full/README.zh.md) |
+| Install | `exam-cram-coach-flash.zip` from the [latest release](https://github.com/ZeKaiNie/universal-examprep-skill/releases/latest) | `universal-exam-cram-coach.zip` from the [v4.3 release](https://github.com/ZeKaiNie/universal-examprep-skill/releases/tag/v4.3), or copy `full/` |
+
+The rest of this page is about **Flash**: setup takes seconds even for a whole course, the whole skill is about 1,100 words, the study loop is seven commands, and it works with small models (tested with Gemini flash-lite and Claude Haiku). A feature-by-feature comparison is in [Flash vs. the full edition](#flash-vs-the-full-edition).
 
 ## Contents
 
 1. [Start studying in five minutes](#start-studying-in-five-minutes)
 2. [What a study session looks like](#what-a-study-session-looks-like)
 3. [Preparing your materials](#preparing-your-materials)
-4. [Flash vs. the old full edition](#flash-vs-the-old-full-edition)
+4. [Flash vs. the full edition](#flash-vs-the-full-edition)
 5. [What ends up in the `exam-cram/` folder](#what-ends-up-in-the-exam-cram-folder)
 6. [Command reference](#command-reference)
 7. [Measured results](#measured-results)
@@ -138,7 +147,10 @@ The agent will run one command (`coach.py setup`), which takes a few seconds eve
 | “quiz me” | a homework or exam question (with its printed figure), graded against the reference answer; wrong ones go to your mistake list |
 | “I'm done with this chapter” | the chapter is marked *verified* (you answered a material question right) or *covered*, and it moves on |
 | “show me my mistakes” / “make a cheat sheet” | re-teaches open mistakes; writes `cheatsheet.md` from your chapter summaries, confusions and mistakes |
+| “what should I do today?” | `coach.py plan` splits the remaining chapters over the days left (the last day is kept for mistakes and the cheat sheet) |
 | new chat, days later | say “continue my exam prep” and it resumes exactly where you stopped |
+
+Every reply ends with a 📍 progress line (chapter and part, quiz score, mistakes, days left, next step) copied from the tool, so a long session never loses its place.
 
 ## What a study session looks like
 
@@ -194,9 +206,9 @@ The tool works on any layout, but a few habits make the automatic chapter split 
 
 Supported input: `.pdf` (needs `pypdfium2` or `pypdf`), `.pptx`, `.docx`, `.md`, `.txt`, `.html`, and image files. Excel files and audio are not read.
 
-## Flash vs. the old full edition
+## Flash vs. the full edition
 
-| | **Flash (this version, v5.x)** | Full (v4.3, still downloadable) |
+| | **Flash (root of this repository, v5.x)** | Full (v4.3, `full/`) |
 |---|---|---|
 | Setup | one command, seconds | several confirmation commands, the agent renders PDF pages itself and writes “receipts” |
 | Skill text the agent must read | ≈6 KB | ≈140 KB |
@@ -206,7 +218,7 @@ Supported input: `.pdf` (needs `pypdfium2` or `pypdf`), `.pptx`, `.docx`, `.md`,
 | Knowledge windows, 3×4 learning-mode matrix, generation ledgers, remote parser adapters | no | yes |
 | Provenance labels, materials-only quizzes, mistakes, notes, cheat sheet, progress across chats | yes | yes |
 
-Use Flash unless you specifically want the printable HTML/PDF study guides of v4.3. The two editions do not share workspaces: after switching, re-run `setup` on the materials folder.
+Use Flash unless you specifically want the printable HTML/PDF study guides of v4.3. Both editions stay in this repository (`full/` is the v4.3 tree, unchanged, with its own README and tests). They do not share workspaces: after switching, re-run `setup` on the materials folder.
 
 ## What ends up in the `exam-cram/` folder
 
@@ -242,6 +254,8 @@ python coach.py done [--chapter N]            finish the chapter, move on
 python coach.py note "…" [--type summary|confusion|note] [--chapter N]
 python coach.py mistakes [--answers]          open mistakes
 python coach.py cheatsheet [--out FILE]       build the cheat sheet
+python coach.py plan [--days N]               day-by-day plan for the remaining chapters (--days updates the exam date)
+python coach.py export [--to DIR] [--qid …] [--chapter N] [paths…]   copy figures where the chat UI can render them
 python coach.py figures [--chapter N] [--file F] [--page P]   list cropped figures
 python coach.py figure <file> <page> [--crop x0,y0,x1,y1] [--scale 2]   render a page or a region
 python coach.py doctor                        environment check
@@ -278,7 +292,7 @@ All numbers were measured on a Windows 11 laptop with Python 3.12; the commands 
 
 **`python` is not recognized.** Install Python from python.org and tick *Add python.exe to PATH*, or tell the agent the full path to your Python.
 
-**I don't see the pictures in the chat.** Some terminals cannot render images. Use the desktop or IDE version of your agent (Claude Desktop, Codex desktop, Cursor, Windsurf, Antigravity), or open the PNG path the agent printed. The agent itself can always open the file to see what it shows.
+**I don't see the pictures in the chat.** Two different causes. Terminals cannot render images at all: use the desktop or IDE version of your agent, or open the PNG path it printed. Chat panels built on VS Code / Electron (Cursor, Windsurf, Antigravity, VS Code extensions) do render images, but block `file://` paths outside the opened workspace or in a Temp folder: the skill then runs `coach.py export --to <a folder inside the workspace or the host's artifact folder>` and embeds the copied files. If a picture still does not appear, the agent has at least opened it and can describe it, and gives you the path to click.
 
 **My slides are scans without text.** They are listed as “no text”; the agent can render any page with `coach.py figure <file> <page>` and read it with its own vision. Handwritten homework is skipped on purpose.
 
