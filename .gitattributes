@@ -1,3 +1,14 @@
+# Flash edition lives at the repository root; the v4.3 full edition lives in full/ and keeps
+# its own .gitattributes (Gold Set fixtures must stay LF byte-for-byte).
 * text=auto eol=lf
 *.png binary
 *.pdf binary
+*.xlsx binary
+
+# Source archives ("Download ZIP") skip the heavy trees; the installable bundles are the release assets.
+full/benchmark        export-ignore
+full/benchmark/**     export-ignore
+full/tests            export-ignore
+full/tests/**         export-ignore
+eval/results          export-ignore
+eval/results/**       export-ignore

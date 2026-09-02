@@ -106,7 +106,67 @@ _T = {
     "figure_saved": ("已保存", "Saved"),
     "no_figures": ("没有找到配图。", "No figures found."),
     "unknown_file": ("材料里没有这个文件", "No such file in the materials"),
+    "plan_head": ("📅 学习计划", "📅 Study plan"),
+    "plan_day": ("第 %d 天", "Day %d"),
+    "plan_last": ("最后一天：复习错题（mistakes --answers）并生成小抄（cheatsheet）", "Last day: review mistakes (mistakes --answers) and build the cheat sheet (cheatsheet)"),
+    "plan_today": ("今天目标", "Today's target"),
+    "plan_loop": ("每章流程：next 讲完 → quiz → note --type summary → done", "Per chapter: next until the text ends → quiz → note --type summary → done"),
+    "plan_no_days": ("没有设置考试日期。设置：python coach.py plan --days N", "No exam date set. Set it: python coach.py plan --days N"),
+    "plan_done": ("所有章节已完成，只剩复习错题和小抄。", "All chapters done; only mistakes and the cheat sheet are left."),
+    "export_ok": ("已复制 %d 张图到 %s（用下面的相对路径嵌入）", "Copied %d figure(s) to %s (embed the relative paths below)"),
+    "export_none": ("没有可导出的图：先运行 next / quiz / check 列出图，或用 --qid / --chapter 指定。",
+                    "Nothing to export: run next / quiz / check first, or pass --qid / --chapter."),
+    "export_hint": ("聊天界面不显示这些图片时：python coach.py export --to <打开的工作区或宿主 artifact 目录>，再用它打印的相对路径嵌入",
+                    "If your chat cannot render these paths: python coach.py export --to <open workspace or the host's artifact folder>, then embed the printed relative paths"),
 }
+
+
+# ------------------------------------------------------------------ progress line
+
+_SHOWN = []  # figure paths printed by the current command (for `export` without arguments)
+
+
+def days_for_study(state):
+    days = state.get("exam_days")
+    if not days or days < 1:
+        return None
+    return max(1, days - 1) if days >= 2 else 1  # keep the last day for mistakes + cheat sheet
+
+
+def daily_groups(state):
+    """Split the remaining chapters over the remaining study days: [[chapter, ...], ...]."""
+    todo = [c for c in state["chapters"] if c["status"] == "todo"]
+    cur = st.chapter(state)
+    if cur and cur["status"] == "todo":
+        todo = [cur] + [c for c in todo if c["n"] != cur["n"]]
+    days = days_for_study(state)
+    if not todo or not days:
+        return [todo] if todo else []
+    days = min(days, len(todo))
+    base, extra = divmod(len(todo), days)
+    groups, i = [], 0
+    for d in range(days):
+        size = base + (1 if d < extra else 0)
+        groups.append(todo[i:i + size])
+        i += size
+    return groups
+
+
+def footer(state, w, next_cmd):
+    total = len(state["chapters"])
+    done = sum(1 for c in state["chapters"] if c["status"] in ("done", "verified"))
+    parts = []
+    c = st.chapter(state)
+    if c and c["status"] == "todo":
+        right, asked = st.chapter_results(state, c["n"])
+        parts.append(("第 %d/%d 章《%s》段 %d/%d" if w.zh else "ch %d/%d %s · part %d/%d")
+                     % (c["n"], total, shorten(c["title"], 24), min(c["part"], c["parts"]), c["parts"]))
+        parts.append(("本章题 %d/%d" if w.zh else "quiz %d/%d") % (right, asked))
+    parts.append(("已完成 %d/%d 章" if w.zh else "%d/%d chapters done") % (done, total))
+    parts.append(("错题 %d" if w.zh else "%d open mistakes") % len(st.open_mistakes(state)))
+    if state.get("exam_days") is not None:
+        parts.append(("距考试 %d 天" if w.zh else "%d day(s) to exam") % state["exam_days"])
+    return "📍 " + " · ".join(parts) + " → " + next_cmd
 
 
 class W(object):
@@ -409,7 +469,11 @@ def cmd_status(args):
     om = st.open_mistakes(state)
     conf = [n for n in state["notes"] if n["type"] == "confusion"]
     print("%s: %d %s | %s: %d" % (w("mistakes"), len(om), w("open"), w("confusions"), len(conf)))
+    groups = daily_groups(state)
+    if groups and groups[0]:
+        print("%s: %s  (python coach.py plan)" % (w("plan_today"), ", ".join("ch%d" % c["n"] for c in groups[0])))
     print("%s: %s" % (w("next_steps"), "python coach.py next"))
+    print(footer(state, w, "python coach.py next"))
     return 0
 
 
@@ -436,12 +500,24 @@ def _print_examples(w, ws, bank, n, limit=8):
         print("… +%d" % (len(items) - limit))
 
 
+def _abs_fig(ws, p):
+    return os.path.join(ws, p.replace("/", os.sep))
+
+
 def _print_figs(ws, label, paths):
     if not paths:
         return
     print(label + ":")
     for p in paths:
-        print("  " + os.path.join(ws, p.replace("/", os.sep)))
+        full = _abs_fig(ws, p)
+        _SHOWN.append(full)
+        print("  " + full)
+
+
+def _remember_shown(ws, state):
+    if _SHOWN:
+        state["last_figures"] = list(dict.fromkeys(_SHOWN))
+        st.save(ws, state)
 
 
 def cmd_next(args):
@@ -478,6 +554,7 @@ def cmd_next(args):
         _print_examples(w, ws, bank, cur["n"])
         print("%s | %s" % (w("hint_quiz"), w("hint_done")))
         st.save(ws, state)
+        print(footer(state, w, "python coach.py quiz"))
         return 0
     if k >= len(parts):
         print("=== %s (%s %d/%d) ===" % (head, w("part"), len(parts), len(parts)))
@@ -485,6 +562,7 @@ def cmd_next(args):
         _print_examples(w, ws, bank, cur["n"])
         print("%s | %s" % (w("hint_quiz"), w("hint_done")))
         st.save(ws, state)
+        print(footer(state, w, "python coach.py quiz"))
         return 0
     print("=== %s (%s %d/%d) ===" % (head, w("part"), k + 1, len(parts)))
     print(w("material_label"))
@@ -494,19 +572,29 @@ def cmd_next(args):
         print("")
         print(w("slice_figs") + ":")
         for f in figs:
-            print("  [%s p.%s] %s" % (f["file"], f["page"], os.path.join(ws, f["path"].replace("/", os.sep))))
+            full = _abs_fig(ws, f["path"])
+            _SHOWN.append(full)
+            print("  [%s p.%s] %s" % (f["file"], f["page"], full))
+        print("  (%s)" % w("export_hint"))
     if k == 0 and ch.figures:
         print("\n" + w("figures") + ":")
         for f in ch.figures:
-            print("  - " + os.path.join(state["materials"], f))
+            full = os.path.join(state["materials"], f)
+            _SHOWN.append(full)
+            print("  - " + full)
     cur["part"] = k + 1
     if cur["part"] >= len(parts):
         print("")
         _print_examples(w, ws, bank, cur["n"])
         print("%s | %s" % (w("hint_quiz"), w("hint_done")))
+        next_cmd = "python coach.py quiz"
     else:
         print("\n%s | %s" % (w("hint_next"), w("hint_ask")))
+        next_cmd = "python coach.py next"
+    if _SHOWN:
+        state["last_figures"] = list(dict.fromkeys(_SHOWN))
     st.save(ws, state)
+    print(footer(state, w, next_cmd))
     return 0
 
 
@@ -529,7 +617,10 @@ def cmd_chapter(args):
     if figs:
         print("\n" + w("slice_figs") + ":")
         for f in figs:
-            print("  [%s p.%s] %s" % (f["file"], f["page"], os.path.join(ws, f["path"].replace("/", os.sep))))
+            full = _abs_fig(ws, f["path"])
+            _SHOWN.append(full)
+            print("  [%s p.%s] %s" % (f["file"], f["page"], full))
+    _remember_shown(ws, state)
     return 0
 
 
@@ -547,6 +638,7 @@ def cmd_goto(args):
     st.save(ws, state)
     print("%s %d: %s" % (w("goto_ok"), args.n, c["title"]))
     print(w("hint_next"))
+    print(footer(state, w, "python coach.py next"))
     return 0
 
 
@@ -561,8 +653,12 @@ def cmd_ask(args):
         print("🟢 [ch%s | %s p.%s | score %.1f]" % (c["chapter"], c["file"], c["page"], score))
         print(shorten(c["text"], args.chars))
         for f in figures_for_pages(figs, [(c["file"], c["page"])]):
-            print("  🖼 " + os.path.join(ws, f["path"].replace("/", os.sep)))
+            full = _abs_fig(ws, f["path"])
+            _SHOWN.append(full)
+            print("  🖼 " + full)
         print("")
+    _remember_shown(ws, state)
+    print(footer(state, w, "python coach.py next"))
     return 0
 
 
@@ -638,6 +734,8 @@ def cmd_quiz(args):
         _print_question(q, w, ws)
         print("")
     print(w("hint_check"))
+    _remember_shown(ws, state)
+    print(footer(state, w, "python coach.py check %s" % picked[0]["id"]))
     return 0
 
 
@@ -652,6 +750,8 @@ def cmd_check(args):
         print("%s: %s" % (w("unknown_q"), args.qid))
         return 2
     _print_question(q, w, ws, with_answer=True)
+    _remember_shown(ws, state)
+    print(footer(state, w, "python coach.py answer %s right|wrong|skip" % q["id"]))
     return 0
 
 
@@ -665,6 +765,9 @@ def cmd_answer(args):
     st.save(ws, state)
     right, asked = st.chapter_results(state, q["chapter"])
     print("%s: %s %s | ch%s quiz %d/%d | %s %d" % (w("recorded"), args.qid, args.result, q["chapter"], right, asked, w("mistakes"), len(st.open_mistakes(state))))
+    cur = st.chapter(state)
+    nxt = "python coach.py quiz" if cur and cur["part"] >= cur["parts"] else "python coach.py next"
+    print(footer(state, w, nxt))
     return 0
 
 
@@ -683,8 +786,10 @@ def cmd_done(args):
     if nxt:
         print("%s: ch%d %s" % (w("current"), nxt["n"], nxt["title"]))
         print(w("hint_next"))
+        print(footer(state, w, "python coach.py next"))
     else:
         print(w("all_done"))
+        print(footer(state, w, "python coach.py mistakes --answers"))
     return 0
 
 
@@ -694,6 +799,9 @@ def cmd_note(args):
     state["notes"].append({"chapter": n, "type": args.type, "text": args.text.strip(), "ts": st.now()})
     st.save(ws, state)
     print("%s (ch%s, %s)" % (w("note_ok"), n, args.type))
+    cur = st.chapter(state)
+    nxt = "python coach.py done" if (args.type == "summary" and cur and cur["part"] >= cur["parts"]) else "python coach.py next"
+    print(footer(state, w, nxt))
     return 0
 
 
@@ -711,6 +819,8 @@ def cmd_mistakes(args):
             _print_question(q, w, ws, with_answer=args.answers)
         print("")
     print(w("hint_check"))
+    _remember_shown(ws, state)
+    print(footer(state, w, "python coach.py answer %s right|wrong|skip" % om[0]["qid"]))
     return 0
 
 
@@ -808,6 +918,77 @@ def cmd_figure(args):
     return 0
 
 
+def cmd_plan(args):
+    ws, state, w = load_ws(args)
+    if args.days is not None:
+        state["exam_days"] = args.days
+        st.save(ws, state)
+    total = len(state["chapters"])
+    done = sum(1 for c in state["chapters"] if c["status"] in ("done", "verified"))
+    groups = daily_groups(state)
+    if not groups:
+        print(w("plan_done"))
+        print(footer(state, w, "python coach.py mistakes --answers"))
+        return 0
+    if state.get("exam_days") is None:
+        print(w("plan_no_days"))
+        print("  " + ", ".join("ch%d %s" % (c["n"], shorten(c["title"], 30)) for c in groups[0]))
+        return 0
+    print("%s: %s %d %s · %d/%d %s" % (w("plan_head"), ("距考试" if w.zh else "exam in"), state["exam_days"],
+                                        ("天" if w.zh else "day(s)"), done, total, ("章已完成" if w.zh else "chapters done")))
+    cur = st.chapter(state)
+    for d, group in enumerate(groups, 1):
+        names = ", ".join(("→ " if cur and c["n"] == cur["n"] else "") + "ch%d %s" % (c["n"], shorten(c["title"], 28)) for c in group)
+        print("  %s: %s" % (w("plan_day") % d, names))
+    if state["exam_days"] >= 2:
+        print("  %s" % w("plan_last"))
+    print("%s: %s" % (w("plan_today"), ", ".join("ch%d" % c["n"] for c in groups[0])))
+    print(w("plan_loop"))
+    print(footer(state, w, "python coach.py next"))
+    return 0
+
+
+def cmd_export(args):
+    import shutil
+    ws, state, w = load_ws(args)
+    bank = load_bank(ws)
+    figs = load_figures(ws)
+    chosen = []
+    for qid in args.qid or []:
+        q = _find_q(bank, qid)
+        if q:
+            chosen += [_abs_fig(ws, p) for p in (q.get("figures") or []) + (q.get("answer_figures") or [])]
+    if args.chapter:
+        chs = {c.number: c for c in load_chapters(ws)}
+        if args.chapter in chs:
+            pages = [(rel, page) for rel, page, _ in chs[args.chapter].blocks]
+            chosen += [_abs_fig(ws, f["path"]) for f in figures_for_pages(figs, pages)]
+    chosen += [os.path.abspath(p) for p in args.paths or []]
+    if not chosen:
+        chosen = list(state.get("last_figures") or [])
+    chosen = [p for p in dict.fromkeys(chosen) if os.path.exists(p)]
+    if not chosen:
+        print(w("export_none"))
+        return 3
+    dest = os.path.abspath(args.to)
+    os.makedirs(dest, exist_ok=True)
+    copied = []
+    for src in chosen:
+        target = os.path.join(dest, os.path.basename(src))
+        shutil.copy2(src, target)
+        copied.append(target)
+    print(w("export_ok") % (len(copied), dest))
+    cwd = os.getcwd()
+    for target in copied:
+        try:
+            inside = os.path.commonpath([cwd, target]) == cwd
+        except ValueError:
+            inside = False
+        rel = os.path.relpath(target, cwd) if inside else target
+        print("  " + rel.replace(os.sep, "/"))
+    return 0
+
+
 def cmd_doctor(args):
     print("Exam Cram Coach %s | python %s" % (__version__, sys.version.split()[0]))
     backend = extract.pdf_backend()
@@ -836,6 +1017,8 @@ HELP_ZH = """用法：python coach.py <命令> [--workspace 路径]
   note "内容" [--type summary|confusion|note] [--chapter N]   写笔记
   mistakes [--answers]   列出待复习错题
   cheatsheet [--out 文件] 由笔记+错题生成小抄
+  plan [--days N]        按剩余天数排每日目标（--days 更新考试日期）
+  export [--to 目录] [--qid q001 ...] [--chapter N] [图片路径...]   把要展示的图复制到聊天界面能显示的目录（默认取上一条命令列出的图）
   figures [--chapter N] [--file F] [--page P]   列出已裁好的配图
   figure <文件> <页码> [--crop x0,y0,x1,y1] [--scale 2]   截整页或局部（坐标为 0-1 比例，左上角原点）
   doctor                 环境检查"""
@@ -854,6 +1037,8 @@ HELP_EN = """Usage: python coach.py <command> [--workspace PATH]
   note "text" [--type summary|confusion|note] [--chapter N]   save a note
   mistakes [--answers]   list open mistakes
   cheatsheet [--out FILE] build a cheat sheet from notes + mistakes
+  plan [--days N]        split the remaining chapters over the days left (--days updates the exam date)
+  export [--to DIR] [--qid q001 ...] [--chapter N] [paths...]   copy figures where the chat UI can render them (default: the figures listed by the last command)
   figures [--chapter N] [--file F] [--page P]   list cropped figures
   figure <file> <page> [--crop x0,y0,x1,y1] [--scale 2]   shoot a whole page or a region (0-1 fractions, top-left origin)
   doctor                 environment check"""
@@ -958,6 +1143,17 @@ def build_parser():
     s.add_argument("--scale", type=float, default=2.0)
     s.add_argument("--out")
     s.set_defaults(fn=cmd_figure)
+
+    s = sub.add_parser("plan")
+    s.add_argument("--days", type=int)
+    s.set_defaults(fn=cmd_plan)
+
+    s = sub.add_parser("export")
+    s.add_argument("paths", nargs="*")
+    s.add_argument("--to", default="exam-cram-figures")
+    s.add_argument("--qid", nargs="*")
+    s.add_argument("--chapter", type=int)
+    s.set_defaults(fn=cmd_export)
 
     sub.add_parser("doctor").set_defaults(fn=cmd_doctor)
     sub.add_parser("help").set_defaults(fn=cmd_help)

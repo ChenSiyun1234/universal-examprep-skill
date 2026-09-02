@@ -32,14 +32,23 @@
 | 🟡 **AI 补充** | 智能体补的背景，可能和你老师讲的不完全一致 |
 | ⚠️ **AI 生成答案** | 资料里没有答案，这是智能体自己算的 |
 
-**Flash** 是这个版本的名字：整门课几秒钟准备完，技能说明只有约 1100 词，学习循环只有 7 条命令，小模型也能跑（实测 Gemini flash-lite 和 Claude Haiku）。之前的“完整版”（v4.3，带网页讲义/PDF 和一整套核验流水线）仍可从 [v4.3 发布页](https://github.com/ZeKaiNie/universal-examprep-skill/releases/tag/v4.3) 下载，区别见 [Flash 版与旧完整版](#flash-版与旧完整版)。
+## 两个版本，任选其一
+
+| | **Flash 版**（本目录，推荐） | **完整版**（v4.3，在 [`full/`](full/)） |
+|---|---|---|
+| 适合谁 | 所有临考的人；小模型/本地模型 | 想要完整建库、可打印网页/PDF 讲义和核验流水线的人 |
+| 准备 | 一条命令，几秒 | 多步确认，智能体自己渲染页面 |
+| README | 本页 · [English](README.md) | [full/README.zh.md](full/README.zh.md) · [full/README.md](full/README.md) |
+| 安装 | [最新发布](https://github.com/ZeKaiNie/universal-examprep-skill/releases/latest)里的 `exam-cram-coach-flash.zip` | [v4.3 发布](https://github.com/ZeKaiNie/universal-examprep-skill/releases/tag/v4.3)里的 `universal-exam-cram-coach.zip`，或直接复制 `full/` |
+
+本页其余内容讲 **Flash 版**：整门课几秒钟准备完，技能说明只有约 1100 词，学习循环只有 7 条命令，小模型也能跑（实测 Gemini flash-lite 和 Claude Haiku）。逐项对比见 [Flash 版与完整版](#flash-版与完整版)。
 
 ## 目录
 
 1. [五分钟开始复习](#五分钟开始复习)
 2. [一次复习长什么样](#一次复习长什么样)
 3. [资料怎么放](#资料怎么放)
-4. [Flash 版与旧完整版](#flash-版与旧完整版)
+4. [Flash 版与完整版](#flash-版与完整版)
 5. [`exam-cram/` 文件夹里有什么](#exam-cram-文件夹里有什么)
 6. [命令一览](#命令一览)
 7. [实测数据](#实测数据)
@@ -138,7 +147,10 @@ python 技能路径/exam-cram-coach/coach.py doctor
 | “考考我” | 一道作业或试卷真题（带题面图），按参考答案判分；错题自动记入错题本 |
 | “这章学完了” | 本章标为“已验证”（答对过本章材料题）或“已讲完”，进入下一章 |
 | “看看错题” / “做小抄” | 重讲待复习错题；由你的章节总结、疑难点、错题生成 `cheatsheet.md` |
+| “今天该学什么？” | `coach.py plan` 把剩余章节按剩余天数分配（最后一天留给错题和小抄） |
 | 几天后开新对话 | 说“继续备考”，它会从上次停的地方接着讲 |
+
+每次回复末尾都有一行从工具照抄的 📍 进度（第几章第几段、本章做题、错题、剩余天数、下一步），会话再长也不会丢线。
 
 ## 一次复习长什么样
 
@@ -194,9 +206,9 @@ python 技能路径/exam-cram-coach/coach.py doctor
 
 支持的输入：`.pdf`（需要 `pypdfium2` 或 `pypdf`）、`.pptx`、`.docx`、`.md`、`.txt`、`.html` 和图片文件。不读 Excel 和音频。
 
-## Flash 版与旧完整版
+## Flash 版与完整版
 
-| | **Flash 版（本版本，v5.x）** | 完整版（v4.3，仍可下载） |
+| | **Flash 版（仓库根目录，v5.x）** | 完整版（v4.3，`full/`） |
 |---|---|---|
 | 准备 | 一条命令，几秒 | 多条确认命令，智能体自己渲染 PDF 页并写“回执” |
 | 智能体要读的技能文本 | 约 6 KB | 约 140 KB |
@@ -206,7 +218,7 @@ python 技能路径/exam-cram-coach/coach.py doctor
 | 知识点窗口、3×4 学习模式、代际账本、远端解析适配 | 无 | 有 |
 | 来源标签、只出材料题、错题、笔记、小抄、跨对话进度 | 有 | 有 |
 
-除非你明确要 v4.3 的可打印网页讲义，否则用 Flash 版。两个版本的工作区互不兼容：切换后对资料夹重新 `setup` 即可。
+除非你明确要 v4.3 的可打印网页讲义，否则用 Flash 版。两个版本都在本仓库里（`full/` 是原样保留的 v4.3 目录树，带自己的 README 和测试）。两者工作区互不兼容：切换后对资料夹重新 `setup` 即可。
 
 ## `exam-cram/` 文件夹里有什么
 
@@ -242,6 +254,8 @@ python coach.py done [--chapter N]            本章讲完，进入下一章
 python coach.py note "…" [--type summary|confusion|note] [--chapter N]
 python coach.py mistakes [--answers]          待复习错题
 python coach.py cheatsheet [--out 文件]       生成小抄
+python coach.py plan [--days N]               按剩余天数排每日目标（--days 更新考试日期）
+python coach.py export [--to 目录] [--qid …] [--chapter N] [路径…]   把图复制到聊天界面能显示的目录
 python coach.py figures [--chapter N] [--file F] [--page P]   列出裁好的图
 python coach.py figure <文件> <页> [--crop x0,y0,x1,y1] [--scale 2]   截整页或局部
 python coach.py doctor                        环境检查
@@ -278,7 +292,7 @@ python coach.py help
 
 **提示 `python` 不是内部或外部命令。** 到 python.org 安装并勾选 *Add python.exe to PATH*，或者把 Python 的完整路径告诉智能体。
 
-**对话里看不到图。** 有些终端不能显示图片。用智能体的桌面版或编辑器（Claude Desktop、Codex 桌面版、Cursor、Windsurf、Antigravity），或者直接打开它打印的 PNG 路径。智能体自己总能打开文件看图。
+**对话里看不到图。** 两种原因。纯终端根本不显示图片：用智能体的桌面版或编辑器，或直接打开它打印的 PNG 路径。基于 VS Code / Electron 的聊天面板（Cursor、Windsurf、Antigravity、VS Code 插件）能显示图片，但会拦截打开的工作区之外或临时目录里的 `file://` 路径：这时技能会运行 `coach.py export --to <工作区内的文件夹或宿主的 artifact 目录>`，再嵌入复制后的文件。若仍不显示，智能体至少已经打开看过并能描述，并把路径给你点击。
 
 **我的课件是没有文字的扫描件。** 会被列为“没有文字”；智能体可以用 `coach.py figure <文件> <页>` 渲染任何一页再用自己的视觉能力读。手写作业则是故意跳过的。
 

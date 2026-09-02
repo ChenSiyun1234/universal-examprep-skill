@@ -4,7 +4,18 @@
 
 > 运行时文本（`SKILL.md`、`README*.md`）只描述当前行为，版本历史集中记录在本文件。
 
-## V5.1 Flash — 2026-09-02 · 图片回到对话里（发布：`v5.1.0-flash`，附 `exam-cram-coach-flash.zip`）
+## V5.1.1 Flash — 2026-09-02 · 图片显示策略、长程进度、两版并存（发布：`v5.1.1-flash`）
+
+- **图片显示**：VS Code / Electron 类聊天面板会拦截工作区外或临时目录下的 `file://` 图片。新增 `export [--to 目录] [--qid …] [--chapter N] [路径…]`，把上一条命令列出的图（或指定的图）复制到聊天界面能显示的目录并打印相对路径；SKILL §4 改为三级策略：直接嵌入 → `export` 后用相对路径嵌入 → 用查看器打开并给可点击路径，且不得声称展示了没有嵌入的图。`next` 在配图列表下附带这条提示。
+- **长程进度追踪**：每条命令末尾输出一行 📍（第几章/段、本章做题、已完成章数、错题、剩余天数、下一条命令），SKILL 要求每次回复末尾照抄并按它执行；新对话先跑 `status`。新增 `plan [--days N]`：把剩余章节按剩余天数分配、最后一天留给错题与小抄，`status` 显示今天目标。
+- **两个版本并存**：v4.3 完整版原样恢复到 `full/`（自带 README、SKILL、脚本、文档、benchmark、测试），根目录是 Flash 版；根 README 顶部说明如何选择；原版 CONTRIBUTING（中英）恢复到根目录；CI 在 `full/` 变更时运行它原有的测试。
+- 发布说明改为中英完整对照。
+
+### V5.1.1 Flash (English)
+
+Figures in Electron/VS Code chat panels: new `export` command copies the figures listed by the last command (or `--qid`/`--chapter`/paths) into a folder the UI can render and prints relative paths; SKILL §4 now spells out the three-level display strategy. Long-session tracking: every command ends with a 📍 progress line (chapter/part, quiz score, chapters done, mistakes, days left, next command) that the agent copies into each reply; new `plan [--days N]` splits the remaining chapters over the remaining days and keeps the last day for review; `status` shows today's target. Two editions side by side: the v4.3 full edition is restored verbatim under `full/` with its own README/SKILL/tests, the Flash edition stays at the root, the original CONTRIBUTING guides are back, and CI runs the v4.3 suite when `full/` changes. Release notes are now fully bilingual.
+
+## V5.1 Flash — 2026-09-02 · 图片回到对话里
 
 - **自动裁图**：`setup` 用 `pypdfium2` 读取 PDF 页面对象，把讲义里的矢量图/嵌入图按区域裁成 PNG（`figures/`），`next`、`chapter`、`ask` 在对应页下方列出路径；PPTX/DOCX 的嵌入图直接抽出；`figure <文件> <页> --crop` 可手动截任意区域。
 - **题面图 / 答案图**：题目或解答所在的印刷区域含图时自动裁出，`quiz` 先给题面图，`check` 才给答案图；SKILL §4 要求把图真正放进对话而不是打印路径。

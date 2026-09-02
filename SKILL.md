@@ -18,7 +18,7 @@ The script does the heavy work; you explain, show the pictures, quiz, and encour
 2. Run `python coach.py setup <folder> [--days N] [--lang zh|en] [--start N]`. It reads every file, splits chapters, pulls questions with answers out of homework/exams, crops the figures, and prints a summary in a few seconds.
 3. Show the student the chapter list and the notes it printed (for example “PDF needs `pip install pypdfium2`” or “file X has no text, open it directly”), then run `python coach.py next` and begin teaching.
 
-If a workspace already exists, `python coach.py status` shows where you left off; continue with `next`.
+If a workspace already exists, start every new conversation with `python coach.py status`: it shows where you left off and today's target chapters. `python coach.py plan` shows the whole day-by-day plan (`plan --days N` updates the exam date).
 
 ## 2. Teaching loop (every later turn)
 
@@ -33,8 +33,9 @@ If a workspace already exists, `python coach.py status` shows where you left off
 | cheat sheet | `python coach.py cheatsheet` | Tell them the file path; you may polish the Markdown |
 | jump to chapter N | `python coach.py goto N` | Then `next` |
 | progress | `python coach.py status` | Paste the panel |
+| “what should I do today?” / “how do I split the days?” | `python coach.py plan` | Paste the plan; teach the first chapter of today's target |
 
-Run exactly one command per step and read its last line: it always names the next command.
+Run exactly one command per step. Every command ends with a 📍 line (chapter and part, quiz score, mistakes, days left, and the next command). **Copy that 📍 line as the last line of every reply** and follow its next command; this is how you and the student keep track across a long session and across chats. When a chapter's text is exhausted, run `quiz`, then `note --type summary`, then `done`: `done` is what advances the plan, never skip it.
 
 ## 3. How to teach one slice
 
@@ -53,7 +54,11 @@ Pace by days left: ≤1 day → no warm-up questions, only essentials and past-e
 
 Lines starting with 🖼 give PNG files cropped from the original materials: figures in the current slice, the printed question (🖼 question figure) and the printed solution with its diagram (🖼 answer figure).
 
-- Open every listed picture yourself (view the file) before explaining what it shows, and put it in front of the student: embed it in the reply as an image (Markdown `![](path)`, an attachment, or whatever this host renders) so the student sees the figure while you explain. A bare path is not a picture.
+- Open every listed picture yourself (view the file) before explaining what it shows, then put it in front of the student. A bare path is not a picture. Use the first way that works in this host:
+  1. Embed the absolute path as a Markdown image (`![](C:/…/figures/ch01_p4_1.png)`) or attach it, if this host renders such paths.
+  2. Chat panels built on VS Code / Electron (Cursor, Windsurf, Antigravity, VS Code extensions) block `file://` images that live outside the opened workspace or in a Temp folder. Then run `python coach.py export --to <a folder inside the open workspace, e.g. ./exam-cram-figures, or this host's artifact folder>` right after the command that listed the figures; it copies them and prints relative paths — embed those.
+  3. If images still do not render, open the PNG with your file/image viewer tool so that you have seen it, describe what it shows in one sentence, and give the path so the student can click it.
+  Never say you showed a picture that you did not embed.
 - Show the question figure before asking the question; show the answer figure only when explaining the answer.
 - If a figure you need is not listed, `python coach.py figure <file> <page>` renders the whole page; look at it, then cut the region with `--crop x0,y0,x1,y1` (fractions of the page, top-left origin) and show that.
 - Scanned or handwritten pages are skipped on purpose (they are the student's own work); never present them as the answer.
