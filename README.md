@@ -9,21 +9,31 @@
 English · [中文](README.zh.md)
 
 [![stars](https://img.shields.io/github/stars/ZeKaiNie/universal-examprep-skill?style=flat&color=blue)](https://github.com/ZeKaiNie/universal-examprep-skill/stargazers)
+[![skills.sh](https://img.shields.io/badge/skills.sh-install-purple)](https://skills.sh/zekainie/universal-examprep-skill/universal-exam-cram-coach)
 [![release](https://img.shields.io/github/v/release/ZeKaiNie/universal-examprep-skill?label=release&color=orange)](https://github.com/ZeKaiNie/universal-examprep-skill/releases/latest)
 [![MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/ZeKaiNie/universal-examprep-skill/actions/workflows/ci.yml/badge.svg)](https://github.com/ZeKaiNie/universal-examprep-skill/actions)
+
+```bash
+# One-command install (Claude Code, Cursor, Codex, Antigravity, Windsurf, etc.)
+npx skills add zekainie/universal-examprep-skill
+```
 
 **One command to set up · Teaches from your files · Shows the figures · Quizzes from your homework · Never hides what it made up**
 
 </div>
 
-Exam Cram Coach is an [Agent Skill](SKILL.md) plus one small Python tool. You give a coding agent (Claude Code, Codex, Cursor, Windsurf, Antigravity, Gemini CLI, …) the folder with your lecture slides, notes, homework and past papers. From then on it:
+Exam Cram Coach is an [Agent Skill](SKILL.md) plus one small Python tool. You give a coding agent (Claude Code, Codex, Cursor, Windsurf, Antigravity, Gemini CLI, …) the folder with your lecture slides, notes, homework and past papers. It is engineered with three core technical differentiators:
 
+1. **🎯 100% Grounded & Anti-Hallucination**: Every taught concept cites exact `file p.N` references; out-of-scope queries exit with non-zero status to strictly prevent fabrication (100% out-of-scope abstention); transparent 🟢/🟡/⚠️ provenance tags distinguish materials from AI commentary.
+2. **🧠 Cross-Session Persistent Memory**: Maintains state locally in `study_state.json` and a mistake log without external vector databases or token bloat. Close your chat and resume anytime with `coach.py status`; mistakes are prioritized in spaced re-quizzing.
+3. **⚡ High-End Performance on Cheap / Weak Models**: Deterministic CLI output with `📍 next command` hints and automated vector-figure cropping (`pypdfium2`). Benchmarked on 1,000+ pages of real college probability notes: **Gemini Flash-Lite** and **Claude Haiku** achieve zero command fabrication, zero phantom citations, and publication-grade figure presentations (see [Weak Model Benchmark](docs/weak-model-test.md)).
+
+Core workflow:
 - reads PDF / PPTX / DOCX / Markdown / TXT / HTML and splits the course into chapters;
 - **cuts the figures out of the lecture notes and the printed questions and solutions**, so it can put the right picture in front of you while it explains;
-- pulls the real questions and reference answers out of homework and exams (it matches `hw2.pdf` with `hw2solutions.pdf`, and “Problem 1.3.10” with its solution);
-- teaches one chapter at a time, in plain words, citing `file p.N` for every fact;
-- quizzes you only with those questions, keeps your mistakes and notes, and builds a cheat sheet;
+- pulls the real questions and reference answers out of homework and exams (matches `hw2.pdf` with `hw2solutions.pdf`, and “Problem 1.3.10” with its solution);
+- teaches chapter by chapter in plain words, quizzes only with those questions, tracks mistakes, and compiles a concise cheat sheet;
 - labels every sentence so you always know where it came from:
 
 | Label | Meaning |

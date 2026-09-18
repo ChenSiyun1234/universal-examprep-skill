@@ -14,7 +14,8 @@ Use this project when a user asks for: exam preparation, final exam cramming, re
 
 ## Install (Flash)
 
-Unzip `exam-cram-coach-flash.zip` from the latest GitHub release into the agent's skills folder so that `exam-cram-coach/SKILL.md` and `exam-cram-coach/coach.py` exist; `pip install pypdfium2`; then tell the agent where the course folder is and when the exam is.
+- Via Skills CLI (Recommended): `npx skills add zekainie/universal-examprep-skill`
+- Manual: Unzip `exam-cram-coach-flash.zip` from the latest GitHub release into the agent's skills folder so that `exam-cram-coach/SKILL.md` and `exam-cram-coach/coach.py` exist; `pip install pypdfium2`; then tell the agent where the course folder is and when the exam is.
 
 ## Commands (Flash)
 
@@ -22,5 +23,5 @@ setup, status, plan, next, chapter, goto, ask, quiz, check, answer, done, note, 
 
 ## Keywords
 
-exam prep AI tutor, study assistant, lecture notes to quiz, homework solutions pairing, past exam practice, spaced review of mistakes, cheat sheet generator, study plan, PDF figure extraction, source-cited answers, provenance labels, hallucination-free tutoring, agent skill, Claude Code skill, Codex skill, Cursor skill, Windsurf skill, Antigravity skill, Gemini CLI skill, small language model friendly, local, offline, no server, Python, MIT
-期末复习 AI, 考前突击, 备考助手, 课件 PDF 讲解, 作业答案配对, 真题练习, 错题本, 复习计划, 考前小抄, 讲义配图, 来源标注, 不编造, 智能体技能, Claude Code 技能, Codex 技能, Cursor 技能, 本地运行, 开源
+exam prep AI tutor, study assistant, lecture notes to quiz, homework solutions pairing, past exam practice, spaced review of mistakes, cheat sheet generator, study plan, PDF figure extraction, source-cited answers, provenance labels, hallucination-free tutoring, anti-hallucination, persistent cross-session memory, small language model friendly, weak-model benchmark, local, offline, no server, Python, MIT, agent skill, Claude Code skill, Codex skill, Cursor skill, Windsurf skill, Antigravity skill, Gemini CLI skill
+期末复习 AI, 考前突击, 备考助手, 课件 PDF 讲解, 作业答案配对, 真题练习, 错题本, 复习计划, 考前小抄, 讲义配图, 来源标注, 不编造, 零幻觉, 跨会话长久记忆, 小模型实测高水平, 智能体技能, Claude Code 技能, Codex 技能, Cursor 技能, 本地运行, 开源

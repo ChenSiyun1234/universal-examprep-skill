@@ -9,21 +9,31 @@
 中文 · [English](README.md)
 
 [![收藏数](https://img.shields.io/github/stars/ZeKaiNie/universal-examprep-skill?style=flat&color=blue)](https://github.com/ZeKaiNie/universal-examprep-skill/stargazers)
+[![skills.sh](https://img.shields.io/badge/skills.sh-install-purple)](https://skills.sh/zekainie/universal-examprep-skill/universal-exam-cram-coach)
 [![发布](https://img.shields.io/github/v/release/ZeKaiNie/universal-examprep-skill?label=release&color=orange)](https://github.com/ZeKaiNie/universal-examprep-skill/releases/latest)
 [![MIT](https://img.shields.io/badge/协议-MIT-blue.svg)](LICENSE)
 [![持续集成](https://github.com/ZeKaiNie/universal-examprep-skill/actions/workflows/ci.yml/badge.svg)](https://github.com/ZeKaiNie/universal-examprep-skill/actions)
+
+```bash
+# 一键安装技能 (支持 Claude Code / Cursor / Codex / Antigravity / Windsurf 等)
+npx skills add zekainie/universal-examprep-skill
+```
 
 **一条命令准备好整门课 · 按你的资料讲 · 讲到哪张图就给你看哪张 · 用你的作业和真题考你 · 编的内容绝不冒充资料**
 
 </div>
 
-期末极速备考教练是一个 [Agent Skill](SKILL.md) 加一个很小的 Python 工具。你把课件、笔记、作业、往年题所在的文件夹交给编程智能体（Claude Code、Codex、Cursor、Windsurf、Antigravity、Gemini CLI……），之后它会：
+期末极速备考教练是一个 [Agent Skill](SKILL.md) 加一个很小的 Python 工具。你把课件、笔记、作业、往年题所在的文件夹交给编程智能体（Claude Code、Codex、Cursor、Windsurf、Antigravity、Gemini CLI……），它拥有三大核心技术特色：
 
+1. **🎯 100% 讲义溯源与零幻觉**：每个知识点讲解强制标明 `文件 p.页码`；遇到材料没讲的内容，检索自动拦截拒答（100% 拒绝材料外瞎编）；严格通过 🟢/🟡/⚠️ 三色标记来源。
+2. **🧠 跨会话长期记忆**：纯本地轻量维护 `study_state.json` 与错题本，无需昂贵向量库。关掉对话随时重开，一条 `coach.py status` 瞬间恢复断点；做错的题自动优先重测。
+3. **⚡ 弱模型/小模型发挥强模型水准**：确定性 CLI 指令流（每步输出带 `📍 下一步` 提示），配合底层自动裁图。实测千页复杂真实教材，**Gemini Flash-Lite** 与 **Claude Haiku** 也能做到零编造命令、零伪造页码、全流程高质量授课（详见 [弱模型实测](docs/weak-model-test.md)）。
+
+核心功能流程：
 - 读取 PDF / PPTX / DOCX / Markdown / TXT / HTML，把整门课切成章节；
 - **把讲义里的图、题目和解答里的图裁出来**，讲到对应内容时直接放进对话；
 - 从作业和试卷里抽出真题和参考答案（`hw2.pdf` 自动配 `hw2solutions.pdf`，“Problem 1.3.10” 自动配它的解答）；
-- 一章一章用大白话讲，每个结论都标出处 `文件 p.页码`；
-- 只用这些题考你，记住错题和笔记，最后拼一份小抄；
+- 一章一章用大白话讲，只用真实作业/真题考你，记住错题并生成考前小抄；
 - 每句话都标明来源，你永远知道哪句是老师讲的、哪句是 AI 补的：
 
 | 标签 | 含义 |
