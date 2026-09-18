@@ -4,7 +4,7 @@
 
 # Exam Cram Coach · Flash
 
-*Drop your course folder on a coding agent. Get a tutor that teaches from your own slides, shows the figures, quizzes you with your own homework, and remembers where you stopped.*
+*An AI exam-prep tutor for Claude Code, Codex, Cursor, Windsurf, Antigravity and Gemini CLI: drop in your lecture slides, notes, homework and past papers, and it teaches chapter by chapter with page citations, shows the figures, quizzes you with your own questions, tracks mistakes, and builds your cheat sheet.*
 
 English · [中文](README.zh.md)
 
@@ -326,6 +326,10 @@ python release.py                                 # build dist/exam-cram-coach-f
 ```
 
 Layout: `SKILL.md` (what the agent follows), `coach.py` + `coach/` (`extract` → `chapters` → `questions` → `figures` → `index` → `state` → `cli`), `tests/`, `samples/`, `eval/` (agent smoke test and scorer), `docs/` ([refactor report](docs/v5-refactor.md), [feature audit](docs/feature-audit.md), [weak-model test](docs/weak-model-test.md)). Release history is in [CHANGELOG.md](CHANGELOG.md); contribution notes in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Keywords
+
+So that people and agents searching in either language find this page: exam prep · final exam cram · midterm revision · study from lecture slides PDF / PPTX · AI tutor that cites sources · quiz from homework and past papers · mistake notebook · cheat sheet generator · study plan for N days · figures extracted from lecture notes · Agent Skill for Claude Code / Codex / Cursor / Windsurf / Antigravity / Gemini CLI · works with small local models · offline, no server, Python, MIT. 期末复习 · 考前突击 · 期中复习 · 考研/考证复习 · 课件 PDF 讲解 · AI 家教 · 引用出处不编造 · 用作业和真题刷题 · 错题本 · 考前小抄 · 复习计划 · 讲义配图 · Claude Code / Codex / Cursor 智能体技能 · 本地运行 · 开源。
 
 ## License
 
