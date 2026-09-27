@@ -1,4 +1,4 @@
-> **本仓库并存两个版本。** **Flash 版**（根目录：`SKILL.md`、`coach.py`、`coach/`、`tests/`）是默认版本，测试用 `python -m unittest discover -s tests -v`，约 1 秒。**完整版（v4.3）**原样保留在 `full/`，测试用 `cd full && python -m unittest discover -s tests -v`（约十分钟），CI 在 `full/` 有改动时运行。下面的指南原本为完整版而写，两版通用：保护学生数据、来源诚实、PR 聚焦。
+> **本仓库并存两个版本。** **Flash 版**（可安装的技能在 `skills/universal-exam-cram-coach/`，测试在 `tests/`）是默认版本；这个文件夹只能放 `SKILL.md`、`LICENSE`、`coach.py` 和 `coach/`，因为 `npx skills add` 装的、skills.sh 审计的就是它（`tests/test_skill_surface.py` 会检查），测试用 `python -m unittest discover -s tests -v`，约 1 秒。**完整版（v4.3）**原样保留在 `full/`，测试用 `cd full && python -m unittest discover -s tests -v`（约十分钟），CI 在 `full/` 有改动时运行。下面的指南原本为完整版而写，两版通用：保护学生数据、来源诚实、PR 聚焦。
 
 # 参与贡献
 

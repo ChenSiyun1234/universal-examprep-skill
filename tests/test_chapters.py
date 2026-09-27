@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+from tests import skillpath  # noqa: F401  (skill folder on sys.path)
 import unittest
 
 from coach.chapters import build_chapters, number_from_name

@@ -4,6 +4,24 @@
 
 > 运行时文本（`SKILL.md`、`README*.md`）只描述当前行为，版本历史集中记录在本文件。
 
+## V5.2.0 Flash — 2026-09-27 · 小安装包、通过安全审计、课件当数据（发布：`v5.2.0-flash`）
+
+- **只安装技能本身**：可安装的技能移到 `skills/universal-exam-cram-coach/`，只含 `SKILL.md`、`LICENSE`、`coach.py`、`coach/`。此前 `SKILL.md` 在仓库根目录，`npx skills add` 会把整个仓库（545 个文件、12 MB，含 v4.3、评测脚本和测试）复制进每个智能体；现在是 13 个文件、150 KB（skills CLI 1.7.0 实测）。根目录的 `coach.py` 保留为开发者快捷入口。
+- **沿用 skills.sh 上已有的名字**：Flash 版改名为 `universal-exam-cram-coach`，与 skills.sh 现有页面、安装数和页面上的 `--skill` 安装命令一致；v4.3 完整版改名 `universal-exam-cram-coach-full` 并标记 `metadata.internal: true`，普通安装不会选中它，按名字指定时仍可安装。旧的 `exam-cram-coach` 安装请 `npx skills remove exam-cram-coach` 后重装。
+- **针对 skills.sh 三项安全审计**：去掉 v4.3 README 里 Star History 链接中的高熵 `sealed_token`（Snyk W008）；README 不再让智能体“去某网址下载最新版并安装”，改为用户执行的 `npx skills add` 与带 `SHA256SUMS.txt` 校验的发布包（Snyk W012）；评测脚本不再位于被审计、被安装的技能目录中（Socket）；新增课件防注入边界（Gen Agent Trust Hub）。新增 `SECURITY.md` 与 `tests/test_skill_surface.py`，在 CI 中保证技能目录只有规定文件、不联网、不调用子进程、`SKILL.md` 不含网址或类似密钥的字符串、frontmatter 符合 Agent Skills 规范。
+- **课件当数据，不当指令**：工具打印的课件、题目和答案一律夹在 `<<<MATERIAL` 与 `MATERIAL>>>` 之间；`coach/guard.py` 标出对 AI 说话的句子（“ignore previous instructions”“如果你是 AI…”“把…发送到 https://…”），`setup` 报告所在文件，显示时加 ⚠️ 提醒；SKILL.md 新增 §6 要求智能体只把它们当内容讲。在 EEC 160、MIT 6.006、PSYC 110 和中文样例共 20,363 行真实课件上零误报，13 条中英注入样例全部识别。
+- **新的安装渠道**：Claude Code 插件（`/plugin marketplace add ZeKaiNie/universal-examprep-skill`，`claude plugin validate` 通过）；发布包改名 `universal-exam-cram-coach-flash.zip` 并附 `SHA256SUMS.txt`，打包可复现。
+- **SKILL.md** 增加 `compatibility` 字段（Python 3.8+、可选 pypdfium2、离线、无需密钥），README 的 skills.sh 徽章改为实时安装数。
+
+### V5.2.0 Flash (English)
+
+- **Installs only the skill.** The installable skill moved to `skills/universal-exam-cram-coach/` (`SKILL.md`, `LICENSE`, `coach.py`, `coach/`). With `SKILL.md` at the repository root, `npx skills add` used to copy the whole repository into every agent (545 files, 12 MB, including v4.3, benchmark scripts and tests); now it copies 13 files, 150 KB (measured with skills CLI 1.7.0). The root `coach.py` stays as a developer shortcut.
+- **Keeps the established skills.sh name.** Flash is now `universal-exam-cram-coach`, matching the existing skills.sh page, its install count and its `--skill` command. The v4.3 full edition is `universal-exam-cram-coach-full` with `metadata.internal: true`: hidden from a plain install, installable by name. Remove an old `exam-cram-coach` install with `npx skills remove exam-cram-coach` and install again.
+- **Addresses the three skills.sh security audits.** Removed the high-entropy `sealed_token` from the Star History URLs in the v4.3 READMEs (Snyk W008). The README no longer asks an agent to fetch and install "the latest release" from a URL; it uses the user-run `npx skills add` and a release zip verified with `SHA256SUMS.txt` (Snyk W012). Benchmark scripts are no longer inside the audited, installed skill folder (Socket). Added a prompt-injection boundary for course files (Gen Agent Trust Hub). New `SECURITY.md` and `tests/test_skill_surface.py`, which keeps the skill folder to its allowed files, offline, free of subprocess calls, free of URLs and token-like strings in `SKILL.md`, and spec-compliant.
+- **Course files are data, not instructions.** Everything printed from the materials is fenced between `<<<MATERIAL` and `MATERIAL>>>`; `coach/guard.py` flags lines that address an AI, `setup` reports the files, displays add a ⚠️ note, and SKILL.md §6 tells the agent to teach such text as content only. Zero false positives on 20,363 lines of real coursework (EEC 160, MIT 6.006, PSYC 110, the Chinese sample); all 13 English and Chinese injection samples caught.
+- **New install channels.** Claude Code plugin marketplace (`/plugin marketplace add ZeKaiNie/universal-examprep-skill`; passes `claude plugin validate`). The release asset is now `universal-exam-cram-coach-flash.zip` with `SHA256SUMS.txt`, built reproducibly.
+- `SKILL.md` gains a `compatibility` field; the README's skills.sh badge now shows the live install count.
+
 ## V5.1.1 Flash — 2026-09-02 · 图片显示策略、长程进度、两版并存（发布：`v5.1.1-flash`）
 
 - **图片显示**：VS Code / Electron 类聊天面板会拦截工作区外或临时目录下的 `file://` 图片。新增 `export [--to 目录] [--qid …] [--chapter N] [路径…]`，把上一条命令列出的图（或指定的图）复制到聊天界面能显示的目录并打印相对路径；SKILL §4 改为三级策略：直接嵌入 → `export` 后用相对路径嵌入 → 用查看器打开并给可点击路径，且不得声称展示了没有嵌入的图。`next` 在配图列表下附带这条提示。

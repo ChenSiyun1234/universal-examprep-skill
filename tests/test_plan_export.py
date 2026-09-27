@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """Progress footer, day-by-day plan and figure export."""
+from tests import skillpath  # noqa: F401  (skill folder on sys.path)
 import contextlib
 import io
 import json

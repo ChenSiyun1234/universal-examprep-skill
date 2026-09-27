@@ -13,7 +13,7 @@ Examples:
 Antigravity connection: pass --ls-address / --csrf-token / --project-id or set ANTIGRAVITY_LS_ADDRESS,
 ANTIGRAVITY_CSRF_TOKEN, ANTIGRAVITY_PROJECT_ID (see the running language_server.exe command line and
 ~/.gemini/config/projects/*.json). --install-skill copies SKILL.md + coach into
-~/.gemini/antigravity/skills/exam-cram-coach first, the way a student would install it.
+~/.gemini/antigravity/skills/universal-exam-cram-coach first, the way a student would install it.
 Transcripts and scores are written to eval/results/ (git-ignored: they contain course text).
 """
 import argparse
@@ -28,10 +28,11 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 RESULTS = os.path.join(HERE, "results")
-SKILL_PATH = os.path.join(ROOT, "SKILL.md")
+SKILL_SRC = os.path.join(ROOT, "skills", "universal-exam-cram-coach")
+SKILL_PATH = os.path.join(SKILL_SRC, "SKILL.md")
 COMMANDS = {"setup", "status", "next", "chapter", "goto", "ask", "quiz", "check", "answer", "done", "note",
-            "mistakes", "cheatsheet", "figures", "figure", "doctor", "help"}
-AGY_SKILLS = os.path.expanduser("~/.gemini/antigravity/skills/exam-cram-coach")
+            "mistakes", "cheatsheet", "figures", "figure", "export", "plan", "doctor", "help"}
+AGY_SKILLS = os.path.expanduser("~/.gemini/antigravity/skills/universal-exam-cram-coach")
 AGY_EXE = os.path.expandvars(r"%LOCALAPPDATA%\Programs\antigravity\resources\bin\language_server.exe")
 
 for _s in ("stdout", "stderr"):
@@ -45,9 +46,12 @@ def install_skill(dest):
     if os.path.exists(dest):
         shutil.rmtree(dest)
     os.makedirs(dest)
-    shutil.copy(SKILL_PATH, dest)
-    shutil.copy(os.path.join(ROOT, "coach.py"), dest)
-    shutil.copytree(os.path.join(ROOT, "coach"), os.path.join(dest, "coach"), ignore=shutil.ignore_patterns("__pycache__"))
+    for name in os.listdir(SKILL_SRC):  # the same files `npx skills add` installs
+        src = os.path.join(SKILL_SRC, name)
+        if os.path.isdir(src):
+            shutil.copytree(src, os.path.join(dest, name), ignore=shutil.ignore_patterns("__pycache__"))
+        else:
+            shutil.copy(src, dest)
     return dest
 
 
@@ -161,6 +165,8 @@ class Claude(object):
         self.model = args.model
         self.session = None
         self.cwd = args.cwd or ROOT
+        # pin the workspace so a parallel `coach.py setup` elsewhere cannot redirect this session
+        self.env = dict(os.environ, EXAM_CRAM_WORKSPACE=os.path.join(os.path.abspath(args.materials), "exam-cram"))
         self.exe = shutil.which("claude")
         if not self.exe:
             raise SystemExit("claude CLI not found on PATH")
@@ -172,7 +178,7 @@ class Claude(object):
             cmd += ["--append-system-prompt", "You are a coding agent with a shell. Run commands instead of describing them."]
         else:
             cmd += ["--resume", self.session]
-        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", env=self.env,
                               cwd=self.cwd, timeout=1200)
         events = []
         for line in proc.stdout.splitlines():
@@ -244,7 +250,7 @@ def main():
     ap.add_argument("--model", required=True)
     ap.add_argument("--materials", required=True)
     ap.add_argument("--lang", choices=["zh", "en"], default="zh")
-    ap.add_argument("--skill-dir", default=ROOT, help="folder holding SKILL.md and coach.py the agent should use")
+    ap.add_argument("--skill-dir", default=SKILL_SRC, help="folder holding SKILL.md and coach.py the agent should use")
     ap.add_argument("--install-skill", action="store_true", help="copy the skill into Antigravity's skills folder and use it from there")
     ap.add_argument("--ls-address")
     ap.add_argument("--csrf-token")

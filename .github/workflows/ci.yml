@@ -81,9 +81,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Build exam-cram-coach-flash.zip
-        run: python release.py dist/exam-cram-coach-flash.zip
+      - name: Build universal-exam-cram-coach-flash.zip and SHA256SUMS.txt
+        run: python release.py dist/universal-exam-cram-coach-flash.zip
       - name: Attach to the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.event.release.tag_name }}" dist/exam-cram-coach-flash.zip --clobber
+        run: gh release upload "${{ github.event.release.tag_name }}" dist/universal-exam-cram-coach-flash.zip dist/SHA256SUMS.txt --clobber

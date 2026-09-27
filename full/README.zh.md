@@ -1,4 +1,4 @@
-> **这是完整版（v4.3），原样保留给需要完整建库、网页/PDF 讲义和核验流水线的读者。** 更轻的 **Flash 版**在仓库根目录（[README](../README.zh.md)）。安装完整版：从 [v4.3 发布页](https://github.com/ZeKaiNie/universal-examprep-skill/releases/tag/v4.3) 下载 `universal-exam-cram-coach.zip`，或把这个 `full/` 文件夹复制到智能体的技能目录并命名为 `universal-exam-cram-coach`。两个版本的工作区互不兼容。
+> **这是完整版（v4.3），原样保留给需要完整建库、网页/PDF 讲义和核验流水线的读者。** 更轻的 **Flash 版**在仓库根目录（[README](../README.zh.md)）。安装完整版：运行 `npx skills add ZeKaiNie/universal-examprep-skill --skill universal-exam-cram-coach-full`，或从 [v4.3 发布页](https://github.com/ZeKaiNie/universal-examprep-skill/releases/tag/v4.3) 下载 `universal-exam-cram-coach.zip`，或把这个 `full/` 文件夹复制到智能体的技能目录并命名为 `universal-exam-cram-coach-full`。（从 v5.2 起，`universal-exam-cram-coach` 这个名字安装的是 Flash 版；完整版不会被普通的 `npx skills add` 选中，只在按名字指定时安装。）两个版本的工作区互不兼容。
 
 <div align="center">
 
@@ -323,9 +323,9 @@ python scripts/build_dist.py
 
 <a href="https://www.star-history.com/?repos=ZeKaiNie%2Funiversal-examprep-skill&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=ZeKaiNie/universal-examprep-skill&type=date&theme=dark&legend=top-left&sealed_token=q2eC20GmpWMHMen634RnHHNopx3dtYK6mzpbK0tB8B7sBn_LT0IKz-TYsaaWMY5xLJ6i7bsHedSzBxs4DU6cD5vZ8HFc-ZD2XAlqm5MnqBbf-ZbEq8zr2A" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=ZeKaiNie/universal-examprep-skill&type=date&legend=top-left&sealed_token=q2eC20GmpWMHMen634RnHHNopx3dtYK6mzpbK0tB8B7sBn_LT0IKz-TYsaaWMY5xLJ6i7bsHedSzBxs4DU6cD5vZ8HFc-ZD2XAlqm5MnqBbf-ZbEq8zr2A" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=ZeKaiNie/universal-examprep-skill&type=date&legend=top-left&sealed_token=q2eC20GmpWMHMen634RnHHNopx3dtYK6mzpbK0tB8B7sBn_LT0IKz-TYsaaWMY5xLJ6i7bsHedSzBxs4DU6cD5vZ8HFc-ZD2XAlqm5MnqBbf-ZbEq8zr2A" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=ZeKaiNie/universal-examprep-skill&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=ZeKaiNie/universal-examprep-skill&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=ZeKaiNie/universal-examprep-skill&type=date&legend=top-left" />
  </picture>
 </a>
 
