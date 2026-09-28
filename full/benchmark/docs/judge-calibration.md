@@ -1,5 +1,7 @@
 # 判分校准（B5 · Tier-5）
 
+[English](judge-calibration.en.md) · 中文
+
 裁判（LLM judge）的数字能不能信，要**校准**才知道。本层给出：① 更稳的数值判分；② 通用的
 「人工 vs 裁判」Cohen's kappa 校准工具（读 B4 `run_matrix` 输出，任意课程可用）；③ 跨家族裁判提醒；
 ④ near-miss 越界探针的出题建议。**诚实前提**：kappa < ~0.6 时别信任裁判数字，先改裁判/题目。

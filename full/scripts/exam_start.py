@@ -104,6 +104,7 @@ RUNTIME_FILE_EXCLUDES = frozenset((
     "docs/file-format.en.md",
     "docs/language-policy.zh.md",
     "docs/localization.md",
+    "docs/localization.en.md",
     "docs/openai-study-guide-adapter.zh.md",
     "docs/pdf-capability-adapters.en.md",
     "docs/retrieval-evaluation.md",

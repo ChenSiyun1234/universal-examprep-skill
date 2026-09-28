@@ -1,5 +1,7 @@
 # 运行账本（B7 · run ledger）
 
+[English](README.en.md) · 中文
+
 每次**真实**运行（T5c live smoke、rejudge 导出、未来的矩阵生成/长会话/判分校准）向
 `benchmark/runs/ledger.jsonl` 追加一行：run_id / kind / model / prompt_hash / workspace_hash /
 transcript_path / summary_path / cost·tokens / exit_code / notes / created_at——“哪个模型、哪份

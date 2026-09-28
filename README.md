@@ -27,7 +27,7 @@ Exam Cram Coach is an [Agent Skill](skills/universal-exam-cram-coach/SKILL.md) p
 
 1. **🎯 100% Grounded & Anti-Hallucination**: Every taught concept cites exact `file p.N` references; out-of-scope queries exit with non-zero status to strictly prevent fabrication (100% out-of-scope abstention); transparent 🟢/🟡/⚠️ provenance tags distinguish materials from AI commentary.
 2. **🧠 Cross-Session Persistent Memory**: Maintains state locally in `study_state.json` and a mistake log without external vector databases or token bloat. Close your chat and resume anytime with `coach.py status`; mistakes are prioritized in spaced re-quizzing.
-3. **⚡ High-End Performance on Cheap / Weak Models**: Deterministic CLI output with `📍 next command` hints and automated vector-figure cropping (`pypdfium2`). Benchmarked on 1,000+ pages of real college probability notes: **Gemini Flash-Lite** and **Claude Haiku** achieve zero command fabrication, zero phantom citations, and publication-grade figure presentations (see [Weak Model Benchmark](docs/weak-model-test.md)).
+3. **⚡ High-End Performance on Cheap / Weak Models**: Deterministic CLI output with `📍 next command` hints and automated vector-figure cropping (`pypdfium2`). Benchmarked on 1,000+ pages of real college probability notes: **Gemini Flash-Lite** and **Claude Haiku** achieve zero command fabrication, zero phantom citations, and publication-grade figure presentations (see [Weak Model Benchmark](docs/weak-model-test.en.md)).
 
 Core workflow:
 - reads PDF / PPTX / DOCX / Markdown / TXT / HTML and splits the course into chapters;
@@ -270,7 +270,7 @@ python coach.py help
 
 ## Measured results
 
-All numbers were measured on a Windows 11 laptop with Python 3.12; the commands are in [docs/v5-refactor.md](docs/v5-refactor.md).
+All numbers were measured on a Windows 11 laptop with Python 3.12; the commands are in [docs/v5-refactor.en.md](docs/v5-refactor.en.md).
 
 **Setup speed and extraction quality**
 
@@ -280,7 +280,7 @@ All numbers were measured on a Windows 11 laptop with Python 3.12; the commands 
 | Open Yale PSYC 110: 4 lecture transcripts | 4 Markdown | 0.1 s | 4/4 | (no homework) | — |
 | EEC 160 Applied Probability (private): 9 slide decks, 9 homework sheets with scanned handwriting, 9 solution sets | 27 PDFs, 1000 pages, 30 MB | 9 s | 9/9, multi-line titles joined | 89/89 by textbook label | 235 lecture figures + 16 answer figures; 140 scanned pages skipped |
 
-**Weak models actually follow it.** Four-turn Chinese session on EEC 160 with only `SKILL.md` as guidance ([docs/weak-model-test.md](docs/weak-model-test.md)):
+**Weak models actually follow it.** Four-turn Chinese session on EEC 160 with only `SKILL.md` as guidance ([docs/weak-model-test.en.md](docs/weak-model-test.en.md)):
 
 | Model | Ran setup → next → quiz → check | Page citations | 🟢/🟡 labels | Figures embedded in replies | Invented commands |
 |---|---|---|---|---|---|
@@ -333,7 +333,7 @@ python eval/agent_smoke.py claude --model claude-haiku-4-5-20251001 --materials 
 python release.py                                 # build dist/universal-exam-cram-coach-flash.zip + SHA256SUMS.txt
 ```
 
-Layout: `skills/universal-exam-cram-coach/` is the installable skill and nothing else (`SKILL.md`, `coach.py`, `coach/` with `extract` → `chapters` → `questions` → `figures` → `guard` → `index` → `state` → `cli`, `LICENSE`); `tests/test_skill_surface.py` keeps that folder small, offline and audit-clean. The root `coach.py` is a developer shortcut to the same CLI. Also `.claude-plugin/marketplace.json` (Claude Code plugin), `tests/`, `samples/`, `eval/` (agent smoke test and scorer), `docs/` ([refactor report](docs/v5-refactor.md), [feature audit](docs/feature-audit.md), [weak-model test](docs/weak-model-test.md)). Release history is in [CHANGELOG.md](CHANGELOG.md); contribution notes in [CONTRIBUTING.md](CONTRIBUTING.md).
+Layout: `skills/universal-exam-cram-coach/` is the installable skill and nothing else (`SKILL.md`, `coach.py`, `coach/` with `extract` → `chapters` → `questions` → `figures` → `guard` → `index` → `state` → `cli`, `LICENSE`); `tests/test_skill_surface.py` keeps that folder small, offline and audit-clean. The root `coach.py` is a developer shortcut to the same CLI. Also `.claude-plugin/marketplace.json` (Claude Code plugin), `tests/`, `samples/`, `eval/` (agent smoke test and scorer), `docs/` ([refactor report](docs/v5-refactor.en.md), [feature audit](docs/feature-audit.en.md), [weak-model test](docs/weak-model-test.en.md)). Release history is in [CHANGELOG.md](CHANGELOG.md); contribution notes in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Keywords
 

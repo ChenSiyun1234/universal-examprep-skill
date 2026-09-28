@@ -1,5 +1,7 @@
 # Tier 2 — 行为冒烟 (Behavioral Smoke)
 
+[English](README.en.md) · 中文
+
 把技能当作**辅导工作流**来测，而不是只测静态文件（Tier 0/1）或有据问答（Tier 3 benchmark）。
 口径定义见 [`../docs/test_tiers.md`](../docs/test_tiers.md)；现状审计见 [`../docs/testing-audit.md`](../docs/testing-audit.md)。
 

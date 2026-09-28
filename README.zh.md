@@ -333,7 +333,7 @@ python eval/agent_smoke.py claude --model claude-haiku-4-5-20251001 --materials 
 python release.py                                 # 打包 dist/universal-exam-cram-coach-flash.zip 与 SHA256SUMS.txt
 ```
 
-结构：`skills/universal-exam-cram-coach/` 就是安装进智能体的技能本身，只有 `SKILL.md`、`coach.py`、`coach/`（`extract` → `chapters` → `questions` → `figures` → `guard` → `index` → `state` → `cli`）和 `LICENSE`；`tests/test_skill_surface.py` 保证这个文件夹始终小巧、离线、能通过安全审计。根目录的 `coach.py` 只是开发者用的快捷入口。另有 `.claude-plugin/marketplace.json`（Claude Code 插件）、`tests/`、`samples/`、`eval/`（智能体冒烟测试与打分）、`docs/`（[重构记录](docs/v5-refactor.md)、[功能核查](docs/feature-audit.md)、[弱模型实测](docs/weak-model-test.md)）。版本历史见 [CHANGELOG.md](CHANGELOG.md)，贡献说明见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+结构：`skills/universal-exam-cram-coach/` 就是安装进智能体的技能本身，只有 `SKILL.md`、`coach.py`、`coach/`（`extract` → `chapters` → `questions` → `figures` → `guard` → `index` → `state` → `cli`）和 `LICENSE`；`tests/test_skill_surface.py` 保证这个文件夹始终小巧、离线、能通过安全审计。根目录的 `coach.py` 只是开发者用的快捷入口。另有 `.claude-plugin/marketplace.json`（Claude Code 插件）、`tests/`、`samples/`、`eval/`（智能体冒烟测试与打分）、`docs/`（[重构记录](docs/v5-refactor.md)、[功能核查](docs/feature-audit.md)、[弱模型实测](docs/weak-model-test.md)）。版本历史见 [CHANGELOG.zh.md](CHANGELOG.zh.md)，贡献说明见 [CONTRIBUTING.zh.md](CONTRIBUTING.zh.md)。
 
 ## 关键词
 

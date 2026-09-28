@@ -1,5 +1,7 @@
 # 仓库 About 与标签设置（需要仓库所有者操作）
 
+[English](discoverability.en.md) · 中文
+
 GitHub 搜索、Google 和各类 AI 助手找项目时，最先读的是仓库页面右上角的 **About 描述**和 **Topics 标签**。这两项只有仓库所有者能改，目前都是空的，所以无论用中文还是英文搜“期末复习 / exam prep”都很难命中这个仓库。改好只需要两分钟：
 
 ## 1. About 描述

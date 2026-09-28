@@ -1310,6 +1310,8 @@ class DriftHarness(unittest.TestCase):
             dirs[:] = [d for d in dirs if d != "__pycache__"]    # skip transient, gitignored bytecode
             for fn in files:
                 exts.add(os.path.splitext(fn)[1].lower())
+                if fn.endswith(".en.md"):
+                    continue    # English mirror of our own docs, not fixture data
                 total += os.path.getsize(os.path.join(base, fn))
         self.assertTrue(exts <= {".py", ".md", ".json", ".jsonl"}, "unexpected file types: %s" % exts)
         self.assertLess(total, 200 * 1024, "drift/ unexpectedly large — no big/copyrighted blobs allowed")

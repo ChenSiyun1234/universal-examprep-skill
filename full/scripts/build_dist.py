@@ -76,6 +76,7 @@ PATH_EXCLUDES = (
     # language and portability contracts remain shipped separately.
     "docs/skill-architecture.md",
     "docs/localization.md",
+    "docs/localization.en.md",
     # Maintainer-facing audit JSON reference; the shipped exam-ingest skill
     # carries the complete runtime command and fail-closed handoff contract.
     "docs/formula-audit-importer.md",
