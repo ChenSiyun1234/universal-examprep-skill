@@ -23,7 +23,7 @@ npx skills add zekainie/universal-examprep-skill
 
 </div>
 
-期末极速备考教练是一个 [Agent Skill](SKILL.md) 加一个很小的 Python 工具。你把课件、笔记、作业、往年题所在的文件夹交给编程智能体（Claude Code、Codex、Cursor、Windsurf、Antigravity、Gemini CLI……），它拥有三大核心技术特色：
+期末极速备考教练是一个 [Agent Skill](skills/universal-exam-cram-coach/SKILL.md) 加一个很小的 Python 工具。你把课件、笔记、作业、往年题所在的文件夹交给编程智能体（Claude Code、Codex、Cursor、Windsurf、Antigravity、Gemini CLI……），它拥有三大核心技术特色：
 
 1. **🎯 100% 讲义溯源与零幻觉**：每个知识点讲解强制标明 `文件 p.页码`；遇到材料没讲的内容，检索自动拦截拒答（100% 拒绝材料外瞎编）；严格通过 🟢/🟡/⚠️ 三色标记来源。
 2. **🧠 跨会话长期记忆**：纯本地轻量维护 `study_state.json` 与错题本，无需昂贵向量库。关掉对话随时重开，一条 `coach.py status` 瞬间恢复断点；做错的题自动优先重测。
@@ -49,9 +49,9 @@ npx skills add zekainie/universal-examprep-skill
 | 适合谁 | 所有临考的人；小模型/本地模型 | 想要完整建库、可打印网页/PDF 讲义和核验流水线的人 |
 | 准备 | 一条命令，几秒 | 多步确认，智能体自己渲染页面 |
 | README | 本页 · [English](README.md) | [full/README.zh.md](full/README.zh.md) · [full/README.md](full/README.md) |
-| 安装 | `npx skills add ZeKaiNie/universal-examprep-skill`，或[最新发布](https://github.com/ZeKaiNie/universal-examprep-skill/releases/latest)里的 `universal-exam-cram-coach-flash.zip` | `npx skills add ZeKaiNie/universal-examprep-skill --skill universal-exam-cram-coach-full`，或 [v4.3 发布](https://github.com/ZeKaiNie/universal-examprep-skill/releases/tag/v4.3)里的 `universal-exam-cram-coach.zip` |
+| 安装 | `npx skills add ZeKaiNie/universal-examprep-skill`，或[最新发布](https://github.com/ZeKaiNie/universal-examprep-skill/releases/latest)里的 `universal-exam-cram-coach-flash.zip` | `npx skills add ZeKaiNie/universal-examprep-skill --skill universal-exam-cram-coach-full`；更新方法和 v4.3 发布包见 [full/README.zh.md](full/README.zh.md) |
 
-本页其余内容讲 **Flash 版**：整门课几秒钟准备完，技能说明只有约 1400 词，学习循环只有 7 条命令，小模型也能跑（实测 Gemini flash-lite 和 Claude Haiku）。逐项对比见 [Flash 版与完整版](#flash-版与完整版)。
+本页其余内容讲 **Flash 版**：整门课几秒钟准备完，技能说明只有约 1500 词，学习循环只有 7 条命令，小模型也能跑（实测 Gemini flash-lite 和 Claude Haiku）。逐项对比见 [Flash 版与完整版](#flash-版与完整版)。
 
 ## 目录
 
@@ -94,7 +94,7 @@ pip install pypdfium2
 **也可以让智能体替你装。** 把下面这段发给它；它可能会请你批准运行命令：
 
 ```text
-请为你自己安装期末极速备考教练技能：运行 `npx skills add ZeKaiNie/universal-examprep-skill --skill universal-exam-cram-coach`，询问时选择你自己；然后运行 `pip install pypdfium2`；最后运行 `python <安装好的文件夹>/coach.py doctor`，把输出给我看。
+请为你自己安装期末极速备考教练技能：运行 `npx skills add ZeKaiNie/universal-examprep-skill --skill universal-exam-cram-coach`（它会自动识别你并为你安装）；然后运行 `pip install pypdfium2`；最后运行 `python <安装好的文件夹>/coach.py doctor`，把输出给我看。
 ```
 
 <details><summary>离线安装（发布包）与各智能体的技能目录</summary>
@@ -128,7 +128,7 @@ python ~/.claude/skills/universal-exam-cram-coach/coach.py doctor
 
 它会打印版本、PDF 支持是否可用、上次使用的工作区。
 
-**装过早期 Flash 版？** 5.0 和 5.1 版以 `exam-cram-coach` 的名字安装，并且会把整个仓库（约 12 MB）复制进技能目录。运行 `npx skills remove exam-cram-coach`（或直接删掉那个文件夹），再按上面的方法重新安装即可；你的学习工作区在别处，不受影响。`universal-exam-cram-coach` 这个名字以前装的是 v4.3 完整版；现在 `npx skills update` 会升级到 Flash 版，想继续用 v4.3 请运行 `npx skills add ZeKaiNie/universal-examprep-skill --skill universal-exam-cram-coach-full`。
+**装过早期 Flash 版？** 5.0 和 5.1 版以 `exam-cram-coach` 的名字安装，并且会把整个仓库（约 12 MB）复制进技能目录。运行 `npx skills remove exam-cram-coach`（当初装给整个用户的加 `-g`，或直接删掉那个文件夹），再按上面的方法重新安装即可；你的学习工作区在别处，不受影响。`universal-exam-cram-coach` 这个名字以前装的是 v4.3 完整版；现在 `npx skills update` 会升级到 Flash 版，想继续用 v4.3 请运行 `npx skills add ZeKaiNie/universal-examprep-skill --skill universal-exam-cram-coach-full`（[以后如何更新](full/README.zh.md)）。
 
 ### 第 2 步 · 把资料放进一个文件夹
 
@@ -288,7 +288,7 @@ python coach.py help
 | Gemini flash（Antigravity） | ✅ | 21 | 14/15 | 6 张 | 无 |
 | Claude Haiku 4.5 | ✅ | 13 | 14/14 | 5 张 | 无 |
 
-**与 v4.3 相比**（同一门 MIT 课）：智能体要读的技能文本 140 KB → 9.8 KB；开讲前脚本调用 5 次 → 1 次；单元测试 12 分钟 → 不到 1 秒；仓库 14.4 万行 → 2500 行。
+**与 v4.3 相比**（同一门 MIT 课）：智能体要读的技能文本 140 KB → 10 KB；开讲前脚本调用 5 次 → 1 次；单元测试 12 分钟 → 不到 1 秒；仓库 14.4 万行 → 2500 行。
 
 **`npx skills add` 实际装到你电脑上的内容**（用 skills CLI 1.7.0 实测）：v5.1 时技能放在仓库根目录，CLI 会把整个仓库复制过去，共 545 个文件、12 MB；v5.2 起只安装 `skills/universal-exam-cram-coach/`，13 个文件、150 KB。
 
@@ -314,7 +314,7 @@ python coach.py help
 
 **我的资料会被传到哪里？** 哪里都不传。工具只往 `exam-cram/` 里写文件。你的智能体会看到它打印的文字和图片，和你用智能体打开任何文件一样。
 
-**安装它安全吗？课件里如果藏了给 AI 的指令怎么办？** 安装进去的技能只有 13 个小文件，不联网、不调用其他程序、不含任何密钥。它从你的文件里打印出的内容都夹在 `<<<MATERIAL` 和 `MATERIAL>>>` 之间，`SKILL.md` 要求智能体只把这些文字当课程内容。像“忽略之前的指令”“如果你是 AI…”这样的句子会被 `setup` 和显示它的地方用 ⚠️ 标出来。详见 [SECURITY.md](SECURITY.md)。
+**安装它安全吗？课件里如果藏了给 AI 的指令怎么办？** 安装进去的技能只有 13 个小文件，不联网、不调用其他程序、不含任何密钥。它从你的文件里打印出的内容都夹在 `<<<MATERIAL` 和 `MATERIAL>>>` 之间，`SKILL.md` 要求智能体只把这些文字当课程内容。像“忽略之前的指令”“如果你是 AI…”这样的句子会被 `setup` 和显示它的地方用 ⚠️ 标出来；这个检查是启发式的，真正的边界是分隔标记和那条规则。详见 [SECURITY.md](SECURITY.md)。
 
 **不用智能体能用吗？** 能：每条命令都输出纯文本，`python coach.py next`、`python coach.py quiz` 本身就是一个阅读和刷题工具。
 

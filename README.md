@@ -23,7 +23,7 @@ npx skills add ZeKaiNie/universal-examprep-skill
 
 </div>
 
-Exam Cram Coach is an [Agent Skill](SKILL.md) plus one small Python tool. You give a coding agent (Claude Code, Codex, Cursor, Windsurf, Antigravity, Gemini CLI, …) the folder with your lecture slides, notes, homework and past papers. It is engineered with three core technical differentiators:
+Exam Cram Coach is an [Agent Skill](skills/universal-exam-cram-coach/SKILL.md) plus one small Python tool. You give a coding agent (Claude Code, Codex, Cursor, Windsurf, Antigravity, Gemini CLI, …) the folder with your lecture slides, notes, homework and past papers. It is engineered with three core technical differentiators:
 
 1. **🎯 100% Grounded & Anti-Hallucination**: Every taught concept cites exact `file p.N` references; out-of-scope queries exit with non-zero status to strictly prevent fabrication (100% out-of-scope abstention); transparent 🟢/🟡/⚠️ provenance tags distinguish materials from AI commentary.
 2. **🧠 Cross-Session Persistent Memory**: Maintains state locally in `study_state.json` and a mistake log without external vector databases or token bloat. Close your chat and resume anytime with `coach.py status`; mistakes are prioritized in spaced re-quizzing.
@@ -49,9 +49,9 @@ Core workflow:
 | For | anyone with an exam coming up; small or local models | readers who want the complete knowledge-base build, printable HTML/PDF study guides and the verification pipeline |
 | Setup | one command, seconds | several confirmation steps, the agent renders pages itself |
 | README | this page · [中文](README.zh.md) | [full/README.md](full/README.md) · [full/README.zh.md](full/README.zh.md) |
-| Install | `npx skills add ZeKaiNie/universal-examprep-skill`, or `universal-exam-cram-coach-flash.zip` from the [latest release](https://github.com/ZeKaiNie/universal-examprep-skill/releases/latest) | `npx skills add ZeKaiNie/universal-examprep-skill --skill universal-exam-cram-coach-full`, or `universal-exam-cram-coach.zip` from the [v4.3 release](https://github.com/ZeKaiNie/universal-examprep-skill/releases/tag/v4.3) |
+| Install | `npx skills add ZeKaiNie/universal-examprep-skill`, or `universal-exam-cram-coach-flash.zip` from the [latest release](https://github.com/ZeKaiNie/universal-examprep-skill/releases/latest) | `npx skills add ZeKaiNie/universal-examprep-skill --skill universal-exam-cram-coach-full`; updating and the v4.3 zip are covered in [full/README.md](full/README.md) |
 
-The rest of this page is about **Flash**: setup takes seconds even for a whole course, the whole skill is about 1,400 words, the study loop is seven commands, and it works with small models (tested with Gemini flash-lite and Claude Haiku). A feature-by-feature comparison is in [Flash vs. the full edition](#flash-vs-the-full-edition).
+The rest of this page is about **Flash**: setup takes seconds even for a whole course, the whole skill is about 1,500 words, the study loop is seven commands, and it works with small models (tested with Gemini flash-lite and Claude Haiku). A feature-by-feature comparison is in [Flash vs. the full edition](#flash-vs-the-full-edition).
 
 ## Contents
 
@@ -94,7 +94,7 @@ The first command asks which agents to set up (Claude Code, Codex, Cursor, Winds
 **Or ask your agent to do it.** Paste this; it may ask you to approve running the commands:
 
 ```text
-Install the Exam Cram Coach skill for this agent: run `npx skills add ZeKaiNie/universal-examprep-skill --skill universal-exam-cram-coach` and choose this agent when asked, then run `pip install pypdfium2`, then run `python <installed folder>/coach.py doctor` and show me its output.
+Install the Exam Cram Coach skill for this agent: run `npx skills add ZeKaiNie/universal-examprep-skill --skill universal-exam-cram-coach` (the CLI detects you and installs for you), then run `pip install pypdfium2`, then run `python <installed folder>/coach.py doctor` and show me its output.
 ```
 
 <details><summary>Offline install from the release zip, and the skills folder of each agent</summary>
@@ -128,7 +128,7 @@ python ~/.claude/skills/universal-exam-cram-coach/coach.py doctor
 
 It prints the version, whether PDF support is available, and the last workspace used.
 
-**Installed an earlier Flash version?** Versions 5.0 and 5.1 installed as `exam-cram-coach` and copied the whole repository (about 12 MB). Run `npx skills remove exam-cram-coach` (or delete that folder), then install again as above. Your study workspaces are separate and stay as they are. The name `universal-exam-cram-coach` used to install the v4.3 full edition; `npx skills update` now brings Flash, and `npx skills add ZeKaiNie/universal-examprep-skill --skill universal-exam-cram-coach-full` keeps v4.3.
+**Installed an earlier Flash version?** Versions 5.0 and 5.1 installed as `exam-cram-coach` and copied the whole repository (about 12 MB). Run `npx skills remove exam-cram-coach` (add `-g` if you installed it for your user account, or delete that folder), then install again as above. Your study workspaces are separate and stay as they are. The name `universal-exam-cram-coach` used to install the v4.3 full edition; `npx skills update` now brings Flash, and `npx skills add ZeKaiNie/universal-examprep-skill --skill universal-exam-cram-coach-full` keeps v4.3 ([how to update it](full/README.md)).
 
 ### Step 2 · Put your materials in one folder
 
@@ -288,7 +288,7 @@ All numbers were measured on a Windows 11 laptop with Python 3.12; the commands 
 | Gemini flash (Antigravity) | ✅ | 21 | 14/15 | 6 | none |
 | Claude Haiku 4.5 | ✅ | 13 | 14/14 | 5 | none |
 
-**Compared with v4.3** on the same MIT course: skill text read by the agent 140 KB → 9.8 KB; script calls before the first explanation 5 → 1; unit-test suite 12 minutes → under one second; repository 144k lines → 2.5k.
+**Compared with v4.3** on the same MIT course: skill text read by the agent 140 KB → 10 KB; script calls before the first explanation 5 → 1; unit-test suite 12 minutes → under one second; repository 144k lines → 2.5k.
 
 **What `npx skills add` puts on your disk** (measured with skills CLI 1.7.0): 545 files / 12 MB in v5.1, when the skill sat at the repository root and the CLI copied everything; 13 files / 150 KB since v5.2, which installs only `skills/universal-exam-cram-coach/`.
 
@@ -314,7 +314,7 @@ All numbers were measured on a Windows 11 laptop with Python 3.12; the commands 
 
 **Where does my data go?** Nowhere. The tool only writes into `exam-cram/`. Your agent host sees the text and images it prints, the same as any file you open with the agent.
 
-**Is it safe to install? What if a course file contains instructions for the AI?** The installed skill is 13 small files that need no network access, run no other programs and hold no keys. Everything it prints from your files sits between `<<<MATERIAL` and `MATERIAL>>>`, and `SKILL.md` tells the agent to treat that text as course content only. Lines such as “ignore previous instructions” or “如果你是 AI…” are flagged with ⚠️, both by `setup` and wherever they are shown. Details are in [SECURITY.md](SECURITY.md).
+**Is it safe to install? What if a course file contains instructions for the AI?** The installed skill is 13 small files that need no network access, run no other programs and hold no keys. Everything it prints from your files sits between `<<<MATERIAL` and `MATERIAL>>>`, and `SKILL.md` tells the agent to treat that text as course content only. Lines such as “ignore previous instructions” or “如果你是 AI…” are flagged with ⚠️, both by `setup` and wherever they are shown; that check is a heuristic, while the fence and the rule are the actual boundary. Details are in [SECURITY.md](SECURITY.md).
 
 **Can I use it without an agent?** Yes: every command prints plain text, so `python coach.py next` and `python coach.py quiz` work as a reading and drill tool on their own.
 

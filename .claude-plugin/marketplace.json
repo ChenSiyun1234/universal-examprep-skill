@@ -11,7 +11,7 @@
   "plugins": [
     {
       "name": "universal-exam-cram-coach",
-      "source": "./",
+      "source": "./skills",
       "strict": false,
       "description": "Exam prep from your own course files: chapter-by-chapter teaching with page citations, figures cropped from the PDFs, quizzes from your homework and past papers, mistakes and progress kept across chats. 期末复习·考前突击·刷题·错题本·小抄.",
       "version": "5.2.0",
@@ -23,8 +23,21 @@
       "repository": "https://github.com/ZeKaiNie/universal-examprep-skill",
       "license": "MIT",
       "category": "education",
-      "keywords": ["exam-prep", "study", "tutor", "quiz", "cheat-sheet", "education", "students", "pdf", "期末复习", "刷题"],
-      "skills": ["./skills/universal-exam-cram-coach"]
+      "keywords": [
+        "exam-prep",
+        "study",
+        "tutor",
+        "quiz",
+        "cheat-sheet",
+        "education",
+        "students",
+        "pdf",
+        "期末复习",
+        "刷题"
+      ],
+      "skills": [
+        "./universal-exam-cram-coach"
+      ]
     }
   ]
 }

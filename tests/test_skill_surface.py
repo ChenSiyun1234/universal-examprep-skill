@@ -31,12 +31,20 @@ def frontmatter(path):
             fm[section] = {}
         elif line.startswith("  ") and section:
             k, v = line.strip().split(":", 1)
-            fm[section][k.strip()] = v.strip().strip('"')
+            fm[section][k.strip()] = scalar(v)
         elif ":" in line:
             section = None
             k, v = line.split(":", 1)
-            fm[k.strip()] = v.strip().strip('"')
+            fm[k.strip()] = scalar(v)
     return fm
+
+
+def scalar(v):
+    """YAML scalar as the CLI sees it: unquoted true/false are booleans, quoted ones are strings."""
+    v = v.strip()
+    if v in ("true", "false"):
+        return v == "true"
+    return v.strip('"')
 
 
 def discover(base):
@@ -48,7 +56,7 @@ def discover(base):
         fm = frontmatter(p)
         if not fm.get("name") or not fm.get("description"):
             return "invalid"
-        if isinstance(fm.get("metadata"), dict) and fm["metadata"].get("internal") == "true":
+        if isinstance(fm.get("metadata"), dict) and fm["metadata"].get("internal") is True:
             return "internal"
         return fm["name"]
 
@@ -119,15 +127,25 @@ class SkillSurfaceTest(unittest.TestCase):
     def test_full_edition_is_hidden_but_installable_by_name(self):
         fm = frontmatter(os.path.join(ROOT, "full", "SKILL.md"))
         self.assertEqual(fm["name"], NAME + "-full")
-        self.assertEqual(fm["metadata"].get("internal"), "true")
+        self.assertIs(fm["metadata"].get("internal"), True)  # a quoted "true" would not hide it
 
     def test_claude_plugin_marketplace_points_at_the_skill_only(self):
         path = os.path.join(ROOT, ".claude-plugin", "marketplace.json")
         data = json.load(open(path, encoding="utf-8"))
         (plugin,) = data["plugins"]
-        self.assertEqual(plugin["source"], "./")
-        self.assertEqual(plugin["skills"], ["./skills/" + NAME])
+        self.assertEqual(plugin["source"], "./skills")  # the plugin root is the skills folder, not the repo
+        self.assertEqual(plugin["skills"], ["./" + NAME])
+        self.assertEqual(sorted(os.listdir(os.path.join(ROOT, "skills"))), [NAME])
         self.assertTrue(os.path.isfile(os.path.join(ROOT, "skills", NAME, "SKILL.md")))
+
+    def test_no_stray_skill_files(self):
+        # the CLI also searches .claude/skills, .agents/skills, .github/skills and similar folders
+        found = []
+        for base, dirs, files in os.walk(ROOT):
+            dirs[:] = [d for d in dirs if d not in SKIP_DIRS and d != "full" and not d.startswith(".git")]
+            if "SKILL.md" in files:
+                found.append(os.path.relpath(base, ROOT).replace(os.sep, "/"))
+        self.assertEqual(found, ["skills/" + NAME])
 
 
 if __name__ == "__main__":

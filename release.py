@@ -36,12 +36,13 @@ def skill_files():
 def build(out_path):
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     names = []
-    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
+    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_STORED) as zf:
         for full, rel in skill_files():
             with open(full, "rb") as fh:
                 data = fh.read().replace(b"\r\n", b"\n")
             info = zipfile.ZipInfo("%s/%s" % (NAME, rel), FIXED_TIME)
-            info.compress_type = zipfile.ZIP_DEFLATED
+            info.compress_type = zipfile.ZIP_STORED  # no zlib: identical bytes on every OS and Python
+            info.create_system = 3                  # Unix, whatever OS builds it
             info.external_attr = 0o644 << 16
             zf.writestr(info, data)
             names.append(rel)
