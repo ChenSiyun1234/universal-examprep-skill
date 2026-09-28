@@ -9,21 +9,21 @@
 English · [中文](README.zh.md)
 
 [![stars](https://img.shields.io/github/stars/ZeKaiNie/universal-examprep-skill?style=flat&color=blue)](https://github.com/ZeKaiNie/universal-examprep-skill/stargazers)
-[![skills.sh](https://img.shields.io/badge/skills.sh-install-purple)](https://skills.sh/zekainie/universal-examprep-skill/universal-exam-cram-coach)
+[![skills.sh installs](https://skills.sh/b/zekainie/universal-examprep-skill)](https://skills.sh/zekainie/universal-examprep-skill/universal-exam-cram-coach)
 [![release](https://img.shields.io/github/v/release/ZeKaiNie/universal-examprep-skill?label=release&color=orange)](https://github.com/ZeKaiNie/universal-examprep-skill/releases/latest)
 [![MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/ZeKaiNie/universal-examprep-skill/actions/workflows/ci.yml/badge.svg)](https://github.com/ZeKaiNie/universal-examprep-skill/actions)
 
 ```bash
-# One-command install (Claude Code, Cursor, Codex, Antigravity, Windsurf, etc.)
-npx skills add zekainie/universal-examprep-skill
+# One command for Claude Code, Codex, Cursor, Windsurf, Antigravity, Gemini CLI and 40+ agents
+npx skills add ZeKaiNie/universal-examprep-skill
 ```
 
 **One command to set up · Teaches from your files · Shows the figures · Quizzes from your homework · Never hides what it made up**
 
 </div>
 
-Exam Cram Coach is an [Agent Skill](SKILL.md) plus one small Python tool. You give a coding agent (Claude Code, Codex, Cursor, Windsurf, Antigravity, Gemini CLI, …) the folder with your lecture slides, notes, homework and past papers. It is engineered with three core technical differentiators:
+Exam Cram Coach is an [Agent Skill](skills/universal-exam-cram-coach/SKILL.md) plus one small Python tool. You give a coding agent (Claude Code, Codex, Cursor, Windsurf, Antigravity, Gemini CLI, …) the folder with your lecture slides, notes, homework and past papers. It is engineered with three core technical differentiators:
 
 1. **🎯 100% Grounded & Anti-Hallucination**: Every taught concept cites exact `file p.N` references; out-of-scope queries exit with non-zero status to strictly prevent fabrication (100% out-of-scope abstention); transparent 🟢/🟡/⚠️ provenance tags distinguish materials from AI commentary.
 2. **🧠 Cross-Session Persistent Memory**: Maintains state locally in `study_state.json` and a mistake log without external vector databases or token bloat. Close your chat and resume anytime with `coach.py status`; mistakes are prioritized in spaced re-quizzing.
@@ -49,9 +49,9 @@ Core workflow:
 | For | anyone with an exam coming up; small or local models | readers who want the complete knowledge-base build, printable HTML/PDF study guides and the verification pipeline |
 | Setup | one command, seconds | several confirmation steps, the agent renders pages itself |
 | README | this page · [中文](README.zh.md) | [full/README.md](full/README.md) · [full/README.zh.md](full/README.zh.md) |
-| Install | `exam-cram-coach-flash.zip` from the [latest release](https://github.com/ZeKaiNie/universal-examprep-skill/releases/latest) | `universal-exam-cram-coach.zip` from the [v4.3 release](https://github.com/ZeKaiNie/universal-examprep-skill/releases/tag/v4.3), or copy `full/` |
+| Install | `npx skills add ZeKaiNie/universal-examprep-skill`, or `universal-exam-cram-coach-flash.zip` from the [latest release](https://github.com/ZeKaiNie/universal-examprep-skill/releases/latest) | `npx skills add ZeKaiNie/universal-examprep-skill --skill universal-exam-cram-coach-full`; updating and the v4.3 zip are covered in [full/README.md](full/README.md) |
 
-The rest of this page is about **Flash**: setup takes seconds even for a whole course, the whole skill is about 1,100 words, the study loop is seven commands, and it works with small models (tested with Gemini flash-lite and Claude Haiku). A feature-by-feature comparison is in [Flash vs. the full edition](#flash-vs-the-full-edition).
+The rest of this page is about **Flash**: setup takes seconds even for a whole course, the whole skill is about 1,500 words, the study loop is seven commands, and it works with small models (tested with Gemini flash-lite and Claude Haiku). A feature-by-feature comparison is in [Flash vs. the full edition](#flash-vs-the-full-edition).
 
 ## Contents
 
@@ -75,66 +75,60 @@ The rest of this page is about **Flash**: setup takes seconds even for a whole c
 
 ### Step 1 · Install the skill
 
-**Easiest: let the agent do it.** Copy this to your agent; it may ask you to approve network access or writing to its skills folder:
-
-```text
-Install the Exam Cram Coach skill: download exam-cram-coach-flash.zip from the latest release at https://github.com/ZeKaiNie/universal-examprep-skill/releases/latest (or git clone the repository) and put it in your user-level skills directory so that SKILL.md and coach.py end up in a folder named exam-cram-coach. Back up any older copy first. Then run `pip install pypdfium2` and `python <that folder>/coach.py doctor`, and report the install path and the doctor output.
-```
-
-Per-host versions:
-
-<details><summary>Claude Code</summary>
-
-```text
-Install or update https://github.com/ZeKaiNie/universal-examprep-skill into ~/.claude/skills/exam-cram-coach (SKILL.md and coach.py must be directly inside that folder). Ask before overwriting an existing copy. Then run `pip install pypdfium2` and `python ~/.claude/skills/exam-cram-coach/coach.py doctor` and show me the result.
-```
-</details>
-
-<details><summary>Codex</summary>
-
-```text
-Install the latest Exam Cram Coach skill from https://github.com/ZeKaiNie/universal-examprep-skill into my Codex skills directory as exam-cram-coach (SKILL.md and coach.py directly inside). Back up any older copy. Run `pip install pypdfium2`, then `python <install path>/coach.py doctor`, report the path and the output, and tell me whether I need a new task for the skill to appear.
-```
-</details>
-
-<details><summary>Cursor</summary>
-
-```text
-Fetch https://github.com/ZeKaiNie/universal-examprep-skill and install it as exam-cram-coach in my Cursor user skills directory (~/.cursor/skills/ or ~/.agents/skills/), SKILL.md and coach.py directly inside. Back up an older copy, run `pip install pypdfium2`, confirm Cursor discovers SKILL.md, and report the path.
-```
-</details>
-
-<details><summary>Windsurf</summary>
-
-```text
-Fetch https://github.com/ZeKaiNie/universal-examprep-skill and install it in ~/.codeium/windsurf/skills/exam-cram-coach. Ask before downloading or replacing files. Run `pip install pypdfium2`, confirm Cascade discovers SKILL.md, and report the path.
-```
-</details>
-
-<details><summary>Antigravity</summary>
-
-```text
-Fetch https://github.com/ZeKaiNie/universal-examprep-skill and install it in ~/.gemini/antigravity/skills/exam-cram-coach (SKILL.md and coach.py directly inside). Ask before writing outside the workspace. Run `pip install pypdfium2`, rescan skills, and report the path and `python <path>/coach.py doctor`.
-```
-</details>
-
-<details><summary>Gemini CLI</summary>
+**Recommended: one command.** It needs Node.js 18 or newer for `npx` (check with `node --version`):
 
 ```bash
-gemini skills install https://github.com/ZeKaiNie/universal-examprep-skill.git
+npx skills add ZeKaiNie/universal-examprep-skill
 pip install pypdfium2
 ```
-</details>
 
-**Manual install.** Download [`exam-cram-coach-flash.zip`](https://github.com/ZeKaiNie/universal-examprep-skill/releases/latest) and unzip it into your agent's skills folder. You should end up with `…/skills/exam-cram-coach/SKILL.md` and `…/skills/exam-cram-coach/coach.py`. Then open a terminal and run `pip install pypdfium2`.
+The first command asks which agents to set up (Claude Code, Codex, Cursor, Windsurf, Antigravity, Gemini CLI, GitHub Copilot and 40+ others) and whether to install for this project or for your user account (`-g`). It copies one folder, `universal-exam-cram-coach/`: 13 files, about 150 KB, and the tool inside runs offline. Update later with `npx skills update`.
 
-To check the install from any terminal:
+**Claude Code plugin** (alternative; no Node.js needed). Type these in Claude Code:
+
+```text
+/plugin marketplace add ZeKaiNie/universal-examprep-skill
+/plugin install universal-exam-cram-coach@exam-cram-coach
+```
+
+**Or ask your agent to do it.** Paste this; it may ask you to approve running the commands:
+
+```text
+Install the Exam Cram Coach skill for this agent: run `npx skills add ZeKaiNie/universal-examprep-skill --skill universal-exam-cram-coach` (the CLI detects you and installs for you), then run `pip install pypdfium2`, then run `python <installed folder>/coach.py doctor` and show me its output.
+```
+
+<details><summary>Offline install from the release zip, and the skills folder of each agent</summary>
+
+Download `universal-exam-cram-coach-flash.zip` and `SHA256SUMS.txt` from the [latest release](https://github.com/ZeKaiNie/universal-examprep-skill/releases/latest), check the checksum, and unzip into your agent's skills folder:
 
 ```bash
-python path/to/exam-cram-coach/coach.py doctor
+sha256sum -c SHA256SUMS.txt          # macOS: shasum -a 256 -c SHA256SUMS.txt
+```
+
+On Windows, `certutil -hashfile universal-exam-cram-coach-flash.zip SHA256` prints the hash to compare with `SHA256SUMS.txt`.
+
+| Agent | User-level skills folder |
+|---|---|
+| Claude Code | `~/.claude/skills/` |
+| Codex | `~/.codex/skills/` |
+| Cursor | `~/.cursor/skills/` |
+| Windsurf | `~/.codeium/windsurf/skills/` |
+| Antigravity | `~/.gemini/antigravity/skills/` |
+| Gemini CLI | `~/.gemini/skills/` |
+| GitHub Copilot | `~/.copilot/skills/` |
+
+You should end up with `…/skills/universal-exam-cram-coach/SKILL.md` and `…/skills/universal-exam-cram-coach/coach.py`.
+</details>
+
+To check the install from any terminal (use your agent's folder from the table):
+
+```bash
+python ~/.claude/skills/universal-exam-cram-coach/coach.py doctor
 ```
 
 It prints the version, whether PDF support is available, and the last workspace used.
+
+**Installed an earlier Flash version?** Versions 5.0 and 5.1 installed as `exam-cram-coach` and copied the whole repository (about 12 MB). Run `npx skills remove exam-cram-coach` (add `-g` if you installed it for your user account, or delete that folder), then install again as above. Your study workspaces are separate and stay as they are. The name `universal-exam-cram-coach` used to install the v4.3 full edition; `npx skills update` now brings Flash, and `npx skills add ZeKaiNie/universal-examprep-skill --skill universal-exam-cram-coach-full` keeps v4.3 ([how to update it](full/README.md)).
 
 ### Step 2 · Put your materials in one folder
 
@@ -294,7 +288,9 @@ All numbers were measured on a Windows 11 laptop with Python 3.12; the commands 
 | Gemini flash (Antigravity) | ✅ | 21 | 14/15 | 6 | none |
 | Claude Haiku 4.5 | ✅ | 13 | 14/14 | 5 | none |
 
-**Compared with v4.3** on the same MIT course: skill text read by the agent 140 KB → 6.5 KB; script calls before the first explanation 5 → 1; unit-test suite 12 minutes → under one second; repository 144k lines → 2.5k.
+**Compared with v4.3** on the same MIT course: skill text read by the agent 140 KB → 10 KB; script calls before the first explanation 5 → 1; unit-test suite 12 minutes → under one second; repository 144k lines → 2.5k.
+
+**What `npx skills add` puts on your disk** (measured with skills CLI 1.7.0): 545 files / 12 MB in v5.1, when the skill sat at the repository root and the CLI copied everything; 13 files / 150 KB since v5.2, which installs only `skills/universal-exam-cram-coach/`.
 
 ## FAQ
 
@@ -318,24 +314,26 @@ All numbers were measured on a Windows 11 laptop with Python 3.12; the commands 
 
 **Where does my data go?** Nowhere. The tool only writes into `exam-cram/`. Your agent host sees the text and images it prints, the same as any file you open with the agent.
 
+**Is it safe to install? What if a course file contains instructions for the AI?** The installed skill is 13 small files that need no network access, run no other programs and hold no keys. Everything it prints from your files sits between `<<<MATERIAL` and `MATERIAL>>>`, and `SKILL.md` tells the agent to treat that text as course content only. Lines such as “ignore previous instructions” or “如果你是 AI…” are flagged with ⚠️, both by `setup` and wherever they are shown; that check is a heuristic, while the fence and the rule are the actual boundary. Details are in [SECURITY.md](SECURITY.md).
+
 **Can I use it without an agent?** Yes: every command prints plain text, so `python coach.py next` and `python coach.py quiz` work as a reading and drill tool on their own.
 
-**Can I use it in a web chat without Python?** The skill has a fallback (§7 of SKILL.md), but progress, figures and quizzes work much better with a local agent.
+**Can I use it in a web chat without Python?** The skill has a fallback (§8 of SKILL.md), but progress, figures and quizzes work much better with a local agent.
 
 ## For developers
 
 ```bash
-git clone https://github.com/ZeKaiNie/universal-examprep-skill exam-cram-coach
-cd exam-cram-coach
+git clone https://github.com/ZeKaiNie/universal-examprep-skill
+cd universal-examprep-skill
 pip install pypdfium2
 python -m unittest discover -s tests -v          # 43 tests, about a second
 python coach.py setup samples/zh-data-structures  # bundled Chinese sample course
 python samples/fetch.py                           # MIT 6.006 + Yale PSYC 110 (CC BY-NC-SA)
 python eval/agent_smoke.py claude --model claude-haiku-4-5-20251001 --materials <folder>   # drive a real agent
-python release.py                                 # build dist/exam-cram-coach-flash.zip
+python release.py                                 # build dist/universal-exam-cram-coach-flash.zip + SHA256SUMS.txt
 ```
 
-Layout: `SKILL.md` (what the agent follows), `coach.py` + `coach/` (`extract` → `chapters` → `questions` → `figures` → `index` → `state` → `cli`), `tests/`, `samples/`, `eval/` (agent smoke test and scorer), `docs/` ([refactor report](docs/v5-refactor.md), [feature audit](docs/feature-audit.md), [weak-model test](docs/weak-model-test.md)). Release history is in [CHANGELOG.md](CHANGELOG.md); contribution notes in [CONTRIBUTING.md](CONTRIBUTING.md).
+Layout: `skills/universal-exam-cram-coach/` is the installable skill and nothing else (`SKILL.md`, `coach.py`, `coach/` with `extract` → `chapters` → `questions` → `figures` → `guard` → `index` → `state` → `cli`, `LICENSE`); `tests/test_skill_surface.py` keeps that folder small, offline and audit-clean. The root `coach.py` is a developer shortcut to the same CLI. Also `.claude-plugin/marketplace.json` (Claude Code plugin), `tests/`, `samples/`, `eval/` (agent smoke test and scorer), `docs/` ([refactor report](docs/v5-refactor.md), [feature audit](docs/feature-audit.md), [weak-model test](docs/weak-model-test.md)). Release history is in [CHANGELOG.md](CHANGELOG.md); contribution notes in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Keywords
 

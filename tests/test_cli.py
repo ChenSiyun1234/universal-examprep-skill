@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """End-to-end: the bundled Chinese sample course through a full study session."""
+from tests import skillpath  # noqa: F401  (skill folder on sys.path)
 import contextlib
 import io
 import json

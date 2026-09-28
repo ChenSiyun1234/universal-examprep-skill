@@ -9,7 +9,7 @@
 中文 · [English](README.md)
 
 [![收藏数](https://img.shields.io/github/stars/ZeKaiNie/universal-examprep-skill?style=flat&color=blue)](https://github.com/ZeKaiNie/universal-examprep-skill/stargazers)
-[![skills.sh](https://img.shields.io/badge/skills.sh-install-purple)](https://skills.sh/zekainie/universal-examprep-skill/universal-exam-cram-coach)
+[![skills.sh installs](https://skills.sh/b/zekainie/universal-examprep-skill)](https://skills.sh/zekainie/universal-examprep-skill/universal-exam-cram-coach)
 [![发布](https://img.shields.io/github/v/release/ZeKaiNie/universal-examprep-skill?label=release&color=orange)](https://github.com/ZeKaiNie/universal-examprep-skill/releases/latest)
 [![MIT](https://img.shields.io/badge/协议-MIT-blue.svg)](LICENSE)
 [![持续集成](https://github.com/ZeKaiNie/universal-examprep-skill/actions/workflows/ci.yml/badge.svg)](https://github.com/ZeKaiNie/universal-examprep-skill/actions)
@@ -23,7 +23,7 @@ npx skills add zekainie/universal-examprep-skill
 
 </div>
 
-期末极速备考教练是一个 [Agent Skill](SKILL.md) 加一个很小的 Python 工具。你把课件、笔记、作业、往年题所在的文件夹交给编程智能体（Claude Code、Codex、Cursor、Windsurf、Antigravity、Gemini CLI……），它拥有三大核心技术特色：
+期末极速备考教练是一个 [Agent Skill](skills/universal-exam-cram-coach/SKILL.md) 加一个很小的 Python 工具。你把课件、笔记、作业、往年题所在的文件夹交给编程智能体（Claude Code、Codex、Cursor、Windsurf、Antigravity、Gemini CLI……），它拥有三大核心技术特色：
 
 1. **🎯 100% 讲义溯源与零幻觉**：每个知识点讲解强制标明 `文件 p.页码`；遇到材料没讲的内容，检索自动拦截拒答（100% 拒绝材料外瞎编）；严格通过 🟢/🟡/⚠️ 三色标记来源。
 2. **🧠 跨会话长期记忆**：纯本地轻量维护 `study_state.json` 与错题本，无需昂贵向量库。关掉对话随时重开，一条 `coach.py status` 瞬间恢复断点；做错的题自动优先重测。
@@ -49,9 +49,9 @@ npx skills add zekainie/universal-examprep-skill
 | 适合谁 | 所有临考的人；小模型/本地模型 | 想要完整建库、可打印网页/PDF 讲义和核验流水线的人 |
 | 准备 | 一条命令，几秒 | 多步确认，智能体自己渲染页面 |
 | README | 本页 · [English](README.md) | [full/README.zh.md](full/README.zh.md) · [full/README.md](full/README.md) |
-| 安装 | [最新发布](https://github.com/ZeKaiNie/universal-examprep-skill/releases/latest)里的 `exam-cram-coach-flash.zip` | [v4.3 发布](https://github.com/ZeKaiNie/universal-examprep-skill/releases/tag/v4.3)里的 `universal-exam-cram-coach.zip`，或直接复制 `full/` |
+| 安装 | `npx skills add ZeKaiNie/universal-examprep-skill`，或[最新发布](https://github.com/ZeKaiNie/universal-examprep-skill/releases/latest)里的 `universal-exam-cram-coach-flash.zip` | `npx skills add ZeKaiNie/universal-examprep-skill --skill universal-exam-cram-coach-full`；更新方法和 v4.3 发布包见 [full/README.zh.md](full/README.zh.md) |
 
-本页其余内容讲 **Flash 版**：整门课几秒钟准备完，技能说明只有约 1100 词，学习循环只有 7 条命令，小模型也能跑（实测 Gemini flash-lite 和 Claude Haiku）。逐项对比见 [Flash 版与完整版](#flash-版与完整版)。
+本页其余内容讲 **Flash 版**：整门课几秒钟准备完，技能说明只有约 1500 词，学习循环只有 7 条命令，小模型也能跑（实测 Gemini flash-lite 和 Claude Haiku）。逐项对比见 [Flash 版与完整版](#flash-版与完整版)。
 
 ## 目录
 
@@ -75,66 +75,60 @@ npx skills add zekainie/universal-examprep-skill
 
 ### 第 1 步 · 安装技能
 
-**最省事：让智能体自己装。** 把下面这段发给它；它可能会请你批准联网或写入技能目录：
-
-```text
-安装期末极速备考教练技能：从 https://github.com/ZeKaiNie/universal-examprep-skill/releases/latest 下载最新发布中的 exam-cram-coach-flash.zip（或 git clone 仓库），放进你的用户级技能目录，保证 SKILL.md 和 coach.py 直接位于名为 exam-cram-coach 的文件夹内。替换旧版前先备份。然后运行 `pip install pypdfium2` 和 `python <该文件夹>/coach.py doctor`，把安装路径和 doctor 的输出告诉我。
-```
-
-各平台版本：
-
-<details><summary>Claude Code</summary>
-
-```text
-请把 https://github.com/ZeKaiNie/universal-examprep-skill 安装或更新到 ~/.claude/skills/exam-cram-coach（SKILL.md 和 coach.py 必须直接在这个文件夹里）。覆盖旧版前先问我。然后运行 `pip install pypdfium2` 和 `python ~/.claude/skills/exam-cram-coach/coach.py doctor`，把结果给我看。
-```
-</details>
-
-<details><summary>Codex</summary>
-
-```text
-请从 https://github.com/ZeKaiNie/universal-examprep-skill 安装最新版期末极速备考教练到我的 Codex 技能目录，文件夹名为 exam-cram-coach（SKILL.md 和 coach.py 直接在里面）。先备份旧版。运行 `pip install pypdfium2`，再运行 `python <安装路径>/coach.py doctor`，告诉我路径和输出，并说明是否需要新建任务才能看到技能。
-```
-</details>
-
-<details><summary>Cursor</summary>
-
-```text
-请获取 https://github.com/ZeKaiNie/universal-examprep-skill，安装为 exam-cram-coach，放到 Cursor 的用户技能目录（~/.cursor/skills/ 或 ~/.agents/skills/），SKILL.md 和 coach.py 直接在里面。先备份旧版，运行 `pip install pypdfium2`，确认 Cursor 能发现 SKILL.md，并告诉我路径。
-```
-</details>
-
-<details><summary>Windsurf</summary>
-
-```text
-请获取 https://github.com/ZeKaiNie/universal-examprep-skill，安装到 ~/.codeium/windsurf/skills/exam-cram-coach。下载或覆盖文件前先问我。运行 `pip install pypdfium2`，确认 Cascade 能发现 SKILL.md，并告诉我路径。
-```
-</details>
-
-<details><summary>Antigravity</summary>
-
-```text
-请获取 https://github.com/ZeKaiNie/universal-examprep-skill，安装到 ~/.gemini/antigravity/skills/exam-cram-coach（SKILL.md 和 coach.py 直接在里面）。写入工作区以外的目录前先问我。运行 `pip install pypdfium2`，重新扫描技能，把路径和 `python <路径>/coach.py doctor` 的输出告诉我。
-```
-</details>
-
-<details><summary>Gemini CLI</summary>
+**推荐：一条命令。** `npx` 需要 Node.js 18 或更新版本（用 `node --version` 检查）：
 
 ```bash
-gemini skills install https://github.com/ZeKaiNie/universal-examprep-skill.git
+npx skills add ZeKaiNie/universal-examprep-skill
 pip install pypdfium2
 ```
-</details>
 
-**手动安装。** 到[最新发布页](https://github.com/ZeKaiNie/universal-examprep-skill/releases/latest)下载 `exam-cram-coach-flash.zip`，解压到智能体的技能目录，得到 `…/skills/exam-cram-coach/SKILL.md` 和 `…/skills/exam-cram-coach/coach.py`。然后打开终端运行 `pip install pypdfium2`。
+第一条命令会问你给哪些智能体安装（Claude Code、Codex、Cursor、Windsurf、Antigravity、Gemini CLI、GitHub Copilot 等 40 多种），以及装在当前项目还是装给你的用户账号（`-g`）。它只复制一个文件夹 `universal-exam-cram-coach/`：13 个文件、约 150 KB，里面的工具离线运行。以后用 `npx skills update` 更新。
 
-在任何终端都可以自检：
+**Claude Code 插件**（另一种方式，不需要 Node.js）。在 Claude Code 里输入：
+
+```text
+/plugin marketplace add ZeKaiNie/universal-examprep-skill
+/plugin install universal-exam-cram-coach@exam-cram-coach
+```
+
+**也可以让智能体替你装。** 把下面这段发给它；它可能会请你批准运行命令：
+
+```text
+请为你自己安装期末极速备考教练技能：运行 `npx skills add ZeKaiNie/universal-examprep-skill --skill universal-exam-cram-coach`（它会自动识别你并为你安装）；然后运行 `pip install pypdfium2`；最后运行 `python <安装好的文件夹>/coach.py doctor`，把输出给我看。
+```
+
+<details><summary>离线安装（发布包）与各智能体的技能目录</summary>
+
+到[最新发布页](https://github.com/ZeKaiNie/universal-examprep-skill/releases/latest)下载 `universal-exam-cram-coach-flash.zip` 和 `SHA256SUMS.txt`，先核对校验和，再解压到智能体的技能目录：
 
 ```bash
-python 技能路径/exam-cram-coach/coach.py doctor
+sha256sum -c SHA256SUMS.txt          # macOS：shasum -a 256 -c SHA256SUMS.txt
+```
+
+Windows 上用 `certutil -hashfile universal-exam-cram-coach-flash.zip SHA256` 打印哈希值，与 `SHA256SUMS.txt` 对比。
+
+| 智能体 | 用户级技能目录 |
+|---|---|
+| Claude Code | `~/.claude/skills/` |
+| Codex | `~/.codex/skills/` |
+| Cursor | `~/.cursor/skills/` |
+| Windsurf | `~/.codeium/windsurf/skills/` |
+| Antigravity | `~/.gemini/antigravity/skills/` |
+| Gemini CLI | `~/.gemini/skills/` |
+| GitHub Copilot | `~/.copilot/skills/` |
+
+解压后应得到 `…/skills/universal-exam-cram-coach/SKILL.md` 和 `…/skills/universal-exam-cram-coach/coach.py`。
+</details>
+
+在任何终端都可以自检（把路径换成上表里你的智能体目录）：
+
+```bash
+python ~/.claude/skills/universal-exam-cram-coach/coach.py doctor
 ```
 
 它会打印版本、PDF 支持是否可用、上次使用的工作区。
+
+**装过早期 Flash 版？** 5.0 和 5.1 版以 `exam-cram-coach` 的名字安装，并且会把整个仓库（约 12 MB）复制进技能目录。运行 `npx skills remove exam-cram-coach`（当初装给整个用户的加 `-g`，或直接删掉那个文件夹），再按上面的方法重新安装即可；你的学习工作区在别处，不受影响。`universal-exam-cram-coach` 这个名字以前装的是 v4.3 完整版；现在 `npx skills update` 会升级到 Flash 版，想继续用 v4.3 请运行 `npx skills add ZeKaiNie/universal-examprep-skill --skill universal-exam-cram-coach-full`（[以后如何更新](full/README.zh.md)）。
 
 ### 第 2 步 · 把资料放进一个文件夹
 
@@ -294,7 +288,9 @@ python coach.py help
 | Gemini flash（Antigravity） | ✅ | 21 | 14/15 | 6 张 | 无 |
 | Claude Haiku 4.5 | ✅ | 13 | 14/14 | 5 张 | 无 |
 
-**与 v4.3 相比**（同一门 MIT 课）：智能体要读的技能文本 140 KB → 6.5 KB；开讲前脚本调用 5 次 → 1 次；单元测试 12 分钟 → 不到 1 秒；仓库 14.4 万行 → 2500 行。
+**与 v4.3 相比**（同一门 MIT 课）：智能体要读的技能文本 140 KB → 10 KB；开讲前脚本调用 5 次 → 1 次；单元测试 12 分钟 → 不到 1 秒；仓库 14.4 万行 → 2500 行。
+
+**`npx skills add` 实际装到你电脑上的内容**（用 skills CLI 1.7.0 实测）：v5.1 时技能放在仓库根目录，CLI 会把整个仓库复制过去，共 545 个文件、12 MB；v5.2 起只安装 `skills/universal-exam-cram-coach/`，13 个文件、150 KB。
 
 ## 常见问题
 
@@ -318,24 +314,26 @@ python coach.py help
 
 **我的资料会被传到哪里？** 哪里都不传。工具只往 `exam-cram/` 里写文件。你的智能体会看到它打印的文字和图片，和你用智能体打开任何文件一样。
 
+**安装它安全吗？课件里如果藏了给 AI 的指令怎么办？** 安装进去的技能只有 13 个小文件，不联网、不调用其他程序、不含任何密钥。它从你的文件里打印出的内容都夹在 `<<<MATERIAL` 和 `MATERIAL>>>` 之间，`SKILL.md` 要求智能体只把这些文字当课程内容。像“忽略之前的指令”“如果你是 AI…”这样的句子会被 `setup` 和显示它的地方用 ⚠️ 标出来；这个检查是启发式的，真正的边界是分隔标记和那条规则。详见 [SECURITY.md](SECURITY.md)。
+
 **不用智能体能用吗？** 能：每条命令都输出纯文本，`python coach.py next`、`python coach.py quiz` 本身就是一个阅读和刷题工具。
 
-**没有 Python 的网页对话能用吗？** 技能有降级方案（SKILL.md §7），但进度、配图和测验在本地智能体里效果好得多。
+**没有 Python 的网页对话能用吗？** 技能有降级方案（SKILL.md §8），但进度、配图和测验在本地智能体里效果好得多。
 
 ## 给开发者
 
 ```bash
-git clone https://github.com/ZeKaiNie/universal-examprep-skill exam-cram-coach
-cd exam-cram-coach
+git clone https://github.com/ZeKaiNie/universal-examprep-skill
+cd universal-examprep-skill
 pip install pypdfium2
 python -m unittest discover -s tests -v          # 43 个用例，约 1 秒
 python coach.py setup samples/zh-data-structures  # 内置中文样例课
 python samples/fetch.py                           # 下载 MIT 6.006 + 耶鲁 PSYC 110（CC BY-NC-SA）
 python eval/agent_smoke.py claude --model claude-haiku-4-5-20251001 --materials <文件夹>   # 驱动真实智能体跑一轮
-python release.py                                 # 打包 dist/exam-cram-coach-flash.zip
+python release.py                                 # 打包 dist/universal-exam-cram-coach-flash.zip 与 SHA256SUMS.txt
 ```
 
-结构：`SKILL.md`（智能体遵循的说明）、`coach.py` + `coach/`（`extract` → `chapters` → `questions` → `figures` → `index` → `state` → `cli`）、`tests/`、`samples/`、`eval/`（智能体冒烟测试与打分）、`docs/`（[重构记录](docs/v5-refactor.md)、[功能核查](docs/feature-audit.md)、[弱模型实测](docs/weak-model-test.md)）。版本历史见 [CHANGELOG.md](CHANGELOG.md)，贡献说明见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+结构：`skills/universal-exam-cram-coach/` 就是安装进智能体的技能本身，只有 `SKILL.md`、`coach.py`、`coach/`（`extract` → `chapters` → `questions` → `figures` → `guard` → `index` → `state` → `cli`）和 `LICENSE`；`tests/test_skill_surface.py` 保证这个文件夹始终小巧、离线、能通过安全审计。根目录的 `coach.py` 只是开发者用的快捷入口。另有 `.claude-plugin/marketplace.json`（Claude Code 插件）、`tests/`、`samples/`、`eval/`（智能体冒烟测试与打分）、`docs/`（[重构记录](docs/v5-refactor.md)、[功能核查](docs/feature-audit.md)、[弱模型实测](docs/weak-model-test.md)）。版本历史见 [CHANGELOG.md](CHANGELOG.md)，贡献说明见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 关键词
 

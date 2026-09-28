@@ -1,4 +1,4 @@
-> **This is the Full edition (v4.3), kept unchanged for readers who want the complete knowledge-base build, HTML/PDF study guides and the verification pipeline.** The lighter **Flash edition** lives at the repository root ([README](../README.md)). To install this edition, download `universal-exam-cram-coach.zip` from the [v4.3 release](https://github.com/ZeKaiNie/universal-examprep-skill/releases/tag/v4.3) or copy this `full/` folder into your agent's skills directory as `universal-exam-cram-coach`. The two editions do not share workspaces.
+> **This is the Full edition (v4.3), kept unchanged for readers who want the complete knowledge-base build, HTML/PDF study guides and the verification pipeline.** The lighter **Flash edition** lives in `skills/universal-exam-cram-coach/` (see the [root README](../README.md)). Since v5.2 the name `universal-exam-cram-coach` installs Flash; this edition is `universal-exam-cram-coach-full` and is hidden from a plain `npx skills add`. Install it with `npx skills add ZeKaiNie/universal-examprep-skill --skill universal-exam-cram-coach-full`. A plain `npx skills update` cannot see a hidden skill and may offer to remove it (answer no); update it with `INSTALL_INTERNAL_SKILLS=1 npx skills update` (PowerShell: `$env:INSTALL_INTERNAL_SKILLS=1; npx skills update`). Offline, the `universal-exam-cram-coach.zip` of the [v4.3 release](https://github.com/ZeKaiNie/universal-examprep-skill/releases/tag/v4.3) works too, but its folder and `name:` are the old `universal-exam-cram-coach`: if you also use Flash, rename both to `universal-exam-cram-coach-full`. Avoid `--full-depth`, which also lists the ten v4.3 sub-skills in `full/skills/`. The two editions do not share workspaces.
 
 <div align="center">
 
@@ -336,9 +336,9 @@ Read the [contribution guide](CONTRIBUTING.md) before opening a PR. Debugging an
 
 <a href="https://www.star-history.com/?repos=ZeKaiNie%2Funiversal-examprep-skill&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=ZeKaiNie/universal-examprep-skill&type=date&theme=dark&legend=top-left&sealed_token=q2eC20GmpWMHMen634RnHHNopx3dtYK6mzpbK0tB8B7sBn_LT0IKz-TYsaaWMY5xLJ6i7bsHedSzBxs4DU6cD5vZ8HFc-ZD2XAlqm5MnqBbf-ZbEq8zr2A" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=ZeKaiNie/universal-examprep-skill&type=date&legend=top-left&sealed_token=q2eC20GmpWMHMen634RnHHNopx3dtYK6mzpbK0tB8B7sBn_LT0IKz-TYsaaWMY5xLJ6i7bsHedSzBxs4DU6cD5vZ8HFc-ZD2XAlqm5MnqBbf-ZbEq8zr2A" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=ZeKaiNie/universal-examprep-skill&type=date&legend=top-left&sealed_token=q2eC20GmpWMHMen634RnHHNopx3dtYK6mzpbK0tB8B7sBn_LT0IKz-TYsaaWMY5xLJ6i7bsHedSzBxs4DU6cD5vZ8HFc-ZD2XAlqm5MnqBbf-ZbEq8zr2A" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=ZeKaiNie/universal-examprep-skill&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=ZeKaiNie/universal-examprep-skill&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=ZeKaiNie/universal-examprep-skill&type=date&legend=top-left" />
  </picture>
 </a>
 

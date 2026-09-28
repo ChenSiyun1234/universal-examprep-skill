@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+from tests import skillpath  # noqa: F401  (skill folder on sys.path)
 import unittest
 
 from coach.text import chinese_numeral, clean, is_mostly_cjk, pack, tokenize

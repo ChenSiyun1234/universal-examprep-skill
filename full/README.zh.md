@@ -1,4 +1,4 @@
-> **这是完整版（v4.3），原样保留给需要完整建库、网页/PDF 讲义和核验流水线的读者。** 更轻的 **Flash 版**在仓库根目录（[README](../README.zh.md)）。安装完整版：从 [v4.3 发布页](https://github.com/ZeKaiNie/universal-examprep-skill/releases/tag/v4.3) 下载 `universal-exam-cram-coach.zip`，或把这个 `full/` 文件夹复制到智能体的技能目录并命名为 `universal-exam-cram-coach`。两个版本的工作区互不兼容。
+> **这是完整版（v4.3），原样保留给需要完整建库、网页/PDF 讲义和核验流水线的读者。** 更轻的 **Flash 版**在 `skills/universal-exam-cram-coach/`（见[根目录 README](../README.zh.md)）。从 v5.2 起，`universal-exam-cram-coach` 这个名字安装的是 Flash 版；完整版叫 `universal-exam-cram-coach-full`，普通的 `npx skills add` 不会选中它。安装：`npx skills add ZeKaiNie/universal-examprep-skill --skill universal-exam-cram-coach-full`。普通的 `npx skills update` 看不到隐藏的技能，可能会提示删除它（选否）；更新请用 `INSTALL_INTERNAL_SKILLS=1 npx skills update`（PowerShell：`$env:INSTALL_INTERNAL_SKILLS=1; npx skills update`）。离线也可以用 [v4.3 发布页](https://github.com/ZeKaiNie/universal-examprep-skill/releases/tag/v4.3)的 `universal-exam-cram-coach.zip`，但它的文件夹名和 `name:` 仍是旧的 `universal-exam-cram-coach`：如果同时在用 Flash 版，请把两者都改成 `universal-exam-cram-coach-full`。不要加 `--full-depth`，否则会同时列出 `full/skills/` 里十个 v4.3 子技能。两个版本的工作区互不兼容。
 
 <div align="center">
 
@@ -323,9 +323,9 @@ python scripts/build_dist.py
 
 <a href="https://www.star-history.com/?repos=ZeKaiNie%2Funiversal-examprep-skill&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=ZeKaiNie/universal-examprep-skill&type=date&theme=dark&legend=top-left&sealed_token=q2eC20GmpWMHMen634RnHHNopx3dtYK6mzpbK0tB8B7sBn_LT0IKz-TYsaaWMY5xLJ6i7bsHedSzBxs4DU6cD5vZ8HFc-ZD2XAlqm5MnqBbf-ZbEq8zr2A" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=ZeKaiNie/universal-examprep-skill&type=date&legend=top-left&sealed_token=q2eC20GmpWMHMen634RnHHNopx3dtYK6mzpbK0tB8B7sBn_LT0IKz-TYsaaWMY5xLJ6i7bsHedSzBxs4DU6cD5vZ8HFc-ZD2XAlqm5MnqBbf-ZbEq8zr2A" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=ZeKaiNie/universal-examprep-skill&type=date&legend=top-left&sealed_token=q2eC20GmpWMHMen634RnHHNopx3dtYK6mzpbK0tB8B7sBn_LT0IKz-TYsaaWMY5xLJ6i7bsHedSzBxs4DU6cD5vZ8HFc-ZD2XAlqm5MnqBbf-ZbEq8zr2A" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=ZeKaiNie/universal-examprep-skill&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=ZeKaiNie/universal-examprep-skill&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=ZeKaiNie/universal-examprep-skill&type=date&legend=top-left" />
  </picture>
 </a>
 

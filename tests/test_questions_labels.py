@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """Textbook-style labels, messy solution file names and scanned homework sheets."""
+from tests import skillpath  # noqa: F401  (skill folder on sys.path)
 import unittest
 
 from coach.chapters import Chapter
