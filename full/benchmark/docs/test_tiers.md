@@ -1,5 +1,7 @@
 # 测试分层 (Test Tiers)
 
+[English](test_tiers.en.md) · 中文
+
 > **本文件 = 简明的「分层口径」权威定义（canonical tier taxonomy）。** 详细现状审计见
 > [`testing-audit.md`](testing-audit.md)，能力 × 层覆盖表见 [`coverage-matrix.md`](coverage-matrix.md)。
 > 三份文档对各层（尤其 **Tier 2 = 行为冒烟**）的定义必须一致。

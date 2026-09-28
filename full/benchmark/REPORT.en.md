@@ -82,4 +82,4 @@ Raw files is already strong, so the skill wins on "same accuracy for less cost +
 - **Materials-specific gold held locally** (verbatim transcript quotes, to avoid copyright/leakage); reproducible by holders via `run_matrix.py --real`.
 - **The Sonnet judge shares a family with the graded models** — both human kappa passes were high, but a known limitation.
 
-Full commands and reproduction in [`docs/running-real-runs.md`](docs/running-real-runs.md); metrics are benchmarked against FACTS Grounding, Vectara HHEM, RAGAS, RGB (see [`docs/`](docs/)).
+Full commands and reproduction in [`docs/running-real-runs.md`](docs/running-real-runs.en.md); metrics are benchmarked against FACTS Grounding, Vectara HHEM, RAGAS, RGB (see [`docs/`](docs/)).

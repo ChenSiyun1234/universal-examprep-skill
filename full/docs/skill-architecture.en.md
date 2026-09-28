@@ -102,7 +102,7 @@ When state exists, it may be modified only through `scripts/update_progress.py`;
 - Machine contracts: JSON keys, stable IDs, hashes, reason codes, and lifecycle statuses remain fixed across translations.
 - Human-readable views: agent-generated notebooks, receipts, and textbooks render in the selected language, while state enumerations remain canonical. If a legacy/generated progress view still uses Chinese canonical wording, the agent reads it only as a state view and then restates it in the current language; it must not conflate the two layers.
 
-See [`language-policy.md`](language-policy.md) and [`localization.md`](localization.md).
+See [`language-policy.md`](language-policy.md) and [`localization.md`](localization.en.md).
 
 ## 6. Key invariants
 

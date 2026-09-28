@@ -1,5 +1,7 @@
 # 权威幻觉 / 事实性基准综述（报告 Related-Work 草稿）
 
+[English](related_benchmarks.en.md) · 中文
+
 > 工作草稿，供 benchmark 报告引用。已逐项核对一手来源（arXiv / ACL·NeurIPS·AAAI / 官方 repo·leaderboard）。
 > 排行榜实时数字会变（如 Vectara 头部模型 ~2–5%），引用时按"快照"对待；方法/数据描述较稳定。
 

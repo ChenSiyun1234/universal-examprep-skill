@@ -1,5 +1,7 @@
 # 防幻觉 Benchmark 框架
 
+[English](README.en.md) · 中文
+
 给 `universal-exam-cram-coach` 这个 skill 做**真实数据背书**：用实测对比"装了 skill / 没装 skill"
 两组在"基于你自己课件的有据问答"上的幻觉率、忠实度、弃答率等，替代 README 里"90% / 100%"那种宣传数字。
 

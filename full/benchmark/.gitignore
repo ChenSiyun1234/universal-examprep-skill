@@ -27,14 +27,17 @@ items/items_*_oos.jsonl
 # 你的课件/作业 —— 可能含版权或隐私，绝不提交到公开仓库
 materials/*
 !materials/README.md
+!materials/README.en.md
 
 # skill 臂生成的知识库
 skill_workspace/*
 !skill_workspace/README.md
+!skill_workspace/README.en.md
 
 # 人工校准标注（可能含答案细节）
 calibration/*
 !calibration/README.md
+!calibration/README.en.md
 !calibration/kappa_n24_summary.json
 runs/ledger.jsonl
 items/items_algoexam*.jsonl

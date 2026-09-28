@@ -1,5 +1,7 @@
 # 测试与 Benchmark 审计 (Testing & Benchmark Audit)
 
+[English](testing-audit.en.md) · 中文
+
 > 这是一份**诚实的现状快照**，用来在投入昂贵测试之前，把「我们到底测了什么、没测什么」说清楚。
 > 非营销文档。结论指向 PR 路线（见文末）。当前进度：**T1**（审计文档 + 一致性守卫）、**T2**（Tier 2 确定性行为冒烟层）、**T3/T3.1**（提交版聚合器 `aggregate_matrix.py` + fixture 流水线 + 判分↔聚合桥）、**T4**（Tier 4 长程漂移**确定性 replay harness** [`drift/`](../drift/)）已落地；T2 的**真 LLM 行为冒烟接线已接通**（B2，behavior_smoke `--llm` 单轮 + stub 确定性测试）、T4 的**真 LLM 长会话** runner 亦就绪；真付费跑与 **T5** 仍 opt-in（完整发布矩阵仍需私有/付费产物）。本文件是跨 PR 维护的活快照，不跑付费 benchmark。
 

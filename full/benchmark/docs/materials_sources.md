@@ -1,5 +1,7 @@
 # 测试数据来源 / Materials Sources
 
+[English](materials_sources.en.md) · 中文
+
 本 benchmark **不使用任何私有/学校课件**，统一采用**名校公开课**资料（3 门理工 + 3 门文科，覆盖算法、数学、物理、哲学、心理、历史）。
 资料仅**下载到本地用于测试**，**不二次分发、不提交到本仓库**（见 `benchmark/.gitignore`），并在此与报告中**注明出处 + 超链接**。
 

@@ -1,5 +1,7 @@
 # 弱模型实测：小模型能不能按这份技能真的把课讲起来
 
+[English](weak-model-test.en.md) · 中文
+
 日期：2026-09-02。资料：用户提供的 EEC 160/161 Applied Probability（27 个 PDF，约 1000 页，含手写作业扫描件）。
 工具：`eval/agent_smoke.py`，每个模型跑同一份四轮中文剧本，只给它 `SKILL.md`、`coach.py` 和资料路径，不给任何额外提示。
 

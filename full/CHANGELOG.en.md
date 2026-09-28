@@ -41,7 +41,7 @@ English · [中文](CHANGELOG.md)
 
 ## V4.1 — 2026-07-14
 
-> See [`docs/history/plans/PLAN-v4.1-real-world-hardening.md`](docs/history/plans/PLAN-v4.1-real-world-hardening.md) for the complete implementation record.
+> See [`docs/history/plans/PLAN-v4.1-real-world-hardening.md`](docs/history/plans/PLAN-v4.1-real-world-hardening.en.md) for the complete implementation record.
 
 - **Real-course completeness hardening**: Visual coverage is split into wiki, prompt, and answer sides. Blank/image-only PDF pages enter the denominator, and reattachment accepts only images carrying original-page provenance. The index binds workspace input, original PDF content/path inventory, and derived-result hashes, then checks freshness at phase completion. Answer-only pages are deferred to the solution section; manually exposing answers early or sharing a whole page between prompt and answer fails closed.
 - **Teaching examples no longer disappear during question-bank cleanup**: Adds `references/teaching_examples.json`, append-only `references/teaching_baseline.json`, and a per-chapter listing tool. Smaller raw input or rewritten reports cannot reduce the baseline. The gradable question bank remains the sole answer source, while the teaching layer guarantees worked-example reachability.
@@ -54,7 +54,7 @@ English · [中文](CHANGELOG.md)
 
 ## V4.0 — 2026-07-12
 
-> See [`docs/history/plans/PLAN-v4.md`](docs/history/plans/PLAN-v4.md) for the complete design and implementation roadmap. The changelog previously jumped directly from V3.0 to V4.1; this section restores the already released V4.0 history and does not represent another release.
+> See [`docs/history/plans/PLAN-v4.md`](docs/history/plans/PLAN-v4.en.md) for the complete design and implementation roadmap. The changelog previously jumped directly from V3.0 to V4.1; this section restores the already released V4.0 history and does not represent another release.
 
 - **Language and state layering**: Introduces `locales/zh|en` language packs, a shared i18n layer, and legacy-workspace migration to reduce coupling between control logic and student-facing wording.
 - **Lightweight retrieval**: Builds a pure-standard-library BM25 index by chunk, with Chinese/English terminology bridges, top-k, minimum-score abstention, and retrieval traces. Production absorbed the result contract from the early LlamaIndex spike without a heavy runtime dependency.

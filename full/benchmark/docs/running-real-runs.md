@@ -1,5 +1,7 @@
 # 真·付费 LLM 跑：操作手册（opt-in）
 
+[English](running-real-runs.en.md) · 中文
+
 > 面向仓库拥有者（有 Claude Code 订阅、**无独立 API key**）。所有真跑都通过 shell `claude -p` 走你已登录的订阅，不需要 provider API key。
 > **先用 `--mock` 免费验证管线，再加 `--real`。** 真跑消耗你的订阅配额；所有 runner 都 resumable + 配额感知，Ctrl-C 安全、`--real` 重跑自动续。
 > CI 里这些真跑**永远不开**——全靠显式 flag / env 门控。真实材料、金标、结果都 `.gitignore` 挡住，不进公开仓库。

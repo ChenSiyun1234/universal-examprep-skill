@@ -1,5 +1,7 @@
 # items/ —— 金标题集（ground truth）
 
+[English](README.en.md) · 中文
+
 测试的核心。每道题是一行 JSON（JSONL 格式），既给"标准答案"，也给"答案出自材料哪一句"
 （supporting span）——后者让裁判判"答得是否忠于材料"，也是数值题判分的依据。
 

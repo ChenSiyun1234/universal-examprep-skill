@@ -1,5 +1,7 @@
 # 本地化边界 / Localization Boundary
 
+[English](localization.en.md) · 中文
+
 本文件说明语言包能做什么、不能做什么。核心原则是：**行为只有一份，文案可以有多份**。
 
 ## 1. 目录职责

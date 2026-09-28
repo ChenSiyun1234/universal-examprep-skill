@@ -1,5 +1,7 @@
 # skill_workspace/ —— skill 臂的运行目录
 
+[English](README.en.md) · 中文
+
 这是**装了 skill 的那一组**（treatment）跑 `claude -p` 时的工作目录。它要处于
 "skill 已激活 + 文件锁定知识库已建好"的状态，这样测的才是 skill 真正的防幻觉机制。
 

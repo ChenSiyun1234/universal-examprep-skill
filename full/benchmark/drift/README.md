@@ -1,5 +1,7 @@
 # Tier 4 · 长程漂移 harness（deterministic replay）
 
+[English](README.en.md) · 中文
+
 这是 Tier 4「长程漂移（long-horizon drift）」的**第一版落地**：一个**确定性、零成本、纯标准库**的
 **回放（replay）** 框架，用来衡量一个多轮辅导会话是**稳定地贴着复习目标走**，还是随着轮次增多**慢慢跑偏**。
 
